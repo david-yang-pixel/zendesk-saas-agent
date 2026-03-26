@@ -20,6 +20,7 @@ class WebhookScriptTest(unittest.TestCase):
         self.bin_dir = self.root / "bin"
         self.venv_bin_dir = self.root / ".venv" / "bin"
         self.child_pid_file = self.root / "child.pid"
+        self.fake_ss_log = self.root / "fake-ss.log"
 
         self.scripts_dir.mkdir(parents=True, exist_ok=True)
         self.bin_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,19 @@ class WebhookScriptTest(unittest.TestCase):
         )
         fake_uv.chmod(fake_uv.stat().st_mode | stat.S_IEXEC)
 
+        fake_ss = self.bin_dir / "ss"
+        fake_ss.write_text(
+            "\n".join([
+                "#!/usr/bin/env bash",
+                f'echo \"$*\" >> \"{self.fake_ss_log}\"',
+                'if [[ -n "${FAKE_SS_PORT:-}" && "$*" == *":${FAKE_SS_PORT}"* ]]; then',
+                '  printf "LISTEN 0 128 0.0.0.0:%s 0.0.0.0:* users:((\\"python\\",pid=%s,fd=3))\\n" "${FAKE_SS_PORT}" "${FAKE_SS_PID:-99999}"',
+                "fi",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        fake_ss.chmod(fake_ss.stat().st_mode | stat.S_IEXEC)
+
         self.env = os.environ.copy()
         self.env["PATH"] = f"{self.bin_dir}:{self.env.get('PATH', '')}"
 
@@ -82,11 +96,15 @@ class WebhookScriptTest(unittest.TestCase):
         self,
         *args: str,
         capture_output: bool = True,
+        extra_env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        env = self.env.copy()
+        if extra_env is not None:
+            env.update(extra_env)
         return subprocess.run(
             ["bash", str(self.scripts_dir / "webhook.sh"), *args],
             cwd=self.root,
-            env=self.env,
+            env=env,
             text=True,
             capture_output=capture_output,
             timeout=30,
@@ -133,6 +151,29 @@ class WebhookScriptTest(unittest.TestCase):
             self._is_running(child_pid),
             f"stop 后真正的 webhook 进程仍然存活: child_pid={child_pid}, tracked_pid={tracked_pid}",
         )
+
+    def test_status_uses_last_started_port_when_no_port_is_passed(self) -> None:
+        start_result = self._run_script("start", "--host", "0.0.0.0", "--port", "18080", capture_output=False)
+        self.assertEqual(start_result.returncode, 0)
+
+        status_result = self._run_script("status")
+
+        self.assertEqual(status_result.returncode, 0, status_result.stderr + status_result.stdout)
+        self.assertIn("port=18080", status_result.stdout)
+
+    def test_start_rejects_port_when_ss_reports_listener(self) -> None:
+        result = self._run_script(
+            "start",
+            "--port",
+            "16888",
+            extra_env={
+                "FAKE_SS_PORT": "16888",
+                "FAKE_SS_PID": "425120",
+            },
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("端口 16888 已被占用，PID=425120", result.stderr)
 
 
 if __name__ == "__main__":

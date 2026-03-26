@@ -6,12 +6,15 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${ROOT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/webhook.log"
 PID_FILE="${LOG_DIR}/webhook.pid"
+STATE_FILE="${LOG_DIR}/webhook.state"
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 DEFAULT_HOST="0.0.0.0"
 DEFAULT_PORT="8080"
 
 HOST="${DEFAULT_HOST}"
 PORT="${DEFAULT_PORT}"
+HOST_SET=0
+PORT_SET=0
 
 print_usage() {
   cat <<'EOF'
@@ -81,12 +84,23 @@ is_running() {
 
 find_listening_pid() {
   local port="$1"
+  local port_pid=""
 
-  if ! command -v lsof >/dev/null 2>&1; then
-    return
+  if command -v ss >/dev/null 2>&1; then
+    port_pid="$(
+      ss -ltnp "sport = :${port}" 2>/dev/null \
+        | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
+        | head -n 1
+    )"
+    if [[ -n "${port_pid}" ]]; then
+      printf '%s\n' "${port_pid}"
+      return
+    fi
   fi
 
-  lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | head -n 1
+  fi
 }
 
 find_child_pid() {
@@ -119,6 +133,32 @@ read_pid() {
   if [[ -f "${PID_FILE}" ]]; then
     tr -d '[:space:]' < "${PID_FILE}"
   fi
+}
+
+load_state() {
+  local state_host=""
+  local state_port=""
+
+  if [[ ! -f "${STATE_FILE}" ]]; then
+    return
+  fi
+
+  # shellcheck disable=SC1090
+  source "${STATE_FILE}"
+
+  if [[ "${HOST_SET}" -eq 0 && -n "${STATE_HOST:-}" ]]; then
+    HOST="${STATE_HOST}"
+  fi
+  if [[ "${PORT_SET}" -eq 0 && -n "${STATE_PORT:-}" ]]; then
+    PORT="${STATE_PORT}"
+  fi
+}
+
+write_state() {
+  cat > "${STATE_FILE}" <<EOF
+STATE_HOST=${HOST}
+STATE_PORT=${PORT}
+EOF
 }
 
 cleanup_stale_pid() {
@@ -200,6 +240,7 @@ start_webhook() {
   fi
 
   printf '%s\n' "${pid}" > "${PID_FILE}"
+  write_state
 
   log "Webhook 已启动，PID=${pid}"
   log "日志文件: ${LOG_FILE}"
@@ -250,7 +291,7 @@ status_webhook() {
   pid="$(read_pid)"
 
   if [[ -n "${pid}" ]] && is_running "${pid}"; then
-    log "Webhook 运行中，PID=${pid}，日志=${LOG_FILE}"
+    log "Webhook 运行中，host=${HOST}，port=${PORT}，PID=${pid}，日志=${LOG_FILE}"
     return
   fi
 
@@ -274,10 +315,12 @@ parse_options() {
     case "$1" in
       --host)
         HOST="$2"
+        HOST_SET=1
         shift 2
         ;;
       --port)
         PORT="$2"
+        PORT_SET=1
         shift 2
         ;;
       *)
@@ -305,23 +348,28 @@ case "${ACTION}" in
     ;;
   start)
     parse_options "$@"
+    load_state
     start_webhook
     ;;
   stop)
     parse_options "$@"
+    load_state
     stop_webhook
     ;;
   status)
     parse_options "$@"
+    load_state
     status_webhook
     ;;
   restart)
     parse_options "$@"
+    load_state
     stop_webhook
     start_webhook
     ;;
   logs)
     parse_options "$@"
+    load_state
     logs_webhook
     ;;
   *)
