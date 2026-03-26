@@ -89,7 +89,7 @@ find_listening_pid() {
   if command -v ss >/dev/null 2>&1; then
     port_pid="$(
       ss -ltnp "sport = :${port}" 2>/dev/null \
-        | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
+        | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' \
         | head -n 1
     )"
     if [[ -n "${port_pid}" ]]; then
