@@ -1,0 +1,71 @@
+# Zendesk 工单自动处理 Agent 配置
+
+agent:
+  max_concurrent_sessions: 5
+  guardrails:
+    max_rounds: 30
+    timeout_seconds: 600
+    max_tokens_per_session: 1050000
+    compaction_threshold: 0.75
+
+llm:
+  provider: openai
+  model: gpt-5.4
+  base_url: https://api.openai.com/v1
+  temperature: 0.2
+
+retry:
+  max_attempts: 3
+  base_delay_seconds: 5
+  max_delay_seconds: 20
+  jitter: true
+  llm:
+    max_attempts: 3
+  zendesk:
+    max_attempts: 3
+    base_delay_seconds: 5
+    max_delay_seconds: 30
+  git:
+    max_attempts: 2
+    base_delay_seconds: 5
+  sandbox:
+    max_attempts: 2
+    base_delay_seconds: 1
+
+zendesk:
+  poll_interval_seconds: 60
+  poll_query: "status:open status:new"
+
+repos:
+  base_dir: ./repos
+  auto_fetch: true
+  fetch_cron: "0 3 * * *"
+  repositories:
+    - name: dify
+      url: git@github.com:langgenius/dify.git
+    - name: dify-enterprise
+      url: git@github.com:langgenius/dify-enterprise.git
+    - name: dify-sandbox
+      url: git@github.com:langgenius/dify-sandbox.git
+    - name: dify-enterprise-frontend
+      url: git@github.com:langgenius/dify-enterprise-frontend.git
+    - name: dify-helm
+      url: git@github.com:langgenius/dify-helm.git
+    - name: dify-plugin-daemon
+      url: git@github.com:langgenius/dify-plugin-daemon.git
+    - name: dify-official-plugins
+      url: git@github.com:langgenius/dify-official-plugins.git
+
+sandbox:
+  type: local
+  base_dir: /tmp/zd-agent
+  cleanup_on_success: true
+  cleanup_on_failure: true  # 设为 false 可保留失败的 sandbox 用于调试
+
+helm_watchdog:
+  url: https://helm-watchdog.dify.ai
+  timeout: 30
+
+knowledge:
+  docs_dir: ./ai-docs
+  archive_dir: ./ai-docs/tickets
