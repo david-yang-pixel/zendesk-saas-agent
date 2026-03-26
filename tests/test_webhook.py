@@ -16,6 +16,7 @@ from zd_agent.entry.webhook import create_app
 class WebhookTest(unittest.IsolatedAsyncioTestCase):
     signing_secret = "RyqsCLbrnJtjQofdJVbPjy9M8bbHbjl95747HzOI5hY="
     current_timestamp = 1_700_000_000
+    current_timestamp_iso = "2023-11-14T22:13:20Z"
 
     async def asyncSetUp(self) -> None:
         self.manager = SimpleNamespace(
@@ -62,11 +63,11 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
         self,
         payload: dict,
         *,
-        timestamp: int | None = None,
+        timestamp: str | None = None,
         signature: str | None = None,
     ):
         raw_body = self._encode_body(payload)
-        timestamp_text = str(timestamp if timestamp is not None else self.current_timestamp)
+        timestamp_text = timestamp if timestamp is not None else self.current_timestamp_iso
         signature_text = signature or self._build_signature(raw_body, timestamp_text)
         return await self.client.post(
             "/webhook/zendesk",
@@ -105,9 +106,9 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
             event_type="zen:event-type:ticket.created",
             signature_header=self._build_signature(
                 self._encode_body(self._event_payload()),
-                str(self.current_timestamp),
+                self.current_timestamp_iso,
             ),
-            signature_timestamp=str(self.current_timestamp),
+            signature_timestamp=self.current_timestamp_iso,
         )
 
     async def test_rejects_request_when_signature_is_invalid(self) -> None:
@@ -140,7 +141,7 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
             config_module._config = None
             response = await self._post_signed_event(
                 self._event_payload(),
-                timestamp=self.current_timestamp - 301,
+                timestamp="2023-11-14T22:07:59Z",
             )
 
         self.assertEqual(response.status, 401)

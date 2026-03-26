@@ -7,7 +7,7 @@ LOG_DIR="${ROOT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/webhook.log"
 PID_FILE="${LOG_DIR}/webhook.pid"
 STATE_FILE="${LOG_DIR}/webhook.state"
-PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
+AGENT_BIN="${ROOT_DIR}/.venv/bin/zd-agent"
 DEFAULT_HOST="0.0.0.0"
 DEFAULT_PORT="8080"
 
@@ -70,9 +70,9 @@ ensure_venv() {
   }
 }
 
-ensure_python_bin() {
-  if [[ ! -x "${PYTHON_BIN}" ]]; then
-    error "未找到可执行的 ${PYTHON_BIN}，请先检查 uv sync 是否成功"
+ensure_agent_bin() {
+  if [[ ! -x "${AGENT_BIN}" ]]; then
+    error "未找到可执行的 ${AGENT_BIN}，请先检查 uv sync 是否成功"
     exit 1
   fi
 }
@@ -204,7 +204,7 @@ start_webhook() {
   fi
 
   ensure_venv
-  ensure_python_bin
+  ensure_agent_bin
 
   write_state
 
@@ -217,7 +217,7 @@ start_webhook() {
   log "开始后台启动 Webhook，host=${HOST} port=${PORT}"
   (
     cd "${ROOT_DIR}" &&
-    nohup "${PYTHON_BIN}" -m zd_agent.entry.cli webhook --host "${HOST}" --port "${PORT}" >> "${LOG_FILE}" 2>&1 &
+    nohup "${AGENT_BIN}" webhook --host "${HOST}" --port "${PORT}" >> "${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"
   )
 

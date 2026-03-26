@@ -29,8 +29,8 @@ class WebhookScriptTest(unittest.TestCase):
         shutil.copy2(SCRIPT_SOURCE, self.scripts_dir / "webhook.sh")
         (self.root / "pyproject.toml").write_text("[project]\nname='test'\n", encoding="utf-8")
 
-        fake_python = self.venv_bin_dir / "python"
-        fake_python.write_text(
+        fake_agent = self.venv_bin_dir / "zd-agent"
+        fake_agent.write_text(
             "\n".join([
                 "#!/usr/bin/env bash",
                 'port="8080"',
@@ -52,7 +52,7 @@ class WebhookScriptTest(unittest.TestCase):
             ]) + "\n",
             encoding="utf-8",
         )
-        fake_python.chmod(fake_python.stat().st_mode | stat.S_IEXEC)
+        fake_agent.chmod(fake_agent.stat().st_mode | stat.S_IEXEC)
 
         fake_uv = self.bin_dir / "uv"
         fake_uv.write_text(

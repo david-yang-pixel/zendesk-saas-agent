@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import time
+from datetime import datetime, timezone
 
 from aiohttp import web
 
@@ -82,7 +83,7 @@ def _validate_webhook_signature(request: web.Request, raw_body: str) -> web.Resp
         return web.json_response({"error": "missing webhook signature headers"}, status=401)
 
     try:
-        timestamp_value = int(signature_timestamp)
+        timestamp_value = _parse_timestamp(signature_timestamp)
     except ValueError:
         logger.warning(
             "webhook_signature_timestamp_invalid",
@@ -125,6 +126,16 @@ def _clean_optional_string(value: str | None) -> str | None:
     if value.strip() == "":
         return None
     return value
+
+
+def _parse_timestamp(raw: str) -> int:
+    """解析时间戳，支持 Unix epoch 整数和 ISO 8601 两种格式。"""
+    try:
+        return int(raw)
+    except ValueError:
+        pass
+    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    return int(dt.timestamp())
 
 
 def _extract_event_detail(body: object) -> dict:
