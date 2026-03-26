@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="${ROOT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/webhook.log"
 PID_FILE="${LOG_DIR}/webhook.pid"
+PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 DEFAULT_HOST="0.0.0.0"
 DEFAULT_PORT="8080"
 
@@ -66,9 +67,52 @@ ensure_venv() {
   }
 }
 
+ensure_python_bin() {
+  if [[ ! -x "${PYTHON_BIN}" ]]; then
+    error "未找到可执行的 ${PYTHON_BIN}，请先检查 uv sync 是否成功"
+    exit 1
+  fi
+}
+
 is_running() {
   local pid="$1"
   kill -0 "${pid}" >/dev/null 2>&1
+}
+
+find_listening_pid() {
+  local port="$1"
+
+  if ! command -v lsof >/dev/null 2>&1; then
+    return
+  fi
+
+  lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null | head -n 1
+}
+
+find_child_pid() {
+  local pid="$1"
+
+  ps -o pid= --ppid "${pid}" 2>/dev/null | awk 'NF { print $1; exit }'
+}
+
+find_deepest_child_pid() {
+  local root_pid="$1"
+  local current_pid="$1"
+  local next_pid=""
+
+  while true; do
+    next_pid="$(find_child_pid "${current_pid}")"
+    if [[ -z "${next_pid}" ]]; then
+      break
+    fi
+    current_pid="${next_pid}"
+  done
+
+  if [[ "${current_pid}" == "${root_pid}" ]]; then
+    return
+  fi
+
+  printf '%s\n' "${current_pid}"
 }
 
 read_pid() {
@@ -105,6 +149,8 @@ check_env() {
 
 start_webhook() {
   local pid
+  local launcher_pid
+  local port_pid
 
   ensure_project_root
   ensure_uv
@@ -118,16 +164,31 @@ start_webhook() {
   fi
 
   ensure_venv
+  ensure_python_bin
+
+  port_pid="$(find_listening_pid "${PORT}")"
+  if [[ -n "${port_pid}" ]]; then
+    error "端口 ${PORT} 已被占用，PID=${port_pid}"
+    exit 1
+  fi
 
   log "开始后台启动 Webhook，host=${HOST} port=${PORT}"
   (
     cd "${ROOT_DIR}" &&
-    nohup uv run zd-agent webhook --host "${HOST}" --port "${PORT}" >> "${LOG_FILE}" 2>&1 &
+    nohup "${PYTHON_BIN}" -m zd_agent.entry.cli webhook --host "${HOST}" --port "${PORT}" >> "${LOG_FILE}" 2>&1 &
     echo $! > "${PID_FILE}"
   )
 
-  pid="$(read_pid)"
+  launcher_pid="$(read_pid)"
   sleep 2
+
+  pid="$(find_listening_pid "${PORT}")"
+  if [[ -z "${pid}" ]]; then
+    pid="$(find_deepest_child_pid "${launcher_pid}")"
+  fi
+  if [[ -z "${pid}" ]] && [[ -n "${launcher_pid}" ]] && is_running "${launcher_pid}"; then
+    pid="${launcher_pid}"
+  fi
 
   if [[ -z "${pid}" ]] || ! is_running "${pid}"; then
     error "Webhook 启动失败，请查看日志 ${LOG_FILE}"
@@ -137,6 +198,8 @@ start_webhook() {
     fi
     exit 1
   fi
+
+  printf '%s\n' "${pid}" > "${PID_FILE}"
 
   log "Webhook 已启动，PID=${pid}"
   log "日志文件: ${LOG_FILE}"
@@ -180,6 +243,7 @@ stop_webhook() {
 
 status_webhook() {
   local pid
+  local port_pid
 
   ensure_log_dir
   cleanup_stale_pid
@@ -187,6 +251,12 @@ status_webhook() {
 
   if [[ -n "${pid}" ]] && is_running "${pid}"; then
     log "Webhook 运行中，PID=${pid}，日志=${LOG_FILE}"
+    return
+  fi
+
+  port_pid="$(find_listening_pid "${PORT}")"
+  if [[ -n "${port_pid}" ]]; then
+    log "Webhook PID 文件不存在，但端口 ${PORT} 仍被进程 ${port_pid} 占用"
     return
   fi
 

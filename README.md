@@ -158,12 +158,18 @@ uv run zd-agent repos tags dify-enterprise
 
 Webhook 入口为 `POST /webhook/zendesk`，默认监听 `0.0.0.0:8080`。
 
-如果需要请求头鉴权，可在 `.env` 中配置：
+如果需要开启 Zendesk 官方签名校验，可在 `.env` 中配置：
 
 ```env
-ZD_WEBHOOK_AUTH_HEADER=Authorization
-ZD_WEBHOOK_AUTH_VALUE=Bearer difyai123456
+ZD_WEBHOOK_SIGNING_SECRET=RyqsCLbrnJtjQofdJVbPjy9M8bbHbjl95747HzOI5hY=
 ```
+
+签名校验会读取以下请求头，并按 Zendesk 官方规则校验：
+
+- `X-Zendesk-Webhook-Signature`
+- `X-Zendesk-Webhook-Signature-Timestamp`
+
+服务端会用 `timestamp + raw_body` 和 secret 计算 `SHA256 HMAC` 后再做 `base64` 比对，并固定要求时间戳在 `300` 秒窗口内。
 
 当前 webhook 仅接收 Zendesk Event Webhook 格式，并且只处理满足以下条件的事件：
 

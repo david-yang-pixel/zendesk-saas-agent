@@ -60,8 +60,7 @@ class ZendeskConfig(BaseModel):
 
 
 class WebhookConfig(BaseModel):
-    auth_header: str | None = None
-    auth_value: str | None = None
+    signing_secret: str | None = None
 
 
 class RepoEntry(BaseModel):
@@ -119,8 +118,7 @@ class EnvSettings(BaseSettings):
     zendesk_api_token: str = ""
     zd_max_concurrent: int | None = None
     zd_model: str | None = None
-    zd_webhook_auth_header: str | None = None
-    zd_webhook_auth_value: str | None = None
+    zd_webhook_signing_secret: str | None = None
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
 
 
@@ -166,10 +164,8 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.llm.model = env.zd_model
     if env.openai_base_url is not None:
         cfg.llm.base_url = env.openai_base_url
-    if env.zd_webhook_auth_header is not None:
-        cfg.webhook.auth_header = env.zd_webhook_auth_header
-    if env.zd_webhook_auth_value is not None:
-        cfg.webhook.auth_value = env.zd_webhook_auth_value
+    if env.zd_webhook_signing_secret is not None:
+        cfg.webhook.signing_secret = env.zd_webhook_signing_secret
 
     return cfg
 

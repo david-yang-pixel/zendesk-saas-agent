@@ -1,4 +1,8 @@
 import os
+import base64
+import hashlib
+import hmac
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -10,6 +14,9 @@ from zd_agent.entry.webhook import create_app
 
 
 class WebhookTest(unittest.IsolatedAsyncioTestCase):
+    signing_secret = "RyqsCLbrnJtjQofdJVbPjy9M8bbHbjl95747HzOI5hY="
+    current_timestamp = 1_700_000_000
+
     async def asyncSetUp(self) -> None:
         self.manager = SimpleNamespace(
             dispatch=AsyncMock(return_value=SimpleNamespace(session_id="session-123")),
@@ -40,21 +47,51 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
             "type": event_type,
         }
 
-    async def test_dispatches_ticket_created_event_with_enterprise_tag(self) -> None:
-        with patch.dict(
-            os.environ,
-            {
-                "ZD_WEBHOOK_AUTH_HEADER": "Authorization",
-                "ZD_WEBHOOK_AUTH_VALUE": "Bearer difyai123456",
+    def _encode_body(self, payload: dict) -> str:
+        return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+
+    def _build_signature(self, body: str, timestamp: str) -> str:
+        digest = hmac.new(
+            self.signing_secret.encode("utf-8"),
+            f"{timestamp}{body}".encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        return base64.b64encode(digest).decode("utf-8")
+
+    async def _post_signed_event(
+        self,
+        payload: dict,
+        *,
+        timestamp: int | None = None,
+        signature: str | None = None,
+    ):
+        raw_body = self._encode_body(payload)
+        timestamp_text = str(timestamp if timestamp is not None else self.current_timestamp)
+        signature_text = signature or self._build_signature(raw_body, timestamp_text)
+        return await self.client.post(
+            "/webhook/zendesk",
+            data=raw_body.encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-Zendesk-Webhook-Signature": signature_text,
+                "X-Zendesk-Webhook-Signature-Timestamp": timestamp_text,
             },
-            clear=False,
+        )
+
+    async def test_dispatches_ticket_created_event_with_enterprise_tag(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret,
+                },
+                clear=False,
+            ),
+            patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp),
+            patch("zd_agent.entry.webhook.logger.info") as mock_logger_info,
         ):
             config_module._config = None
-            response = await self.client.post(
-                "/webhook/zendesk",
-                json=self._event_payload(),
-                headers={"Authorization": "Bearer difyai123456"},
-            )
+            response = await self._post_signed_event(self._event_payload())
 
         self.assertEqual(response.status, 200)
         payload = await response.json()
@@ -62,21 +99,29 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["ticket_id"], 5158)
         self.assertEqual(payload["session_id"], "session-123")
         self.manager.dispatch.assert_awaited_once_with(5158, hint="", dry_run=False)
+        mock_logger_info.assert_any_call(
+            "webhook_received",
+            ticket_id=5158,
+            event_type="zen:event-type:ticket.created",
+            signature_header=self._build_signature(
+                self._encode_body(self._event_payload()),
+                str(self.current_timestamp),
+            ),
+            signature_timestamp=str(self.current_timestamp),
+        )
 
-    async def test_rejects_request_when_auth_value_is_invalid(self) -> None:
+    async def test_rejects_request_when_signature_is_invalid(self) -> None:
         with patch.dict(
             os.environ,
             {
-                "ZD_WEBHOOK_AUTH_HEADER": "Authorization",
-                "ZD_WEBHOOK_AUTH_VALUE": "Bearer difyai123456",
+                "ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret,
             },
             clear=False,
-        ):
+        ), patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp):
             config_module._config = None
-            response = await self.client.post(
-                "/webhook/zendesk",
-                json=self._event_payload(),
-                headers={"Authorization": "Bearer wrong-value"},
+            response = await self._post_signed_event(
+                self._event_payload(),
+                signature="invalid-signature",
             )
 
         self.assertEqual(response.status, 401)
@@ -84,20 +129,36 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["error"], "unauthorized")
         self.manager.dispatch.assert_not_awaited()
 
+    async def test_rejects_request_when_signature_timestamp_is_expired(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret,
+            },
+            clear=False,
+        ), patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp):
+            config_module._config = None
+            response = await self._post_signed_event(
+                self._event_payload(),
+                timestamp=self.current_timestamp - 301,
+            )
+
+        self.assertEqual(response.status, 401)
+        payload = await response.json()
+        self.assertEqual(payload["error"], "signature timestamp expired")
+        self.manager.dispatch.assert_not_awaited()
+
     async def test_ignores_event_when_type_is_not_ticket_created(self) -> None:
         with patch.dict(
             os.environ,
             {
-                "ZD_WEBHOOK_AUTH_HEADER": "Authorization",
-                "ZD_WEBHOOK_AUTH_VALUE": "Bearer difyai123456",
+                "ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret,
             },
             clear=False,
-        ):
+        ), patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp):
             config_module._config = None
-            response = await self.client.post(
-                "/webhook/zendesk",
-                json=self._event_payload(event_type="zen:event-type:ticket.updated"),
-                headers={"Authorization": "Bearer difyai123456"},
+            response = await self._post_signed_event(
+                self._event_payload(event_type="zen:event-type:ticket.updated"),
             )
 
         self.assertEqual(response.status, 200)
@@ -111,16 +172,13 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
         with patch.dict(
             os.environ,
             {
-                "ZD_WEBHOOK_AUTH_HEADER": "Authorization",
-                "ZD_WEBHOOK_AUTH_VALUE": "Bearer difyai123456",
+                "ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret,
             },
             clear=False,
-        ):
+        ), patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp):
             config_module._config = None
-            response = await self.client.post(
-                "/webhook/zendesk",
-                json=self._event_payload(tags=["ticket-info-test-tag"]),
-                headers={"Authorization": "Bearer difyai123456"},
+            response = await self._post_signed_event(
+                self._event_payload(tags=["ticket-info-test-tag"]),
             )
 
         self.assertEqual(response.status, 200)
@@ -134,16 +192,13 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
         with patch.dict(
             os.environ,
             {
-                "ZD_WEBHOOK_AUTH_HEADER": "Authorization",
-                "ZD_WEBHOOK_AUTH_VALUE": "Bearer difyai123456",
+                "ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret,
             },
             clear=False,
-        ):
+        ), patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp):
             config_module._config = None
-            response = await self.client.post(
-                "/webhook/zendesk",
-                json=self._event_payload(ticket_id="invalid"),
-                headers={"Authorization": "Bearer difyai123456"},
+            response = await self._post_signed_event(
+                self._event_payload(ticket_id="invalid"),
             )
 
         self.assertEqual(response.status, 400)

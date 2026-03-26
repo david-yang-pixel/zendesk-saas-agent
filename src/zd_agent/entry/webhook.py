@@ -8,7 +8,11 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
+import time
 
 from aiohttp import web
 
@@ -19,6 +23,9 @@ logger = get_logger(module="webhook")
 MANAGER_APP_KEY = web.AppKey("manager", object)
 SUPPORTED_EVENT_TYPE = "zen:event-type:ticket.created"
 ENTERPRISE_TAG = "enterprise"
+SIGNATURE_HEADER = "X-Zendesk-Webhook-Signature"
+SIGNATURE_TIMESTAMP_HEADER = "X-Zendesk-Webhook-Signature-Timestamp"
+SIGNATURE_MAX_AGE_SECONDS = 300
 
 
 async def handle_health(_request: web.Request) -> web.Response:
@@ -48,25 +55,64 @@ def _build_ignored_response(reason: str) -> web.Response:
     })
 
 
-def _validate_webhook_auth(request: web.Request) -> web.Response | None:
-    """校验 webhook 请求头鉴权。"""
-    cfg = get_config()
-    auth_header = _clean_optional_string(cfg.webhook.auth_header)
-    auth_value = _clean_optional_string(cfg.webhook.auth_value)
+def _get_signature_header_info(request: web.Request) -> tuple[str | None, str | None]:
+    """获取当前请求中的 Zendesk 签名头信息。"""
+    return (
+        request.headers.get(SIGNATURE_HEADER),
+        request.headers.get(SIGNATURE_TIMESTAMP_HEADER),
+    )
 
-    if not auth_header and not auth_value:
+
+def _validate_webhook_signature(request: web.Request, raw_body: str) -> web.Response | None:
+    """校验 Zendesk Webhook 签名与时间窗口。"""
+    cfg = get_config()
+    signing_secret = _clean_optional_string(cfg.webhook.signing_secret)
+    signature = request.headers.get(SIGNATURE_HEADER)
+    signature_timestamp = request.headers.get(SIGNATURE_TIMESTAMP_HEADER)
+
+    if signing_secret is None:
         return None
 
-    if not auth_header or not auth_value:
+    if signature is None or signature_timestamp is None:
         logger.error(
-            "webhook_auth_misconfigured",
-            auth_header=bool(auth_header),
-            auth_value=bool(auth_value),
+            "webhook_signature_missing",
+            signature_header=signature,
+            signature_timestamp=signature_timestamp,
         )
-        return web.json_response({"error": "webhook auth misconfigured"}, status=500)
+        return web.json_response({"error": "missing webhook signature headers"}, status=401)
 
-    request_value = request.headers.get(auth_header)
-    if request_value != auth_value:
+    try:
+        timestamp_value = int(signature_timestamp)
+    except ValueError:
+        logger.warning(
+            "webhook_signature_timestamp_invalid",
+            signature_timestamp=signature_timestamp,
+        )
+        return web.json_response({"error": "invalid signature timestamp"}, status=401)
+
+    current_time = int(time.time())
+    if abs(current_time - timestamp_value) > SIGNATURE_MAX_AGE_SECONDS:
+        logger.warning(
+            "webhook_signature_timestamp_expired",
+            signature_timestamp=signature_timestamp,
+            current_time=current_time,
+        )
+        return web.json_response({"error": "signature timestamp expired"}, status=401)
+
+    expected_signature = base64.b64encode(
+        hmac.new(
+            signing_secret.encode("utf-8"),
+            f"{signature_timestamp}{raw_body}".encode("utf-8"),
+            hashlib.sha256,
+        ).digest(),
+    ).decode("utf-8")
+
+    if not hmac.compare_digest(signature, expected_signature):
+        logger.warning(
+            "webhook_signature_invalid",
+            signature_header=signature,
+            signature_timestamp=signature_timestamp,
+        )
         return web.json_response({"error": "unauthorized"}, status=401)
 
     return None
@@ -108,12 +154,17 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     if manager is None:
         return web.json_response({"error": "manager not initialized"}, status=503)
 
-    auth_error = _validate_webhook_auth(request)
-    if auth_error is not None:
-        return auth_error
+    try:
+        raw_body = (await request.read()).decode("utf-8")
+    except UnicodeDecodeError:
+        return web.json_response({"error": "request body must be utf-8"}, status=400)
+
+    signature_error = _validate_webhook_signature(request, raw_body)
+    if signature_error is not None:
+        return signature_error
 
     try:
-        body = await request.json()
+        body = json.loads(raw_body)
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON"}, status=400)
 
@@ -131,7 +182,14 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     if not isinstance(tags, list) or ENTERPRISE_TAG not in tags:
         return _build_ignored_response("missing_enterprise_tag")
 
-    logger.info("webhook_received", ticket_id=ticket_id, event_type=event_type)
+    signature_header, signature_timestamp = _get_signature_header_info(request)
+    logger.info(
+        "webhook_received",
+        ticket_id=ticket_id,
+        event_type=event_type,
+        signature_header=signature_header,
+        signature_timestamp=signature_timestamp,
+    )
 
     session = await manager.dispatch(ticket_id, hint="", dry_run=False)
 
