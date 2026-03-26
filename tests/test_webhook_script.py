@@ -175,6 +175,32 @@ class WebhookScriptTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("端口 16888 已被占用，PID=425120", result.stderr)
 
+    def test_status_uses_last_attempted_port_after_failed_start(self) -> None:
+        result = self._run_script(
+            "start",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "16888",
+            extra_env={
+                "FAKE_SS_PORT": "16888",
+                "FAKE_SS_PID": "425120",
+            },
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+
+        status_result = self._run_script(
+            "status",
+            extra_env={
+                "FAKE_SS_PORT": "16888",
+                "FAKE_SS_PID": "425120",
+            },
+        )
+
+        self.assertEqual(status_result.returncode, 0, status_result.stderr + status_result.stdout)
+        self.assertIn("端口 16888", status_result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

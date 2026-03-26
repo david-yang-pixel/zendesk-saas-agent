@@ -206,6 +206,8 @@ start_webhook() {
   ensure_venv
   ensure_python_bin
 
+  write_state
+
   port_pid="$(find_listening_pid "${PORT}")"
   if [[ -n "${port_pid}" ]]; then
     error "端口 ${PORT} 已被占用，PID=${port_pid}"
