@@ -549,3 +549,7 @@ def repos_tags(
         console.print(f"  {tag}")
     if total > limit:
         console.print(f"\n  [dim]... 还有 {total - limit} 个[/dim]")
+
+
+if __name__ == "__main__":
+    app()
