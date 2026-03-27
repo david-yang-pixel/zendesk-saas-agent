@@ -173,16 +173,37 @@ def webhook(
     from zd_agent.entry.webhook import run_webhook_server
     from zd_agent.session.manager import SessionManager
 
+    cfg = get_config()
     console.print(f"[bold green]Webhook 服务器启动[/bold green]  {host}:{port}")
     console.print("  POST /webhook/zendesk — 接收工单推送")
     console.print("  GET  /health — 健康检查")
-    console.print("  GET  /status — 处理状态\n")
+    console.print("  GET  /status — 处理状态")
+    if cfg.repos.auto_fetch:
+        console.print(f"  仓库定时 fetch: {cfg.repos.fetch_cron}")
+    console.print()
 
     manager = SessionManager()
 
     async def _run() -> None:
         await run_webhook_server(host=host, port=port, manager=manager)
-        # 保持运行直到中断
+
+        # 启动仓库定时 fetch（复用 scheduler 中的 fetch 逻辑）
+        if cfg.repos.auto_fetch:
+            from apscheduler import AsyncScheduler
+            from apscheduler.triggers.cron import CronTrigger
+
+            from zd_agent.entry.scheduler import fetch_repos_task
+
+            scheduler = AsyncScheduler()
+            await scheduler.__aenter__()
+            await scheduler.add_schedule(
+                fetch_repos_task,
+                CronTrigger.from_crontab(cfg.repos.fetch_cron),
+                id="repo_fetch",
+            )
+            asyncio.create_task(fetch_repos_task())
+            console.print("[dim]仓库定时 fetch 已启动[/dim]")
+
         stop = asyncio.Event()
 
         import signal
