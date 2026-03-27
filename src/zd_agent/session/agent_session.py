@@ -66,6 +66,10 @@ class AgentSession:
     image_urls: list[dict[str, str]] = field(default_factory=list)
     images_injected: bool = False
 
+    # 工单分类
+    ticket_type: str = ""
+    classification_reasoning: str = ""
+
     # 产出物
     analysis: str = ""
     reply_draft: str = ""
