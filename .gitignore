@@ -16,3 +16,4 @@ logs/
 htmlcov/
 .DS_Store
 ai-docs/tickets/
+.state/
