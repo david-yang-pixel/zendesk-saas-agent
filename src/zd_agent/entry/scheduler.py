@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import time
+from datetime import datetime, timezone
 
 from rich.console import Console
 
@@ -22,6 +24,8 @@ console = Console(highlight=False)
 _seen_ticket_ids: set[int] = set()
 _manager: SessionManager | None = None  # type: ignore[name-defined]  # noqa: F821
 _dry_run: bool = False
+_mention_tracker: MentionTracker | None = None  # type: ignore[name-defined]  # noqa: F821
+_last_mention_poll_time: float = 0.0
 
 
 async def poll_zendesk_task() -> None:
@@ -95,6 +99,64 @@ async def fetch_repos_task() -> None:
     logger.info("scheduled_repo_fetch_done", success=success, total=total)
 
 
+async def poll_mention_task() -> None:
+    """定时任务：轮询最近更新的工单，检测 @mention 并派发（APScheduler 注册用）"""
+    from zd.client import ZendeskClient
+    from zd_agent.mention.detector import is_mention
+
+    global _last_mention_poll_time
+
+    if _manager is None or _mention_tracker is None:
+        return
+
+    cfg = get_config()
+    trigger = cfg.zendesk.mention_trigger
+
+    since = datetime.fromtimestamp(_last_mention_poll_time, tz=timezone.utc)
+    since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = f"status:open status:new updated>{since_iso}"
+
+    # 更新 poll 时间（在请求前更新，避免遗漏同一秒内的事件）
+    _last_mention_poll_time = time.time()
+
+    try:
+        client = ZendeskClient()
+        data = await asyncio.to_thread(client.search_tickets, query)
+        results = data.get("results", [])
+
+        for ticket in results:
+            tid = ticket.get("id")
+            if not tid:
+                continue
+
+            comments_data = await asyncio.to_thread(
+                client.get_ticket_comments, tid, 1, 10
+            )
+            comments = comments_data.get("comments", [])
+
+            # 倒序遍历（最新评论优先）
+            for comment in reversed(comments):
+                comment_id = str(comment.get("id", ""))
+                if not comment_id:
+                    continue
+                if _mention_tracker.is_processed(comment_id):
+                    continue
+                if is_mention(comment, trigger):
+                    _mention_tracker.mark_processed(comment_id)
+                    hint = f"[来自 @mention 的请求]\n{comment.get('body', '')}"
+                    await _manager.dispatch(tid, hint=hint, dry_run=_dry_run)
+                    logger.info(
+                        "mention_poll_dispatched",
+                        ticket_id=tid,
+                        comment_id=comment_id,
+                    )
+                    break  # 同一工单每轮只处理一条 mention
+
+    except Exception as e:
+        logger.error("mention_poll_error", error=str(e), exc_info=True)
+        console.print(f"[red]@mention 轮询出错: {e}[/red]")
+
+
 async def run_scheduler(
     poll_interval: int | None = None,
     dry_run: bool = False,
@@ -105,7 +167,7 @@ async def run_scheduler(
         poll_interval: 轮询间隔（秒），None 则用 config.yaml 的值
         dry_run: 是否为 dry-run 模式（不发送回复）
     """
-    global _manager, _dry_run
+    global _manager, _dry_run, _mention_tracker, _last_mention_poll_time
 
     from apscheduler import AsyncScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -119,6 +181,12 @@ async def run_scheduler(
     _manager = SessionManager()
     _dry_run = dry_run
 
+    from zd_agent.mention.tracker import MentionTracker
+
+    _mention_tracker = MentionTracker()
+    _mention_tracker.cleanup()
+    _last_mention_poll_time = time.time()  # 从启动时刻开始，忽略历史 mention
+
     stop_event = asyncio.Event()
 
     def _handle_signal() -> None:
@@ -130,6 +198,8 @@ async def run_scheduler(
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _handle_signal)
 
+    mention_interval = cfg.zendesk.mention_poll_interval_seconds
+
     console.print(
         f"[bold green]Scheduler 启动[/bold green]\n"
         f"  轮询间隔: {interval}s\n"
@@ -137,6 +207,8 @@ async def run_scheduler(
         f"  并发上限: {_manager.max_concurrent}\n"
         f"  仓库 fetch cron: {cfg.repos.fetch_cron}\n"
         f"  Dry Run: {'是' if dry_run else '否'}\n"
+        f"  @mention 轮询间隔: {mention_interval}s\n"
+        f"  @mention 触发词: [cyan]{cfg.zendesk.mention_trigger}[/cyan]\n"
     )
 
     async with AsyncScheduler() as scheduler:
@@ -144,6 +216,13 @@ async def run_scheduler(
             poll_zendesk_task,
             IntervalTrigger(seconds=interval),
             id="zendesk_poll",
+        )
+
+        mention_interval = cfg.zendesk.mention_poll_interval_seconds
+        await scheduler.add_schedule(
+            poll_mention_task,
+            IntervalTrigger(seconds=mention_interval),
+            id="mention_poll",
         )
 
         if cfg.repos.auto_fetch:
