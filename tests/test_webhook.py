@@ -5,7 +5,7 @@ import hmac
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import zd_agent.config as config_module
 from aiohttp.test_utils import TestClient, TestServer
@@ -22,7 +22,11 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
         self.manager = SimpleNamespace(
             dispatch=AsyncMock(return_value=SimpleNamespace(session_id="session-123")),
         )
-        self.server = TestServer(create_app(self.manager))
+        self.tracker = SimpleNamespace(
+            is_processed=MagicMock(return_value=False),
+            mark_processed=MagicMock(),
+        )
+        self.server = TestServer(create_app(self.manager, tracker=self.tracker))
         self.client = TestClient(self.server)
         await self.client.start_server()
         config_module._config = None
@@ -46,6 +50,32 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
             },
             "id": "cbe4028c-7239-495d-b020-f22348516046",
             "type": event_type,
+        }
+
+    def _comment_added_payload(
+        self,
+        *,
+        ticket_id: str = "342757",
+        comment_id: str = "8659716087550",
+        comment_body: str = "Hey @support-agent please help",
+        is_public: bool = False,
+    ) -> dict:
+        return {
+            "account_id": 22129848,
+            "detail": {
+                "id": ticket_id,
+                "tags": [],
+            },
+            "event": {
+                "comment": {
+                    "id": comment_id,
+                    "body": comment_body,
+                    "is_public": is_public,
+                    "author": {"id": "12345", "name": "Test User", "is_staff": True},
+                },
+            },
+            "id": "test-event-id",
+            "type": "zen:event-type:ticket.comment_added",
         }
 
     def _encode_body(self, payload: dict) -> str:
@@ -205,6 +235,70 @@ class WebhookTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 400)
         payload = await response.json()
         self.assertEqual(payload["error"], "detail.id must be a valid int")
+        self.manager.dispatch.assert_not_awaited()
+
+
+    async def test_dispatches_on_mention_in_internal_note(self) -> None:
+        with (
+            patch.dict(os.environ, {"ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret}, clear=False),
+            patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp),
+        ):
+            config_module._config = None
+            response = await self._post_signed_event(self._comment_added_payload())
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertTrue(payload["accepted"])
+        self.assertEqual(payload["ticket_id"], 342757)
+        self.manager.dispatch.assert_awaited_once()
+        call_kwargs = self.manager.dispatch.call_args
+        self.assertIn("@support-agent", call_kwargs.kwargs["hint"])
+
+    async def test_ignores_mention_in_public_comment(self) -> None:
+        with (
+            patch.dict(os.environ, {"ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret}, clear=False),
+            patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp),
+        ):
+            config_module._config = None
+            response = await self._post_signed_event(
+                self._comment_added_payload(is_public=True),
+            )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertFalse(payload["accepted"])
+        self.assertEqual(payload["reason"], "no_mention_trigger")
+        self.manager.dispatch.assert_not_awaited()
+
+    async def test_ignores_already_processed_comment(self) -> None:
+        self.tracker.is_processed.return_value = True
+        with (
+            patch.dict(os.environ, {"ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret}, clear=False),
+            patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp),
+        ):
+            config_module._config = None
+            response = await self._post_signed_event(self._comment_added_payload())
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertFalse(payload["accepted"])
+        self.assertEqual(payload["reason"], "already_processed")
+        self.manager.dispatch.assert_not_awaited()
+
+    async def test_ignores_comment_without_mention(self) -> None:
+        with (
+            patch.dict(os.environ, {"ZD_WEBHOOK_SIGNING_SECRET": self.signing_secret}, clear=False),
+            patch("zd_agent.entry.webhook.time.time", return_value=self.current_timestamp),
+        ):
+            config_module._config = None
+            response = await self._post_signed_event(
+                self._comment_added_payload(comment_body="Regular internal note, no mention here"),
+            )
+
+        self.assertEqual(response.status, 200)
+        payload = await response.json()
+        self.assertFalse(payload["accepted"])
+        self.assertEqual(payload["reason"], "no_mention_trigger")
         self.manager.dispatch.assert_not_awaited()
 
 

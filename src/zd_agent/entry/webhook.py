@@ -22,6 +22,8 @@ from zd_agent.log import get_logger
 
 logger = get_logger(module="webhook")
 MANAGER_APP_KEY = web.AppKey("manager", object)
+TRACKER_APP_KEY = web.AppKey("tracker", object)
+COMMENT_ADDED_EVENT_TYPE = "zen:event-type:ticket.comment_added"
 SUPPORTED_EVENT_TYPE = "zen:event-type:ticket.created"
 ENTERPRISE_TAG = "enterprise"
 SIGNATURE_HEADER = "X-Zendesk-Webhook-Signature"
@@ -159,6 +161,60 @@ def _extract_ticket_id(detail: dict) -> int:
         raise ValueError("detail.id must be a valid int") from exc
 
 
+def _extract_comment(body: dict) -> dict | None:
+    """从 comment_added 事件体中提取评论对象。"""
+    event = body.get("event")
+    if not isinstance(event, dict):
+        return None
+    comment = event.get("comment")
+    if not isinstance(comment, dict):
+        return None
+    return comment
+
+
+async def _handle_comment_added(
+    request: web.Request,
+    body: dict,
+    ticket_id: int,
+    manager: object,
+) -> web.Response:
+    """处理 ticket.comment_added 事件：检测 @mention 并派发。"""
+    from zd_agent.mention.detector import is_mention
+
+    cfg = get_config()
+    tracker = request.app.get(TRACKER_APP_KEY)
+
+    comment = _extract_comment(body)
+    if comment is None:
+        return _build_ignored_response("missing_comment")
+
+    if not is_mention(comment, cfg.zendesk.mention_trigger):
+        return _build_ignored_response("no_mention_trigger")
+
+    comment_id = str(comment.get("id", ""))
+    if tracker is not None and tracker.is_processed(comment_id):
+        return _build_ignored_response("already_processed")
+
+    if tracker is not None:
+        tracker.mark_processed(comment_id)
+
+    hint = f"[来自 @mention 的请求]\n{comment.get('body', '')}"
+    session = await manager.dispatch(ticket_id, hint=hint, dry_run=False)
+
+    logger.info(
+        "mention_dispatched",
+        ticket_id=ticket_id,
+        comment_id=comment_id,
+        session_id=session.session_id,
+    )
+
+    return web.json_response({
+        "accepted": True,
+        "ticket_id": ticket_id,
+        "session_id": session.session_id,
+    })
+
+
 async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     """处理 Zendesk Event Webhook 推送。"""
     manager = request.app.get(MANAGER_APP_KEY)
@@ -186,6 +242,10 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=400)
 
     event_type = body.get("type")
+
+    if event_type == COMMENT_ADDED_EVENT_TYPE:
+        return await _handle_comment_added(request, body, ticket_id, manager)
+
     if event_type != SUPPORTED_EVENT_TYPE:
         return _build_ignored_response("unsupported_event_type")
 
@@ -211,10 +271,11 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     })
 
 
-def create_app(manager: object | None = None) -> web.Application:
+def create_app(manager: object | None = None, tracker: object | None = None) -> web.Application:
     """创建 aiohttp web 应用"""
     app = web.Application()
     app[MANAGER_APP_KEY] = manager
+    app[TRACKER_APP_KEY] = tracker
 
     app.router.add_get("/health", handle_health)
     app.router.add_get("/status", handle_status)
@@ -227,9 +288,10 @@ async def run_webhook_server(
     host: str = "0.0.0.0",
     port: int = 8080,
     manager: object | None = None,
+    tracker: object | None = None,
 ) -> None:
     """启动 Webhook HTTP 服务器"""
-    app = create_app(manager)
+    app = create_app(manager, tracker)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
