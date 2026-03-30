@@ -122,6 +122,7 @@ class EnvSettings(BaseSettings):
     zd_model: str | None = None
     zd_webhook_signing_secret: str | None = None
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
+    zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:

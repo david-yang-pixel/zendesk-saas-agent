@@ -186,13 +186,30 @@ async def _handle_comment_added(
 
     comment = _extract_comment(body)
     if comment is None:
+        logger.debug("comment_added_no_comment", ticket_id=ticket_id)
         return _build_ignored_response("missing_comment")
 
+    comment_id = str(comment.get("id", ""))
+    is_public = comment.get("is_public", True)
+    logger.debug(
+        "comment_added_received",
+        ticket_id=ticket_id,
+        comment_id=comment_id,
+        is_public=is_public,
+        body_preview=comment.get("body", "")[:80],
+    )
+
     if not is_mention(comment, cfg.zendesk.mention_trigger):
+        logger.debug(
+            "comment_added_no_mention",
+            ticket_id=ticket_id,
+            comment_id=comment_id,
+            trigger=cfg.zendesk.mention_trigger,
+        )
         return _build_ignored_response("no_mention_trigger")
 
-    comment_id = str(comment.get("id", ""))
     if tracker is not None and tracker.is_processed(comment_id):
+        logger.debug("comment_added_already_processed", ticket_id=ticket_id, comment_id=comment_id)
         return _build_ignored_response("already_processed")
 
     if tracker is not None:
@@ -226,9 +243,13 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     except UnicodeDecodeError:
         return web.json_response({"error": "request body must be utf-8"}, status=400)
 
+    logger.debug("webhook_request_received", body_size=len(raw_body))
+
     signature_error = _validate_webhook_signature(request, raw_body)
     if signature_error is not None:
         return signature_error
+
+    logger.debug("webhook_signature_ok")
 
     try:
         body = json.loads(raw_body)
@@ -242,6 +263,7 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=400)
 
     event_type = body.get("type")
+    logger.debug("webhook_event_type", event_type=event_type, ticket_id=ticket_id)
 
     if event_type == COMMENT_ADDED_EVENT_TYPE:
         return await _handle_comment_added(request, body, ticket_id, manager)
