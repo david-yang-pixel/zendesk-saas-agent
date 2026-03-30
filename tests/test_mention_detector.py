@@ -28,6 +28,15 @@ class TestIsMention(unittest.TestCase):
         comment = {"is_public": False, "body": ""}
         self.assertFalse(is_mention(comment, "@support-agent"))
 
+    def test_detects_zendesk_markdown_mention(self) -> None:
+        # Zendesk API 将 @mention 转为 **username** 格式
+        comment = {"is_public": False, "body": "**support-agent** 1"}
+        self.assertTrue(is_mention(comment, "@support-agent"))
+
+    def test_detects_zendesk_markdown_mention_case_insensitive(self) -> None:
+        comment = {"is_public": False, "body": "**Support-Agent** please help"}
+        self.assertTrue(is_mention(comment, "@support-agent"))
+
 
 if __name__ == "__main__":
     unittest.main()
