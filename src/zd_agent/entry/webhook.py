@@ -196,7 +196,8 @@ async def _handle_comment_added(
         ticket_id=ticket_id,
         comment_id=comment_id,
         is_public=is_public,
-        body_preview=comment.get("body", "")[:80],
+        body=comment.get("body", ""),
+        comment_raw=comment,
     )
 
     if not is_mention(comment, cfg.zendesk.mention_trigger):
