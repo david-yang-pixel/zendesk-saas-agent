@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,8 +17,40 @@ from zd_agent.runtime.tool_loop import run_tool_loop
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.session.sandbox import create_sandbox
 from zd_agent.tools.registry import create_tool_registry
+from zd_agent.tools.zendesk import _call_with_rate_limit_retry, _get_client
 
 logger = get_logger(module="runner")
+
+_ACK_NOTE = (
+    "🤖 **AI Agent is now processing this ticket.** "
+    "Please wait while the agent analyzes and prepares a response."
+)
+_FAILURE_NOTE_TEMPLATE = (
+    "⚠️ **AI Agent encountered an error while processing this ticket.**\n\n"
+    "**Reason:** {reason}\n\n"
+    "Please handle this ticket manually or retry by mentioning @support-agent."
+)
+
+
+async def _send_ack_note(ticket_id: int) -> None:
+    """发送 ACK 内部备注，告知客服 AI 已开始处理。"""
+    try:
+        client = _get_client()
+        await _call_with_rate_limit_retry(client.reply_ticket, ticket_id, _ACK_NOTE, False)
+        logger.info("ack_note_sent", ticket_id=ticket_id)
+    except Exception as e:
+        logger.warning("ack_note_failed", ticket_id=ticket_id, error=str(e))
+
+
+async def _send_error_note(ticket_id: int, reason: str) -> None:
+    """发送错误内部备注，告知客服 AI 处理失败及原因。"""
+    body = _FAILURE_NOTE_TEMPLATE.format(reason=reason)
+    try:
+        client = _get_client()
+        await _call_with_rate_limit_retry(client.reply_ticket, ticket_id, body, False)
+        logger.info("error_note_sent", ticket_id=ticket_id)
+    except Exception as e:
+        logger.warning("error_note_failed", ticket_id=ticket_id, error=str(e))
 
 
 async def run_agent(session: AgentSession) -> None:
@@ -66,6 +99,10 @@ async def run_agent(session: AgentSession) -> None:
         hint=session.hint or "(无)",
     )
 
+    # 发送 ACK 内部备注（dry_run 模式跳过）
+    if not session.dry_run:
+        await _send_ack_note(session.ticket_id)
+
     try:
         # 运行工具循环
         await run_tool_loop(session, llm, registry, guardrails)
@@ -79,6 +116,9 @@ async def run_agent(session: AgentSession) -> None:
         )
         session.status = SessionStatus.FAILED
         session.error_message = str(e)
+        # 发送错误内部备注（dry_run 模式跳过）
+        if not session.dry_run:
+            await _send_error_note(session.ticket_id, str(e))
 
     finally:
         # 输出处理摘要

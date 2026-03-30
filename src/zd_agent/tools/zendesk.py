@@ -32,6 +32,9 @@ _client: ZendeskClient | None = None
 _INTERNAL_REPLY_BANNER = (
     "> **AI-generated reply for reference only.**"
 )
+_MENTION_FOOTER = (
+    "\n\n---\n*You can follow up by mentioning @support-agent in an internal note.*"
+)
 
 # 字段 ID → 元数据缓存：{field_id: {"title": ..., "type": ..., "options": {value: label}}}
 _field_map: dict[int, dict[str, Any]] | None = None
@@ -629,6 +632,7 @@ class ZendeskInternalReply(Tool):
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         body = _prepend_internal_reply_banner(args["body"])
+        body = _append_mention_footer(body)
         session.reply_draft = body
 
         if session.dry_run:
@@ -654,6 +658,13 @@ def _prepend_internal_reply_banner(body: str) -> str:
     if normalized.startswith(_INTERNAL_REPLY_BANNER):
         return body
     return f"{_INTERNAL_REPLY_BANNER}\n\n{body}"
+
+
+def _append_mention_footer(body: str) -> str:
+    """为 Internal Reply 追加 @mention 追问提示，避免重复追加。"""
+    if body.endswith(_MENTION_FOOTER):
+        return body
+    return body + _MENTION_FOOTER
 
 
 class ZendeskGetUser(Tool):

@@ -8,5 +8,5 @@
 - 如果 @mention 评论没有明确问题，则按正常 SOP 处理整张工单
 
 **回复要求：**
-- Internal Note 开头注明"[回应 @mention]"
+- Internal Note 开头注明"[回应 @mention]" 注意这个要根据提问者语言来回复
 - 直接回答问题，不需要重复完整的问题确认环节
