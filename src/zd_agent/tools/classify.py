@@ -11,7 +11,7 @@ from zd_agent.tools.base import Tool, ToolResult
 
 logger = get_logger(module="classify")
 
-VALID_TYPES = {"config-deploy", "code-bug", "usage-howto", "general"}
+VALID_TYPES = {"config-deploy", "code-bug", "usage-howto", "general", "mention"}
 DEFAULT_TYPE = "general"
 
 
@@ -38,6 +38,7 @@ class ClassifyTicket(Tool):
                     "工单类型：config-deploy（配置/部署/环境）、"
                     "code-bug（代码缺陷/回归）、"
                     "usage-howto（使用方法/功能咨询）、"
+                    "mention（@mention 触发，聚焦回答 hint 中的问题）、"
                     "general（无法明确归类/复合问题）"
                 ),
             },
