@@ -13,6 +13,7 @@ from zd_agent.tools.git_source import (
     ListRepoTags,
     ListRepos,
 )
+from zd_agent.tools.github_pr import GithubGetPr, GithubSearchPrs
 from zd_agent.tools.knowledge import KnowledgeRead, KnowledgeSearch
 from zd_agent.tools.helm_watchdog import (
     HelmGetLatestVersion,
@@ -68,6 +69,8 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(GitDiff())
     registry.register(ListRepos())
     registry.register(ListRepoTags())
+    registry.register(GithubSearchPrs())
+    registry.register(GithubGetPr())
 
     # Helm Watchdog REST API 工具组
     registry.register(HelmListVersions())

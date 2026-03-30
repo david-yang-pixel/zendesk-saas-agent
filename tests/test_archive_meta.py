@@ -69,6 +69,24 @@ class ArchiveMetaTest(unittest.TestCase):
         self.assertEqual(meta["failed_tools"], [])
         self.assertTrue(meta["tool_calls"][0]["success"])
 
+    def test_build_archive_meta_includes_fix_status_and_customer_reply_flags(self) -> None:
+        session = AgentSession(ticket_id=1810)
+        session.ticket_type = "code-bug"
+        session.analysis = "## 内部分析\n..."
+        session.reply_draft = "## 内部分析\n...\n## 客户回复建议\n...\n## 人工复核指引\n..."
+        session.fix_status = "已合并未发布"
+        session.customer_reply_draft = "Hi customer"
+
+        meta = build_archive_meta(
+            session=session,
+            archived_at="2026-03-30T12:00:00Z",
+        )
+
+        self.assertEqual(meta["ticket_type"], "code-bug")
+        self.assertEqual(meta["fix_status"], "已合并未发布")
+        self.assertTrue(meta["customer_reply_available"])
+        self.assertTrue(meta["reviewer_checklist_available"])
+
 
 if __name__ == "__main__":
     unittest.main()

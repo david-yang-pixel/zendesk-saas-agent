@@ -73,6 +73,9 @@ class AgentSession:
     # 产出物
     analysis: str = ""
     reply_draft: str = ""
+    customer_reply_draft: str = ""
+    reviewer_checklist: str = ""
+    fix_status: str = ""
     reply_sent: bool = False
     archived: bool = False
     error_message: str = ""

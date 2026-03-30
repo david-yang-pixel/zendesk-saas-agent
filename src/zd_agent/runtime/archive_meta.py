@@ -32,6 +32,7 @@ def build_archive_meta(
         "ticket_id": session.ticket_id,
         "session_id": session.session_id,
         "status": session.status.value,
+        "ticket_type": session.ticket_type or None,
         "created_at": archived_at,
         "archived_at": archived_at,
         "rounds": session.round_count,
@@ -46,6 +47,13 @@ def build_archive_meta(
         "failed_tool_count": len(failed_tools),
         "failed_tools": failed_tools,
         "error": session.error_message or None,
+        "fix_status": session.fix_status or None,
+        "customer_reply_available": bool(
+            session.customer_reply_draft or "## 客户回复建议" in session.reply_draft
+        ),
+        "reviewer_checklist_available": bool(
+            session.reviewer_checklist or "## 人工复核指引" in session.reply_draft
+        ),
         "reply_sent": session.reply_sent,
     }
 

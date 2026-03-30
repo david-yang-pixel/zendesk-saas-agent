@@ -76,7 +76,7 @@ class ArchiveTicket(Tool):
                 output=(
                     f"已归档到 {archive_dir}/\n"
                     f"  - analysis.md（分析过程）\n"
-                    f"  - reply.md（回复内容）\n"
+                    f"  - reply.md（三段式 Internal Note）\n"
                     f"  - meta.json（元数据）"
                 )
             )

@@ -1,6 +1,6 @@
 # zd-agent
 
-`zd-agent` 是一个面向 Dify 技术支持场景的 Zendesk 工单自动处理 Agent。它以 LLM 驱动的工具循环为核心，围绕“读取工单 -> 版本确认 -> 多源检索 -> 源码分析 -> 生成 Internal Reply -> 归档结果”这一条标准流程运行，目标是把人工 SOP 尽可能自动化，同时保留 dry-run、归档和错误追踪能力，方便人工抽检与回溯。
+`zd-agent` 是一个面向 Dify 技术支持场景的 Zendesk 工单自动处理 Agent。它以 LLM 驱动的工具循环为核心，围绕“读取工单 -> 版本确认 -> 多源检索 -> 源码分析 -> 修复状态检查 -> 生成 Internal Note -> 归档结果”这一条标准流程运行，目标是把人工 SOP 尽可能自动化，同时保留 dry-run、归档和错误追踪能力，方便人工抽检与回溯。
 
 ## 项目定位
 
@@ -20,7 +20,8 @@
 - 融合 Zendesk Help Center、官方在线文档、本地知识库、历史工单、源码等多种知识源
 - 使用 `sandbox_create_worktree`、`sandbox_search`、`sandbox_read` 做连续代码追踪
 - 调用 Helm Watchdog 做版本映射、values 查询和部署侧辅助判断
-- 生成 Internal Reply 草稿，并统一写入归档
+- 对 `code-bug` 工单额外检查更高版本差异与 GitHub PR 修复状态
+- 生成三段式 Internal Note：内部分析、客户回复建议、人工复核指引
 - 在失败场景下记录 `meta.json`、`analysis.md`、失败工具和错误信息
 
 ## 整体架构
@@ -66,8 +67,9 @@
    - 历史工单
    - Helm Watchdog
    - 源码仓库 / worktree
-5. 生成 Internal Reply 草稿，dry-run 时仅保留草稿不发送
-6. 将分析结果、回复、元数据、错误信息归档到 `ai-docs/tickets/<ticket_id>/`
+5. 若为 `code-bug`，补充检查更新版本差异与 GitHub PR 状态
+6. 生成三段式 Internal Note 草稿，dry-run 时仅保留草稿不发送
+7. 将分析结果、回复、元数据、错误信息归档到 `ai-docs/tickets/<ticket_id>/`
 
 ## 目录结构
 
@@ -211,8 +213,8 @@ bash scripts/webhook.sh stop
 每次工单处理后，系统会在 `ai-docs/tickets/<ticket_id>/` 下保存归档结果。常见文件包括：
 
 - `analysis.md`：分析过程或失败说明
-- `reply.md`：回复草稿
-- `meta.json`：状态、轮次、token、工具调用、失败工具、错误信息等元数据
+- `reply.md`：完整 Internal Note，包含内部分析、客户回复建议、人工复核指引
+- `meta.json`：状态、轮次、token、工具调用、失败工具、错误信息、修复状态等元数据
 
 如果开启 `dry-run`，通常适合先观察这里的归档内容，再决定是否正式投递 Internal Reply。
 
