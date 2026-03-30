@@ -57,6 +57,8 @@ class ZendeskConfig(BaseModel):
     api_token: str = ""
     poll_interval_seconds: int = 60
     poll_query: str = "status:open status:new"
+    mention_trigger: str = "@support-agent"
+    mention_poll_interval_seconds: int = 60
 
 
 class WebhookConfig(BaseModel):

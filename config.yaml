@@ -35,6 +35,8 @@ retry:
 zendesk:
   poll_interval_seconds: 60
   poll_query: "status:open status:new"
+  mention_trigger: "@support-agent"
+  mention_poll_interval_seconds: 60
 
 repos:
   base_dir: ./repos
