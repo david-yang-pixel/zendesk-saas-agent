@@ -45,15 +45,23 @@ _LATIN_RE = re.compile(r"[A-Za-z]")
 
 
 def _detect_reply_language(text: str) -> str:
-    """根据文本内容做轻量语言判断，优先识别日语。"""
+    """根据文本中各语系字符占比判断语言，避免少量混入字符导致误判。"""
     normalized = (text or "").strip()
     if not normalized:
         return ""
-    if _JA_KANA_RE.search(normalized):
+    ja_count = len(_JA_KANA_RE.findall(normalized))
+    cjk_count = len(_CJK_RE.findall(normalized))
+    latin_count = len(_LATIN_RE.findall(normalized))
+    total = ja_count + cjk_count + latin_count
+    if total == 0:
+        return ""
+    # 日语假名出现即优先判定为日语（假名几乎不会在非日语文本中大量出现）
+    if ja_count > 0 and ja_count / total > 0.05:
         return "ja"
-    if _CJK_RE.search(normalized):
+    # 中文 vs 英文按占比判断，避免英文邮件中混入少量中文人名/术语被误判
+    if cjk_count > latin_count:
         return "zh"
-    if _LATIN_RE.search(normalized):
+    if latin_count > 0:
         return "en"
     return ""
 
