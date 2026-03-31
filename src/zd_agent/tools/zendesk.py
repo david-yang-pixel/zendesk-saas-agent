@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -38,6 +39,83 @@ _MENTION_FOOTER = (
 
 # 字段 ID → 元数据缓存：{field_id: {"title": ..., "type": ..., "options": {value: label}}}
 _field_map: dict[int, dict[str, Any]] | None = None
+_JA_KANA_RE = re.compile(r"[\u3040-\u30ff]")
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_LATIN_RE = re.compile(r"[A-Za-z]")
+
+
+def _detect_reply_language(text: str) -> str:
+    """根据文本内容做轻量语言判断，优先识别日语。"""
+    normalized = (text or "").strip()
+    if not normalized:
+        return ""
+    if _JA_KANA_RE.search(normalized):
+        return "ja"
+    if _CJK_RE.search(normalized):
+        return "zh"
+    if _LATIN_RE.search(normalized):
+        return "en"
+    return ""
+
+
+def _language_label(language: str) -> str:
+    return {
+        "ja": "Japanese",
+        "zh": "Chinese",
+        "en": "English",
+    }.get(language, language or "unknown")
+
+
+def _extract_event_text(event: dict[str, Any]) -> str:
+    content = event.get("content") or {}
+    content_type = content.get("type", "")
+    if content_type == "text":
+        return str(content.get("text", "")).strip()
+    if content_type == "html":
+        return str(content.get("body", "")).strip()
+    if content_type == "formResponse":
+        return str(content.get("text_fallback", "")).strip()
+    return ""
+
+
+def _is_external_author(author_type: str) -> bool:
+    normalized = (author_type or "").strip().lower()
+    if not normalized:
+        return False
+    external_markers = ("end-user", "requester", "customer", "user", "external")
+    internal_markers = ("agent", "admin", "staff", "support", "ai_agent")
+    return any(marker in normalized for marker in external_markers) and not any(
+        marker in normalized for marker in internal_markers
+    )
+
+
+def _extract_reply_language_hint(
+    *, thread_type: str, thread_items: list[dict[str, Any]], ticket_description: str,
+) -> dict[str, str] | None:
+    """从最近一条客户公开消息中提取回复语言建议。"""
+    if thread_type == "conversation_log":
+        for event in reversed(thread_items):
+            author = event.get("author") or {}
+            if not _is_external_author(str(author.get("type", ""))):
+                continue
+            body = _extract_event_text(event)
+            language = _detect_reply_language(body)
+            if language:
+                return {"language": language, "evidence": body[:200]}
+    else:
+        for comment in reversed(thread_items):
+            if not comment.get("public"):
+                continue
+            body = str(comment.get("body") or comment.get("plain_body") or "").strip()
+            language = _detect_reply_language(body)
+            if language:
+                return {"language": language, "evidence": body[:200]}
+
+    fallback = (ticket_description or "").strip()
+    language = _detect_reply_language(fallback)
+    if language:
+        return {"language": language, "evidence": fallback[:200]}
+    return None
 
 
 def _get_client() -> ZendeskClient:
@@ -295,6 +373,7 @@ class ZendeskGetTicket(Tool):
                 ticket_id=tid,
                 subject=ticket.get("subject", ""),
                 description=ticket.get("description", ""),
+                customer_language="",
                 customer_version=custom_fields.get("Version", ""),
                 deployment_method=custom_fields.get("Environment", ""),
                 raw_data={
@@ -306,6 +385,25 @@ class ZendeskGetTicket(Tool):
             )
 
             lines.extend(_format_source_recommendations(custom_fields, ticket))
+
+            reply_language_hint = _extract_reply_language_hint(
+                thread_type=thread_type,
+                thread_items=thread_items,
+                ticket_description=ticket.get("description", ""),
+            )
+            if reply_language_hint:
+                session.context.customer_language = reply_language_hint["language"]
+                session.context.raw_data["reply_language_hint"] = reply_language_hint
+                lines.extend([
+                    "## 回复语言建议",
+                    "- 优先使用客户最近一条公开消息的语言回复，不要被系统提示语言影响",
+                    (
+                        f"- 检测结果: {reply_language_hint['language']} "
+                        f"({ _language_label(reply_language_hint['language']) })"
+                    ),
+                    f"- 参考文本: {reply_language_hint['evidence']}",
+                    "",
+                ])
 
             if collected_images:
                 lines.append(f"**截图数量**: {len(collected_images)} 张（已自动提交给你查看）")

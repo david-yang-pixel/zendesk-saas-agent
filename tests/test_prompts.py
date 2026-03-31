@@ -30,6 +30,11 @@ class TestPrompts(unittest.TestCase):
         self.assertIn("github_search_prs", content)
         self.assertIn("github_get_pr", content)
 
+    def test_agents_prompt_prioritizes_language_hint_from_ticket_tool(self) -> None:
+        content = (ROOT / "src/zd_agent/prompts/AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("回复语言建议", content)
+        self.assertIn("不要被系统提示语言影响", content)
+
 
 if __name__ == "__main__":
     unittest.main()
