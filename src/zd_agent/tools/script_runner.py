@@ -36,6 +36,9 @@ class RunScript(Tool):
         "required": ["script_name"],
     }
 
+    group = "environment"
+    concurrency_safe = False
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         script_name = args["script_name"]
 
@@ -98,17 +101,21 @@ class SandboxExec(Tool):
         "required": ["command"],
     }
 
+    group = "environment"
+    requires_sandbox = True
+    concurrency_safe = False
+
     # 白名单：只允许这些命令开头的指令
     ALLOWED_PREFIXES = {
         "ls", "cat", "head", "tail", "wc", "find", "grep", "rg",
         "file", "stat", "du", "diff", "tree", "echo", "pwd",
-        "python -c", "python3 -c",
+        "git", "python -c", "python3 -c",
     }
 
     BLOCKED_PATTERNS = {
         "rm ", "rm\t", "rmdir", "mv ", "cp ",
         "curl", "wget", "nc ", "ncat", "ssh ", "scp ", "rsync",
-        "git push", "git commit", "git checkout", "git reset", "git clean",
+        "git push", "git commit", "git reset", "git clean",
         "chmod", "chown", "sudo", "su ",
         "> ", ">> ", "| sh", "| bash", "xargs",
         "import os", "import subprocess", "import shutil",

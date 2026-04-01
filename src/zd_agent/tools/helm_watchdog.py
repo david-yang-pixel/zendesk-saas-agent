@@ -73,6 +73,8 @@ class HelmListVersions(Tool):
         },
     }
 
+    group = "helm"
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         params: dict[str, Any] = {}
         if args.get("includeValidation"):
@@ -87,6 +89,8 @@ class HelmGetLatestVersion(Tool):
         "type": "object",
         "properties": {},
     }
+
+    group = "helm"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         return await _api_get("/api/v1/versions/latest")
@@ -107,6 +111,8 @@ class HelmGetVersionDetails(Tool):
         },
         "required": ["version"],
     }
+
+    group = "helm"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         version = args.get("version", "")
@@ -135,6 +141,8 @@ class HelmListImages(Tool):
         },
         "required": ["version"],
     }
+
+    group = "helm"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         version = args.get("version", "")
@@ -167,6 +175,8 @@ class HelmValidateImages(Tool):
         "required": ["version"],
     }
 
+    group = "helm"
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         version = args.get("version", "")
         if not version:
@@ -193,6 +203,8 @@ class HelmGetValues(Tool):
         },
         "required": ["version"],
     }
+
+    group = "helm"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         version = args.get("version", "")

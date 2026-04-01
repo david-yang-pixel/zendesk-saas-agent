@@ -32,7 +32,9 @@ from zd_agent.tools.sandbox_tools import (
     SandboxWrite,
 )
 from zd_agent.tools.script_runner import RunScript, SandboxExec
+from zd_agent.tools.subagent import RunSubagent
 from zd_agent.tools.zendesk import (
+    ZendeskAddTags,
     ZendeskGetArticle,
     ZendeskGetAttachments,
     ZendeskGetTicket,
@@ -55,6 +57,7 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ZendeskGetArticle())
     registry.register(ZendeskGetUser())
     registry.register(ZendeskInternalReply())
+    registry.register(ZendeskAddTags())
 
     # 知识库工具组
     registry.register(KnowledgeSearch())
@@ -96,5 +99,8 @@ def create_tool_registry() -> ToolRegistry:
 
     # 归档工具组
     registry.register(ArchiveTicket())
+
+    # Subagent 工具
+    registry.register(RunSubagent())
 
     return registry

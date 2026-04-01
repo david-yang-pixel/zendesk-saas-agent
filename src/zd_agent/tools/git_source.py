@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from zd_agent.config import get_config
@@ -24,6 +25,16 @@ _REF_NOT_FOUND_MARKERS = (
     "invalid object name",
     "unable to resolve revision",
 )
+
+_COMPLEX_RE_PATTERN = re.compile(r"(\(\?[!=<]|\\[bBdDwWsS]|\{[\d,]+\}|[|()]{3,})")
+
+
+def _is_complex_regex(pattern: str) -> bool:
+    """检测正则是否过于复杂，git grep 的 POSIX regex 可能无法处理"""
+    if _COMPLEX_RE_PATTERN.search(pattern):
+        return True
+    special = sum(1 for c in pattern if c in r"()[]{}|+*?^$\\")
+    return special > 8
 
 
 async def _run_git(repo_dir: str, *args: str, max_output: int = 30000) -> tuple[int, str, str]:
@@ -97,6 +108,8 @@ class GitShow(Tool):
         "required": ["repo", "ref", "filepath"],
     }
 
+    group = "source_code"
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo_dir = resolve_repo(args["repo"])
         if repo_dir is None:
@@ -142,15 +155,23 @@ class GitGrep(Tool):
         "required": ["repo", "ref", "pattern"],
     }
 
+    group = "source_code"
+    max_output_tokens = 4000
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo_dir = resolve_repo(args["repo"])
         if repo_dir is None:
             return ToolResult(success=False, error=f"仓库未找到: {args['repo']}")
 
-        # git grep -n --break --heading -i <pattern> <ref> [-- <glob>]
+        pattern = args["pattern"]
+
+        # 如果正则过于复杂（含多个特殊量词/断言），回退为固定字符串搜索
+        use_fixed = len(pattern) > 120 or _is_complex_regex(pattern)
+        grep_flag = "-F" if use_fixed else "-e"
+
         git_args = [
             "grep", "-n", "--break", "--heading", "-i",
-            args["pattern"], args["ref"],
+            grep_flag, pattern, args["ref"],
         ]
         if glob := args.get("glob"):
             git_args.extend(["--", glob])
@@ -162,8 +183,18 @@ class GitGrep(Tool):
             if await _auto_fetch_repo(args["repo"]):
                 code, out, err = await _run_git(str(repo_dir), *git_args)
 
+        # 正则语法错误时，自动回退为固定字符串重试
+        if code != 0 and code != 1 and not use_fixed and "invalid" in err.lower():
+            git_args_fixed = [
+                "grep", "-n", "--break", "--heading", "-i",
+                "-F", pattern, args["ref"],
+            ]
+            if glob := args.get("glob"):
+                git_args_fixed.extend(["--", glob])
+            code, out, err = await _run_git(str(repo_dir), *git_args_fixed)
+
         if code == 1:
-            return ToolResult(output=f"未找到匹配「{args['pattern']}」的代码")
+            return ToolResult(output=f"未找到匹配「{pattern}」的代码")
         if code != 0:
             return ToolResult(success=False, error=f"git grep 失败: {err.strip()}")
         return ToolResult(output=out)
@@ -194,6 +225,9 @@ class GitLog(Tool):
         },
         "required": ["repo", "ref"],
     }
+
+    group = "source_code"
+    max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo_dir = resolve_repo(args["repo"])
@@ -246,6 +280,9 @@ class GitDiff(Tool):
         "required": ["repo", "ref1", "ref2"],
     }
 
+    group = "source_code"
+    max_output_tokens = 4000
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo_dir = resolve_repo(args["repo"])
         if repo_dir is None:
@@ -273,6 +310,8 @@ class ListRepos(Tool):
         "type": "object",
         "properties": {},
     }
+
+    group = "source_code"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         from zd_agent.repos import get_repo_status
@@ -310,6 +349,8 @@ class ListRepoTags(Tool):
         },
         "required": ["repo"],
     }
+
+    group = "source_code"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo_name = args["repo"]

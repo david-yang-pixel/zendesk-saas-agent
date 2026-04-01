@@ -27,6 +27,13 @@ class Tool(ABC):
     description: str
     parameters: dict[str, Any]
 
+    # 元数据（默认值向后兼容，现有子类无需改动）
+    concurrency_safe: bool = True
+    group: str = "default"
+    max_output_tokens: int = 0
+    requires_sandbox: bool = False
+    is_write_operation: bool = False
+
     @abstractmethod
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         ...

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 
 from zd_agent.config import get_config
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
+
+_SEARCH_EXTENSIONS = {".md", ".json", ".txt", ".yaml", ".yml"}
+_MAX_MATCHES = 30
+_MAX_OUTPUT_CHARS = 5000
+_CONTEXT_LINES = 2
 
 
 class KnowledgeSearch(Tool):
@@ -32,6 +38,9 @@ class KnowledgeSearch(Tool):
         "required": ["query"],
     }
 
+    group = "knowledge"
+    max_output_tokens = 4000
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         cfg = get_config()
         docs_dir = Path(cfg.knowledge.docs_dir)
@@ -47,50 +56,102 @@ class KnowledgeSearch(Tool):
 
         query = args["query"]
 
+        output = await _search_with_rg(search_dir, query)
+        if output is None:
+            output = await _search_with_grep(search_dir, query)
+        if output is None:
+            output = await asyncio.to_thread(_search_with_python, search_dir, query)
+
+        if not output:
+            return ToolResult(output=f"未找到匹配「{query}」的内容")
+
+        if len(output) > _MAX_OUTPUT_CHARS:
+            output = output[:_MAX_OUTPUT_CHARS] + "\n\n... (结果过多，已截断)"
+
+        return ToolResult(output=output)
+
+
+async def _search_with_rg(search_dir: Path, query: str) -> str | None:
+    """使用 ripgrep 搜索；不可用时返回 None"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "rg",
+            "--ignore-case",
+            "--max-count", "5",
+            "--context", str(_CONTEXT_LINES),
+            "-g", "*.md",
+            "-g", "*.json",
+            query,
+            str(search_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 1:
+            return ""
+        if proc.returncode != 0:
+            return None
+        return stdout.decode("utf-8", errors="replace").strip()
+    except FileNotFoundError:
+        return None
+
+
+async def _search_with_grep(search_dir: Path, query: str) -> str | None:
+    """使用 grep 搜索；不可用时返回 None"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "grep",
+            "-r", "-i", "-n",
+            "--include=*.md", "--include=*.json",
+            "-C", str(_CONTEXT_LINES),
+            query,
+            str(search_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode == 1:
+            return ""
+        if proc.returncode != 0:
+            return None
+        return stdout.decode("utf-8", errors="replace").strip()
+    except FileNotFoundError:
+        return None
+
+
+def _search_with_python(search_dir: Path, query: str) -> str:
+    """纯 Python fallback：当 rg 和 grep 均不可用时使用"""
+    try:
+        regex = re.compile(re.escape(query), re.IGNORECASE)
+    except re.error:
+        regex = re.compile(re.escape(query), re.IGNORECASE)
+
+    results: list[str] = []
+    match_count = 0
+
+    for filepath in sorted(search_dir.rglob("*")):
+        if not filepath.is_file() or filepath.suffix not in _SEARCH_EXTENSIONS:
+            continue
         try:
-            # 搜索 md + json 文件
-            proc = await asyncio.create_subprocess_exec(
-                "rg",
-                "--ignore-case",
-                "--max-count", "5",
-                "--context", "2",
-                "-g", "*.md",
-                "-g", "*.json",
-                query,
-                str(search_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await proc.communicate()
+            lines = filepath.read_text(encoding="utf-8", errors="replace").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
 
-            if proc.returncode == 1:
-                return ToolResult(output=f"未找到匹配「{query}」的内容")
+        rel = filepath.relative_to(search_dir)
+        for i, line in enumerate(lines):
+            if not regex.search(line):
+                continue
+            match_count += 1
+            if match_count > _MAX_MATCHES:
+                results.append(f"\n... 超过 {_MAX_MATCHES} 条匹配，已截断")
+                return "\n".join(results)
 
-            if proc.returncode != 0:
-                proc = await asyncio.create_subprocess_exec(
-                    "grep",
-                    "-r", "-i", "-n",
-                    "--include=*.md", "--include=*.json",
-                    "-C", "2",
-                    query,
-                    str(search_dir),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                stdout, stderr = await proc.communicate()
+            start = max(0, i - _CONTEXT_LINES)
+            end = min(len(lines), i + _CONTEXT_LINES + 1)
+            block = [f"{rel}:{j + 1}:{lines[j]}" for j in range(start, end)]
+            results.append("\n".join(block))
 
-            output = stdout.decode("utf-8", errors="replace").strip()
-            if not output:
-                return ToolResult(output=f"未找到匹配「{query}」的内容")
-
-            if len(output) > 5000:
-                output = output[:5000] + "\n\n... (结果过多，已截断)"
-
-            return ToolResult(output=output)
-        except FileNotFoundError:
-            return ToolResult(success=False, error="rg 和 grep 均不可用")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+    return "\n--\n".join(results)
 
 
 class KnowledgeRead(Tool):
@@ -106,6 +167,8 @@ class KnowledgeRead(Tool):
         },
         "required": ["filepath"],
     }
+
+    group = "knowledge"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         cfg = get_config()

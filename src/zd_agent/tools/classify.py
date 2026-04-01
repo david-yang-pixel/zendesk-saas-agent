@@ -50,6 +50,8 @@ class ClassifyTicket(Tool):
         "required": ["ticket_type", "reasoning"],
     }
 
+    group = "workflow"
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         ticket_type = args.get("ticket_type", DEFAULT_TYPE)
         reasoning = args.get("reasoning", "")

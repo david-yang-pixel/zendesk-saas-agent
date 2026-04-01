@@ -124,6 +124,9 @@ class OfficialDocsSearch(Tool):
         "required": ["query"],
     }
 
+    group = "knowledge"
+    max_output_tokens = 4000
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         query = args["query"]
         source = args.get("source", "auto")
@@ -161,6 +164,8 @@ class OfficialDocsRead(Tool):
         },
         "required": ["url"],
     }
+
+    group = "knowledge"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         url = args["url"]

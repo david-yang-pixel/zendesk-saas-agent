@@ -38,6 +38,10 @@ class SandboxCreateWorktree(Tool):
         "required": ["repo", "ref"],
     }
 
+    group = "sandbox"
+    requires_sandbox = True
+    concurrency_safe = False
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
@@ -46,7 +50,8 @@ class SandboxCreateWorktree(Tool):
         if repo_dir is None:
             return ToolResult(success=False, error=f"仓库未找到: {args['repo']}")
 
-        worktree_path = session.sandbox_dir / "worktree" / args["repo"]
+        # resolve() 消除 macOS /tmp → /private/tmp 符号链接差异
+        worktree_path = (session.sandbox_dir / "worktree" / args["repo"]).resolve()
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
         if worktree_path.exists() and (worktree_path / ".git").exists():
@@ -54,9 +59,7 @@ class SandboxCreateWorktree(Tool):
 
         try:
             async def _create_worktree() -> None:
-                await _run_git(str(repo_dir), "worktree", "prune")
-                if worktree_path.exists():
-                    shutil.rmtree(worktree_path, ignore_errors=True)
+                await _prune_and_cleanup_worktree(str(repo_dir), worktree_path)
 
                 code, out, err = await _run_git(
                     str(repo_dir),
@@ -102,6 +105,11 @@ class SandboxWrite(Tool):
         "required": ["filepath", "content"],
     }
 
+    group = "sandbox"
+    requires_sandbox = True
+    concurrency_safe = False
+    is_write_operation = True
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
@@ -140,6 +148,9 @@ class SandboxRead(Tool):
         },
         "required": ["filepath"],
     }
+
+    group = "sandbox"
+    requires_sandbox = True
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         if not session.sandbox_dir:
@@ -198,6 +209,9 @@ class SandboxList(Tool):
             },
         },
     }
+
+    group = "sandbox"
+    requires_sandbox = True
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         target = _resolve_sandbox_path(session, args.get("path", ""))
@@ -266,6 +280,10 @@ class SandboxSearch(Tool):
         },
         "required": ["pattern"],
     }
+
+    group = "sandbox"
+    requires_sandbox = True
+    max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         target = _resolve_sandbox_path(session, args.get("path", ""))
@@ -346,6 +364,33 @@ async def _search_with_rg(target: Path, pattern: str, glob: str | None) -> str |
     if proc.returncode != 0:
         raise RuntimeError(f"sandbox_search 失败: {err}")
     return output
+
+
+async def _prune_and_cleanup_worktree(repo_dir: str, worktree_path: Path) -> None:
+    """清理残留的 worktree 注册和物理目录，确保后续 worktree add 不会冲突。
+
+    处理流程：
+    1. git worktree prune — 清理指向已不存在目录的注册
+    2. git worktree remove --force — 如果仍然注册则强制移除
+    3. 删除残留的物理目录
+    """
+    await _run_git(repo_dir, "worktree", "prune")
+
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path, ignore_errors=True)
+
+    # prune 后检查是否仍然注册（极端情况：路径存在但状态异常）
+    code, out, _ = await _run_git(repo_dir, "worktree", "list", "--porcelain")
+    if code == 0:
+        wt_str = str(worktree_path)
+        for line in out.splitlines():
+            if line.startswith("worktree ") and line[9:] == wt_str:
+                await _run_git(repo_dir, "worktree", "remove", "--force", wt_str)
+                await _run_git(repo_dir, "worktree", "prune")
+                break
+
+    if worktree_path.exists():
+        shutil.rmtree(worktree_path, ignore_errors=True)
 
 
 async def _run_git(repo_dir: str, *args: str) -> tuple[int, str, str]:

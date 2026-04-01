@@ -35,6 +35,10 @@ class ArchiveTicket(Tool):
         "required": ["ticket_id", "analysis", "solution"],
     }
 
+    group = "workflow"
+    concurrency_safe = False
+    is_write_operation = True
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         cfg = get_config()
         archive_dir = Path(cfg.knowledge.archive_dir) / str(args["ticket_id"])

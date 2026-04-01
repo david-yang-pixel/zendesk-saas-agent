@@ -69,6 +69,9 @@ class GithubSearchPrs(Tool):
         "required": ["repo", "query"],
     }
 
+    group = "source_code"
+    max_output_tokens = 4000
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo = str(args["repo"]).strip()
         query = str(args["query"]).strip()
@@ -122,6 +125,8 @@ class GithubGetPr(Tool):
         },
         "required": ["repo", "pr_number"],
     }
+
+    group = "source_code"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo = str(args["repo"]).strip()

@@ -62,32 +62,46 @@ class LocalSandbox(Sandbox):
 
     async def cleanup(self) -> None:
         """无条件清理 sandbox 目录（由 runner 决定是否调用）"""
-        if self._sandbox_dir and self._sandbox_dir.exists():
-            worktree_dir = self._sandbox_dir / "worktree"
-            if worktree_dir.exists():
-                for child in worktree_dir.iterdir():
-                    if child.is_dir():
-                        logger.info("removing_worktree", path=str(child))
-                        repo_dir = resolve_repo(child.name)
-                        if repo_dir is not None:
-                            proc = await asyncio.create_subprocess_exec(
-                                "git", "-C", str(repo_dir),
-                                "worktree", "remove", "--force", str(child),
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            await proc.communicate()
-                            prune_proc = await asyncio.create_subprocess_exec(
-                                "git", "-C", str(repo_dir),
-                                "worktree", "prune",
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            await prune_proc.communicate()
-                        shutil.rmtree(child, ignore_errors=True)
+        if not self._sandbox_dir:
+            return
 
+        # resolve() 消除 macOS /tmp → /private/tmp 符号链接差异
+        sandbox_resolved = self._sandbox_dir.resolve()
+        worktree_dir = sandbox_resolved / "worktree"
+
+        if worktree_dir.exists():
+            for child in worktree_dir.iterdir():
+                if not child.is_dir():
+                    continue
+                child_resolved = child.resolve()
+                logger.info("removing_worktree", path=str(child_resolved))
+                repo_dir = resolve_repo(child.name)
+                if repo_dir is not None:
+                    # 先尝试 remove，再 prune 兜底
+                    proc = await asyncio.create_subprocess_exec(
+                        "git", "-C", str(repo_dir),
+                        "worktree", "remove", "--force", str(child_resolved),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    await proc.communicate()
+                    prune_proc = await asyncio.create_subprocess_exec(
+                        "git", "-C", str(repo_dir),
+                        "worktree", "prune",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    await prune_proc.communicate()
+                shutil.rmtree(child_resolved, ignore_errors=True)
+
+        if sandbox_resolved.exists():
+            shutil.rmtree(sandbox_resolved, ignore_errors=True)
+
+        # 清理未 resolve 的原始路径（双重保险）
+        if self._sandbox_dir.exists():
             shutil.rmtree(self._sandbox_dir, ignore_errors=True)
-            logger.info("sandbox_cleaned", ticket_id=self._ticket_id)
+
+        logger.info("sandbox_cleaned", ticket_id=self._ticket_id)
 
     def get_dir(self) -> Path | None:
         return self._sandbox_dir
