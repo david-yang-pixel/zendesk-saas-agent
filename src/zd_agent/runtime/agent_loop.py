@@ -1,0 +1,253 @@
+"""基于 LLMProvider 与 MessageStore 的 Agent 主循环（AsyncGenerator 事件驱动）。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import time
+from collections.abc import AsyncGenerator
+from typing import Any
+
+from zd_agent.log import get_logger
+from zd_agent.runtime.compaction import compact_messages
+from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, ToolExecuted
+from zd_agent.runtime.guardrails import GuardrailTriggered, Guardrails
+from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
+from zd_agent.runtime.messages import MessageStore
+from zd_agent.session.agent_session import AgentSession, SessionStatus
+from zd_agent.tools.base import ToolRegistry
+
+logger = get_logger(module="agent_loop")
+
+MAX_IMAGES = 10
+
+
+def _assistant_message_dict(response: LLMResponse) -> dict[str, Any]:
+    """将 assistant 轮次转为可存入 MessageStore 的 dict（优先使用 provider 的 raw）。"""
+    if isinstance(response.raw, dict):
+        return response.raw
+    msg: dict[str, Any] = {"role": "assistant", "content": response.content}
+    if response.tool_calls:
+        msg["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {"name": tc.name, "arguments": tc.arguments},
+            }
+            for tc in response.tool_calls
+        ]
+    return msg
+
+
+def _inject_images(session: AgentSession, message_store: MessageStore) -> None:
+    """将工单截图以多模态 user 消息注入上下文。"""
+    images = session.image_urls[:MAX_IMAGES]
+    if not images:
+        return
+
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                f"以下是工单中客户提交的 {len(images)} 张截图，请仔细查看并结合对话内容分析问题："
+            ),
+        },
+    ]
+    for img in images:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": img["url"], "detail": "low"},
+        })
+    message_store.append_user(content)
+    logger.info(
+        "images_injected",
+        ticket_id=session.ticket_id,
+        count=len(images),
+        truncated=len(session.image_urls) > MAX_IMAGES,
+    )
+
+
+_LANG_NAMES = {"zh": "中文", "en": "English", "ja": "日本語"}
+
+
+def _inject_language_reminder(session: AgentSession, message_store: MessageStore) -> None:
+    """检测到客户语言后，注入一次性语言提醒到对话中。"""
+    if getattr(session, "_language_reminder_injected", False):
+        return
+    ctx = getattr(session, "context", None)
+    if ctx is None or not ctx.customer_language:
+        return
+    lang = ctx.customer_language
+    label = _LANG_NAMES.get(lang, lang)
+    message_store.append_user(
+        f"[系统提醒] 客户使用 {label} 沟通，你的 Internal Note 全文"
+        f"（内部分析、客户回复建议、人工复核指引）都必须使用 {label} 撰写。"
+        f"代码块和命令行内容不受此限制。"
+    )
+    session._language_reminder_injected = True  # type: ignore[attr-defined]
+    logger.info(
+        "language_reminder_injected",
+        ticket_id=session.ticket_id,
+        language=lang,
+    )
+
+
+async def agent_loop(
+    session: AgentSession,
+    provider: LLMProvider,
+    message_store: MessageStore,
+    registry: ToolRegistry,
+    guardrails: Guardrails,
+    tool_schemas: list[ToolSchema],
+) -> AsyncGenerator[AgentEvent, None]:
+    """LLM ↔ 工具循环，通过 yield 产出进度事件（不打印控制台）。"""
+    session.status = SessionStatus.RUNNING
+
+    try:
+        while True:
+            guardrails.check_all()
+
+            if guardrails.should_compact():
+                logger.info("compaction_triggered", ticket_id=session.ticket_id)
+                compacted = await compact_messages(
+                    message_store.to_api_messages(),
+                    provider,
+                )
+                message_store.raw = compacted
+
+            guardrails.increment_round()
+            session.round_count = guardrails.current_round
+
+            llm_start = time.monotonic()
+            response = await provider.chat(
+                message_store.to_api_messages(),
+                tools=tool_schemas,
+                temperature=0.2,
+            )
+            llm_elapsed = time.monotonic() - llm_start
+
+            guardrails.add_tokens(response.prompt_tokens, response.completion_tokens)
+            session.token_usage.prompt_tokens += response.prompt_tokens
+            session.token_usage.completion_tokens += response.completion_tokens
+
+            yield LoopProgress(
+                round=guardrails.current_round,
+                message_count=len(message_store),
+                token_count=guardrails.total_tokens,
+                llm_elapsed=llm_elapsed,
+                prompt_tokens=response.prompt_tokens,
+                completion_tokens=response.completion_tokens,
+                tool_call_count=len(response.tool_calls),
+            )
+
+            message_store.append_assistant(_assistant_message_dict(response))
+
+            if not response.has_tool_calls:
+                if response.content:
+                    session.analysis += f"\n{response.content}"
+                session.status = SessionStatus.COMPLETED
+                yield LoopFinished(
+                    status="completed",
+                    total_rounds=guardrails.current_round,
+                    total_tokens=guardrails.total_tokens,
+                    elapsed_seconds=guardrails.elapsed_seconds,
+                    reason="",
+                )
+                return
+
+            async def _run_tool(tc: ToolCallRequest) -> ToolExecuted:
+                t0 = time.monotonic()
+                result = await registry.execute(tc.name, tc.arguments, session)
+                elapsed = time.monotonic() - t0
+                output = result.output if result.success else f"❌ 错误: {result.error}"
+                try:
+                    args_dict = json.loads(tc.arguments) if tc.arguments else {}
+                except json.JSONDecodeError:
+                    args_dict = {"raw": tc.arguments}
+                session.log_tool_call(
+                    tc.name,
+                    args_dict,
+                    output,
+                    success=result.success,
+                    error=result.error,
+                )
+                message_store.append_tool_result(tc.id, tc.name, output)
+                return ToolExecuted(
+                    round=guardrails.current_round,
+                    tool_name=tc.name,
+                    success=result.success,
+                    output_length=len(output),
+                    elapsed=elapsed,
+                    error=result.error,
+                )
+
+            tasks = [_run_tool(tc) for tc in response.tool_calls]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for i, r in enumerate(results):
+                tc = response.tool_calls[i]
+                if isinstance(r, Exception):
+                    err_text = f"❌ 工具执行异常: {r}"
+                    message_store.append_tool_result(tc.id, tc.name, err_text)
+                    logger.error(
+                        "tool_execution_error",
+                        ticket_id=session.ticket_id,
+                        tool=tc.name,
+                        error=str(r),
+                    )
+                    yield ToolExecuted(
+                        round=guardrails.current_round,
+                        tool_name=tc.name,
+                        success=False,
+                        output_length=len(err_text),
+                        elapsed=0.0,
+                        error=str(r),
+                    )
+                else:
+                    yield r
+
+            if session.image_urls and not session.images_injected:
+                _inject_images(session, message_store)
+                session.images_injected = True
+
+            _inject_language_reminder(session, message_store)
+
+    except GuardrailTriggered as e:
+        logger.warning(
+            "guardrail_triggered",
+            ticket_id=session.ticket_id,
+            reason=e.reason,
+            rounds=guardrails.current_round,
+            total_tokens=guardrails.total_tokens,
+        )
+        if "超时" in e.reason:
+            session.status = SessionStatus.TIMEOUT
+        else:
+            session.status = SessionStatus.FAILED
+        session.error_message = e.reason
+        session.analysis += f"\n\n⚠️ 处理被护栏终止: {e.reason}"
+        yield LoopFinished(
+            status="guardrail",
+            total_rounds=guardrails.current_round,
+            total_tokens=guardrails.total_tokens,
+            elapsed_seconds=guardrails.elapsed_seconds,
+            reason=e.reason,
+        )
+
+    except Exception as e:
+        logger.error(
+            "agent_loop_error",
+            ticket_id=session.ticket_id,
+            error=str(e),
+            exc_info=True,
+        )
+        session.status = SessionStatus.FAILED
+        session.error_message = str(e)
+        session.analysis += f"\n\n❌ 处理异常: {e}"
+        yield LoopFinished(
+            status="error",
+            total_rounds=guardrails.current_round,
+            total_tokens=guardrails.total_tokens,
+            elapsed_seconds=guardrails.elapsed_seconds,
+            reason=str(e),
+        )

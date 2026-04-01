@@ -8,6 +8,7 @@ import tiktoken
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
+from zd_agent.runtime.llm.types import LLMProvider
 from zd_agent.runtime.llm_client import LLMClient
 
 logger = get_logger(module="compaction")
@@ -40,7 +41,7 @@ def count_tokens(messages: list[dict[str, Any]], model: str = "gpt-4o") -> int:
 
 async def compact_messages(
     messages: list[dict[str, Any]],
-    llm: LLMClient,
+    llm: LLMClient | LLMProvider,
 ) -> list[dict[str, Any]]:
     """压缩历史对话：保留 system prompt + 最近 N 轮 + 早期内容摘要
 
@@ -155,3 +156,79 @@ def _find_safe_split_index(messages: list[dict[str, Any]], keep_recent: int) -> 
         start -= 1
 
     return start
+
+
+# --- 锚点与多级压缩（在现有 compact_messages 之上叠加）---
+
+# 锚点工具：其 tool 消息全文保留，不参与 History Snip 裁剪
+ANCHOR_TOOL_NAMES = {
+    "zendesk_get_ticket",
+    "classify_ticket",
+    "zendesk_internal_reply",
+}
+
+
+def is_anchor_message(msg: dict[str, Any]) -> bool:
+    """判断消息是否为锚点（不可被 Level 1 压缩裁剪）。"""
+    if msg.get("role") == "system":
+        return True
+    if msg.get("role") == "tool" and msg.get("name") in ANCHOR_TOOL_NAMES:
+        return True
+    return False
+
+
+def history_snip(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Level 1 压缩：缩减非锚点工具结果的内容长度。
+
+    对非锚点 tool 消息，将 content 裁剪为前 200 字符 + 截断提示。
+    不消耗 LLM 调用。
+    """
+    result: list[dict[str, Any]] = []
+    for msg in messages:
+        if is_anchor_message(msg):
+            result.append(msg)
+            continue
+
+        if msg.get("role") == "tool" and msg.get("name") not in ANCHOR_TOOL_NAMES:
+            content = msg.get("content", "")
+            if isinstance(content, str) and len(content) > 300:
+                snipped = dict(msg)
+                snipped["content"] = content[:200] + "\n\n[... 输出已精简 ...]"
+                result.append(snipped)
+                continue
+
+        result.append(msg)
+    return result
+
+
+async def multi_level_compact(
+    messages: list[dict[str, Any]],
+    llm_or_provider: LLMClient | LLMProvider,
+    target_tokens: int | None = None,
+) -> list[dict[str, Any]]:
+    """多级压缩调度器：依次尝试 Level 1 → Level 2。
+
+    target_tokens 为 None 时使用配置的 compaction_threshold 推算。
+    """
+    if target_tokens is None:
+        cfg = get_config()
+        max_tokens = cfg.agent.guardrails.max_tokens_per_session
+        target_tokens = int(max_tokens * cfg.agent.guardrails.compaction_threshold)
+
+    current = messages
+    current_tokens = count_tokens(current)
+
+    if current_tokens <= target_tokens:
+        return current
+
+    # Level 1：History Snip（不消耗 LLM 调用）
+    current = history_snip(current)
+    current_tokens = count_tokens(current)
+    logger.info("compaction_level1_done", tokens_after=current_tokens)
+    if current_tokens <= target_tokens:
+        return current
+
+    # Level 2：LLM 摘要（沿用现有 compact_messages）
+    current = await compact_messages(current, llm_or_provider)
+    logger.info("compaction_level2_done", tokens_after=count_tokens(current))
+    return current
