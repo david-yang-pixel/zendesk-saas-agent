@@ -401,12 +401,29 @@ class ZendeskGetTicket(Tool):
                 thread_items=thread_items,
                 ticket_description=ticket.get("description", ""),
             )
+
+            # @mention 触发时，hint 包含触发评论原文——
+            # 如果公开消息检测不到语言，从 hint fallback 检测
+            if not reply_language_hint and session.hint:
+                hint_lang = _detect_reply_language(session.hint)
+                if hint_lang:
+                    reply_language_hint = {
+                        "language": hint_lang,
+                        "evidence": session.hint[:200],
+                        "source": "mention_hint",
+                    }
+
             if reply_language_hint:
                 session.context.customer_language = reply_language_hint["language"]
                 session.context.raw_data["reply_language_hint"] = reply_language_hint
+                source_label = (
+                    "（来源: @mention 触发评论）"
+                    if reply_language_hint.get("source") == "mention_hint"
+                    else ""
+                )
                 lines.extend([
                     "## 回复语言建议",
-                    "- 优先使用客户最近一条公开消息的语言回复，不要被系统提示语言影响",
+                    f"- 优先使用客户的语言回复，不要被系统提示语言影响{source_label}",
                     (
                         f"- 检测结果: {reply_language_hint['language']} "
                         f"({ _language_label(reply_language_hint['language']) })"
