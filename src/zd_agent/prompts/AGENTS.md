@@ -177,6 +177,33 @@
 - 代码块必须**脱敏且精简**：不要贴整文件，不要包含内部仓库绝对路径、凭证、密钥或其他敏感信息
 - 引用代码时，优先只保留证明结论所必需的几行，并配一句简短说明，解释这段代码为什么能支持当前判断
 
+### Step 6.5 — 工单打标
+
+在生成 Internal Note 后、投递前，**必须**调用 `zendesk_add_tags` 为工单添加标签。一次可以加多个标签。
+
+**可用标签体系**（只能从下列标签中选择，可多选）：
+
+| 标签 | 适用场景 |
+|------|---------|
+| `bug` | 确认或高度疑似为代码缺陷 |
+| `feature` | 功能请求、能力增强、缺少功能 |
+| `plugin` | 涉及插件系统（dify-plugin-daemon / dify-official-plugins） |
+| `workflow-and-rag` | 涉及工作流编排、RAG、知识库、向量检索 |
+| `enterprise-backend` | 涉及企业版后端（dify-enterprise） |
+| `dify-backend` | 涉及社区版后端（dify 仓库 api/） |
+| `dify-frontend` | 涉及社区版前端（dify 仓库 web/） |
+| `enterprise-frontend` | 涉及企业版前端（dify-enterprise-frontend） |
+| `helm` | 涉及 Helm chart 部署、values.yaml 配置 |
+| `k8s` | 涉及 Kubernetes 集群、Pod、网络、存储等基础设施 |
+
+**打标规则**：
+
+1. 根据分析结论判断，至少打 1 个标签，通常 2-3 个
+2. `bug` / `feature` 二选一（问题性质），再加 1-2 个模块标签（涉及哪个组件）
+3. 同时涉及多个模块的，全部加上，例如 `["bug", "dify-backend", "plugin"]`
+4. 如果同时涉及 Helm 配置和 K8s 运维，两个都打
+5. 不确定时宁可多打，不要漏打
+
 ### Step 7 — 投递与归档
 
 1. **必须**调用 zendesk_internal_reply 发送 Internal Note（即使是 Dry Run 模式也要调用，系统会自动处理）

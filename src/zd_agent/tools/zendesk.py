@@ -334,6 +334,8 @@ class ZendeskGetTicket(Tool):
         "required": ["ticket_id"],
     }
 
+    group = "zendesk"
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         client = _get_client()
         tid = args["ticket_id"]
@@ -515,6 +517,8 @@ class ZendeskGetAttachments(Tool):
         "required": ["ticket_id"],
     }
 
+    group = "zendesk"
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         client = _get_client()
         tid = args["ticket_id"]
@@ -604,6 +608,9 @@ class ZendeskSearch(Tool):
         "required": ["query"],
     }
 
+    group = "zendesk"
+    max_output_tokens = 4000
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         client = _get_client()
         try:
@@ -647,6 +654,9 @@ class ZendeskSearchArticles(Tool):
         "required": ["query"],
     }
 
+    group = "zendesk"
+    max_output_tokens = 4000
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         client = _get_client()
         locale = args.get("locale", "zh-cn")
@@ -688,6 +698,8 @@ class ZendeskGetArticle(Tool):
         },
         "required": ["article_id"],
     }
+
+    group = "zendesk"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         client = _get_client()
@@ -736,6 +748,10 @@ class ZendeskInternalReply(Tool):
         "required": ["ticket_id", "body"],
     }
 
+    group = "zendesk"
+    concurrency_safe = False
+    is_write_operation = True
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         body = _prepend_internal_reply_banner(args["body"])
         body = _append_mention_footer(body)
@@ -773,6 +789,76 @@ def _append_mention_footer(body: str) -> str:
     return body + _MENTION_FOOTER
 
 
+_ALLOWED_TAGS = frozenset({
+    "bug", "feature", "plugin", "workflow-and-rag",
+    "enterprise-backend", "dify-backend", "dify-frontend",
+    "enterprise-frontend", "helm", "k8s",
+})
+
+
+class ZendeskAddTags(Tool):
+    name = "zendesk_add_tags"
+    description = (
+        "为工单增量添加标签（不影响已有标签，不可删除标签）。"
+        "可用标签：bug, feature, plugin, workflow-and-rag, "
+        "enterprise-backend, dify-backend, dify-frontend, "
+        "enterprise-frontend, helm, k8s。一次可加多个。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "ticket_id": {
+                "type": "integer",
+                "description": "工单 ID",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "要添加的标签列表，只能使用允许的标签："
+                    "bug, feature, plugin, workflow-and-rag, "
+                    "enterprise-backend, dify-backend, dify-frontend, "
+                    "enterprise-frontend, helm, k8s"
+                ),
+            },
+        },
+        "required": ["ticket_id", "tags"],
+    }
+
+    group = "zendesk"
+    concurrency_safe = False
+    is_write_operation = True
+
+    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        ticket_id = args["ticket_id"]
+        tags = [t.strip().lower() for t in args["tags"] if t.strip()]
+        if not tags:
+            return ToolResult(success=False, error="标签列表不能为空")
+
+        invalid = [t for t in tags if t not in _ALLOWED_TAGS]
+        if invalid:
+            return ToolResult(
+                success=False,
+                error=f"不允许的标签: {', '.join(invalid)}。"
+                f"可用标签: {', '.join(sorted(_ALLOWED_TAGS))}",
+            )
+
+        if session.dry_run:
+            return ToolResult(output=f"[Dry Run] 将为工单 #{ticket_id} 添加标签: {', '.join(tags)}")
+
+        client = _get_client()
+        try:
+            result = await _call_with_rate_limit_retry(
+                client.add_ticket_tags, ticket_id, tags
+            )
+            updated = result.get("ticket", {}).get("tags", [])
+            return ToolResult(output=f"工单 #{ticket_id} 标签已更新: {', '.join(updated)}")
+        except ZendeskError as e:
+            return ToolResult(success=False, error=_format_error(e))
+        except Exception as e:
+            return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
+
+
 class ZendeskGetUser(Tool):
     name = "zendesk_get_user"
     description = "获取 Zendesk 用户信息（根据用户 ID 查看客户或受理人信息）"
@@ -786,6 +872,8 @@ class ZendeskGetUser(Tool):
         },
         "required": ["user_id"],
     }
+
+    group = "zendesk"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         client = _get_client()
