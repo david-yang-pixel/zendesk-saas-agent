@@ -126,6 +126,8 @@ class EnvSettings(BaseSettings):
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
     anthropic_api_key: str = ""
     zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
+    hc_client_url: str = ""  # zendesk-hc-client API 地址（如 http://localhost:8000）
+    hc_client_api_key: str = ""  # 对应 hc-client 的 AGENT_INNER_API_KEY
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
