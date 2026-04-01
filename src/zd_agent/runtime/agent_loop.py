@@ -138,6 +138,8 @@ async def agent_loop(
                 prompt_tokens=response.prompt_tokens,
                 completion_tokens=response.completion_tokens,
                 tool_call_count=len(response.tool_calls),
+                assistant_content=response.content,
+                stop_reason=response.finish_reason,
             )
 
             message_store.append_assistant(_assistant_message_dict(response))
@@ -179,6 +181,8 @@ async def agent_loop(
                     output_length=len(output),
                     elapsed=elapsed,
                     error=result.error,
+                    arguments=args_dict,
+                    output=output[:4000],
                 )
 
             tasks = [_run_tool(tc) for tc in response.tool_calls]

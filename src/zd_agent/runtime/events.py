@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -20,6 +21,8 @@ class LoopProgress(AgentEvent):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     tool_call_count: int = 0
+    assistant_content: str | None = None
+    stop_reason: str = ""
 
 
 @dataclass
@@ -30,6 +33,8 @@ class ToolExecuted(AgentEvent):
     output_length: int = 0
     elapsed: float = 0.0
     error: str | None = None
+    arguments: dict[str, Any] = field(default_factory=dict)
+    output: str = ""
 
 
 @dataclass
