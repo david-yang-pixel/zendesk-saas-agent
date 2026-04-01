@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv",
     "aiohttp",
     "zendesk-cli",
+    "anthropic>=0.87.0",
 ]
 
 [tool.uv.sources]
@@ -29,6 +30,11 @@ zd-agent = "zd_agent.entry.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zd_agent"]

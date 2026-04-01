@@ -1,15 +1,16 @@
-"""OpenAI API 封装：支持 function calling、重试、超时控制"""
+"""LLM 客户端 facade：保持向后兼容的接口，内部委托给 LLMProvider。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, RateLimitError
-from openai.types.chat import ChatCompletion
+from openai import APIConnectionError, APITimeoutError, RateLimitError
 
 from zd_agent.config import EnvSettings, get_config
 from zd_agent.log import get_logger
+from zd_agent.runtime.llm.factory import create_llm_provider
+from zd_agent.runtime.llm.types import LLMProvider, LLMResponse as ProviderLLMResponse, ToolSchema
 from zd_agent.runtime.retry import get_retry_policy, retry_async
 
 logger = get_logger(module="llm_client")
@@ -17,7 +18,7 @@ logger = get_logger(module="llm_client")
 
 @dataclass
 class LLMResponse:
-    """LLM 单次调用结果"""
+    """向后兼容的 LLM 响应（tool_loop.py 等模块仍在使用）"""
 
     content: str | None
     tool_calls: Sequence[Any]
@@ -31,22 +32,29 @@ class LLMResponse:
         return len(self.tool_calls) > 0
 
 
+def _provider_response_to_legacy(resp: ProviderLLMResponse) -> LLMResponse:
+    """将新的 ProviderLLMResponse 转为旧的 LLMResponse 格式"""
+    return LLMResponse(
+        content=resp.content,
+        tool_calls=resp.tool_calls,
+        finish_reason=resp.finish_reason,
+        prompt_tokens=resp.prompt_tokens,
+        completion_tokens=resp.completion_tokens,
+        raw_message=resp.raw if isinstance(resp.raw, dict) else {},
+    )
+
+
 class LLMClient:
-    """OpenAI Chat Completions 客户端，内置重试和超时处理"""
+    """向后兼容的 LLM 客户端，内部委托给 LLMProvider。
+
+    tool_loop.py 和 compaction.py 中的调用方式不需要任何改动。
+    同时暴露 _provider 属性供新代码（agent_loop 等）直接使用 Provider。
+    """
 
     def __init__(self) -> None:
         cfg = get_config()
         env = EnvSettings()
-
-        client_kwargs: dict[str, Any] = {
-            "api_key": env.openai_api_key,
-            "timeout": float(cfg.llm.timeout),
-            "max_retries": 0,
-        }
-        if cfg.llm.base_url:
-            client_kwargs["base_url"] = cfg.llm.base_url
-
-        self._client = AsyncOpenAI(**client_kwargs)
+        self._provider: LLMProvider = create_llm_provider(cfg.llm, env)
         self._model = cfg.llm.model
         self._temperature = cfg.llm.temperature
 
@@ -55,16 +63,17 @@ class LLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
-        """发送一次 chat completion 请求，内置指数退避重试"""
-        kwargs: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "temperature": self._temperature,
-        }
-
+        """向后兼容入口：接受 OpenAI 格式的 tools dict，返回旧版 LLMResponse"""
+        tool_schemas: list[ToolSchema] | None = None
         if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            tool_schemas = [
+                ToolSchema(
+                    name=t["function"]["name"],
+                    description=t["function"]["description"],
+                    parameters=t["function"]["parameters"],
+                )
+                for t in tools
+            ]
 
         logger.debug(
             "llm_request",
@@ -74,33 +83,21 @@ class LLMClient:
         )
 
         async def _call() -> LLMResponse:
-            response: ChatCompletion = await self._client.chat.completions.create(**kwargs)
-
-            choice = response.choices[0]
-            message = choice.message
-            usage = response.usage
-
-            result = LLMResponse(
-                content=message.content,
-                tool_calls=list(message.tool_calls or []),
-                finish_reason=choice.finish_reason or "stop",
-                prompt_tokens=usage.prompt_tokens if usage else 0,
-                completion_tokens=usage.completion_tokens if usage else 0,
-                raw_message=message.model_dump(),
+            resp = await self._provider.chat(
+                messages, tools=tool_schemas, temperature=self._temperature,
             )
-
             logger.debug(
                 "llm_response",
-                finish_reason=result.finish_reason,
-                has_tool_calls=result.has_tool_calls,
-                tool_call_count=len(result.tool_calls),
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
+                finish_reason=resp.finish_reason,
+                has_tool_calls=resp.has_tool_calls,
+                tool_call_count=len(resp.tool_calls),
+                prompt_tokens=resp.prompt_tokens,
+                completion_tokens=resp.completion_tokens,
             )
-            return result
+            return _provider_response_to_legacy(resp)
 
         return await retry_async(
-            operation="openai_chat_completion",
+            operation="llm_chat",
             policy=get_retry_policy("llm"),
             func=_call,
             should_retry=lambda e: isinstance(

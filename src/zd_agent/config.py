@@ -28,6 +28,7 @@ class LLMConfig(BaseModel):
     temperature: float = 0.2
     base_url: str | None = None  # 自定义 OpenAI API 地址（代理 / Azure）
     timeout: int = 120  # API 请求超时（秒）
+    max_tokens: int = 8192  # Anthropic 必传，OpenAI 可选（0 表示不设）
 
 
 class RetryPolicyOverrideConfig(BaseModel):
@@ -120,8 +121,10 @@ class EnvSettings(BaseSettings):
     zendesk_api_token: str = ""
     zd_max_concurrent: int | None = None
     zd_model: str | None = None
+    zd_llm_provider: str | None = None  # 覆盖 llm.provider（openai / anthropic）
     zd_webhook_signing_secret: str | None = None
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
+    anthropic_api_key: str = ""
     zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
 
 
@@ -163,6 +166,8 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.zendesk.api_token = env.zendesk_api_token
     if env.zd_max_concurrent is not None:
         cfg.agent.max_concurrent_sessions = env.zd_max_concurrent
+    if env.zd_llm_provider is not None:
+        cfg.llm.provider = env.zd_llm_provider
     if env.zd_model is not None:
         cfg.llm.model = env.zd_model
     if env.openai_base_url is not None:
