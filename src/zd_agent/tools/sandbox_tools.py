@@ -65,6 +65,7 @@ class SandboxCreateWorktree(Tool):
                     str(repo_dir),
                     "worktree",
                     "add",
+                    "--force",
                     "--detach",
                     str(worktree_path),
                     args["ref"],
@@ -72,11 +73,18 @@ class SandboxCreateWorktree(Tool):
                 if code != 0:
                     raise RuntimeError((err or out).strip())
 
+            def _should_retry(e: Exception) -> bool:
+                msg = str(e).lower()
+                # ref 不存在时不重试，避免浪费
+                if "invalid reference" in msg or "unknown revision" in msg:
+                    return False
+                return True
+
             await retry_async(
                 operation="sandbox_create_worktree",
                 policy=get_retry_policy("sandbox"),
                 func=_create_worktree,
-                should_retry=lambda e: True,
+                should_retry=_should_retry,
                 log_context={"repo": args["repo"], "ref": args["ref"]},
             )
 
@@ -370,22 +378,30 @@ async def _prune_and_cleanup_worktree(repo_dir: str, worktree_path: Path) -> Non
     """清理残留的 worktree 注册和物理目录，确保后续 worktree add 不会冲突。
 
     处理流程：
-    1. git worktree prune — 清理指向已不存在目录的注册
-    2. git worktree remove --force — 如果仍然注册则强制移除
-    3. 删除残留的物理目录
+    1. git worktree unlock（解除 locked 状态，prune 不处理 locked worktree）
+    2. git worktree prune — 清理指向已不存在目录的注册
+    3. 如果仍然注册，git worktree remove --force 强制移除
+    4. 删除残留的物理目录
     """
+    wt_str = str(worktree_path)
+
+    # unlock：locked worktree 不会被 prune 清理，必须先解锁
+    await _run_git(repo_dir, "worktree", "unlock", wt_str)
     await _run_git(repo_dir, "worktree", "prune")
 
     if worktree_path.exists():
         shutil.rmtree(worktree_path, ignore_errors=True)
 
-    # prune 后检查是否仍然注册（极端情况：路径存在但状态异常）
+    # 检查是否仍然注册（路径匹配需兼容 /tmp 和 /private/tmp）
     code, out, _ = await _run_git(repo_dir, "worktree", "list", "--porcelain")
     if code == 0:
-        wt_str = str(worktree_path)
         for line in out.splitlines():
-            if line.startswith("worktree ") and line[9:] == wt_str:
-                await _run_git(repo_dir, "worktree", "remove", "--force", wt_str)
+            if not line.startswith("worktree "):
+                continue
+            registered = line[9:]
+            if registered == wt_str or Path(registered).resolve() == worktree_path:
+                await _run_git(repo_dir, "worktree", "unlock", registered)
+                await _run_git(repo_dir, "worktree", "remove", "--force", registered)
                 await _run_git(repo_dir, "worktree", "prune")
                 break
 

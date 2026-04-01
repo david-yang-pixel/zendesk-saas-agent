@@ -77,7 +77,15 @@ class LocalSandbox(Sandbox):
                 logger.info("removing_worktree", path=str(child_resolved))
                 repo_dir = resolve_repo(child.name)
                 if repo_dir is not None:
-                    # 先尝试 remove，再 prune 兜底
+                    # unlock → remove → prune 三步确保完全清理
+                    for wt_path in (str(child_resolved), str(child)):
+                        unlock = await asyncio.create_subprocess_exec(
+                            "git", "-C", str(repo_dir),
+                            "worktree", "unlock", wt_path,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                        )
+                        await unlock.communicate()
                     proc = await asyncio.create_subprocess_exec(
                         "git", "-C", str(repo_dir),
                         "worktree", "remove", "--force", str(child_resolved),
