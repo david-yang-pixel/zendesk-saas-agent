@@ -217,7 +217,7 @@ async def _handle_comment_added(
         tracker.mark_processed(comment_id)
 
     hint = f"[来自 @mention 的请求]\n{comment.get('body', '')}"
-    session = await manager.dispatch(ticket_id, hint=hint, dry_run=False)
+    session = await manager.dispatch(ticket_id, hint=hint, dry_run=False, trigger_type="mention")
 
     logger.info(
         "mention_dispatched",
@@ -285,7 +285,7 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
         signature_timestamp=signature_timestamp,
     )
 
-    session = await manager.dispatch(ticket_id, hint="", dry_run=False)
+    session = await manager.dispatch(ticket_id, hint="", dry_run=False, trigger_type="webhook")
 
     return web.json_response({
         "accepted": True,

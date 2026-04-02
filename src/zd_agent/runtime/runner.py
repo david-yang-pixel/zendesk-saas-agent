@@ -105,7 +105,7 @@ async def run_agent(session: AgentSession) -> None:
 
     try:
         # 运行工具循环
-        await run_tool_loop(session, llm, registry, guardrails)
+        await run_tool_loop(session, llm, registry, guardrails, trigger_type=session.trigger_type)
 
     except Exception as e:
         logger.error(

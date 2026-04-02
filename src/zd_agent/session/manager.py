@@ -77,6 +77,7 @@ class SessionManager:
         ticket_id: int,
         hint: str = "",
         dry_run: bool = False,
+        trigger_type: str = "auto",
     ) -> AgentSession:
         """派发工单处理任务
 
@@ -94,6 +95,7 @@ class SessionManager:
 
             session = AgentSession(
                 ticket_id=ticket_id, hint=hint, dry_run=dry_run,
+                trigger_type=trigger_type,
             )
 
             tracked = _TrackedSession(session=session)
@@ -161,11 +163,12 @@ class SessionManager:
         ticket_ids: list[int],
         hint: str = "",
         dry_run: bool = False,
+        trigger_type: str = "auto",
     ) -> list[AgentSession]:
         """批量派发工单，返回所有 session（可并发执行）"""
         sessions = []
         for tid in ticket_ids:
-            session = await self.dispatch(tid, hint=hint, dry_run=dry_run)
+            session = await self.dispatch(tid, hint=hint, dry_run=dry_run, trigger_type=trigger_type)
             sessions.append(session)
         return sessions
 

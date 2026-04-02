@@ -67,7 +67,7 @@ async def poll_zendesk_task() -> None:
 
         for tid in new_tickets:
             _seen_ticket_ids.add(tid)
-            await _manager.dispatch(tid, dry_run=_dry_run)
+            await _manager.dispatch(tid, dry_run=_dry_run, trigger_type="scheduler")
 
     except Exception as e:
         logger.error("poll_error", error=str(e), exc_info=True)
@@ -144,7 +144,7 @@ async def poll_mention_task() -> None:
                 if is_mention(comment, trigger):
                     _mention_tracker.mark_processed(comment_id)
                     hint = f"[来自 @mention 的请求]\n{comment.get('body', '')}"
-                    await _manager.dispatch(tid, hint=hint, dry_run=_dry_run)
+                    await _manager.dispatch(tid, hint=hint, dry_run=_dry_run, trigger_type="mention")
                     logger.info(
                         "mention_poll_dispatched",
                         ticket_id=tid,
