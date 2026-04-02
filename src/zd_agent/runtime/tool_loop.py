@@ -115,18 +115,28 @@ async def run_tool_loop(
                         await reporter.report_tool_call(run_id, current_round_id, event)
 
                 case LoopFinished(status="completed"):
-                    _console.print(
-                        f"\n[bold green]✅ ToolLoop 完成[/bold green]  "
-                        f"rounds=[cyan]{event.total_rounds}[/cyan]  "
-                        f"tokens=[cyan]{event.total_tokens:,}[/cyan]  "
-                        f"elapsed=[cyan]{event.elapsed_seconds:.1f}s[/cyan]"
-                    )
+                    if event.reason:
+                        _console.print(
+                            f"\n[bold yellow]⚠️  {event.reason}[/bold yellow]\n"
+                            f"[bold green]✅ ToolLoop 完成（强制总结）[/bold green]  "
+                            f"rounds=[cyan]{event.total_rounds}[/cyan]  "
+                            f"tokens=[cyan]{event.total_tokens:,}[/cyan]  "
+                            f"elapsed=[cyan]{event.elapsed_seconds:.1f}s[/cyan]"
+                        )
+                    else:
+                        _console.print(
+                            f"\n[bold green]✅ ToolLoop 完成[/bold green]  "
+                            f"rounds=[cyan]{event.total_rounds}[/cyan]  "
+                            f"tokens=[cyan]{event.total_tokens:,}[/cyan]  "
+                            f"elapsed=[cyan]{event.elapsed_seconds:.1f}s[/cyan]"
+                        )
                     logger.info(
                         "tool_loop_complete",
                         ticket_id=session.ticket_id,
                         rounds=event.total_rounds,
                         total_tokens=event.total_tokens,
                         elapsed=f"{event.elapsed_seconds:.1f}s",
+                        forced_summary=bool(event.reason),
                     )
                     if run_id is not None:
                         await reporter.report_run_finish(

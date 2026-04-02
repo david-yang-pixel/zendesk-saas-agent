@@ -224,19 +224,74 @@ async def agent_loop(
             rounds=guardrails.current_round,
             total_tokens=guardrails.total_tokens,
         )
-        if "超时" in e.reason:
-            session.status = SessionStatus.TIMEOUT
-        else:
-            session.status = SessionStatus.FAILED
-        session.error_message = e.reason
-        session.analysis += f"\n\n⚠️ 处理被护栏终止: {e.reason}"
-        yield LoopFinished(
-            status="guardrail",
-            total_rounds=guardrails.current_round,
-            total_tokens=guardrails.total_tokens,
-            elapsed_seconds=guardrails.elapsed_seconds,
-            reason=e.reason,
-        )
+
+        # 强制总结：不传工具，让 LLM 基于已有上下文输出最终分析
+        try:
+            message_store.append_user(
+                f"[系统] {e.reason}。请基于目前收集到的所有信息，"
+                "立即输出你的最终分析和回复建议，不要再调用任何工具。"
+            )
+            summary_start = time.monotonic()
+            summary_response = await provider.chat(
+                message_store.to_api_messages(),
+                tools=None,
+                temperature=0.2,
+            )
+            summary_elapsed = time.monotonic() - summary_start
+
+            guardrails.add_tokens(summary_response.prompt_tokens, summary_response.completion_tokens)
+            session.token_usage.prompt_tokens += summary_response.prompt_tokens
+            session.token_usage.completion_tokens += summary_response.completion_tokens
+
+            yield LoopProgress(
+                round=guardrails.current_round + 1,
+                message_count=len(message_store),
+                token_count=guardrails.total_tokens,
+                llm_elapsed=summary_elapsed,
+                prompt_tokens=summary_response.prompt_tokens,
+                completion_tokens=summary_response.completion_tokens,
+                tool_call_count=0,
+                assistant_content=summary_response.content,
+                stop_reason="guardrail_summary",
+            )
+
+            if summary_response.content:
+                session.analysis += f"\n{summary_response.content}"
+
+            session.status = SessionStatus.COMPLETED
+            yield LoopFinished(
+                status="completed",
+                total_rounds=guardrails.current_round + 1,
+                total_tokens=guardrails.total_tokens,
+                elapsed_seconds=guardrails.elapsed_seconds,
+                reason=f"护栏触发后强制总结: {e.reason}",
+            )
+            logger.info(
+                "guardrail_summary_completed",
+                ticket_id=session.ticket_id,
+                original_reason=e.reason,
+                summary_tokens=summary_response.prompt_tokens + summary_response.completion_tokens,
+            )
+        except Exception as summary_err:
+            logger.error(
+                "guardrail_summary_failed",
+                ticket_id=session.ticket_id,
+                original_reason=e.reason,
+                summary_error=str(summary_err),
+            )
+            if "超时" in e.reason:
+                session.status = SessionStatus.TIMEOUT
+            else:
+                session.status = SessionStatus.FAILED
+            session.error_message = e.reason
+            session.analysis += f"\n\n⚠️ 处理被护栏终止: {e.reason}"
+            yield LoopFinished(
+                status="guardrail",
+                total_rounds=guardrails.current_round,
+                total_tokens=guardrails.total_tokens,
+                elapsed_seconds=guardrails.elapsed_seconds,
+                reason=e.reason,
+            )
 
     except Exception as e:
         logger.error(
