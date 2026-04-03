@@ -1382,7 +1382,7 @@ dev = [{ name = "pytest" }]
 [[package]]
 name = "zendesk-cli"
 version = "0.1.0"
-source = { git = "ssh://git@github.com/ZhouhaoJiang/zendesk-cli.git#32766689a0e043d74b9afdf57c1f6b7b7072bab9" }
+source = { git = "ssh://git@github.com/ZhouhaoJiang/zendesk-cli.git#139d20d10b4c360267fee6e114d27d8458138fe4" }
 dependencies = [
     { name = "click" },
     { name = "python-dotenv" },
