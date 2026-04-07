@@ -868,7 +868,7 @@ class ZendeskAddTags(Tool):
             result = await _call_with_rate_limit_retry(
                 client.add_ticket_tags, ticket_id, tags
             )
-            updated = result.get("ticket", {}).get("tags", [])
+            updated = result.get("tags", [])
             return ToolResult(output=f"工单 #{ticket_id} 标签已更新: {', '.join(updated)}")
         except ZendeskError as e:
             return ToolResult(success=False, error=_format_error(e))
