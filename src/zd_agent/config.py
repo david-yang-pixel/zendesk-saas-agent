@@ -119,6 +119,8 @@ class EnvSettings(BaseSettings):
     zendesk_subdomain: str = ""
     zendesk_email: str = ""
     zendesk_api_token: str = ""
+    zendesk_admin_email: str = ""
+    zendesk_admin_api_token: str = ""
     zd_max_concurrent: int | None = None
     zd_model: str | None = None
     zd_llm_provider: str | None = None  # 覆盖 llm.provider（openai / anthropic）
