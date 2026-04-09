@@ -8,6 +8,8 @@ import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from openai import BadRequestError
+
 from zd_agent.log import get_logger
 from zd_agent.runtime.compaction import compact_messages
 from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, ToolExecuted
@@ -20,6 +22,39 @@ from zd_agent.tools.base import ToolRegistry
 logger = get_logger(module="agent_loop")
 
 MAX_IMAGES = 10
+
+
+def _is_image_url_error(exc: Exception) -> bool:
+    """判断是否为 LLM 下载图片 URL 超时/失败的错误（OpenAI code=invalid_image_url）。"""
+    if isinstance(exc, BadRequestError) and getattr(exc, "code", None) == "invalid_image_url":
+        return True
+    err_str = str(exc).lower()
+    return "invalid_image_url" in err_str
+
+
+def _strip_images_from_messages(messages: list[dict[str, Any]]) -> int:
+    """移除消息中所有 image_url 块，返回移除的图片数量。"""
+    removed = 0
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        new_content: list[dict[str, Any]] = []
+        img_count = 0
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                img_count += 1
+            else:
+                new_content.append(part)
+        if img_count == 0:
+            continue
+        removed += img_count
+        new_content.append({
+            "type": "text",
+            "text": f"（⚠️ {img_count} 张截图因网络超时无法加载，请仅基于文字内容分析问题）",
+        })
+        msg["content"] = new_content
+    return removed
 
 
 def _assistant_message_dict(response: LLMResponse) -> dict[str, Any]:
@@ -119,11 +154,27 @@ async def agent_loop(
             session.round_count = guardrails.current_round
 
             llm_start = time.monotonic()
-            response = await provider.chat(
-                message_store.to_api_messages(),
-                tools=tool_schemas,
-                temperature=0.2,
-            )
+            try:
+                response = await provider.chat(
+                    message_store.to_api_messages(),
+                    tools=tool_schemas,
+                    temperature=0.2,
+                )
+            except Exception as chat_err:
+                if not _is_image_url_error(chat_err):
+                    raise
+                removed = _strip_images_from_messages(message_store.raw)
+                logger.warning(
+                    "image_url_fallback",
+                    ticket_id=session.ticket_id,
+                    removed_count=removed,
+                    error=str(chat_err),
+                )
+                response = await provider.chat(
+                    message_store.to_api_messages(),
+                    tools=tool_schemas,
+                    temperature=0.2,
+                )
             llm_elapsed = time.monotonic() - llm_start
 
             guardrails.add_tokens(response.prompt_tokens, response.completion_tokens)
@@ -232,11 +283,26 @@ async def agent_loop(
                 "立即输出你的最终分析和回复建议，不要再调用任何工具。"
             )
             summary_start = time.monotonic()
-            summary_response = await provider.chat(
-                message_store.to_api_messages(),
-                tools=None,
-                temperature=0.2,
-            )
+            try:
+                summary_response = await provider.chat(
+                    message_store.to_api_messages(),
+                    tools=None,
+                    temperature=0.2,
+                )
+            except Exception as chat_err:
+                if not _is_image_url_error(chat_err):
+                    raise
+                _strip_images_from_messages(message_store.raw)
+                logger.warning(
+                    "image_url_fallback_summary",
+                    ticket_id=session.ticket_id,
+                    error=str(chat_err),
+                )
+                summary_response = await provider.chat(
+                    message_store.to_api_messages(),
+                    tools=None,
+                    temperature=0.2,
+                )
             summary_elapsed = time.monotonic() - summary_start
 
             guardrails.add_tokens(summary_response.prompt_tokens, summary_response.completion_tokens)
