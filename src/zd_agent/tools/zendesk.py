@@ -795,7 +795,11 @@ class ZendeskGetArticle(Tool):
 
 class ZendeskInternalReply(Tool):
     name = "zendesk_internal_reply"
-    description = "向工单发送 Internal Note（内部备注，客户不可见）"
+    description = (
+        "向工单发送 Internal Note（内部备注，客户不可见）。"
+        "必须同时提供 body（Markdown 正文）和 summary（结构化摘要），"
+        "系统会自动将其渲染为带摘要卡片的 HTML 格式。"
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -805,10 +809,67 @@ class ZendeskInternalReply(Tool):
             },
             "body": {
                 "type": "string",
-                "description": "回复内容（Markdown 格式）",
+                "description": "回复正文（Markdown 格式），应包含三段：## Suggested Reply、## Internal Analysis、## Review Guide",
+            },
+            "summary": {
+                "type": "object",
+                "description": "结构化摘要信息，用于渲染快速摘要卡片",
+                "properties": {
+                    "problem_type": {
+                        "type": "string",
+                        "description": "问题分类（如 code-bug / config-deploy / usage-howto / feature-request）",
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                        "description": "置信度等级",
+                    },
+                    "confidence_reason": {
+                        "type": "string",
+                        "description": "置信度判断依据（如：来自源码验证 + 官方文档交叉确认）",
+                    },
+                    "customer_language": {
+                        "type": "string",
+                        "description": "客户使用的语言（如：中文 / English / 日本語）",
+                    },
+                    "version": {
+                        "type": "string",
+                        "description": "客户版本（如：Enterprise 3.7.3 (chart) / App 1.11.2）",
+                    },
+                    "key_finding": {
+                        "type": "string",
+                        "description": "一句话核心结论",
+                    },
+                    "fix_status": {
+                        "type": "string",
+                        "description": "Fix status (released / merged_unreleased / in_progress / not_fixed / unknown)",
+                        "enum": ["released", "merged_unreleased", "in_progress", "not_fixed", "unknown"],
+                    },
+                    "fix_status_detail": {
+                        "type": "string",
+                        "description": "修复状态补充说明（如版本号 v1.12.0）",
+                    },
+                    "needs_human": {
+                        "type": "boolean",
+                        "description": "是否需要人工复核后才能发送给客户",
+                    },
+                    "needs_human_reason": {
+                        "type": "string",
+                        "description": "需要/不需要人工的原因",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "工单标签列表",
+                    },
+                },
+                "required": [
+                    "problem_type", "confidence", "confidence_reason",
+                    "customer_language", "key_finding", "needs_human",
+                ],
             },
         },
-        "required": ["ticket_id", "body"],
+        "required": ["ticket_id", "body", "summary"],
     }
 
     group = "zendesk"
@@ -816,9 +877,19 @@ class ZendeskInternalReply(Tool):
     is_write_operation = True
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        body = _prepend_internal_reply_banner(args["body"])
-        body = _append_mention_footer(body)
-        session.reply_draft = body
+        from zd_agent.tools.html_renderer import render_internal_note
+
+        body_md = args["body"]
+        summary = args.get("summary", {})
+
+        # 纯文本版（作为 body 回退）
+        plain_body = _prepend_internal_reply_banner(body_md)
+        plain_body = _append_mention_footer(plain_body)
+
+        # HTML 版（摘要卡片 + 正文）
+        html_body = render_internal_note(summary, body_md)
+
+        session.reply_draft = plain_body
 
         if session.dry_run:
             return ToolResult(output="[Dry Run] 回复已保存到草稿，未实际发送")
@@ -826,7 +897,11 @@ class ZendeskInternalReply(Tool):
         client = _get_client()
         try:
             await _call_with_rate_limit_retry(
-                client.reply_ticket, args["ticket_id"], body, False
+                client.reply_ticket,
+                args["ticket_id"],
+                plain_body,
+                False,
+                html_body=html_body,
             )
             session.reply_sent = True
             return ToolResult(output=f"已发送 Internal Note 到工单 #{args['ticket_id']}")

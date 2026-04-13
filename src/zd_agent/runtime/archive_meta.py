@@ -49,10 +49,10 @@ def build_archive_meta(
         "error": session.error_message or None,
         "fix_status": session.fix_status or None,
         "customer_reply_available": bool(
-            session.customer_reply_draft or "## 客户回复建议" in session.reply_draft
+            session.customer_reply_draft or "## Suggested Reply" in session.reply_draft
         ),
         "reviewer_checklist_available": bool(
-            session.reviewer_checklist or "## 人工复核指引" in session.reply_draft
+            session.reviewer_checklist or "## Review Guide" in session.reply_draft
         ),
         "reply_sent": session.reply_sent,
     }

@@ -108,11 +108,11 @@
 2. 更高版本 tag 或 `main` 中同一逻辑是否已经修复
 3. GitHub 上是否存在相关的 `open / merged PR`
 4. 最终修复状态属于哪一类：
-   - `未修复`
-   - `修复中`
-   - `已合并未发布`
-   - `已发布修复`
-   - `不确定`
+   - `not_fixed`
+   - `in_progress`
+   - `merged_unreleased`
+   - `released`
+   - `unknown`
 
 执行要求：
 
@@ -120,38 +120,60 @@
 2. 检查更高版本 tag 或 `main` 中相同文件 / 相同逻辑是否发生变化
 3. 使用 GitHub PR 工具搜索相关 `open / merged PR`，确认是否已有修复在进行中或已合并
 4. 不能仅凭 PR 标题相似就判定为已修复，必须结合 diff、描述或代码路径判断
-5. 如果无法确认，必须明确写成 `不确定`，并在"人工复核指引"里说明需要补看的 repo / ref / PR
+5. 如果无法确认，必须明确写成 `unknown`，并在 "Review Guide" 里说明需要补看的 repo / ref / PR
 
-### Step 6 — 生成三段式 Internal Note
+### Step 6 — 生成 Internal Note
 
-基于分析结果，撰写 Internal Reply。最终内容必须包含以下 3 个一级小节，且缺一不可：
+基于分析结果，调用 `zendesk_internal_reply` 发送 Internal Note。调用时需要同时提供 `body`（Markdown 正文）和 `summary`（结构化摘要）。
 
-1. `## 内部分析`
-2. `## 客户回复建议`
-3. `## 人工复核指引`
+#### 6.1 — `summary` 结构化摘要
 
-**整篇 Internal Note 的语言规则（适用于以上全部三个小节）：**
+系统会将 `summary` 渲染为顶部快速摘要卡片，让 reviewer 一眼看到关键信息。必填字段：
 
-- **整篇 Internal Note（包括内部分析、客户回复建议、人工复核指引）都必须使用客户的语言撰写**，不要因为系统提示是中文就默认用中文
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `problem_type` | string | 问题分类（如 code-bug / config-deploy / usage-howto / feature-request） |
+| `confidence` | string | 置信度等级：`high` / `medium` / `low` |
+| `confidence_reason` | string | 置信度依据（如「来自源码验证 + 官方文档交叉确认」） |
+| `customer_language` | string | 客户语言（如「中文」「English」「日本語」） |
+| `key_finding` | string | 一句话核心结论 |
+| `needs_human` | boolean | 是否需要人工复核后才能发送给客户 |
+
+可选字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `version` | string | 客户版本（如「Enterprise 3.7.3 (chart) / App 1.11.2」） |
+| `fix_status` | string | Fix status: `released` / `merged_unreleased` / `in_progress` / `not_fixed` / `unknown` |
+| `fix_status_detail` | string | 修复状态补充说明（如版本号 v1.12.0） |
+| `needs_human_reason` | string | 需要/不需要人工的原因说明 |
+| `tags` | array | 工单标签列表 |
+
+**`needs_human` 判定规则：**
+
+- `false`（不需要人工）：答案有明确来源（文档/源码验证），问题模式清晰，Suggested Reply 可直接使用
+- `true`（需要人工）：置信度低于 high、需要客户补充信息、涉及敏感操作、无法确认修复状态
+
+#### 6.2 — `body` 正文（Markdown）
+
+`body` 必须包含以下 3 个一级小节，按此顺序排列（Suggested Reply 在最前面，让 reviewer 最先看到）：
+
+1. `## Suggested Reply`
+2. `## Internal Analysis`
+3. `## Review Guide`
+
+**整篇 body 的语言规则：**
+
+- **Internal Note 的正文内容必须使用客户的语言撰写**（section 标题 `Suggested Reply` / `Internal Analysis` / `Review Guide` 保持英文不变），不要因为系统提示是中文就默认用中文
 - 如果 `zendesk_get_ticket` 已提供"回复语言建议"，必须优先采用该语言
 - 如果工单中混合多种语言，以客户最近一条消息的语言为准
 - 代码块、命令行、配置片段中的内容不受语言规则约束，保持原样即可
 
 各部分要求如下：
 
-### `## 内部分析`
+### `## Suggested Reply`
 
-必须包含：
-
-1. **问题确认**：用自己的话复述客户问题，表明理解
-2. **分析结论**：问题根因是什么，附上证据（代码片段/配置/日志对比）
-3. **影响范围**：哪些版本 / 场景受影响
-4. **修复状态**：尤其在 `code-bug` 时，必须写明是 `未修复 / 修复中 / 已合并未发布 / 已发布修复 / 不确定`
-5. **建议动作**：升级、workaround、人工介入或后续跟进
-
-### `## 客户回复建议`
-
-这是给支持同学复制或改写后发给客户的草稿，要求：
+这是给支持同学复制或改写后发给客户的草稿，**放在最前面**，让 reviewer 第一眼看到。要求：
 
 1. 不暴露内部推理过程，不使用"我猜测""我看了源码怀疑"这类措辞
 2. 如果已修复，明确给出修复版本和建议动作
@@ -159,7 +181,17 @@
 4. 如果存在开放 PR，可以说明"修复进行中"，但不要承诺不确定发布日期
 5. 如果需要客户配合，明确写出要客户提供什么或执行什么
 
-### `## 人工复核指引`
+### `## Internal Analysis`
+
+必须包含：
+
+1. **问题确认**：用自己的话复述客户问题，表明理解
+2. **分析结论**：问题根因是什么，附上证据（代码片段/配置/日志对比）
+3. **影响范围**：哪些版本 / 场景受影响
+4. **修复状态**：尤其在 `code-bug` 时，必须写明是 `not_fixed / in_progress / merged_unreleased / released / unknown`
+5. **建议动作**：升级、workaround、人工介入或后续跟进
+
+### `## Review Guide`
 
 这是给 reviewer 的最短核查路径，即使高置信度也要给出。必须包含：
 
@@ -167,7 +199,7 @@
 2. 建议对比的 tag / branch / ref
 3. 建议阅读的文件、函数或调用链
 4. 建议检索的 GitHub PR / issue / commit 关键词
-5. 判断方式：如何确认 `已修复 / 未修复 / 部分修复 / 无关 PR`
+5. 判断方式：如何确认 `released / not_fixed / partially_fixed / unrelated PR`
 6. 最小验证路径：如果需要人工复现，应优先验证什么场景
 
 证据展示规则：
@@ -204,16 +236,23 @@
 4. 如果同时涉及 Helm 配置和 K8s 运维，两个都打
 5. 不确定时宁可多打，不要漏打
 
+
 ### Step 7 — 投递与归档
 
-1. **必须**调用 zendesk_internal_reply 发送 Internal Note（即使是 Dry Run 模式也要调用，系统会自动处理）
+1. **必须**调用 zendesk_internal_reply 发送 Internal Note，同时提供 `body` 和 `summary`（即使是 Dry Run 模式也要调用，系统会自动处理）
 2. 调用 archive_ticket 将本次分析过程和解决方案归档到知识库
 
 **重要**：不要直接用文本消息输出回复内容。必须通过 zendesk_internal_reply 工具投递回复。
 
 ## 决策规则
 
-- 如果分析后确信度低于 70%，在 Internal Reply 中明确标注「⚠️ 置信度不高，建议人工复核」
-- 即使分析后确信度较高，也应在"人工复核指引"中提供最短复核路径，不要省略
-- 如果工单问题超出能力范围（如需要访问客户环境），标注「🔄 需要人工介入：<原因>」
+- `summary.confidence` 的判定标准：
+  - `high`：答案有至少 2 个独立来源交叉验证，或来自源码精确定位 + 文档确认
+  - `medium`：有一定依据但缺少交叉验证，或基于类似场景推断
+  - `low`：无法找到明确依据，或多个来源结论冲突
+- `summary.needs_human` 的判定标准：
+  - `false`：confidence 为 high，且 Suggested Reply 完整、无需补充信息
+  - `true`：confidence 不为 high、需要客户补充信息、涉及敏感操作、或无法确认修复状态
+- 即使 `needs_human` 为 false，也应在 Review Guide 中提供最短复核路径，不要省略
+- 如果工单问题超出能力范围（如需要访问客户环境），设置 `needs_human: true` 并在 `needs_human_reason` 中说明原因
 - 如果遇到工具调用失败，尝试一次重试，仍失败则记录错误并继续

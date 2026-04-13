@@ -115,9 +115,9 @@ def _inject_language_reminder(session: AgentSession, message_store: MessageStore
     lang = ctx.customer_language
     label = _LANG_NAMES.get(lang, lang)
     message_store.append_user(
-        f"[系统提醒] 客户使用 {label} 沟通，你的 Internal Note 全文"
-        f"（内部分析、客户回复建议、人工复核指引）都必须使用 {label} 撰写。"
-        f"代码块和命令行内容不受此限制。"
+        f"[系统提醒] 客户使用 {label} 沟通，你的 Internal Note 正文内容"
+        f"（Suggested Reply、Internal Analysis、Review Guide 各段内容）都必须使用 {label} 撰写。"
+        f"section 标题保持英文不变，代码块和命令行内容不受此限制。"
     )
     session._language_reminder_injected = True  # type: ignore[attr-defined]
     logger.info(

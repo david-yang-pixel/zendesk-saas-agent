@@ -25,7 +25,7 @@
   - 只有标题相似：只能算弱相关
   - 描述相符但未覆盖相同代码路径：不能判定为已修复
   - diff 或文件列表覆盖相同逻辑：才可作为强证据
-- 最终结论应明确区分：`未修复`、`修复中`、`已合并未发布`、`已发布修复`、`不确定`
+- 最终结论应明确区分：`not_fixed`、`in_progress`、`merged_unreleased`、`released`、`unknown`
 
 ### Zendesk 工具
 
@@ -40,6 +40,10 @@
 - zendesk_get_article 获取单篇文章全文，结合搜索结果使用
 - zendesk_get_user 根据用户 ID 获取客户或受理人信息（姓名、邮箱、组织）
 - zendesk_internal_reply 发送的是内部备注，客户看不到
+- zendesk_internal_reply 需要同时提供 `body`（Markdown 正文）和 `summary`（结构化摘要对象），系统会自动将其渲染为带快速摘要卡片的 HTML 格式
+- `summary` 对象必填字段：`problem_type`、`confidence`（high/medium/low）、`confidence_reason`、`customer_language`、`key_finding`、`needs_human`（布尔值）
+- `summary` 可选字段：`version`、`fix_status`（`released` / `merged_unreleased` / `in_progress` / `not_fixed` / `unknown`）、`fix_status_detail`、`needs_human_reason`、`tags`（数组）
+- `body` 中的三段标题必须使用 `## Suggested Reply`、`## Internal Analysis`、`## Review Guide`（注意 Suggested Reply 放在最前面）
 - Internal Reply **允许使用 Markdown 代码块** 作为分析证据
 - 代码块只应包含精简、脱敏后的关键片段：配置、日志、或少量代码行
 - 回复内容不要包含内部仓库绝对路径、敏感源码大段引用、凭证、密钥等信息

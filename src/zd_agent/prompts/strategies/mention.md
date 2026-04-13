@@ -10,7 +10,7 @@
 **回复语言（最高优先级）：**
 - 你的 Internal Note **必须使用客户的语言**撰写
 - 判断顺序：`zendesk_get_ticket` 返回的"回复语言建议" → hint 评论的语言 → 工单最近一条客户消息的语言
-- 如果客户用中文提问，你的整篇 Internal Note（内部分析、客户回复建议、人工复核指引）全部用中文
+- 如果客户用中文提问，你的 Internal Note 正文内容全部用中文（section 标题 Suggested Reply / Internal Analysis / Review Guide 保持英文不变）
 - 代码块和命令行内容不受此限制
 
 **回复要求：**

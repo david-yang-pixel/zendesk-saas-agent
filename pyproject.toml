@@ -19,6 +19,7 @@ dependencies = [
     "aiohttp",
     "zendesk-cli",
     "anthropic>=0.87.0",
+    "mistune>=3.2.0",
 ]
 
 [tool.uv.sources]
