@@ -276,6 +276,9 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     if not isinstance(tags, list) or ENTERPRISE_TAG not in tags:
         return _build_ignored_response("missing_enterprise_tag")
 
+    if "testing" in tags:
+        return _build_ignored_response("testing_tag_skip")
+
     signature_header, signature_timestamp = _get_signature_header_info(request)
     logger.info(
         "webhook_received",
