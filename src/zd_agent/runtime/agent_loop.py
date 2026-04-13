@@ -10,6 +10,13 @@ from typing import Any
 
 from openai import BadRequestError
 
+try:
+    from anthropic import RateLimitError as AnthropicRateLimitError
+except ImportError:
+    AnthropicRateLimitError = None  # type: ignore[assignment,misc]
+
+from openai import RateLimitError as OpenAIRateLimitError
+
 from zd_agent.log import get_logger
 from zd_agent.runtime.compaction import compact_messages
 from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, ToolExecuted
@@ -22,6 +29,29 @@ from zd_agent.tools.base import ToolRegistry
 logger = get_logger(module="agent_loop")
 
 MAX_IMAGES = 10
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_BASE_DELAY = 30  # Anthropic 每分钟限额，等 30s 比较安全
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    if isinstance(exc, OpenAIRateLimitError):
+        return True
+    if AnthropicRateLimitError is not None and isinstance(exc, AnthropicRateLimitError):
+        return True
+    return False
+
+
+def _get_retry_after(exc: Exception) -> float:
+    """从 response header 中提取 retry-after 秒数，取不到则用默认值。"""
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        header = getattr(resp, "headers", {}).get("retry-after")
+        if header:
+            try:
+                return max(float(header), 1.0)
+            except (ValueError, TypeError):
+                pass
+    return _RATE_LIMIT_BASE_DELAY
 
 
 def _is_image_url_error(exc: Exception) -> bool:
@@ -154,12 +184,35 @@ async def agent_loop(
             session.round_count = guardrails.current_round
 
             llm_start = time.monotonic()
+
+            async def _chat_with_retry() -> LLMResponse:
+                """带 rate-limit 重试的 LLM 调用。"""
+                last_exc: Exception | None = None
+                for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+                    try:
+                        return await provider.chat(
+                            message_store.to_api_messages(),
+                            tools=tool_schemas,
+                            temperature=0.2,
+                        )
+                    except Exception as e:
+                        if _is_rate_limit_error(e):
+                            last_exc = e
+                            if attempt < _RATE_LIMIT_MAX_RETRIES:
+                                delay = _get_retry_after(e)
+                                logger.warning(
+                                    "rate_limit_retry",
+                                    ticket_id=session.ticket_id,
+                                    attempt=attempt + 1,
+                                    delay=delay,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                        raise
+                raise last_exc  # type: ignore[misc]
+
             try:
-                response = await provider.chat(
-                    message_store.to_api_messages(),
-                    tools=tool_schemas,
-                    temperature=0.2,
-                )
+                response = await _chat_with_retry()
             except Exception as chat_err:
                 if not _is_image_url_error(chat_err):
                     raise
@@ -170,11 +223,7 @@ async def agent_loop(
                     removed_count=removed,
                     error=str(chat_err),
                 )
-                response = await provider.chat(
-                    message_store.to_api_messages(),
-                    tools=tool_schemas,
-                    temperature=0.2,
-                )
+                response = await _chat_with_retry()
             llm_elapsed = time.monotonic() - llm_start
 
             guardrails.add_tokens(response.prompt_tokens, response.completion_tokens)

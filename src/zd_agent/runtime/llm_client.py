@@ -5,7 +5,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from openai import APIConnectionError, APITimeoutError, RateLimitError
+from openai import (
+    APIConnectionError as OpenAIConnectionError,
+    APITimeoutError as OpenAITimeoutError,
+    RateLimitError as OpenAIRateLimitError,
+)
+
+try:
+    from anthropic import (
+        APIConnectionError as AnthropicConnectionError,
+        APITimeoutError as AnthropicTimeoutError,
+        RateLimitError as AnthropicRateLimitError,
+    )
+
+    _RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+        OpenAITimeoutError, OpenAIConnectionError, OpenAIRateLimitError,
+        AnthropicTimeoutError, AnthropicConnectionError, AnthropicRateLimitError,
+    )
+except ImportError:
+    _RETRYABLE_EXCEPTIONS = (
+        OpenAITimeoutError, OpenAIConnectionError, OpenAIRateLimitError,
+    )
 
 from zd_agent.config import EnvSettings, get_config
 from zd_agent.log import get_logger
@@ -100,8 +120,6 @@ class LLMClient:
             operation="llm_chat",
             policy=get_retry_policy("llm"),
             func=_call,
-            should_retry=lambda e: isinstance(
-                e, (APITimeoutError, APIConnectionError, RateLimitError)
-            ),
+            should_retry=lambda e: isinstance(e, _RETRYABLE_EXCEPTIONS),
             log_context={"model": self._model},
         )
