@@ -43,18 +43,64 @@ _JA_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
 
+# 语言检测前剔除技术内容，避免英文日志/代码干扰判断
+_FENCED_CODE_RE = re.compile(r"```[\s\S]*?```")
+_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+_URL_RE = re.compile(r"https?://\S+")
+_TECHNICAL_LINE_RE = re.compile(
+    r"^[ \t]*(?:"
+    r"at\s+[\w.$<>/]+|"                          # Java/JS/Go 堆栈行
+    r'File\s+"[^"]+"|'                            # Python 堆栈行
+    r"Traceback\s+\(|"                            # Python traceback 头
+    r"[\w.]*(?:Error|Exception|Warning)[:\s]|"    # 错误/异常行
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|"         # 日志时间戳
+    r"(?:WARN|INFO|DEBUG|ERROR|FATAL)[\s\[]|"     # 日志级别
+    r"[A-Z_]{3,}=|"                               # ENV_VAR=value
+    r"(?:kubectl|docker|helm|npm|pip|git)\s"       # CLI 命令
+    r").*$",
+    re.MULTILINE,
+)
+
+
+def _strip_technical_content(text: str) -> str:
+    """剔除代码块、行内代码、URL、堆栈/日志行等技术内容，保留自然语言部分。"""
+    result = _FENCED_CODE_RE.sub("", text)
+    result = _INLINE_CODE_RE.sub("", result)
+    result = _URL_RE.sub("", result)
+    result = _TECHNICAL_LINE_RE.sub("", result)
+    return result
+
+
+def _count_script_chars(text: str) -> tuple[int, int, int]:
+    """统计日文假名、CJK、拉丁字母数量。"""
+    return (
+        len(_JA_KANA_RE.findall(text)),
+        len(_CJK_RE.findall(text)),
+        len(_LATIN_RE.findall(text)),
+    )
+
 
 def _detect_reply_language(text: str) -> str:
-    """根据文本中各语系字符占比判断语言，避免少量混入字符导致误判。"""
+    """根据文本中各语系字符占比判断语言。
+
+    先剔除代码块/日志/URL 等技术内容，仅对客户自然语言做判断，
+    避免英文报错日志导致中文/日文客户被误判为英文。
+    """
     normalized = (text or "").strip()
     if not normalized:
         return ""
-    ja_count = len(_JA_KANA_RE.findall(normalized))
-    cjk_count = len(_CJK_RE.findall(normalized))
-    latin_count = len(_LATIN_RE.findall(normalized))
+
+    cleaned = _strip_technical_content(normalized)
+    ja_count, cjk_count, latin_count = _count_script_chars(cleaned)
     total = ja_count + cjk_count + latin_count
+
+    # 剔除后无有效字符（客户只贴了代码/日志），回退到原文检测
     if total == 0:
-        return ""
+        ja_count, cjk_count, latin_count = _count_script_chars(normalized)
+        total = ja_count + cjk_count + latin_count
+        if total == 0:
+            return ""
+
     # 日语假名出现即优先判定为日语（假名几乎不会在非日语文本中大量出现）
     if ja_count > 0 and ja_count / total > 0.05:
         return "ja"
