@@ -136,7 +136,7 @@ _LANG_NAMES = {"zh": "中文", "en": "English", "ja": "日本語"}
 
 
 def _inject_language_reminder(session: AgentSession, message_store: MessageStore) -> None:
-    """检测到客户语言后，注入一次性语言提醒到对话中。"""
+    """检测到客户语言后，注入一次性语言提醒到对话中（仅作为参考建议）。"""
     if getattr(session, "_language_reminder_injected", False):
         return
     ctx = getattr(session, "context", None)
@@ -145,8 +145,10 @@ def _inject_language_reminder(session: AgentSession, message_store: MessageStore
     lang = ctx.customer_language
     label = _LANG_NAMES.get(lang, lang)
     message_store.append_user(
-        f"[系统提醒] 客户使用 {label} 沟通，你的 Internal Note 正文内容"
-        f"（Suggested Reply、Internal Analysis、Review Guide 各段内容）都必须使用 {label} 撰写。"
+        f"[系统提醒] 基于字符统计的初步检测，客户可能使用 {label} 沟通。"
+        f"请你结合对话全文独立判断客户实际使用的语言，"
+        f"并使用客户的语言撰写 Internal Note 正文内容"
+        f"（Suggested Reply、Internal Analysis、Review Guide 各段内容）。"
         f"section 标题保持英文不变，代码块和命令行内容不受此限制。"
     )
     session._language_reminder_injected = True  # type: ignore[attr-defined]

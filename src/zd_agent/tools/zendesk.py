@@ -468,10 +468,11 @@ class ZendeskGetTicket(Tool):
                     else ""
                 )
                 lines.extend([
-                    "## 回复语言建议",
-                    f"- 优先使用客户的语言回复，不要被系统提示语言影响{source_label}",
+                    "## 回复语言建议（初步检测，仅供参考）",
+                    f"- 以下为基于字符统计的初步检测结果，仅供参考{source_label}",
+                    f"- 请你结合对话全文独立判断客户实际使用的语言，并使用该语言撰写回复",
                     (
-                        f"- 检测结果: {reply_language_hint['language']} "
+                        f"- 初步检测: {reply_language_hint['language']} "
                         f"({ _language_label(reply_language_hint['language']) })"
                     ),
                     f"- 参考文本: {reply_language_hint['evidence']}",
@@ -881,6 +882,11 @@ class ZendeskInternalReply(Tool):
 
         body_md = args["body"]
         summary = args.get("summary", {})
+
+        # LLM 判定的客户语言（以 LLM 判断为准，覆盖字符统计的初步检测）
+        llm_language = summary.get("customer_language", "")
+        if llm_language and session.context:
+            session.context.customer_language = llm_language
 
         # 纯文本版（作为 body 回退）
         plain_body = _prepend_internal_reply_banner(body_md)

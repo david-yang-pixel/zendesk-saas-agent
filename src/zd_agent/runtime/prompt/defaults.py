@@ -53,9 +53,11 @@ def register_default_sections(builder: PromptBuilder) -> None:
         PromptSection(
             name="reply_language_override",
             content=lambda ctx: (
-                f"⚠️ 重要：本工单客户使用 **{_LANG_NAMES.get(ctx.customer_language, ctx.customer_language)}** 沟通。"
-                f"你的 Internal Note 正文内容（Suggested Reply、Internal Analysis、Review Guide 各段内容）都必须使用"
-                f" **{_LANG_NAMES.get(ctx.customer_language, ctx.customer_language)}** 撰写。"
+                f"初步检测客户可能使用 **{_LANG_NAMES.get(ctx.customer_language, ctx.customer_language)}** 沟通"
+                f"（基于字符统计，仅供参考）。"
+                f"请你结合对话全文独立判断客户实际使用的语言，"
+                f"并使用客户的语言撰写 Internal Note 正文内容"
+                f"（Suggested Reply、Internal Analysis、Review Guide 各段内容）。"
                 f"代码块和命令行内容不受此限制。"
             ),
             order=40,
