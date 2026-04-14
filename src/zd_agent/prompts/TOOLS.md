@@ -72,6 +72,56 @@
 - run_script 只能执行 scripts/ 目录下的已知脚本，不接受任意命令
 - sandbox_exec 在 sandbox 目录内执行受限命令
 
+### Zendesk CLI（bash 调用）
+
+除了内置的 Zendesk function call 工具外，你还可以通过 `sandbox_exec` 执行 `zendesk` CLI 命令。适用场景：需要组合过滤、管道处理、或内置工具未覆盖的操作。
+
+**始终使用 `-o text` 格式**（LLM 友好），除非需要 JSON 管道处理。
+
+#### 工单筛选（内置工具只支持简单 query，CLI 支持多维度组合）
+
+- `zendesk tickets -n 10 -o text`
+- `zendesk tickets --status open --assignee me -o text`
+- `zendesk tickets -q "deploy failure" --status open -o text`
+- `zendesk tickets --since 2026-01-01 --until 2026-01-31 -o text`
+- `zendesk tickets --priority urgent --assignee me -o text`
+
+#### 查看工单（需要更快的元数据查询或特定评论数量时使用）
+
+- `zendesk ticket <id> -o text`
+- `zendesk ticket <id> --no-comments -o text` — 只看元数据
+- `zendesk ticket <id> --latest-comments 1 -o text` — 只看最新回复
+
+#### Help Center（CLI 支持结构化浏览和高级搜索，内置工具只支持关键词搜索）
+
+- `zendesk docs categories -o text` — 浏览分类
+- `zendesk docs sections -o text` — 浏览栏目
+- `zendesk docs search --query "SSO" -o text`
+- `zendesk docs search --query "error" --created-after 2026-01-01 -o text`
+- `zendesk docs show <article_id> -o text`
+
+#### 附件
+
+- `zendesk attachment list -t <ticket_id> -o text`
+- `zendesk attachment download -t <ticket_id> --all --dir ./attachments`
+
+#### 工单管理（内置工具没有这些能力）
+
+- `zendesk assign-to <ticket_id> <email>` — 分配工单
+- `zendesk set-status <ticket_id> pending` — 改状态（只允许 open / pending）
+
+#### JSON 管道
+
+- `zendesk ticket <id> -o json | grep version`
+- `zendesk tickets -q "xxx" -o json | head -20`
+
+#### 使用规则
+
+- 优先使用内置 function call 工具（zendesk_get_ticket 等）获取工单详情 — 它们会做语言检测、图片收集、字段解析
+- CLI bash 调用作为补充，用于内置工具未覆盖的操作（筛选、改状态、分配、文档浏览）
+- 写操作（assign-to / set-status）在 dry_run 模式下禁止使用
+- 不要用 `zendesk init` 或 `zendesk set-env` 修改配置
+
 ### Sandbox 工具
 
 - `sandbox_create_worktree` 用于在 sandbox 下创建指定版本的完整代码树，后续代码分析应优先基于这里进行
