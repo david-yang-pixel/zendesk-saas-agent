@@ -161,7 +161,23 @@ config.yaml           主配置文件
 uv sync
 ```
 
-### 2. 配置凭据
+### 2. 安装 Zendesk CLI（可选，启用 bash 调用）
+
+安装 zendesk-cli 二进制后，Agent 可通过 `sandbox_exec` 直接执行 Zendesk 命令，获得工单筛选、状态管理、文档浏览等 function call 工具未覆盖的能力。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sorphwer/zendesk-cli-release/main/install.sh | sh
+```
+
+安装后确认：
+
+```bash
+zendesk --version
+```
+
+zendesk-cli 复用 `.env` 中已有的 Zendesk 凭据（`ZENDESK_SUBDOMAIN`、`ZENDESK_EMAIL`、`ZENDESK_API_TOKEN`），无需额外配置。
+
+### 3. 配置凭据
 
 ```bash
 cp .env.example .env
@@ -189,7 +205,7 @@ ZENDESK_API_TOKEN=your-api-token
 | `ZD_WEBHOOK_SIGNING_SECRET` | Zendesk Webhook 签名校验 |
 | `ZD_LOG_LEVEL` | 日志级别（DEBUG / INFO / WARNING / ERROR） |
 
-### 3. 查看帮助
+### 4. 查看帮助
 
 ```bash
 uv run zd-agent --help

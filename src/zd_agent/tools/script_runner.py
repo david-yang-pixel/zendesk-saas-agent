@@ -110,6 +110,7 @@ class SandboxExec(Tool):
         "ls", "cat", "head", "tail", "wc", "find", "grep", "rg",
         "file", "stat", "du", "diff", "tree", "echo", "pwd",
         "git", "python -c", "python3 -c",
+        "zendesk",
     }
 
     BLOCKED_PATTERNS = {
