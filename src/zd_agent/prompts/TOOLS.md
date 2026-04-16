@@ -118,32 +118,13 @@
 - 写操作（assign-to / set-status）在 dry_run 模式下禁止使用
 - 不要用 `zendesk init` 或 `zendesk set-env` 修改配置
 
-### Zendesk Knowledge Graph CLI（bash 调用）
+### 知识图谱工具
 
-通过 `sandbox_exec` 执行 `zendesk-kg` 命令，在知识图谱中搜索历史工单。基于向量 + 全文混合检索，返回相关工单的问题摘要、解决方案和元数据。**适合查找类似问题的历史处理方案。**
-
-**始终使用 `--json` 格式**以获取结构化数据（含 quickSummary / issueSummary / solutionSummary）。
-
-#### 搜索
-
-- `zendesk-kg search "error message or keyword" --json` — 基础搜索
-- `zendesk-kg search "deploy failure" -k 10 --json` — 返回更多结果（默认 5，最大 20）
-- `zendesk-kg search "SSO login" -p urgent --json` — 按优先级过滤
-- `zendesk-kg search "plugin" --status open --json` — 按状态过滤
-- `zendesk-kg search "sandbox" -v 1.0.0 --json` — 按版本过滤
-- `zendesk-kg search "database" --keyword dify_enterprise --json` — 按关键词标签过滤
-- `zendesk-kg search "performance" --created-after 2026-01-01 --json` — 按时间过滤
-
-#### JSON 输出结构
-
-每条结果包含：`ticketId`、`subject`、`status`、`priority`、`quickSummary`、`issueSummary`、`solutionSummary`、`createdAt`、`handledBy`、`versions`、`keywords`。
-
-#### 使用规则
-
-- 优先使用 `zendesk-kg search` 搜索历史工单的解决方案，它比 `knowledge_search` 和 `zendesk_search` 语义匹配更精准
+- `zendesk_kg_search` 在知识图谱中搜索历史工单，基于向量 + 全文混合检索，返回结构化的问题摘要和解决方案
+- 比 `knowledge_search` 和 `zendesk_search` 语义匹配更精准，适合查找类似问题的历史处理方案
 - 搜索结果中的 `solutionSummary` 是核心参考，直接包含历史处理方案
+- 支持按 `version`、`priority`、`status`、`keyword` 过滤
 - 可与 `zendesk_get_ticket` 配合：先用 KG 搜索相似案例，再用内置工具获取具体工单详情
-- 不要用 `zendesk-kg init` 或 `zendesk-kg update` 修改配置
 
 ### Sandbox 工具
 

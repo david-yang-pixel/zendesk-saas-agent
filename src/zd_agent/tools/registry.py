@@ -33,6 +33,7 @@ from zd_agent.tools.sandbox_tools import (
 )
 from zd_agent.tools.script_runner import RunScript, SandboxExec
 from zd_agent.tools.subagent import RunSubagent
+from zd_agent.tools.zendesk_kg import ZendeskKgSearch
 from zd_agent.tools.zendesk import (
     ZendeskAddTags,
     ZendeskGetArticle,
@@ -62,6 +63,7 @@ def create_tool_registry() -> ToolRegistry:
     # 知识库工具组
     registry.register(KnowledgeSearch())
     registry.register(KnowledgeRead())
+    registry.register(ZendeskKgSearch())
     registry.register(OfficialDocsSearch())
     registry.register(OfficialDocsRead())
 
