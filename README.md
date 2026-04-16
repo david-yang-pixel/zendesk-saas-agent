@@ -177,7 +177,22 @@ zendesk --version
 
 zendesk-cli 复用 `.env` 中已有的 Zendesk 凭据（`ZENDESK_SUBDOMAIN`、`ZENDESK_EMAIL`、`ZENDESK_API_TOKEN`），无需额外配置。
 
-### 3. 配置凭据
+### 3. 安装 Zendesk KG CLI（可选，启用知识图谱搜索）
+
+安装 zendesk-kg 二进制后，Agent 可通过 `sandbox_exec` 在知识图谱中搜索历史工单，获取相似问题的解决方案摘要。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sorphwer/zendesk-kg-cli-release/main/install.sh | sh
+zendesk-kg init  # 输入从 Web UI 生成的 API key
+```
+
+安装后确认：
+
+```bash
+zendesk-kg health
+```
+
+### 4. 配置凭据
 
 ```bash
 cp .env.example .env
@@ -205,7 +220,7 @@ ZENDESK_API_TOKEN=your-api-token
 | `ZD_WEBHOOK_SIGNING_SECRET` | Zendesk Webhook 签名校验 |
 | `ZD_LOG_LEVEL` | 日志级别（DEBUG / INFO / WARNING / ERROR） |
 
-### 4. 查看帮助
+### 5. 查看帮助
 
 ```bash
 uv run zd-agent --help
