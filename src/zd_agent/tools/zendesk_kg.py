@@ -16,7 +16,6 @@ logger = get_logger(module="tools.zendesk_kg")
 _KG_BIN = Path.home() / ".zendesk-kg" / "zendesk-kg"
 _MAX_OUTPUT_CHARS = 8000
 _VALID_PRIORITIES = {"low", "normal", "high", "urgent"}
-_VALID_STATUSES = {"new", "open", "pending", "hold", "solved", "closed"}
 
 
 async def _run_kg(args: list[str], timeout: float = 30) -> tuple[int, str, str]:
@@ -92,10 +91,6 @@ class ZendeskKgSearch(Tool):
                 "type": "string",
                 "description": "按优先级过滤: low, normal, high, urgent",
             },
-            "status": {
-                "type": "string",
-                "description": "按状态过滤: new, open, pending, hold, solved, closed",
-            },
             "keyword": {
                 "type": "string",
                 "description": "按关键词标签过滤",
@@ -132,10 +127,6 @@ class ZendeskKgSearch(Tool):
             p = str(args["priority"]).lower()
             if p in _VALID_PRIORITIES:
                 cmd_args.extend(["-p", p])
-        if args.get("status"):
-            s = str(args["status"]).lower()
-            if s in _VALID_STATUSES:
-                cmd_args.extend(["--status", s])
         if args.get("keyword"):
             cmd_args.extend(["--keyword", str(args["keyword"])])
 
