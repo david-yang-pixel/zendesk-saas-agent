@@ -126,7 +126,7 @@ def clone_repo(entry: RepoEntry) -> tuple[bool, str]:
 
     if is_git_repo(repo_path):
         _update_remote_url(repo_path, clone_url)
-        code, _, err = _run_git_sync(str(repo_path), "fetch", "--all", "--prune", "--tags")
+        code, _, err = _run_git_sync(str(repo_path), "fetch", "--all", "--prune", "--tags", "--force")
         if code != 0:
             return False, f"fetch 失败: {err.strip()}"
         return True, "已存在，fetch 完成"
@@ -167,7 +167,7 @@ def fetch_repo(entry: RepoEntry) -> tuple[bool, str]:
         return clone_repo(entry)
 
     _update_remote_url(repo_path, _resolve_clone_url(entry.url))
-    code, _, err = _run_git_sync(str(repo_path), "fetch", "--all", "--prune", "--tags")
+    code, _, err = _run_git_sync(str(repo_path), "fetch", "--all", "--prune", "--tags", "--force")
     if code != 0:
         return False, f"fetch 失败: {err.strip()}"
     return True, "fetch 完成"
