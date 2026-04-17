@@ -122,6 +122,14 @@
 - 写操作（assign-to / set-status）在 dry_run 模式下禁止使用
 - 不要用 `zendesk init` 或 `zendesk set-env` 修改配置
 
+### 知识图谱工具
+
+- `zendesk_kg_search` 在知识图谱中搜索历史工单，基于向量 + 全文混合检索，返回结构化的问题摘要和解决方案
+- 比 `knowledge_search` 和 `zendesk_search` 语义匹配更精准，适合查找类似问题的历史处理方案
+- 搜索结果中的 `solutionSummary` 是核心参考，直接包含历史处理方案
+- 支持按 `version`、`priority`、`status`、`keyword` 过滤
+- 可与 `zendesk_get_ticket` 配合：先用 KG 搜索相似案例，再用内置工具获取具体工单详情
+
 ### Sandbox 工具
 
 - `sandbox_create_worktree` 用于在 sandbox 下创建指定版本的完整代码树，后续代码分析应优先基于这里进行

@@ -48,7 +48,7 @@
 - Zendesk Help Center（`zendesk_search_articles` / `zendesk_get_article`）
 - 官方在线文档（`official_docs_search` / `official_docs_read`）
 - 本地知识库（`knowledge_search` / `knowledge_read`）
-- 历史相似工单（`zendesk_search`）
+- 知识图谱历史工单（`zendesk_kg_search`）— 向量 + 全文混合检索，返回结构化的问题摘要和解决方案
 - 源码（Step 4）
 - Helm Watchdog（Step 2）
 - 附件 / 截图（`zendesk_get_attachments` + `sandbox_read`）
