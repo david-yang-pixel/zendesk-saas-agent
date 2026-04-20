@@ -7,17 +7,17 @@
 1. 调用 zendesk_get_ticket 获取工单详情和完整对话记录
 2. 调用 zendesk_get_attachments 下载所有附件（截图、日志等）
 3. **优先读取 zendesk_get_ticket 返回的工单字段**，至少检查以下字段是否存在并记录：
-   - `Product`
-   - `Version`
-   - `Environment`
-   - `Plan`
-   - `Workspace ID`
-   - `Issue Summary`
-   - `Patterns`
+  - `Product`
+  - `Version`
+  - `Environment`
+  - `Plan`
+  - `Workspace ID`
+  - `Issue Summary`
+  - `Patterns`
 4. 从工单字段和对话内容中提取关键信息：
-   - 客户描述的问题现象
-   - 错误信息 / 日志片段
-   - 客户的部署方式（Helm / Docker Compose / AWS CDK 等）
+  - 客户描述的问题现象
+  - 错误信息 / 日志片段
+  - 客户的部署方式（Helm / Docker Compose / AWS CDK 等）
 5. 如果工单字段与对话内容存在冲突，必须在后续分析中明确指出冲突，并说明当前采用哪一项作为判断依据
 
 ### Step 2 — 版本确认（关键步骤，不可跳过）
@@ -26,15 +26,15 @@
 
 1. 优先从工单字段中的 `Version` 和 `Product` 提取版本与产品信息，再用对话内容补充缺失信息
 2. 调用 helm_list_versions 或 helm_get_version_details 确认版本映射关系：
-   - **Helm chart 版本**（如 `3.7.5`）= 部署用的 Helm chart 包版本
-   - **App 版本 / appVersion**（如 `1.11.4`）= Dify 应用代码版本
-   - 一个 chart 版本对应一个 appVersion，客户通常报告的是 chart 版本
+  - **Helm chart 版本**（如 `3.7.5`）= 部署用的 Helm chart 包版本
+  - **App 版本 / appVersion**（如 `1.11.4`）= Dify 应用代码版本
+  - 一个 chart 版本对应一个 appVersion，客户通常报告的是 chart 版本
 3. 如果字段中的版本号与对话正文中的版本号不一致，优先采用更结构化、上下文更明确的来源，并在分析结论中说明
 4. 确认版本后，**必须用 list_repos 查看每个仓库实际可用的 tag**，因为各仓库 tag 命名规范不同：
-   - `dify` 仓库的 tag 格式通常是 `主版本号`（如 `1.11.4`、`main`）
-   - `dify-enterprise` / `dify-enterprise-frontend` 仓库的 tag 可能是 `0.x.x` 格式，与 App 版本不一致
-   - `dify-helm` 仓库的 tag 可能没有 `v` 前缀
-   - **绝对不要猜测 tag，必须先查**
+  - `dify` 仓库的 tag 格式通常是 `主版本号`（如 `1.11.4`、`main`）
+  - `dify-enterprise` / `dify-enterprise-frontend` 仓库的 tag 可能是 `0.x.x` 格式，与 App 版本不一致
+  - `dify-helm` 仓库的 tag 可能没有 `v` 前缀
+  - **绝对不要猜测 tag，必须先查**
 5. 如果找不到精确 tag，使用 `main` 分支作为 fallback，并在回复中说明
 
 ### Step 2.5 — 工单分类
@@ -108,11 +108,11 @@
 2. 更高版本 tag 或 `main` 中同一逻辑是否已经修复
 3. GitHub 上是否存在相关的 `open / merged PR`
 4. 最终修复状态属于哪一类：
-   - `not_fixed`
-   - `in_progress`
-   - `merged_unreleased`
-   - `released`
-   - `unknown`
+  - `not_fixed`
+  - `in_progress`
+  - `merged_unreleased`
+  - `released`
+  - `unknown`
 
 执行要求：
 
@@ -130,26 +130,30 @@
 
 系统会将 `summary` 渲染为顶部快速摘要卡片，让 reviewer 一眼看到关键信息。必填字段：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `problem_type` | string | 问题分类（如 code-bug / config-deploy / usage-howto / feature-request） |
-| `confidence` | string | 置信度等级：`high` / `medium` / `low` |
-| `confidence_reason` | string | 置信度依据（如「来自源码验证 + 官方文档交叉确认」） |
-| `customer_language` | string | 客户语言（如「中文」「English」「日本語」） |
-| `key_finding` | string | 一句话核心结论 |
-| `needs_human` | boolean | 是否需要人工复核后才能发送给客户 |
+
+| 字段                  | 类型      | 说明                                                               |
+| ------------------- | ------- | ---------------------------------------------------------------- |
+| `problem_type`      | string  | 问题分类（如 code-bug / config-deploy / usage-howto / feature-request） |
+| `confidence`        | string  | 置信度等级：`high` / `medium` / `low`                                  |
+| `confidence_reason` | string  | 置信度依据（如「来自源码验证 + 官方文档交叉确认」）                                      |
+| `customer_language` | string  | 客户语言（如「中文」「English」「日本語」）                                        |
+| `key_finding`       | string  | 一句话核心结论                                                          |
+| `needs_human`       | boolean | 是否需要人工复核后才能发送给客户                                                 |
+
 
 可选字段：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `version` | string | 客户版本（如「Enterprise 3.7.3 (chart) / App 1.11.2」） |
-| `fix_status` | string | Fix status: `released` / `merged_unreleased` / `in_progress` / `not_fixed` / `unknown` |
-| `fix_status_detail` | string | 修复状态补充说明（如版本号 v1.12.0） |
-| `needs_human_reason` | string | 需要/不需要人工的原因说明 |
-| `tags` | array | 工单标签列表 |
 
-**`needs_human` 判定规则：**
+| 字段                   | 类型     | 说明                                                                                     |
+| -------------------- | ------ | -------------------------------------------------------------------------------------- |
+| `version`            | string | 客户版本（如「Enterprise 3.7.3 (chart) / App 1.11.2」）                                         |
+| `fix_status`         | string | Fix status: `released` / `merged_unreleased` / `in_progress` / `not_fixed` / `unknown` |
+| `fix_status_detail`  | string | 修复状态补充说明（如版本号 v1.12.0）                                                                 |
+| `needs_human_reason` | string | 需要/不需要人工的原因说明                                                                          |
+| `tags`               | array  | 工单标签列表                                                                                 |
+
+
+`**needs_human` 判定规则：**
 
 - `false`（不需要人工）：答案有明确来源（文档/源码验证），问题模式清晰，Suggested Reply 可直接使用
 - `true`（需要人工）：置信度低于 high、需要客户补充信息、涉及敏感操作、无法确认修复状态
@@ -180,6 +184,11 @@
 3. 如果未修复，给出当前 workaround，并说明问题仍在处理中
 4. 如果存在开放 PR，可以说明"修复进行中"，但不要承诺不确定发布日期
 5. 如果需要客户配合，明确写出要客户提供什么或执行什么
+6. **禁止老好人式结尾**：
+  - 不要出现"如果您愿意，我们也可以继续帮您评估""我们可以协助您……""需要的话告诉我，我再帮您……""您可以补充以下信息，我们可以进一步评估"等开放式协助邀请
+  - 不要在回复末尾反问客户"您是否希望……""您可以提供以下信息以便我们进一步协助"
+  - 一次把问题答完：能给答案就直接给；信息不足时，说明当前结论的边界，直接在回复里列出"请提供 X/Y/Z"作为客户的下一步动作即可，不要包装成"如果您愿意我们可以……"
+  - 回复应聚焦"问题本身的答案"，不要以"我们/支持团队可以继续协助"作为结尾段落
 
 ### `## Internal Analysis`
 
@@ -215,18 +224,20 @@
 
 **可用标签体系**（只能从下列标签中选择，可多选）：
 
-| 标签 | 适用场景 |
-|------|---------|
-| `bug` | 确认或高度疑似为代码缺陷 |
-| `feature` | 功能请求、能力增强、缺少功能 |
-| `plugin` | 涉及插件系统（dify-plugin-daemon / dify-official-plugins） |
-| `workflow-and-rag` | 涉及工作流编排、RAG、知识库、向量检索 |
-| `enterprise-backend` | 涉及企业版后端（dify-enterprise） |
-| `dify-backend` | 涉及社区版后端（dify 仓库 api/） |
-| `dify-frontend` | 涉及社区版前端（dify 仓库 web/） |
-| `enterprise-frontend` | 涉及企业版前端（dify-enterprise-frontend） |
-| `helm` | 涉及 Helm chart 部署、values.yaml 配置 |
-| `k8s` | 涉及 Kubernetes 集群、Pod、网络、存储等基础设施 |
+
+| 标签                    | 适用场景                                               |
+| --------------------- | -------------------------------------------------- |
+| `bug`                 | 确认或高度疑似为代码缺陷                                       |
+| `feature`             | 功能请求、能力增强、缺少功能                                     |
+| `plugin`              | 涉及插件系统（dify-plugin-daemon / dify-official-plugins） |
+| `workflow-and-rag`    | 涉及工作流编排、RAG、知识库、向量检索                               |
+| `enterprise-backend`  | 涉及企业版后端（dify-enterprise）                           |
+| `dify-backend`        | 涉及社区版后端（dify 仓库 api/）                              |
+| `dify-frontend`       | 涉及社区版前端（dify 仓库 web/）                              |
+| `enterprise-frontend` | 涉及企业版前端（dify-enterprise-frontend）                  |
+| `helm`                | 涉及 Helm chart 部署、values.yaml 配置                    |
+| `k8s`                 | 涉及 Kubernetes 集群、Pod、网络、存储等基础设施                    |
+
 
 **打标规则**：
 
@@ -235,7 +246,6 @@
 3. 同时涉及多个模块的，全部加上，例如 `["bug", "dify-backend", "plugin"]`
 4. 如果同时涉及 Helm 配置和 K8s 运维，两个都打
 5. 不确定时宁可多打，不要漏打
-
 
 ### Step 7 — 投递与归档
 
@@ -256,3 +266,4 @@
 - 即使 `needs_human` 为 false，也应在 Review Guide 中提供最短复核路径，不要省略
 - 如果工单问题超出能力范围（如需要访问客户环境），设置 `needs_human: true` 并在 `needs_human_reason` 中说明原因
 - 如果遇到工具调用失败，尝试一次重试，仍失败则记录错误并继续
+
