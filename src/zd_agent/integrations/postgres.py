@@ -160,3 +160,37 @@ async def run_psql(
         elapsed_ms=elapsed_ms,
         truncated=truncated,
     )
+
+
+import json
+from pathlib import Path
+from typing import Optional
+
+
+def audit_log(
+    *,
+    log_path: Path,
+    database: str,
+    sql: str,
+    status: str,
+    ticket_id: str,
+    row_count: int = 0,
+    elapsed_ms: int = 0,
+    error: Optional[str] = None,
+) -> None:
+    """Append one JSONL audit entry for a SQL execution."""
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "database": database,
+        "sql": sql,
+        "status": status,
+        "ticket_id": ticket_id,
+        "row_count": row_count,
+        "elapsed_ms": elapsed_ms,
+    }
+    if error:
+        entry["error"] = error
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
