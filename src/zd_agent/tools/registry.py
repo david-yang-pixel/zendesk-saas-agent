@@ -32,6 +32,7 @@ from zd_agent.tools.sandbox_tools import (
     SandboxWrite,
 )
 from zd_agent.tools.script_runner import RunScript, SandboxExec
+from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.subagent import RunSubagent
 from zd_agent.tools.zendesk_kg import ZendeskKgSearch
 from zd_agent.tools.zendesk import (
@@ -104,5 +105,8 @@ def create_tool_registry() -> ToolRegistry:
 
     # Subagent 工具
     registry.register(RunSubagent())
+
+    # 数据库只读查询工具组（SaaS）
+    registry.register(SqlQuery())
 
     return registry
