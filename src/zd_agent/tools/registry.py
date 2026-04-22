@@ -45,6 +45,7 @@ from zd_agent.tools.signoz_tools import (
     SignozSearchTraces,
 )
 from zd_agent.tools.feishu_tools import FeishuPush
+from zd_agent.tools.saas_branch import SaasBranchSwitch
 from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.ticket_record import TicketRecordRead, TicketRecordSearch
 from zd_agent.tools.subagent import RunSubagent
@@ -121,6 +122,9 @@ def create_tool_registry() -> ToolRegistry:
     # Subagent 工具
     registry.register(RunSubagent())
     registry.register(RunSubagentsParallel())
+
+    # SaaS 仓库分支切换工具
+    registry.register(SaasBranchSwitch())
 
     # 数据库只读查询工具组（SaaS）
     registry.register(SqlQuery())
