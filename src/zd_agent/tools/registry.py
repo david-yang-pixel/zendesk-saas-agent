@@ -47,6 +47,7 @@ from zd_agent.tools.signoz_tools import (
 from zd_agent.tools.feishu_tools import FeishuPush
 from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.subagent import RunSubagent
+from zd_agent.tools.subagent_parallel import RunSubagentsParallel
 from zd_agent.tools.zendesk_kg import ZendeskKgSearch
 from zd_agent.tools.zendesk import (
     ZendeskAddTags,
@@ -118,6 +119,7 @@ def create_tool_registry() -> ToolRegistry:
 
     # Subagent 工具
     registry.register(RunSubagent())
+    registry.register(RunSubagentsParallel())
 
     # 数据库只读查询工具组（SaaS）
     registry.register(SqlQuery())
