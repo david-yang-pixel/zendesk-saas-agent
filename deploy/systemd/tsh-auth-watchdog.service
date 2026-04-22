@@ -1,0 +1,16 @@
+[Unit]
+Description=Teleport auth watchdog (Feishu push on cert expiry)
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+User=zd-agent
+
+Environment="TELEPORT_HOME=/opt/zd-agent/.tsh"
+
+ExecStart=/opt/zd-agent/code/.venv/bin/python /opt/zd-agent/code/scripts/auth-watchdog.py
+
+[Install]
+WantedBy=multi-user.target

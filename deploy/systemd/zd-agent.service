@@ -1,0 +1,25 @@
+[Unit]
+Description=zd-agent (Dify SaaS Zendesk Agent)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=tsh-proxy-db.service
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+
+ExecStartPre=-/usr/bin/docker rm -f zd-agent
+ExecStart=/usr/bin/docker run --rm --name zd-agent \
+    --network host \
+    -v /opt/zd-agent/resources:/resources \
+    -v /opt/zd-agent/.env:/app/.env:ro \
+    -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
+    --memory=1500m --cpus=1.0 \
+    --log-driver=journald \
+    zd-agent:latest
+
+ExecStop=/usr/bin/docker stop -t 10 zd-agent
+
+[Install]
+WantedBy=multi-user.target

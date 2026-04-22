@@ -1,0 +1,25 @@
+[Unit]
+Description=Teleport proxy db for zd-agent (localhost:56061)
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+User=zd-agent
+
+# TELEPORT_HOME points to the machine's tsh profile directory
+Environment="TELEPORT_HOME=/opt/zd-agent/.tsh"
+
+# Open local proxy on 56061 for the production PostgreSQL.
+# Replace 'dify-prod' with your actual Teleport DB resource name.
+ExecStart=/usr/local/bin/tsh proxy db \
+    --db-user=pro_ops_teleport_read \
+    --port=56061 \
+    dify-prod
+
+# When tsh exits (typically because cert expired), watchdog re-runs headless login.
+# The proxy process should restart automatically (Restart=always above).
+
+[Install]
+WantedBy=multi-user.target
