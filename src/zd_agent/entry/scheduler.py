@@ -36,7 +36,8 @@ async def poll_zendesk_task() -> None:
         return
 
     cfg = get_config()
-    query = cfg.zendesk.poll_query
+    # SaaS 改造：使用 search_query 字段（status:new tags:saas）
+    query = cfg.zendesk.search_query or cfg.zendesk.poll_query
 
     try:
         client = ZendeskClient()
