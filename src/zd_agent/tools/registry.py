@@ -5,6 +5,11 @@ from __future__ import annotations
 from zd_agent.tools.archive import ArchiveTicket
 from zd_agent.tools.base import ToolRegistry
 from zd_agent.tools.classify import ClassifyTicket
+from zd_agent.tools.grafana_tools import (
+    GrafanaGetDashboard,
+    GrafanaListDashboards,
+    GrafanaQueryPrometheus,
+)
 from zd_agent.tools.git_source import (
     GitDiff,
     GitGrep,
@@ -108,5 +113,13 @@ def create_tool_registry() -> ToolRegistry:
 
     # 数据库只读查询工具组（SaaS）
     registry.register(SqlQuery())
+
+    # Grafana 监控工具组（条件注册：仅当配置了 URL + API key）
+    from zd_agent.config import get_config
+    _gcfg = get_config().grafana
+    if _gcfg.url and _gcfg.api_key:
+        registry.register(GrafanaListDashboards())
+        registry.register(GrafanaGetDashboard())
+        registry.register(GrafanaQueryPrometheus())
 
     return registry
