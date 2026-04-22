@@ -35,7 +35,12 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "pytest",
+    "pytest-asyncio",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zd_agent"]

@@ -62,3 +62,101 @@ def validate_read_only_sql(sql: str) -> None:
     fw = first_word.group(1).upper()
     if fw not in ("SELECT", "WITH"):
         raise PsqlSafetyError(f"SQL must start with SELECT or WITH, got: {fw}")
+
+
+import asyncio
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+
+@dataclass
+class PsqlResult:
+    csv: str
+    row_count: int
+    elapsed_ms: int
+    truncated: bool
+
+
+async def run_psql(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    password: str,
+    database: str,
+    sql: str,
+    timeout: int,
+    max_rows: int,
+) -> PsqlResult:
+    """Execute SQL via psql subprocess, return CSV result.
+
+    Raises:
+        TeleportAuthExpired: connection failed (likely auth/port-forward down)
+        asyncio.TimeoutError: query exceeded timeout
+        RuntimeError: other psql errors
+    """
+    # Wrap SQL in LIMIT guard (agent may forget LIMIT on SELECT *)
+    wrapped = f"SELECT * FROM ({sql.rstrip(';').rstrip()}) _zd_agent_wrap LIMIT {max_rows + 1};"
+
+    cmd = [
+        "psql",
+        "-h", host,
+        "-p", str(port),
+        "-U", user,
+        "-d", database,
+        "--csv",
+        "-A",
+        "-F", ",",
+        "-c", wrapped,
+    ]
+
+    env = dict(os.environ)
+    env["PGPASSWORD"] = password
+    env["PGCONNECT_TIMEOUT"] = "10"
+
+    start = datetime.now(timezone.utc)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        raise
+
+    elapsed_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+
+    if proc.returncode != 0:
+        stderr_text = stderr.decode("utf-8", errors="replace")
+        if any(sig in stderr_text for sig in (
+            "Connection refused",
+            "could not connect to server",
+            "no such host",
+            "connection reset",
+        )):
+            raise TeleportAuthExpired(stderr_text)
+        raise RuntimeError(f"psql failed (rc={proc.returncode}): {stderr_text}")
+
+    csv_text = stdout.decode("utf-8", errors="replace")
+    lines = csv_text.splitlines()
+    # --csv includes header row
+    row_count = max(0, len(lines) - 1)
+    truncated = row_count > max_rows
+    if truncated:
+        lines = lines[: max_rows + 1]
+        csv_text = "\n".join(lines)
+        row_count = max_rows
+
+    return PsqlResult(
+        csv=csv_text,
+        row_count=row_count,
+        elapsed_ms=elapsed_ms,
+        truncated=truncated,
+    )
