@@ -44,6 +44,7 @@ from zd_agent.tools.signoz_tools import (
     SignozSearchLogs,
     SignozSearchTraces,
 )
+from zd_agent.tools.feishu_tools import FeishuPush
 from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.subagent import RunSubagent
 from zd_agent.tools.zendesk_kg import ZendeskKgSearch
@@ -120,6 +121,9 @@ def create_tool_registry() -> ToolRegistry:
 
     # 数据库只读查询工具组（SaaS）
     registry.register(SqlQuery())
+
+    # 飞书通知工具（主动推送）
+    registry.register(FeishuPush())
 
     # Grafana 监控工具组（条件注册：仅当配置了 URL + API key）
     from zd_agent.config import get_config
