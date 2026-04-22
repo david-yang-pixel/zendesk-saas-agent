@@ -1,21 +1,38 @@
-"""归档工具：将工单处理结果保存到知识库"""
+"""归档工具：将工单分析结果追加到本地 zendesk-cli/工单记录/<id>.md
 
+SaaS 版：单 markdown 文件，按 skill 规范；支持首次写入和跟进模式追加。
+"""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from zd_agent.config import get_config
-from zd_agent.runtime.archive_meta import build_archive_meta
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
 
 
+def _records_dir() -> Path:
+    cfg = get_config()
+    return Path(cfg.resources.base_dir) / cfg.resources.ticket_records_dir
+
+
+def _ticket_file(ticket_id: str | int) -> Path:
+    return _records_dir() / f"{ticket_id}.md"
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class ArchiveTicket(Tool):
     name = "archive_ticket"
-    description = "将工单分析结果和解决方案归档到知识库（ai-docs/tickets/）"
+    description = (
+        "将本次工单分析结果和建议回复草稿追加到本地工单记录 "
+        "(<ticket_records_dir>/<ticket_id>.md)。首次写入创建新文件（带 frontmatter）；"
+        "已存在则追加一段跟进记录。工单记录供 agent 下次处理该工单时参考（跟进模式）。"
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -25,64 +42,130 @@ class ArchiveTicket(Tool):
             },
             "analysis": {
                 "type": "string",
-                "description": "分析过程和结论",
+                "description": "内部分析（根因 / 证据 / 结论）",
             },
             "solution": {
                 "type": "string",
-                "description": "解决方案摘要",
+                "description": "解决方案摘要 / 客户回复草稿要点",
+            },
+            "category": {
+                "type": "string",
+                "description": "工单分类（来自 classify_ticket），可选",
             },
         },
         "required": ["ticket_id", "analysis", "solution"],
     }
-
     group = "workflow"
     concurrency_safe = False
     is_write_operation = True
 
-    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        cfg = get_config()
-        archive_dir = Path(cfg.knowledge.archive_dir) / str(args["ticket_id"])
-        archive_dir.mkdir(parents=True, exist_ok=True)
+    async def execute(
+        self, args: dict[str, Any], session: AgentSession,
+    ) -> ToolResult:
+        ticket_id = args["ticket_id"]
+        analysis = args["analysis"]
+        solution = args["solution"]
+        category = args.get("category") or session.ticket_type or ""
+        now = _now_iso()
 
-        now = datetime.now(timezone.utc).isoformat()
+        path = _ticket_file(ticket_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        is_first = not path.exists()
 
         try:
-            # 写入分析文档
-            analysis_path = archive_dir / "analysis.md"
-            analysis_content = (
-                f"---\n"
-                f"ticket_id: {args['ticket_id']}\n"
-                f"archived_at: {now}\n"
-                f"---\n\n"
-                f"# 工单 #{args['ticket_id']} 分析\n\n"
-                f"{args['analysis']}\n"
-            )
-            analysis_path.write_text(analysis_content, encoding="utf-8")
-
-            # 写入回复内容
-            if session.reply_draft:
-                reply_path = archive_dir / "reply.md"
-                reply_path.write_text(session.reply_draft, encoding="utf-8")
-
-            meta = build_archive_meta(
-                session=session,
-                archived_at=now,
-                solution_summary=args["solution"],
-            )
-            meta_path = archive_dir / "meta.json"
-            meta_path.write_text(
-                json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-
-            session.archived = True
-
-            return ToolResult(
-                output=(
-                    f"已归档到 {archive_dir}/\n"
-                    f"  - analysis.md（分析过程）\n"
-                    f"  - reply.md（三段式 Internal Note）\n"
-                    f"  - meta.json（元数据）"
+            if is_first:
+                content = self._render_initial(
+                    ticket_id=ticket_id,
+                    analysis=analysis,
+                    solution=solution,
+                    category=category,
+                    reply_draft=session.reply_draft or "",
+                    now=now,
                 )
-            )
+                path.write_text(content, encoding="utf-8")
+                mode = "first_pass"
+            else:
+                followup = self._render_followup(
+                    analysis=analysis,
+                    solution=solution,
+                    reply_draft=session.reply_draft or "",
+                    now=now,
+                )
+                # Append with a blank line separator
+                with path.open("a", encoding="utf-8") as f:
+                    f.write("\n\n" + followup)
+                mode = "followup"
         except Exception as e:
-            return ToolResult(success=False, error=str(e))
+            return ToolResult(success=False, error=f"archive failed: {e}")
+
+        session.archived = True
+        return ToolResult(
+            output=f"已归档到 {path} (mode={mode})",
+        )
+
+    @staticmethod
+    def _render_initial(
+        *,
+        ticket_id: int | str,
+        analysis: str,
+        solution: str,
+        category: str,
+        reply_draft: str,
+        now: str,
+    ) -> str:
+        lines = [
+            "---",
+            f"ticket_id: {ticket_id}",
+            f"archived_at: {now}",
+            f"category: {category}",
+            "---",
+            "",
+            f"# 工单 #{ticket_id}",
+            "",
+            "## 内部分析",
+            "",
+            analysis.strip(),
+            "",
+            "## 解决方案 / 建议",
+            "",
+            solution.strip(),
+            "",
+        ]
+        if reply_draft:
+            lines += [
+                "## 客户回复草稿（Internal Note）",
+                "",
+                reply_draft.strip(),
+                "",
+            ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _render_followup(
+        *,
+        analysis: str,
+        solution: str,
+        reply_draft: str,
+        now: str,
+    ) -> str:
+        lines = [
+            f"## 跟进 {now}",
+            "",
+            "### 新增分析",
+            "",
+            analysis.strip(),
+            "",
+            "### 新增建议",
+            "",
+            solution.strip(),
+            "",
+        ]
+        if reply_draft:
+            lines += [
+                "### 客户回复草稿",
+                "",
+                reply_draft.strip(),
+                "",
+            ]
+        return "\n".join(lines).rstrip() + "\n"
