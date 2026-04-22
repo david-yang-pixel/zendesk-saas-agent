@@ -61,6 +61,7 @@ from zd_agent.tools.zendesk import (
     ZendeskSearch,
     ZendeskSearchArticles,
 )
+from zd_agent.tools.zd_kb_cli import ZdKbCliExec
 
 
 def create_tool_registry() -> ToolRegistry:
@@ -83,6 +84,7 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ZendeskKgSearch())
     registry.register(OfficialDocsSearch())
     registry.register(OfficialDocsRead())
+    registry.register(ZdKbCliExec())
 
     # 源码工具组
     registry.register(GitShow())
