@@ -28,6 +28,7 @@ _FORBIDDEN_KEYWORDS = [
     "EXECUTE",  # prepared statements may hide writes
     "CALL",     # stored procedures
     "VACUUM", "ANALYZE", "REINDEX",
+    "SET", "LOCK", "SHOW",
 ]
 
 

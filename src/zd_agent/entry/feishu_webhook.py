@@ -1,6 +1,7 @@
 """Feishu webhook handler: URL verification + event decryption + command dispatch."""
 from __future__ import annotations
 
+import hmac
 import json
 from typing import Any
 
@@ -64,7 +65,7 @@ async def handle_feishu_webhook(request: web.Request) -> web.Response:
 
     # 2. URL verification (both v1 and v2 handshake forms)
     if payload.get("type") == "url_verification":
-        if payload.get("token") != verify_token:
+        if not hmac.compare_digest(str(payload.get("token", "")), verify_token):
             logger.warning("feishu_url_verify_bad_token")
             return web.Response(status=401, text="bad token")
         return web.json_response({"challenge": payload.get("challenge", "")})
@@ -76,7 +77,7 @@ async def handle_feishu_webhook(request: web.Request) -> web.Response:
         event_token = header.get("token", "")
     if not event_token:
         event_token = payload.get("token", "")
-    if event_token != verify_token:
+    if not hmac.compare_digest(event_token, verify_token):
         logger.warning("feishu_event_bad_token")
         return web.Response(status=401, text="bad token")
 

@@ -113,6 +113,16 @@ class TicketRecordRead(Tool):
 
         records_dir = _records_dir()
         path = records_dir / f"{ticket_id}.md"
+        try:
+            path_resolved = path.resolve()
+            records_resolved = records_dir.resolve()
+            if not str(path_resolved).startswith(str(records_resolved)):
+                return ToolResult(
+                    success=False,
+                    error=f"invalid ticket_id (path escape)",
+                )
+        except Exception:
+            return ToolResult(success=False, error="path resolution failed")
         if not path.exists():
             return ToolResult(
                 success=False,

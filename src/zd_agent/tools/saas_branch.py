@@ -73,6 +73,16 @@ class SaasBranchSwitch(Tool):
 
         base_dir = Path(cfg.repos.base_dir)
         repo_dir = base_dir / canonical
+        try:
+            repo_dir_resolved = repo_dir.resolve()
+            base_dir_resolved = base_dir.resolve()
+            if not str(repo_dir_resolved).startswith(str(base_dir_resolved)):
+                return ToolResult(
+                    success=False,
+                    error=f"repo path outside base_dir: {canonical}",
+                )
+        except Exception:
+            return ToolResult(success=False, error="path resolution failed")
         if not repo_dir.exists() or not (repo_dir / ".git").exists():
             return ToolResult(
                 success=False,

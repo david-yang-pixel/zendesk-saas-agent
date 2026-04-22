@@ -160,10 +160,23 @@ def serve(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="只分析不发送回复"),
 ) -> None:
-    """启动轮询守护进程（自动监听新工单并处理）"""
-    from zd_agent.entry.scheduler import run_scheduler
+    """启动 SaaS Webhook 服务（接收 Zendesk + 飞书推送，自动处理工单）"""
+    from zd_agent.entry.saas_app import run_saas_app
+    from zd_agent.session.manager import SessionManager
+    from zd_agent.tools.registry import create_tool_registry
 
-    asyncio.run(run_scheduler(poll_interval=poll_interval, dry_run=dry_run))
+    cfg = get_config()
+    console.print("[bold green]Starting zd-agent SaaS service...[/bold green]")
+    console.print(f"  Webhook host: {cfg.webhook.listen_host}:{cfg.webhook.listen_port}")
+    console.print(f"  Zendesk path: {cfg.webhook.zendesk_path}")
+    console.print(f"  Feishu path: {cfg.webhook.feishu_path}")
+
+    registry = create_tool_registry()
+    manager = SessionManager(
+        registry=registry,
+        max_concurrent=cfg.agent.max_concurrent_sessions,
+    )
+    run_saas_app(manager)
 
 
 @app.command()
