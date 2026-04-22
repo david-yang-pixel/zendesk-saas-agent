@@ -84,6 +84,11 @@ class AgentSession:
     # Teleport 认证挂起标志
     waiting_for_auth: bool = False
 
+    # 跟进模式支持
+    mode: str = "first_pass"           # "first_pass" | "followup"
+    previous_record: str = ""          # 读取自 zendesk-cli/工单记录/<id>.md
+    new_comments_diff: str = ""        # 与上次记录时比新增的客户对话
+
     # 额外提示
     hint: str = ""
     dry_run: bool = False

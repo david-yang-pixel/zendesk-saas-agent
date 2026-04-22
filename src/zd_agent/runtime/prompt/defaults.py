@@ -64,3 +64,71 @@ def register_default_sections(builder: PromptBuilder) -> None:
             condition=lambda ctx: bool(ctx.customer_language),
         )
     )
+
+    # COMMON_PLAYBOOK — always loaded (after AGENTS, before strategy)
+    builder.register(
+        PromptSection(
+            name="common_playbook",
+            content=load_prompt("playbook/COMMON_PLAYBOOK.md"),
+            order=22,
+        )
+    )
+
+    # SQL_TEMPLATES — loaded for categories that commonly need DB queries
+    _SQL_CATEGORIES = {
+        "platform_issue", "knowledge_base", "workflow",
+        "billing", "refund", "permissions",
+    }
+    builder.register(
+        PromptSection(
+            name="sql_templates",
+            content=load_prompt("sql/SQL_TEMPLATES.md"),
+            order=26,
+            condition=lambda ctx: ctx.ticket_type in _SQL_CATEGORIES,
+        )
+    )
+
+    # REFUND_FLOW — only for refund tickets
+    builder.register(
+        PromptSection(
+            name="refund_flow",
+            content=load_prompt("refund/REFUND_FLOW.md"),
+            order=27,
+            condition=lambda ctx: ctx.ticket_type == "refund",
+        )
+    )
+
+    # REPLY_TEMPLATES — always loaded (reply drafting is on every ticket)
+    builder.register(
+        PromptSection(
+            name="reply_templates",
+            content=load_prompt("templates/REPLY_TEMPLATES.md"),
+            order=35,
+        )
+    )
+
+    # DEV_REPORT — loaded when category is code-bug / platform_issue / workflow
+    _DEV_REPORT_CATEGORIES = {"platform_issue", "workflow", "api"}
+    builder.register(
+        PromptSection(
+            name="dev_report",
+            content=load_prompt("templates/DEV_REPORT.md"),
+            order=36,
+            condition=lambda ctx: ctx.ticket_type in _DEV_REPORT_CATEGORIES,
+        )
+    )
+
+    # followup_context — when session.mode == "followup", inject previous record
+    builder.register(
+        PromptSection(
+            name="followup_context",
+            content=lambda ctx: (
+                f"## 跟进模式 · 历史分析记录\n\n"
+                f"本工单已有历史分析，**不要重复已有分析**。只处理客户新增对话。\n\n"
+                f"### 上次分析记录\n\n{ctx.previous_record}\n\n"
+                f"### 本次新增客户对话\n\n{ctx.new_comments_diff or '(无)'}"
+            ),
+            order=15,  # right after SOUL, before AGENTS
+            condition=lambda ctx: ctx.mode == "followup" and bool(ctx.previous_record),
+        )
+    )
