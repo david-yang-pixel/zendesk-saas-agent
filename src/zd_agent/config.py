@@ -257,9 +257,13 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
 
     # Resolve resources.base_dir and derive repos.base_dir from resources
     cfg.resources.base_dir = _resolve(cfg.resources.base_dir)
-    cfg.repos.base_dir = str(
-        Path(cfg.resources.base_dir) / cfg.resources.saas_codebase_dir
-    )
+    # Only derive from resources when not explicitly set
+    if not cfg.repos.base_dir:
+        cfg.repos.base_dir = str(
+            Path(cfg.resources.base_dir) / cfg.resources.saas_codebase_dir
+        )
+    else:
+        cfg.repos.base_dir = _resolve(cfg.repos.base_dir)
     cfg.knowledge.docs_dir = _resolve(cfg.knowledge.docs_dir)
     cfg.knowledge.archive_dir = _resolve(cfg.knowledge.archive_dir)
 
@@ -280,8 +284,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.llm.model = env.zd_model
     if env.openai_base_url is not None:
         cfg.llm.base_url = env.openai_base_url
-    if env.zd_webhook_signing_secret is not None:
-        cfg.webhook.signing_secret = env.zd_webhook_signing_secret
     # Postgres password
     if env.pg_password:
         cfg.postgres.password = env.pg_password
@@ -302,9 +304,12 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.feishu.encrypt_key = env.feishu_encrypt_key
     if env.feishu_bot_chat_id:
         cfg.feishu.default_chat_id = env.feishu_bot_chat_id
-    # Zendesk webhook
+    # Zendesk webhook secret (ZENDESK_WEBHOOK_SECRET is primary; ZD_WEBHOOK_SIGNING_SECRET
+    # kept as legacy fallback for pre-SaaS deployments)
     if env.zendesk_webhook_secret:
         cfg.webhook.signing_secret = env.zendesk_webhook_secret
+    elif env.zd_webhook_signing_secret is not None:
+        cfg.webhook.signing_secret = env.zd_webhook_signing_secret
     # Teleport
     if env.teleport_user:
         cfg.teleport.user = env.teleport_user
