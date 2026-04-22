@@ -37,6 +37,13 @@ from zd_agent.tools.sandbox_tools import (
     SandboxWrite,
 )
 from zd_agent.tools.script_runner import RunScript, SandboxExec
+from zd_agent.tools.signoz_tools import (
+    SignozGetFieldKeys,
+    SignozGetFieldValues,
+    SignozListServices,
+    SignozSearchLogs,
+    SignozSearchTraces,
+)
 from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.subagent import RunSubagent
 from zd_agent.tools.zendesk_kg import ZendeskKgSearch
@@ -121,5 +128,14 @@ def create_tool_registry() -> ToolRegistry:
         registry.register(GrafanaListDashboards())
         registry.register(GrafanaGetDashboard())
         registry.register(GrafanaQueryPrometheus())
+
+    # SigNoz 日志/追踪工具组（条件注册：仅当配置了 URL + API key）
+    _scfg = get_config().signoz
+    if _scfg.url and _scfg.api_key:
+        registry.register(SignozSearchLogs())
+        registry.register(SignozSearchTraces())
+        registry.register(SignozListServices())
+        registry.register(SignozGetFieldKeys())
+        registry.register(SignozGetFieldValues())
 
     return registry
