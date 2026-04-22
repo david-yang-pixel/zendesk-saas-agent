@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -58,12 +58,17 @@ class ZendeskConfig(BaseModel):
     api_token: str = ""
     poll_interval_seconds: int = 60
     poll_query: str = "status:open status:new"
-    mention_trigger: str = "@support-agent"
+    search_query: str = "status:new tags:saas"
+    mention_trigger: str = "@saas-bot"
     mention_poll_interval_seconds: int = 60
 
 
 class WebhookConfig(BaseModel):
-    signing_secret: str | None = None
+    signing_secret: str | None = None  # keep for backward compat
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 8080
+    zendesk_path: str = "/webhook/zendesk"
+    feishu_path: str = "/webhook/feishu"
 
 
 class RepoEntry(BaseModel):
@@ -76,6 +81,17 @@ class ReposConfig(BaseModel):
     auto_fetch: bool = True
     fetch_cron: str = "0 3 * * *"
     repositories: list[RepoEntry] = Field(default_factory=list)
+    aliases: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("repositories", mode="before")
+    @classmethod
+    def _coerce_str_to_repo_entry(cls, v):
+        if isinstance(v, list):
+            return [
+                {"name": item, "url": ""} if isinstance(item, str) else item
+                for item in v
+            ]
+        return v
 
 
 class SandboxConfig(BaseModel):
@@ -95,6 +111,71 @@ class KnowledgeConfig(BaseModel):
     archive_dir: str = "./ai-docs/tickets"
 
 
+class ResourcesConfig(BaseModel):
+    base_dir: str = "/opt/zd-agent/resources"
+    saas_codebase_dir: str = "saas源代码"
+    knowledge_base_dir: str = "saas版知识库"
+    ticket_records_dir: str = "zendesk-cli/工单记录"
+    attachments_dir: str = "工单附件"
+    state_dir: str = ".state"
+
+
+class TriggerDeciderConfig(BaseModel):
+    llm_model: str = "gpt-5.4-mini"
+    silence_minutes_default: int = 3
+    silence_extend_to_minutes: int = 5
+    rapid_burst_window_seconds: int = 30
+    rapid_burst_threshold: int = 2
+    insufficient_timeout_minutes: int = 20
+    abandoned_hours: int = 6
+    greeting_only_alert_minutes: int = 30
+
+
+class SilenceWakerConfig(BaseModel):
+    scan_interval_seconds: int = 30
+
+
+class PostgresConfig(BaseModel):
+    host: str = "localhost"
+    port: int = 56061
+    user: str = "pro_ops_teleport_read"
+    password: str = ""  # from env PG_PASSWORD
+    db_prod: str = "langgenius"
+    db_billing: str = "billing"
+    db_plugin: str = "dify_plugin_daemon"
+    query_timeout_seconds: int = 30
+    max_rows: int = 1000
+
+
+class GrafanaConfig(BaseModel):
+    url: str = ""
+    api_key: str = ""  # from env GRAFANA_API_KEY
+    prom_datasource_id: int = 1
+
+
+class SignozConfig(BaseModel):
+    url: str = ""
+    api_key: str = ""  # from env SIGNOZ_API_KEY
+
+
+class FeishuConfig(BaseModel):
+    app_id: str = ""
+    app_secret: str = ""
+    verify_token: str = ""
+    encrypt_key: str = ""
+    default_chat_id: str = ""
+    daily_summary_time: str = "09:00"
+    daily_summary_timezone: str = "Asia/Shanghai"
+
+
+class TeleportConfig(BaseModel):
+    proxy: str = ""
+    user: str = ""  # from env TELEPORT_USER
+    auth_home: str = "/opt/zd-agent/.tsh"
+    warn_threshold_minutes: int = 30
+    check_interval_seconds: int = 300
+
+
 class AppConfig(BaseModel):
     """应用完整配置"""
 
@@ -107,6 +188,14 @@ class AppConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     helm_watchdog: HelmWatchdogConfig = Field(default_factory=HelmWatchdogConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
+    trigger_decider: TriggerDeciderConfig = Field(default_factory=TriggerDeciderConfig)
+    silence_waker: SilenceWakerConfig = Field(default_factory=SilenceWakerConfig)
+    postgres: PostgresConfig = Field(default_factory=PostgresConfig)
+    grafana: GrafanaConfig = Field(default_factory=GrafanaConfig)
+    signoz: SignozConfig = Field(default_factory=SignozConfig)
+    feishu: FeishuConfig = Field(default_factory=FeishuConfig)
+    teleport: TeleportConfig = Field(default_factory=TeleportConfig)
 
 
 class EnvSettings(BaseSettings):
@@ -130,6 +219,17 @@ class EnvSettings(BaseSettings):
     zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
     hc_client_url: str = ""  # zendesk-hc-client API 地址（如 http://localhost:8000）
     hc_client_api_key: str = ""  # 对应 hc-client 的 AGENT_INNER_API_KEY
+    # SaaS-specific env vars
+    pg_password: str = ""
+    grafana_api_key: str = ""
+    signoz_api_key: str = ""
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_verify_token: str = ""
+    feishu_encrypt_key: str = ""
+    feishu_bot_chat_id: str = ""
+    zendesk_webhook_secret: str = ""
+    teleport_user: str = ""
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
@@ -155,7 +255,11 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
             pp = (config_dir / pp).resolve()
         return str(pp)
 
-    cfg.repos.base_dir = _resolve(cfg.repos.base_dir)
+    # Resolve resources.base_dir and derive repos.base_dir from resources
+    cfg.resources.base_dir = _resolve(cfg.resources.base_dir)
+    cfg.repos.base_dir = str(
+        Path(cfg.resources.base_dir) / cfg.resources.saas_codebase_dir
+    )
     cfg.knowledge.docs_dir = _resolve(cfg.knowledge.docs_dir)
     cfg.knowledge.archive_dir = _resolve(cfg.knowledge.archive_dir)
 
@@ -178,6 +282,32 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.llm.base_url = env.openai_base_url
     if env.zd_webhook_signing_secret is not None:
         cfg.webhook.signing_secret = env.zd_webhook_signing_secret
+    # Postgres password
+    if env.pg_password:
+        cfg.postgres.password = env.pg_password
+    # Grafana
+    if env.grafana_api_key:
+        cfg.grafana.api_key = env.grafana_api_key
+    # SigNoz
+    if env.signoz_api_key:
+        cfg.signoz.api_key = env.signoz_api_key
+    # Feishu
+    if env.feishu_app_id:
+        cfg.feishu.app_id = env.feishu_app_id
+    if env.feishu_app_secret:
+        cfg.feishu.app_secret = env.feishu_app_secret
+    if env.feishu_verify_token:
+        cfg.feishu.verify_token = env.feishu_verify_token
+    if env.feishu_encrypt_key:
+        cfg.feishu.encrypt_key = env.feishu_encrypt_key
+    if env.feishu_bot_chat_id:
+        cfg.feishu.default_chat_id = env.feishu_bot_chat_id
+    # Zendesk webhook
+    if env.zendesk_webhook_secret:
+        cfg.webhook.signing_secret = env.zendesk_webhook_secret
+    # Teleport
+    if env.teleport_user:
+        cfg.teleport.user = env.teleport_user
 
     return cfg
 
