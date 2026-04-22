@@ -32,10 +32,9 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个专注于特定分析任务的子 Agent�
 SUBAGENT_DEFAULT_TOOLS = [
     "git_show", "git_grep", "git_log", "git_diff",
     "list_repos", "list_repo_tags",
-    "sandbox_create_worktree", "sandbox_list", "sandbox_search", "sandbox_read",
+    "sandbox_list", "sandbox_search", "sandbox_read",
     "knowledge_search", "knowledge_read",
     "official_docs_search", "official_docs_read",
-    "helm_list_versions", "helm_get_version_details",
 ]
 
 SUBAGENT_GUARDRAILS = GuardrailsConfig(

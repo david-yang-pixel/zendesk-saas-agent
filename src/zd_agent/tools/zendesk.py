@@ -303,8 +303,7 @@ def _format_source_recommendations(custom_fields: dict[str, str], ticket: dict[s
         "local_knowledge": "knowledge_search / knowledge_read",
         "official_docs_enterprise": "official_docs_search(source=official_docs_enterprise) / official_docs_read",
         "official_docs_community": "official_docs_search(source=official_docs_community) / official_docs_read",
-        "source_code": "list_repos / list_repo_tags / sandbox_create_worktree / sandbox_search / sandbox_read",
-        "helm_watchdog": "helm_get_version_details / helm_get_values / helm_list_versions",
+        "source_code": "list_repos / list_repo_tags / sandbox_search / sandbox_read",
         "attachments": "zendesk_get_attachments + sandbox_read",
     }
 

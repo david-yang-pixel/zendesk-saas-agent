@@ -20,17 +20,8 @@ from zd_agent.tools.git_source import (
 )
 from zd_agent.tools.github_pr import GithubGetPr, GithubSearchPrs
 from zd_agent.tools.knowledge import KnowledgeRead, KnowledgeSearch
-from zd_agent.tools.helm_watchdog import (
-    HelmGetLatestVersion,
-    HelmGetValues,
-    HelmGetVersionDetails,
-    HelmListImages,
-    HelmListVersions,
-    HelmValidateImages,
-)
 from zd_agent.tools.official_docs import OfficialDocsRead, OfficialDocsSearch
 from zd_agent.tools.sandbox_tools import (
-    SandboxCreateWorktree,
     SandboxList,
     SandboxRead,
     SandboxSearch,
@@ -96,20 +87,11 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(GithubSearchPrs())
     registry.register(GithubGetPr())
 
-    # Helm Watchdog REST API 工具组
-    registry.register(HelmListVersions())
-    registry.register(HelmGetLatestVersion())
-    registry.register(HelmGetVersionDetails())
-    registry.register(HelmListImages())
-    registry.register(HelmValidateImages())
-    registry.register(HelmGetValues())
-
     # 环境工具组
     registry.register(RunScript())
     registry.register(SandboxExec())
 
     # Sandbox 工具组
-    registry.register(SandboxCreateWorktree())
     registry.register(SandboxList())
     registry.register(SandboxSearch())
     registry.register(SandboxWrite())

@@ -101,11 +101,6 @@ class SandboxConfig(BaseModel):
     cleanup_on_failure: bool = False
 
 
-class HelmWatchdogConfig(BaseModel):
-    url: str = "https://helm-watchdog.dify.ai"
-    timeout: int = 30
-
-
 class KnowledgeConfig(BaseModel):
     docs_dir: str = "./ai-docs"
     archive_dir: str = "./ai-docs/tickets"
@@ -186,7 +181,6 @@ class AppConfig(BaseModel):
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     repos: ReposConfig = Field(default_factory=ReposConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
-    helm_watchdog: HelmWatchdogConfig = Field(default_factory=HelmWatchdogConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     trigger_decider: TriggerDeciderConfig = Field(default_factory=TriggerDeciderConfig)

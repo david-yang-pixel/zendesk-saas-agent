@@ -71,7 +71,6 @@ def suggest_sources(
             "安装", "部署", "升级", "镜像", "qdrant", "redis",
         ],
     ):
-        _bump(scores, reasons, "helm_watchdog", 80, "部署/版本问题需要结合 Helm Watchdog 做版本映射")
         _bump(scores, reasons, "official_docs_enterprise", 78, "部署类问题通常需要对照部署文档")
         _bump(scores, reasons, "official_docs_community", 74, "社区部署说明可作为交叉参考")
 
