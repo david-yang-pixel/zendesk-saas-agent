@@ -46,6 +46,7 @@ from zd_agent.tools.signoz_tools import (
 )
 from zd_agent.tools.feishu_tools import FeishuPush
 from zd_agent.tools.sql_query import SqlQuery
+from zd_agent.tools.ticket_record import TicketRecordRead, TicketRecordSearch
 from zd_agent.tools.subagent import RunSubagent
 from zd_agent.tools.subagent_parallel import RunSubagentsParallel
 from zd_agent.tools.zendesk_kg import ZendeskKgSearch
@@ -123,6 +124,10 @@ def create_tool_registry() -> ToolRegistry:
 
     # 数据库只读查询工具组（SaaS）
     registry.register(SqlQuery())
+
+    # 历史工单记录检索工具组（SaaS 知识复用）
+    registry.register(TicketRecordSearch())
+    registry.register(TicketRecordRead())
 
     # 飞书通知工具（主动推送）
     registry.register(FeishuPush())
