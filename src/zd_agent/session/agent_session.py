@@ -81,6 +81,9 @@ class AgentSession:
     archived: bool = False
     error_message: str = ""
 
+    # Teleport 认证挂起标志
+    waiting_for_auth: bool = False
+
     # 额外提示
     hint: str = ""
     dry_run: bool = False
@@ -102,3 +105,12 @@ class AgentSession:
             "error": error,
             "result_preview": result[:500],
         })
+
+    def mark_waiting_for_auth(self) -> None:
+        """Mark this session as waiting for Teleport auth renewal.
+
+        SqlQuery sets this when psql connection fails with connection-refused /
+        could-not-connect, indicating the tsh proxy-db is down or cert expired.
+        Upstream scheduler can use this to suspend and retry later.
+        """
+        self.waiting_for_auth = True
