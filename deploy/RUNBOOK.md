@@ -63,7 +63,7 @@ chmod 600 /opt/zd-agent/.env
 ```
 
 Required variables (see `.env.example` for full list):
-- ZENDESK_SUBDOMAIN / ZENDESK_EMAIL (saas-bot@dify.ai) / ZENDESK_API_TOKEN / ZENDESK_WEBHOOK_SECRET
+- ZENDESK_SUBDOMAIN / ZENDESK_EMAIL (yonggang@dify.ai，即运维人本人) / ZENDESK_API_TOKEN / ZENDESK_WEBHOOK_SECRET
 - OPENAI_API_KEY
 - FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
 - GRAFANA_API_KEY / SIGNOZ_API_KEY
@@ -73,10 +73,14 @@ Required variables (see `.env.example` for full list):
 **可选**：
 - `PG_PASSWORD` — 默认走 Teleport 证书认证不需要；仅在直连 DB 或双重认证时填
 
-### 6. Create Zendesk Agent account + webhook
+### 6. Configure Zendesk webhook + Trigger
 
-1. Register `saas-bot@dify.ai` in Zendesk (role: Agent, not End user)
-2. Generate API token from Admin Center → Apps → APIs → Zendesk API tokens
+本项目复用运维人本人的 Zendesk 账号（`yonggang@dify.ai`），不需要单独注册 bot 账号。
+注意：agent 以你本人身份调 API，所有 Internal Note 落款都是你本人。
+
+1. 用**管理员账号**登录 Zendesk，生成 API token：Admin Center → Apps → APIs → Zendesk API tokens → Add
+   - Token 与谁生成无关，最终身份取决于 `.env` 里 `ZENDESK_EMAIL`
+2. 确认 `yonggang@dify.ai` 账号的 **Role = Agent**（End user 不能写 Internal Note）
 3. Create webhook:
    - Admin Center → Apps and integrations → Webhooks → Create webhook
    - Endpoint: `https://zd-agent.smlershou.top/webhook/zendesk`

@@ -158,8 +158,8 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 不要瞎猜根因。Internal Note 列出"客户需补充"清单；推送 `ticket_escalate` 提醒人工。
 参考 `prompts/templates/REPLY_TEMPLATES.md` 的 "Missing Critical Info" 模板。
 
-### @saas-bot mention（trigger_type=mention）
-Support Engineer 在 Zendesk 内部备注 @saas-bot 时触发。
+### @mention 触发（trigger_type=mention）
+Support Engineer 在 Zendesk 内部备注 @ 运维账号（配置里的 `mention_trigger`，当前为 `@yonggang`）时触发。
 聚焦 hint 中的具体问题，不跑完整 Step 0-22。
 
 ### 跟进模式（session.mode=followup）
