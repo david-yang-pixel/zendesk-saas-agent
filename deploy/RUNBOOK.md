@@ -67,9 +67,11 @@ Required variables (see `.env.example` for full list):
 - OPENAI_API_KEY
 - FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
 - GRAFANA_API_KEY / SIGNOZ_API_KEY
-- PG_PASSWORD
 - GITHUB_TOKEN
 - TELEPORT_USER
+
+**可选**：
+- `PG_PASSWORD` — 默认走 Teleport 证书认证不需要；仅在直连 DB 或双重认证时填
 
 ### 6. Create Zendesk Agent account + webhook
 
