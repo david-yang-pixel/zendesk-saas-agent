@@ -1,0 +1,20 @@
+[Unit]
+Description=Teleport proxy db for zd-agent (billing, localhost:56062)
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=30
+User=zd-agent
+
+Environment="TELEPORT_HOME=/opt/zd-agent/.tsh"
+
+ExecStart=/usr/local/bin/tsh proxy db --tunnel \
+    --db-user=pro_ops_teleport_read \
+    --db-name=billing \
+    --port=56062 \
+    lg-billing-01
+
+[Install]
+WantedBy=multi-user.target

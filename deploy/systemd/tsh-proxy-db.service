@@ -11,12 +11,13 @@ User=zd-agent
 # TELEPORT_HOME points to the machine's tsh profile directory
 Environment="TELEPORT_HOME=/opt/zd-agent/.tsh"
 
-# Open local proxy on 56061 for the production PostgreSQL.
-# Replace 'dify-prod' with your actual Teleport DB resource name.
-ExecStart=/usr/local/bin/tsh proxy db \
+# Teleport tsh proxy db with --tunnel mode (内部 mTLS，psql 本地连接无需证书)
+# DB name 必须与 config.yaml postgres.db_prod 一致（langgenius）
+ExecStart=/usr/local/bin/tsh proxy db --tunnel \
     --db-user=pro_ops_teleport_read \
+    --db-name=langgenius \
     --port=56061 \
-    dify-prod
+    lg-pgsql-read-01
 
 # When tsh exits (typically because cert expired), watchdog re-runs headless login.
 # The proxy process should restart automatically (Restart=always above).
