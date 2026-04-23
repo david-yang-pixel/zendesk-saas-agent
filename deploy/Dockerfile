@@ -30,13 +30,19 @@ ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     UV_INDEX_STRATEGY=unsafe-best-match
 
 # Copy dependency manifests first for better Docker layer caching
+# --no-install-project: 只装依赖，不构建本项目（src 还没 COPY）
+# 不使用 --frozen：uv.lock 里 zendesk-cli 源可能是旧 SSH URL
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --no-dev --no-install-project
 
-# Copy source + scripts + config
+# Copy source + scripts + config + README（hatchling 需要）
 COPY src ./src
 COPY scripts ./scripts
 COPY config.yaml ./config.yaml
+COPY README.md ./README.md
+
+# 再装本项目（依赖已 cache，只加项目本身）
+RUN uv sync --no-dev
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
