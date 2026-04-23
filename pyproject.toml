@@ -23,7 +23,8 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-zendesk-cli = { git = "ssh://git@github.com/ZhouhaoJiang/zendesk-cli.git" }
+# 用 HTTPS（公开仓库，容器内无需 SSH key）
+zendesk-cli = { git = "https://github.com/ZhouhaoJiang/zendesk-cli.git" }
 
 [project.scripts]
 zd-agent = "zd_agent.entry.cli:app"
