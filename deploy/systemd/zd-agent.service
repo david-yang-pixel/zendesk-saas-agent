@@ -10,12 +10,14 @@ Restart=always
 RestartSec=30
 
 ExecStartPre=-/usr/bin/docker rm -f zd-agent
+# 资源限制：2G 服务器场景 — 800m 硬限 + swap 兜底到 1500m，cpus 0.8
+# 如服务器升级到 4G+，可把 --memory 改回 1500m 并移除 --memory-swap
 ExecStart=/usr/bin/docker run --rm --name zd-agent \
     --network host \
     -v /opt/zd-agent/resources:/resources \
     -v /opt/zd-agent/.env:/app/.env:ro \
     -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
-    --memory=1500m --cpus=1.0 \
+    --memory=800m --memory-swap=1500m --cpus=0.8 \
     --log-driver=journald \
     zd-agent:latest
 

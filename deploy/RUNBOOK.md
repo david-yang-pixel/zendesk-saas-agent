@@ -2,9 +2,22 @@
 
 ## One-time Setup (~2 hours)
 
-### 1. Upgrade server resources
+### 1. 服务器资源预算
 
-Baidu Cloud BCC Console → resize instance to **4G memory** (2C/4G). Current 1.8G is too tight.
+本项目支持两种内存档位：
+
+**🟢 推荐（4G）**：Baidu Cloud BCC Console → resize 到 **4G**（2C/4G）
+- `config.yaml`: `max_concurrent_sessions: 5`, `max_tokens_per_session: 1050000`
+- `zd-agent.service`: `--memory=1500m --cpus=1.0`（去掉 `--memory-swap`）
+- 可同时跑 5 个工单分析会话
+
+**🟡 最低（2G，当前服务器档位）** — 默认配置已按此优化：
+- `config.yaml`: `max_concurrent_sessions: 2`, `max_tokens_per_session: 500000`, `compaction_threshold: 0.65`
+- `zd-agent.service`: `--memory=800m --memory-swap=1500m --cpus=0.8`
+- swap 作为 burst 兜底；2 个并发会话稳定运行
+- **务必确认 swap 已启用**（`free -h` 看 Swap 行应 ≥ 1.5G）
+  - 如没 swap：`fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab`
+- 高峰期建议监控：`docker stats zd-agent` 看 MEM % 是否长期 > 90%
 
 ### 2. Clone repo on server
 

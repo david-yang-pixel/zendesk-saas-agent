@@ -1,10 +1,11 @@
 agent:
-  max_concurrent_sessions: 5
+  # 2G 服务器适配：并发 2 + token 上限 500K + 更激进压缩，避免 OOM
+  max_concurrent_sessions: 2
   guardrails:
     max_rounds: 30
     timeout_seconds: 600
-    max_tokens_per_session: 1050000
-    compaction_threshold: 0.75
+    max_tokens_per_session: 500000
+    compaction_threshold: 0.65
 
 llm:
   provider: openai
