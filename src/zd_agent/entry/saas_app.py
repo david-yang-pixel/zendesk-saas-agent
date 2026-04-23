@@ -9,6 +9,12 @@ from aiohttp import web
 
 from zd_agent.config import get_config
 from zd_agent.entry.silence_waker import run_silence_waker
+from zd_agent.entry.teleport_auth_web import (
+    TokenStore,
+    handle_teleport_auth_get,
+    handle_teleport_auth_issue,
+    handle_teleport_auth_post,
+)
 from zd_agent.entry.webhook_dedup import WebhookDedup
 from zd_agent.entry.zendesk_webhook import handle_zendesk_webhook
 from zd_agent.log import get_logger
@@ -60,16 +66,23 @@ def create_saas_app(manager: Any) -> web.Application:
         state_dir / "processed_webhooks.json",
         max_size=10000,
     )
+    teleport_auth_token_store = TokenStore()
 
     app = web.Application()
     app["config"] = cfg
     app["trigger_queue"] = trigger_queue
     app["ticket_state"] = state
     app["webhook_dedup"] = webhook_dedup
+    app["teleport_auth_token_store"] = teleport_auth_token_store
     app["session_manager"] = manager
 
     app.router.add_post(cfg.webhook.zendesk_path, handle_zendesk_webhook)
     app.router.add_get("/healthz", _healthz)
+    # Teleport 认证中转页：watchdog 生成 token 后推飞书，用户点开这个 URL
+    app.router.add_get("/teleport-auth", handle_teleport_auth_get)
+    app.router.add_post("/teleport-auth", handle_teleport_auth_post)
+    # Internal: watchdog 调用 mint token（nginx 不暴露 /internal/*）
+    app.router.add_post("/internal/teleport-auth/issue", handle_teleport_auth_issue)
 
     async def _on_startup(_app: web.Application) -> None:
         _app["silence_task"] = asyncio.create_task(

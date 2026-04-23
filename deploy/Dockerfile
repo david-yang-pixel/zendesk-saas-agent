@@ -8,7 +8,8 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
         sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
     fi
 
-# System deps: psql client (for sql_query), git (for saas_branch_switch), curl+ca (general)
+# System deps: psql client (sql_query), git (saas_branch_switch), curl+ca (general)
+# gcc + python3-dev 有些平台 pexpect 装需要 — slim 镜像已含构建基础，不额外装
 RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     git \

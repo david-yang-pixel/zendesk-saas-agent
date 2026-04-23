@@ -199,7 +199,11 @@ class AppConfig(BaseModel):
 class EnvSettings(BaseSettings):
     """环境变量，优先级高于 YAML 配置"""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",  # 允许 .env 里有 EnvSettings 没定义的变量（如 INTERNAL_SHARED_SECRET 由 os.environ 消费）
+    )
 
     openai_api_key: str = ""
     openai_base_url: str | None = None

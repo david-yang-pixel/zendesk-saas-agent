@@ -1,16 +1,27 @@
 [Unit]
 Description=Teleport auth watchdog (Feishu push on cert expiry)
-After=network-online.target
+After=network-online.target zd-agent.service
+Requires=zd-agent.service
 
 [Service]
 Type=simple
 Restart=always
-RestartSec=30
-User=zd-agent
+RestartSec=60
 
-Environment="TELEPORT_HOME=/opt/zd-agent/.tsh"
+# 通过 Docker 跑：复用 zd-agent 镜像的 Python 3.12 + 依赖
+ExecStartPre=-/usr/bin/docker rm -f tsh-auth-watchdog
+ExecStart=/usr/bin/docker run --rm --name tsh-auth-watchdog \
+    --network host \
+    -v /opt/zd-agent/.env:/app/.env:ro \
+    -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
+    -v /opt/zd-agent/.tsh:/opt/zd-agent/.tsh \
+    -v /usr/local/bin/tsh:/usr/local/bin/tsh:ro \
+    --memory=128m --cpus=0.2 \
+    --log-driver=journald \
+    zd-agent:latest \
+    uv run python /app/scripts/auth-watchdog.py
 
-ExecStart=/opt/zd-agent/code/.venv/bin/python /opt/zd-agent/code/scripts/auth-watchdog.py
+ExecStop=/usr/bin/docker stop -t 10 tsh-auth-watchdog
 
 [Install]
 WantedBy=multi-user.target
