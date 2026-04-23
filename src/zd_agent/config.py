@@ -131,6 +131,8 @@ class SilenceWakerConfig(BaseModel):
 
 
 class PostgresConfig(BaseModel):
+    # Teleport tsh proxy db 需要每个 (db-name) 一个独立端口（--db-name 在 proxy 启动时 固定）。
+    # host + port 保留做向后兼容默认；port_prod/port_billing/port_plugin 是新的真实映射。
     host: str = "localhost"
     port: int = 56061
     user: str = "pro_ops_teleport_read"
@@ -138,6 +140,10 @@ class PostgresConfig(BaseModel):
     db_prod: str = "langgenius"
     db_billing: str = "billing"
     db_plugin: str = "dify_plugin_daemon"
+    # 每个 Teleport proxy db 绑定到一个独立 port（--db-name 固定）
+    port_prod: int = 56061
+    port_billing: int = 56062
+    port_plugin: int = 56063
     query_timeout_seconds: int = 30
     max_rows: int = 1000
 

@@ -1,19 +1,15 @@
 agent:
-  # 2G 服务器适配：并发 2 + token 上限 500K + 更激进压缩，避免 OOM
   max_concurrent_sessions: 2
   guardrails:
     max_rounds: 30
     timeout_seconds: 600
     max_tokens_per_session: 500000
     compaction_threshold: 0.65
-
 llm:
   provider: openai
   model: gpt-5.4
   temperature: 0.2
   max_tokens: 0
-
-# SaaS resource directory (holds source code, knowledge base, ticket records)
 resources:
   base_dir: /opt/zd-agent/resources
   saas_codebase_dir: saas源代码
@@ -21,26 +17,20 @@ resources:
   ticket_records_dir: zendesk-cli/工单记录
   attachments_dir: 工单附件
   state_dir: .state
-
 zendesk:
-  subdomain: ""  # from env
-  search_query: "status:new tags:saas"
-  poll_interval_seconds: 300  # 5 min bottom-line poll (webhook is primary)
-  # @mention 触发词：必须和 Zendesk 里该账号的 username（@后的 handle）完全一致
-  # 部署后若无法触发，用 `zd user me` 查确切 username 再改
-  mention_trigger: "@yonggang"
+  subdomain: ''
+  search_query: status:new tags:saas
+  poll_interval_seconds: 300
+  mention_trigger: '@yonggang'
   mention_poll_interval_seconds: 60
-
 webhook:
   listen_host: 127.0.0.1
   listen_port: 8080
   zendesk_path: /webhook/zendesk
-
 feishu:
-  webhook_url: ""  # from env FEISHU_WEBHOOK_URL
-  daily_summary_time: "09:00"
-  daily_summary_timezone: "Asia/Shanghai"
-
+  webhook_url: ''
+  daily_summary_time: 09:00
+  daily_summary_timezone: Asia/Shanghai
 trigger_decider:
   llm_model: gpt-5.4-mini
   silence_minutes_default: 3
@@ -50,10 +40,8 @@ trigger_decider:
   insufficient_timeout_minutes: 20
   abandoned_hours: 6
   greeting_only_alert_minutes: 30
-
 silence_waker:
   scan_interval_seconds: 30
-
 postgres:
   host: localhost
   port: 56061
@@ -63,29 +51,28 @@ postgres:
   db_plugin: dify_plugin_daemon
   query_timeout_seconds: 30
   max_rows: 1000
-
+  port_prod: 56061
+  port_billing: 56062
+  port_plugin: 56063
 grafana:
   url: https://grafana.ops.dify.dev
   prom_datasource_id: 1
-
 signoz:
   url: https://dify.us2.signoz.cloud
-
 teleport:
   proxy: teleport.dify.dev
-  user: ""  # from env
+  user: ''
   auth_home: /opt/zd-agent/.tsh
   warn_threshold_minutes: 30
   check_interval_seconds: 300
-
 repos:
-  base_dir: ""  # resolved from resources.base_dir + resources.saas_codebase_dir
+  base_dir: ''
   repositories:
-    - dify
-    - dify-billing
-    - dify-marketplace-backend
-    - dify-marketplace-frontend
-    - saas-deploy
+  - dify
+  - dify-billing
+  - dify-marketplace-backend
+  - dify-marketplace-frontend
+  - saas-deploy
   aliases:
     d: dify
     main: dify

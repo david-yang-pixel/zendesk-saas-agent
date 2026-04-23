@@ -115,6 +115,8 @@ async def run_psql(
     env = dict(os.environ)
     env["PGPASSWORD"] = password
     env["PGCONNECT_TIMEOUT"] = "10"
+    # Teleport `tsh proxy db --tunnel` 已在内部做 mTLS，psql 本地连接无需 SSL
+    env.setdefault("PGSSLMODE", "disable")
 
     start = datetime.now(timezone.utc)
     try:

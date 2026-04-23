@@ -24,6 +24,13 @@ _DB_KEY_TO_ATTR = {
     "plugin": "db_plugin",
 }
 
+# 每个 database 对应一个独立的 Teleport proxy 端口（--db-name 在 proxy 启动时固定）
+_DB_KEY_TO_PORT_ATTR = {
+    "prod": "port_prod",
+    "billing": "port_billing",
+    "plugin": "port_plugin",
+}
+
 
 class SqlQuery(Tool):
     name = "sql_query"
@@ -68,6 +75,10 @@ class SqlQuery(Tool):
 
         cfg = get_config()
         db_name = getattr(cfg.postgres, _DB_KEY_TO_ATTR[db_key])
+        # 每个 database 走独立 Teleport proxy 端口
+        db_port = getattr(
+            cfg.postgres, _DB_KEY_TO_PORT_ATTR[db_key], cfg.postgres.port,
+        )
         audit_path = (
             Path(cfg.resources.base_dir)
             / cfg.resources.state_dir
@@ -80,7 +91,7 @@ class SqlQuery(Tool):
         try:
             result = await run_psql(
                 host=cfg.postgres.host,
-                port=cfg.postgres.port,
+                port=db_port,
                 user=cfg.postgres.user,
                 password=cfg.postgres.password,
                 database=db_name,
