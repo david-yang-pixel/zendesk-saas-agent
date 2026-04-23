@@ -1,15 +1,18 @@
-"""Feishu client: send interactive cards + verify/decrypt webhook payloads."""
+"""Feishu custom bot (incoming webhook) client.
+
+Sends interactive cards via HTTPS POST to a fixed webhook URL.
+One-way only — does NOT receive events.
+"""
 from __future__ import annotations
 
-import asyncio
+import base64
+import hashlib
+import hmac
 import json
-from typing import Any, Optional
+import time
+from typing import Any
 
-import lark_oapi as lark
-from lark_oapi.api.im.v1 import (
-    CreateMessageRequest,
-    CreateMessageRequestBody,
-)
+import httpx
 
 from zd_agent.integrations.feishu.cards import (
     alert_card,
@@ -18,52 +21,71 @@ from zd_agent.integrations.feishu.cards import (
     ticket_done_card,
     ticket_escalate_card,
 )
+from zd_agent.log import get_logger
+
+logger = get_logger(module="integrations.feishu")
+
+
+def _gen_sign(timestamp: int, secret: str) -> str:
+    """飞书自定义机器人加签算法（HMAC-SHA256）。
+
+    sign = base64(hmac_sha256(key=f"{timestamp}\\n{secret}".encode(), data=b""))
+    """
+    key = f"{timestamp}\n{secret}".encode("utf-8")
+    mac = hmac.new(key, b"", hashlib.sha256).digest()
+    return base64.b64encode(mac).decode("utf-8")
 
 
 class FeishuClient:
-    """Thin wrapper around lark-oapi sync client, exposing async-friendly methods."""
+    """Incoming-webhook-only Feishu client. One-way push via HTTPS POST."""
 
-    def __init__(self, *, app_id: str, app_secret: str):
-        self.app_id = app_id
-        self.app_secret = app_secret
-        self._client: Optional[Any] = None
+    def __init__(self, webhook_url: str, webhook_secret: str = "", *, timeout: float = 15.0):
+        self.webhook_url = webhook_url
+        self.webhook_secret = webhook_secret
+        self.timeout = timeout
 
-    def _lark(self):
-        if self._client is None:
-            self._client = (
-                lark.Client.builder()
-                .app_id(self.app_id)
-                .app_secret(self.app_secret)
-                .log_level(lark.LogLevel.WARNING)
-                .build()
-            )
-        return self._client
+    async def send_card(self, *, chat_id: str = "", card: dict[str, Any]) -> None:
+        """Send an interactive card.
 
-    async def send_card(self, *, chat_id: str, card: dict[str, Any]) -> None:
-        """Post an interactive card message to a chat_id."""
-        req = (
-            CreateMessageRequest.builder()
-            .receive_id_type("chat_id")
-            .request_body(
-                CreateMessageRequestBody.builder()
-                .receive_id(chat_id)
-                .msg_type("interactive")
-                .content(json.dumps(card, ensure_ascii=False))
-                .build()
-            )
-            .build()
-        )
-        client = self._lark()
-        # lark-oapi v1 is sync; offload to thread
-        resp = await asyncio.to_thread(client.im.v1.message.create, req)
-        if not resp.success():
+        `chat_id` is ignored (webhook is bound to a single group); kept for
+        signature compatibility with older call sites. A debug log notes it
+        if supplied so callers can see it's being ignored.
+        """
+        if chat_id:
+            logger.debug("feishu_chat_id_ignored", chat_id=chat_id,
+                         reason="webhook bot binds to one group")
+
+        if not self.webhook_url:
+            raise RuntimeError("Feishu webhook_url not configured")
+
+        body: dict[str, Any] = {
+            "msg_type": "interactive",
+            "card": card,
+        }
+
+        if self.webhook_secret:
+            ts = int(time.time())
+            body["timestamp"] = str(ts)
+            body["sign"] = _gen_sign(ts, self.webhook_secret)
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(self.webhook_url, json=body)
+
+        if resp.status_code != 200:
             raise RuntimeError(
-                f"Feishu send_card failed: code={resp.code} msg={resp.msg}"
+                f"Feishu webhook HTTP {resp.status_code}: {resp.text[:500]}"
+            )
+        try:
+            data = resp.json()
+        except Exception:
+            raise RuntimeError(f"Feishu webhook invalid JSON response: {resp.text[:200]}")
+        if data.get("code") != 0:
+            raise RuntimeError(
+                f"Feishu webhook error code={data.get('code')} msg={data.get('msg')}"
             )
 
-    async def send_ticket_done(
-        self, *, chat_id: str, ticket_id: str, summary: str, zendesk_url: str,
-    ) -> None:
+    async def send_ticket_done(self, *, chat_id: str = "", ticket_id: str,
+                               summary: str, zendesk_url: str) -> None:
         await self.send_card(
             chat_id=chat_id,
             card=ticket_done_card(
@@ -71,9 +93,8 @@ class FeishuClient:
             ),
         )
 
-    async def send_ticket_escalate(
-        self, *, chat_id: str, ticket_id: str, reason: str, zendesk_url: str,
-    ) -> None:
+    async def send_ticket_escalate(self, *, chat_id: str = "", ticket_id: str,
+                                    reason: str, zendesk_url: str) -> None:
         await self.send_card(
             chat_id=chat_id,
             card=ticket_escalate_card(
@@ -81,45 +102,20 @@ class FeishuClient:
             ),
         )
 
-    async def send_auth_renew(self, *, chat_id: str, url: str, user: str) -> None:
+    async def send_auth_renew(self, *, chat_id: str = "", url: str, user: str) -> None:
         await self.send_card(
             chat_id=chat_id, card=auth_renew_card(url=url, user=user),
         )
 
-    async def send_daily_summary(
-        self, *, chat_id: str, date: str, stats: dict[str, Any],
-    ) -> None:
+    async def send_daily_summary(self, *, chat_id: str = "", date: str,
+                                 stats: dict[str, Any]) -> None:
         await self.send_card(
             chat_id=chat_id, card=daily_summary_card(date=date, stats=stats),
         )
 
-    async def send_alert(
-        self, *, chat_id: str, title: str, message: str, urgent: bool = False,
-    ) -> None:
+    async def send_alert(self, *, chat_id: str = "", title: str, message: str,
+                         urgent: bool = False) -> None:
         await self.send_card(
             chat_id=chat_id,
             card=alert_card(title=title, message=message, urgent=urgent),
         )
-
-
-def verify_webhook_request(
-    *, verify_token: str, body: dict[str, Any],
-) -> bool:
-    """Verify Feishu webhook `token` field (plaintext mode).
-
-    Feishu includes `token` in the request body for non-encrypted events,
-    and inside the decrypted payload for encrypted events.
-    """
-    return body.get("token") == verify_token
-
-
-def decrypt_feishu_payload(
-    *, encrypt_key: str, encrypted: str,
-) -> dict[str, Any]:
-    """Decrypt Feishu AES-encrypted event payload using lark-oapi's AESCipher.
-
-    Encrypted payload format: { "encrypt": "<base64>" }
-    """
-    cipher = lark.AESCipher(encrypt_key)
-    plain = cipher.decrypt_string(encrypted)
-    return json.loads(plain)

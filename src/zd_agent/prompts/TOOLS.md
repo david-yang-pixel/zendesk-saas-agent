@@ -71,8 +71,8 @@
 ## 运维工具
 
 ### `saas_branch_switch`
-- 飞书 `/branch <repo> <branch>` 指令会自动调用；agent 本身一般不需要主动调用
 - 支持 5 仓库别名（`d`/`bill`/`mb`/`mf`/`deploy`）
+- agent 一般不需要主动调用；由运维在 CLI 手动触发
 
 ## 工具选择策略
 

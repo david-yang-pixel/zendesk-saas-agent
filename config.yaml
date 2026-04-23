@@ -33,10 +33,9 @@ webhook:
   listen_host: 127.0.0.1
   listen_port: 8080
   zendesk_path: /webhook/zendesk
-  feishu_path: /webhook/feishu
 
 feishu:
-  default_chat_id: ""  # from env
+  webhook_url: ""  # from env FEISHU_WEBHOOK_URL
   daily_summary_time: "09:00"
   daily_summary_timezone: "Asia/Shanghai"
 

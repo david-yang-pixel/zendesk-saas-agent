@@ -67,11 +67,8 @@ def saas_env(monkeypatch):
         "ZENDESK_API_TOKEN": "tok",
         "ZENDESK_WEBHOOK_SECRET": "wsec",
         "OPENAI_API_KEY": "sk-xxx",
-        "FEISHU_APP_ID": "cli_xxx",
-        "FEISHU_APP_SECRET": "fs_xxx",
-        "FEISHU_VERIFY_TOKEN": "vt_xxx",
-        "FEISHU_ENCRYPT_KEY": "ek_xxx",
-        "FEISHU_BOT_CHAT_ID": "oc_xxx",
+        "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test",
+        "FEISHU_WEBHOOK_SECRET": "fs_sign_xxx",
         "GRAFANA_API_KEY": "glsa_xxx",
         "SIGNOZ_API_KEY": "sn_xxx",
         "PG_PASSWORD": "pg_xxx",
@@ -128,8 +125,8 @@ def test_config_loads_grafana_signoz_sections(saas_env, saas_config_file):
 def test_config_loads_feishu_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.feishu.daily_summary_time == "09:00"
-    assert cfg.feishu.app_id == "cli_xxx"
-    assert cfg.feishu.default_chat_id == "oc_xxx"
+    assert cfg.feishu.webhook_url == "https://open.feishu.cn/open-apis/bot/v2/hook/test"
+    assert cfg.feishu.webhook_secret == "fs_sign_xxx"
 
 
 def test_config_loads_repos_aliases(saas_env, saas_config_file):

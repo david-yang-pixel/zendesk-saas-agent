@@ -154,11 +154,9 @@ class SignozConfig(BaseModel):
 
 
 class FeishuConfig(BaseModel):
-    app_id: str = ""
-    app_secret: str = ""
-    verify_token: str = ""
-    encrypt_key: str = ""
-    default_chat_id: str = ""
+    # Custom bot (incoming webhook) mode
+    webhook_url: str = ""       # from env FEISHU_WEBHOOK_URL
+    webhook_secret: str = ""    # from env FEISHU_WEBHOOK_SECRET (可选加签)
     daily_summary_time: str = "09:00"
     daily_summary_timezone: str = "Asia/Shanghai"
 
@@ -217,11 +215,8 @@ class EnvSettings(BaseSettings):
     pg_password: str = ""
     grafana_api_key: str = ""
     signoz_api_key: str = ""
-    feishu_app_id: str = ""
-    feishu_app_secret: str = ""
-    feishu_verify_token: str = ""
-    feishu_encrypt_key: str = ""
-    feishu_bot_chat_id: str = ""
+    feishu_webhook_url: str = ""
+    feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
     teleport_user: str = ""
 
@@ -288,16 +283,10 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     if env.signoz_api_key:
         cfg.signoz.api_key = env.signoz_api_key
     # Feishu
-    if env.feishu_app_id:
-        cfg.feishu.app_id = env.feishu_app_id
-    if env.feishu_app_secret:
-        cfg.feishu.app_secret = env.feishu_app_secret
-    if env.feishu_verify_token:
-        cfg.feishu.verify_token = env.feishu_verify_token
-    if env.feishu_encrypt_key:
-        cfg.feishu.encrypt_key = env.feishu_encrypt_key
-    if env.feishu_bot_chat_id:
-        cfg.feishu.default_chat_id = env.feishu_bot_chat_id
+    if env.feishu_webhook_url:
+        cfg.feishu.webhook_url = env.feishu_webhook_url
+    if env.feishu_webhook_secret:
+        cfg.feishu.webhook_secret = env.feishu_webhook_secret
     # Zendesk webhook secret (ZENDESK_WEBHOOK_SECRET is primary; ZD_WEBHOOK_SIGNING_SECRET
     # kept as legacy fallback for pre-SaaS deployments)
     if env.zendesk_webhook_secret:

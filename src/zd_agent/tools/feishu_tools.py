@@ -53,33 +53,33 @@ class FeishuPush(Tool):
         self, args: dict[str, Any], session: "AgentSession",
     ) -> ToolResult:
         cfg = get_config().feishu
-        if not cfg.app_id or not cfg.app_secret or not cfg.default_chat_id:
+        if not cfg.webhook_url:
             return ToolResult(
                 success=False,
-                error="Feishu not configured (app_id / app_secret / chat_id missing)",
+                error="Feishu not configured (missing FEISHU_WEBHOOK_URL)",
             )
 
-        client = FeishuClient(app_id=cfg.app_id, app_secret=cfg.app_secret)
+        client = FeishuClient(
+            webhook_url=cfg.webhook_url,
+            webhook_secret=cfg.webhook_secret,
+        )
         card_type = args["card_type"]
         content = args.get("content", "")
         try:
             if card_type == "ticket_done":
                 await client.send_ticket_done(
-                    chat_id=cfg.default_chat_id,
                     ticket_id=str(session.ticket_id),
                     summary=content,
                     zendesk_url=args.get("zendesk_url", ""),
                 )
             elif card_type == "ticket_escalate":
                 await client.send_ticket_escalate(
-                    chat_id=cfg.default_chat_id,
                     ticket_id=str(session.ticket_id),
                     reason=content,
                     zendesk_url=args.get("zendesk_url", ""),
                 )
             elif card_type == "alert":
                 await client.send_alert(
-                    chat_id=cfg.default_chat_id,
                     title=args.get("title", "Alert"),
                     message=content,
                     urgent=args.get("urgent", False),

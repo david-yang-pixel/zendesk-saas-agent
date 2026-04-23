@@ -72,7 +72,6 @@ async def _renew(cfg, feishu, *, reason: str) -> None:
 
     try:
         await feishu.send_auth_renew(
-            chat_id=cfg.feishu.default_chat_id,
             url=url,
             user=cfg.teleport.user,
         )
@@ -85,8 +84,8 @@ async def main() -> None:
     cfg = load_config()
     from zd_agent.integrations.feishu.client import FeishuClient
     feishu = FeishuClient(
-        app_id=cfg.feishu.app_id,
-        app_secret=cfg.feishu.app_secret,
+        webhook_url=cfg.feishu.webhook_url,
+        webhook_secret=cfg.feishu.webhook_secret,
     )
 
     logger.info(

@@ -20,8 +20,6 @@ dependencies = [
     "zendesk-cli",
     "anthropic>=0.87.0",
     "mistune>=3.2.0",
-    "lark-oapi>=1.2.0",
-    "pycryptodome",
 ]
 
 [tool.uv.sources]

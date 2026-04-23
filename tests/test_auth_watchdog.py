@@ -33,7 +33,6 @@ def fake_cfg():
     cfg.teleport.auth_home = "/tmp/.tsh"
     cfg.teleport.warn_threshold_minutes = 30
     cfg.teleport.check_interval_seconds = 300
-    cfg.feishu.default_chat_id = "oc_xxx"
     return cfg
 
 

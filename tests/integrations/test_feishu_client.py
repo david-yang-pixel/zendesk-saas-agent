@@ -1,4 +1,8 @@
-"""Test feishu card builders + webhook verification. No real API calls."""
+"""Test Feishu custom-bot client + card builders."""
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from zd_agent.integrations.feishu.cards import (
     alert_card,
     auth_renew_card,
@@ -6,8 +10,10 @@ from zd_agent.integrations.feishu.cards import (
     ticket_done_card,
     ticket_escalate_card,
 )
-from zd_agent.integrations.feishu.client import verify_webhook_request
+from zd_agent.integrations.feishu.client import FeishuClient, _gen_sign
 
+
+# ===== Card builder tests (unchanged) =====
 
 def test_ticket_done_card_has_ticket_id_in_title():
     card = ticket_done_card(
@@ -20,7 +26,6 @@ def test_ticket_done_card_has_ticket_id_in_title():
 def test_ticket_done_card_without_url_has_no_view_button():
     card = ticket_done_card(ticket_id="12345", summary="ok", zendesk_url="")
     actions = card["elements"][-1]["actions"]
-    # Only the reprocess button remains
     button_texts = [a["text"]["content"] for a in actions]
     assert "查看 Zendesk" not in button_texts
     assert "重新处理" in button_texts
@@ -64,11 +69,81 @@ def test_alert_card_non_urgent_uses_yellow():
     assert "⚠️" in card["header"]["title"]["content"]
 
 
-def test_verify_webhook_request():
-    assert verify_webhook_request(
-        verify_token="tok", body={"token": "tok"},
-    ) is True
-    assert verify_webhook_request(
-        verify_token="tok", body={"token": "xxx"},
-    ) is False
-    assert verify_webhook_request(verify_token="tok", body={}) is False
+# ===== Custom-bot webhook client tests =====
+
+
+def _mock_response(status: int, json_body: dict):
+    resp = MagicMock()
+    resp.status_code = status
+    resp.json.return_value = json_body
+    resp.text = str(json_body)
+    return resp
+
+
+class _AsyncClientCtx:
+    def __init__(self, mock):
+        self.mock = mock
+    async def __aenter__(self):
+        return self.mock
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_send_card_posts_to_webhook_url():
+    client = FeishuClient(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test")
+    mock_http = MagicMock()
+    mock_http.post = AsyncMock(return_value=_mock_response(200, {"code": 0, "msg": "success"}))
+    with patch("httpx.AsyncClient", return_value=_AsyncClientCtx(mock_http)):
+        await client.send_alert(title="T", message="M")
+    mock_http.post.assert_awaited_once()
+    call = mock_http.post.await_args
+    assert call.args[0] == "https://open.feishu.cn/open-apis/bot/v2/hook/test"
+    body = call.kwargs["json"]
+    assert body["msg_type"] == "interactive"
+    assert "card" in body
+    # No secret → no timestamp/sign
+    assert "timestamp" not in body
+    assert "sign" not in body
+
+
+@pytest.mark.asyncio
+async def test_send_card_with_secret_includes_sign():
+    client = FeishuClient(
+        webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test",
+        webhook_secret="mysecret",
+    )
+    mock_http = MagicMock()
+    mock_http.post = AsyncMock(return_value=_mock_response(200, {"code": 0, "msg": "success"}))
+    with patch("httpx.AsyncClient", return_value=_AsyncClientCtx(mock_http)):
+        await client.send_alert(title="T", message="M")
+    body = mock_http.post.await_args.kwargs["json"]
+    assert "timestamp" in body
+    assert "sign" in body
+    # Verify sign is valid for the timestamp
+    assert body["sign"] == _gen_sign(int(body["timestamp"]), "mysecret")
+
+
+@pytest.mark.asyncio
+async def test_send_card_raises_on_non_zero_code():
+    client = FeishuClient(webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test")
+    mock_http = MagicMock()
+    mock_http.post = AsyncMock(return_value=_mock_response(200, {"code": 9499, "msg": "invalid token"}))
+    with patch("httpx.AsyncClient", return_value=_AsyncClientCtx(mock_http)):
+        with pytest.raises(RuntimeError, match="9499"):
+            await client.send_alert(title="T", message="M")
+
+
+@pytest.mark.asyncio
+async def test_send_card_raises_on_missing_webhook_url():
+    client = FeishuClient(webhook_url="")
+    with pytest.raises(RuntimeError, match="webhook_url"):
+        await client.send_alert(title="T", message="M")
+
+
+def test_gen_sign_reproducible():
+    """Sign is deterministic given (timestamp, secret)."""
+    s1 = _gen_sign(1700000000, "secret")
+    s2 = _gen_sign(1700000000, "secret")
+    assert s1 == s2
+    assert _gen_sign(1700000001, "secret") != s1  # different ts → different sign

@@ -9,9 +9,8 @@ from zd_agent.tools.feishu_tools import FeishuPush
 @pytest.fixture
 def feishu_cfg(monkeypatch):
     cfg = MagicMock()
-    cfg.feishu.app_id = "cli_xxx"
-    cfg.feishu.app_secret = "s"
-    cfg.feishu.default_chat_id = "oc_xxx"
+    cfg.feishu.webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/test"
+    cfg.feishu.webhook_secret = ""
     monkeypatch.setattr("zd_agent.tools.feishu_tools.get_config", lambda: cfg)
     return cfg
 
@@ -67,9 +66,7 @@ async def test_push_alert_urgent(fake_session, feishu_cfg):
 @pytest.mark.asyncio
 async def test_push_not_configured(fake_session, monkeypatch):
     cfg = MagicMock()
-    cfg.feishu.app_id = ""
-    cfg.feishu.app_secret = ""
-    cfg.feishu.default_chat_id = ""
+    cfg.feishu.webhook_url = ""
     monkeypatch.setattr("zd_agent.tools.feishu_tools.get_config", lambda: cfg)
     tool = FeishuPush()
     r = await tool.execute(

@@ -8,7 +8,6 @@ from typing import Any
 from aiohttp import web
 
 from zd_agent.config import get_config
-from zd_agent.entry.feishu_webhook import handle_feishu_webhook
 from zd_agent.entry.silence_waker import run_silence_waker
 from zd_agent.entry.webhook_dedup import WebhookDedup
 from zd_agent.entry.zendesk_webhook import handle_zendesk_webhook
@@ -43,24 +42,6 @@ async def _trigger_consumer(
             )
 
 
-async def _feishu_command_consumer(
-    queue: asyncio.Queue, manager: Any,
-) -> None:
-    """Consume feishu_command_queue; dispatch each parsed Command."""
-    # Import dispatcher here to avoid top-level circular imports
-    from zd_agent.integrations.feishu.dispatcher import dispatch_command
-
-    while True:
-        cmd = await queue.get()
-        try:
-            await dispatch_command(cmd, manager=manager)
-        except Exception as e:
-            logger.error(
-                "feishu_command_error",
-                error=str(e), cmd=cmd.name,
-            )
-
-
 def create_saas_app(manager: Any) -> web.Application:
     """Build the aiohttp application used by `zd-agent serve`.
 
@@ -73,7 +54,6 @@ def create_saas_app(manager: Any) -> web.Application:
     state_dir.mkdir(parents=True, exist_ok=True)
 
     trigger_queue: asyncio.Queue = asyncio.Queue()
-    feishu_command_queue: asyncio.Queue = asyncio.Queue()
 
     state = TicketStateTracker(state_dir / "tickets.json")
     webhook_dedup = WebhookDedup(
@@ -84,13 +64,11 @@ def create_saas_app(manager: Any) -> web.Application:
     app = web.Application()
     app["config"] = cfg
     app["trigger_queue"] = trigger_queue
-    app["feishu_command_queue"] = feishu_command_queue
     app["ticket_state"] = state
     app["webhook_dedup"] = webhook_dedup
     app["session_manager"] = manager
 
     app.router.add_post(cfg.webhook.zendesk_path, handle_zendesk_webhook)
-    app.router.add_post(cfg.webhook.feishu_path, handle_feishu_webhook)
     app.router.add_get("/healthz", _healthz)
 
     async def _on_startup(_app: web.Application) -> None:
@@ -104,13 +82,10 @@ def create_saas_app(manager: Any) -> web.Application:
         _app["trigger_task"] = asyncio.create_task(
             _trigger_consumer(trigger_queue, manager),
         )
-        _app["feishu_task"] = asyncio.create_task(
-            _feishu_command_consumer(feishu_command_queue, manager),
-        )
         logger.info("saas_app_started", port=cfg.webhook.listen_port)
 
     async def _on_cleanup(_app: web.Application) -> None:
-        for key in ("silence_task", "trigger_task", "feishu_task"):
+        for key in ("silence_task", "trigger_task"):
             task = _app.get(key)
             if task is not None:
                 task.cancel()
