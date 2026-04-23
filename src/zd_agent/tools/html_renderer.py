@@ -243,11 +243,16 @@ def render_internal_note(
             f'{section_html}</div></div>'
         )
 
-    # Footer
+    # Footer — mention trigger 从 config 读，避免硬编码老账号
+    try:
+        from zd_agent.config import get_config
+        mention = get_config().zendesk.mention_trigger or "@agent"
+    except Exception:
+        mention = "@agent"
     parts.append(
-        '<div style="border-top:1px solid #e5e7eb;margin-top:16px;padding-top:12px;'
-        'font-size:12px;color:#9ca3af">'
-        '<em>You can follow up by mentioning @support-agent in an internal note.</em></div>'
+        f'<div style="border-top:1px solid #e5e7eb;margin-top:16px;padding-top:12px;'
+        f'font-size:12px;color:#9ca3af">'
+        f'<em>You can follow up by mentioning {mention} in an internal note.</em></div>'
     )
 
     return "\n\n".join(parts)

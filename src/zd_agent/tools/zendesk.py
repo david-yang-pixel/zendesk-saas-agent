@@ -33,9 +33,14 @@ _client: ZendeskClient | None = None
 _INTERNAL_REPLY_BANNER = (
     "> **AI-generated reply for reference only.**"
 )
-_MENTION_FOOTER = (
-    "\n\n---\n*You can follow up by mentioning @support-agent in an internal note.*"
-)
+def _mention_footer() -> str:
+    """动态从 config 读 mention_trigger，避免老 agent 轮询到硬编码 @support-agent 造成循环。"""
+    try:
+        from zd_agent.config import get_config
+        trigger = get_config().zendesk.mention_trigger or "@agent"
+    except Exception:
+        trigger = "@agent"
+    return f"\n\n---\n*You can follow up by mentioning {trigger} in an internal note.*"
 
 # 字段 ID → 元数据缓存：{field_id: {"title": ..., "type": ..., "options": {value: label}}}
 _field_map: dict[int, dict[str, Any]] | None = None
@@ -927,9 +932,10 @@ def _prepend_internal_reply_banner(body: str) -> str:
 
 def _append_mention_footer(body: str) -> str:
     """为 Internal Reply 追加 @mention 追问提示，避免重复追加。"""
-    if body.endswith(_MENTION_FOOTER):
+    footer = _mention_footer()
+    if body.endswith(footer):
         return body
-    return body + _MENTION_FOOTER
+    return body + footer
 
 
 _ALLOWED_TAGS = frozenset({

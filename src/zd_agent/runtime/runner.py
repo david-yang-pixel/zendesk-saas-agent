@@ -28,7 +28,7 @@ _ACK_NOTE = (
 _FAILURE_NOTE_TEMPLATE = (
     "⚠️ **AI Agent encountered an error while processing this ticket.**\n\n"
     "**Reason:** {reason}\n\n"
-    "Please handle this ticket manually or retry by mentioning @support-agent."
+    "Please handle this ticket manually or retry by mentioning {mention}."
 )
 
 
@@ -44,7 +44,9 @@ async def _send_ack_note(ticket_id: int) -> None:
 
 async def _send_error_note(ticket_id: int, reason: str) -> None:
     """发送错误内部备注，告知客服 AI 处理失败及原因。"""
-    body = _FAILURE_NOTE_TEMPLATE.format(reason=reason)
+    from zd_agent.config import get_config
+    mention = get_config().zendesk.mention_trigger or "@agent"
+    body = _FAILURE_NOTE_TEMPLATE.format(reason=reason, mention=mention)
     try:
         client = _get_client()
         await _call_with_rate_limit_retry(client.reply_ticket, ticket_id, body, False)
