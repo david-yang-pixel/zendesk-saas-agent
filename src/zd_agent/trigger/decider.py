@@ -65,8 +65,8 @@ async def _call_llm(
             json={
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.0,
-                "max_tokens": 200,
+                # gpt-5.4 系列不支持 temperature / max_tokens，用 max_completion_tokens
+                "max_completion_tokens": 200,
                 "response_format": {"type": "json_object"},
             },
         )

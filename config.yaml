@@ -33,7 +33,7 @@ feishu:
   daily_summary_timezone: Asia/Shanghai
 trigger_decider:
   llm_model: gpt-5.4-mini
-  silence_minutes_default: 3
+  silence_minutes_default: 5
   silence_extend_to_minutes: 5
   rapid_burst_window_seconds: 30
   rapid_burst_threshold: 2

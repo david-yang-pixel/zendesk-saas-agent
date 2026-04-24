@@ -27,20 +27,170 @@ async def _healthz(request: web.Request) -> web.Response:
     return web.Response(status=200, text="ok")
 
 
+def _customer_public_comments(ticket: dict, comments: list[dict]) -> list[dict]:
+    """筛出工单请求者（客户）发的 public 评论，按时间升序。"""
+    requester_id = ticket.get("requester_id")
+    out = []
+    for c in comments:
+        if not c.get("public"):
+            continue
+        if c.get("author_id") != requester_id:
+            continue
+        out.append(c)
+    out.sort(key=lambda c: c.get("created_at", ""))
+    return out
+
+
+async def _fetch_customer_messages(ticket_id: int) -> tuple[list[dict], dict | None]:
+    """拉工单 + 客户 public 评论。返回 (comments, ticket_dict) 或 ([], None) 失败时。"""
+    from zd.client import ZendeskClient
+    import asyncio as _asyncio
+
+    def _sync():
+        client = ZendeskClient()
+        t = client.get_ticket(ticket_id).get("ticket", {})
+        c = client.get_ticket_comments(ticket_id).get("comments", [])
+        return t, c
+
+    try:
+        ticket, comments = await _asyncio.to_thread(_sync)
+    except Exception as e:
+        logger.error("trigger_fetch_ticket_failed",
+                     ticket_id=ticket_id, error=str(e))
+        return [], None
+    return _customer_public_comments(ticket, comments), ticket
+
+
 async def _trigger_consumer(
-    queue: asyncio.Queue, manager: Any,
+    queue: asyncio.Queue,
+    manager: Any,
+    state: "TicketStateTracker",
 ) -> None:
-    """Consume trigger_queue; dispatch each ticket to the SessionManager."""
+    """Consume trigger_queue with TriggerDecider logic:
+    - webhook 来的：判断客户消息，是寒暄/信息不足 → 静默；是问题 → 进入 5min 静默期
+    - silence_waker 来的（静默期到期）：直接 dispatch
+    - mention 触发：直接 dispatch（绕过判定）
+    """
+    from datetime import datetime, timezone, timedelta
+    from zd_agent.config import EnvSettings
+    from zd_agent.trigger.decider import classify_messages
+    from zd_agent.trigger.decision_log import log_decision
+    from zd_agent.trigger.state_store import TicketState
+
+    cfg = get_config()
+    env = EnvSettings()
+    log_path = (
+        Path(cfg.resources.base_dir)
+        / cfg.resources.state_dir
+        / "logs"
+        / "trigger_log.jsonl"
+    )
+
     while True:
         msg = await queue.get()
         try:
             ticket_id = int(msg["ticket_id"])
             source = msg.get("source", "unknown")
-            await manager.dispatch(
-                ticket_id,
-                dry_run=False,
-                trigger_type=f"webhook-{source}",
+
+            # 1. silence_waker 唤醒 or mention 触发 → 跳过判定，直接 dispatch
+            if source in ("silence_waker", "mention"):
+                logger.info("trigger_dispatch_direct",
+                            ticket_id=ticket_id, source=source)
+                await manager.dispatch(
+                    ticket_id, dry_run=False,
+                    trigger_type=f"webhook-{source}",
+                )
+                continue
+
+            # 2. 拉客户消息
+            customer_msgs, ticket_info = await _fetch_customer_messages(ticket_id)
+            if ticket_info is None:
+                continue  # 拉取失败，skip
+
+            if not customer_msgs:
+                # 工单刚创建，客户还没发消息 → 不处理，等 Change 事件
+                logger.info("trigger_skip_no_customer_msg", ticket_id=ticket_id)
+                log_decision(log_path=log_path, ticket_id=ticket_id,
+                             verdict="no_customer_message", action="skip")
+                continue
+
+            # 3. 幂等：同 comment_id 已处理过则 skip
+            latest = customer_msgs[-1]
+            latest_cid = latest.get("id")
+            existing = state.get(ticket_id)
+            if existing and existing.last_customer_comment_id == latest_cid:
+                logger.info(
+                    "trigger_skip_duplicate_comment",
+                    ticket_id=ticket_id, comment_id=latest_cid,
+                    current_state=existing.state,
+                )
+                continue
+
+            # 4. LLM 预判
+            bodies = [c.get("body", "") for c in customer_msgs]
+            verdict = await classify_messages(
+                messages=bodies,
+                model=cfg.trigger_decider.llm_model,
+                api_key=env.openai_api_key,
             )
+            logger.info(
+                "trigger_verdict",
+                ticket_id=ticket_id, verdict=verdict.verdict,
+                completeness=verdict.completeness, reason=verdict.reason[:100],
+            )
+
+            now = datetime.now(timezone.utc)
+            latest_ts_str = latest.get("created_at", "")
+            try:
+                latest_ts = datetime.fromisoformat(
+                    latest_ts_str.replace("Z", "+00:00")
+                )
+            except Exception:
+                latest_ts = now
+
+            # 5. 根据 verdict 更新 state
+            if verdict.verdict == "substantial_issue":
+                # 进入静默期，等 N 分钟客户不再发新消息才处理
+                silence_min = cfg.trigger_decider.silence_minutes_default
+                window_end = now + timedelta(minutes=silence_min)
+                state.set(ticket_id, TicketState(
+                    state="in_silence_window",
+                    first_seen=existing.first_seen if existing else now,
+                    last_customer_comment_id=latest_cid,
+                    last_comment_ts=latest_ts,
+                    last_eval_at=now,
+                    silence_window_end=window_end,
+                    last_verdict=verdict.verdict,
+                ))
+                log_decision(
+                    log_path=log_path, ticket_id=ticket_id,
+                    verdict=verdict.verdict, completeness=verdict.completeness,
+                    silence_min=silence_min, action="enter_silence",
+                )
+                logger.info(
+                    "trigger_enter_silence",
+                    ticket_id=ticket_id, silence_min=silence_min,
+                    window_end=window_end.isoformat(),
+                )
+            else:
+                # greeting / insufficient_info → 等下一条客户消息
+                state.set(ticket_id, TicketState(
+                    state="waiting_for_issue",
+                    first_seen=existing.first_seen if existing else now,
+                    last_customer_comment_id=latest_cid,
+                    last_comment_ts=latest_ts,
+                    last_eval_at=now,
+                    last_verdict=verdict.verdict,
+                ))
+                log_decision(
+                    log_path=log_path, ticket_id=ticket_id,
+                    verdict=verdict.verdict, completeness=verdict.completeness,
+                    action="wait_for_issue",
+                )
+                logger.info(
+                    "trigger_waiting_for_issue",
+                    ticket_id=ticket_id, verdict=verdict.verdict,
+                )
         except Exception as e:
             logger.error(
                 "trigger_consumer_error",
@@ -93,7 +243,7 @@ def create_saas_app(manager: Any) -> web.Application:
             )
         )
         _app["trigger_task"] = asyncio.create_task(
-            _trigger_consumer(trigger_queue, manager),
+            _trigger_consumer(trigger_queue, manager, state),
         )
         logger.info("saas_app_started", port=cfg.webhook.listen_port)
 

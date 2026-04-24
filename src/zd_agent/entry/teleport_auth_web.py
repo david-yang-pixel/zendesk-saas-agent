@@ -209,13 +209,33 @@ async def _run_tsh_login(
     logger.info("tsh_login_start", proxy=proxy, user=user, no_proxy_enforced=True)
 
     def _run_sync() -> tuple[bool, str]:
-        # Step 0: 清掉现有 session（否则 tsh 会打印 status 直接退出，不走密码流程）
+        # Step 0: 清掉现有 session（tsh logout + 强制删 keys 目录）
+        # tsh logout 有时不能清彻底（进程持有 keys 文件时）
         try:
-            import subprocess
-            subprocess.run(
+            import subprocess, shutil
+            from pathlib import Path as _P
+            r = subprocess.run(
                 ["tsh", "logout", "--all"],
                 env=env, capture_output=True, timeout=10, check=False,
             )
+            logger.info(
+                "tsh_logout_result",
+                rc=r.returncode,
+                stdout=r.stdout.decode("utf-8", errors="replace")[:200],
+                stderr=r.stderr.decode("utf-8", errors="replace")[:200],
+            )
+            # 兜底：硬删 keys / current-profile，确保 tsh login 一定走密码流程
+            keys_dir = _P(auth_home) / "keys"
+            if keys_dir.exists():
+                shutil.rmtree(keys_dir, ignore_errors=True)
+            for fname in ("current-profile", "teleport.dify.dev.yaml"):
+                fpath = _P(auth_home) / fname
+                if fpath.exists():
+                    try:
+                        fpath.unlink()
+                    except Exception:
+                        pass
+            logger.info("tsh_profile_purged", auth_home=auth_home)
         except Exception as e:
             return False, f"pre-logout failed: {e}"
 
