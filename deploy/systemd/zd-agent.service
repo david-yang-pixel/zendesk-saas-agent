@@ -16,7 +16,7 @@ ExecStartPre=-/usr/bin/docker rm -f zd-agent
 # /usr/local/bin/tsh 只读挂载：容器内调 tsh login
 ExecStart=/usr/bin/docker run --rm --name zd-agent \
     --network host \
-    -v /opt/zd-agent/resources:/resources \
+    -v /opt/zd-agent/resources:/opt/zd-agent/resources \
     -v /opt/zd-agent/.env:/app/.env:ro \
     -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
     -v /opt/zd-agent/.tsh:/opt/zd-agent/.tsh \
