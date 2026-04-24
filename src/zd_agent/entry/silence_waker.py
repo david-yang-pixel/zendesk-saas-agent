@@ -32,6 +32,9 @@ async def scan_once(
             # malformed — skip
             continue
         if end <= now:
+            # 立刻 advance state 避免下次扫时重复 fire
+            rec.state = "processing"
+            state.set(ticket_id, rec)
             await trigger_queue.put({
                 "source": "silence_waker",
                 "ticket_id": ticket_id,
