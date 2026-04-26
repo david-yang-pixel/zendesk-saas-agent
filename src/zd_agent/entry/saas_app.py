@@ -41,8 +41,68 @@ def _customer_public_comments(ticket: dict, comments: list[dict]) -> list[dict]:
     return out
 
 
+def _strip_html(s: str) -> str:
+    import re
+    s = re.sub(r"<[^>]+>", " ", s or "")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _messaging_customer_messages(events: list[dict]) -> list[dict]:
+    """从 conversation_log events 提取 end-user（客户）发的消息事件。
+
+    Zendesk messaging conversation_log 的 content 结构：
+      - type=text   → text in content["text"]
+      - type=html   → html in content["body"]（剥 HTML）
+      - type=formResponse → 表单提交，含 fields；用 text_fallback 或拼字段
+    """
+    out: list[dict] = []
+    for e in events:
+        author = e.get("author") or {}
+        if author.get("type") != "end-user":
+            continue
+        content = e.get("content") or {}
+        ctype = content.get("type", "")
+        body = ""
+        if ctype == "text":
+            body = content.get("text", "") or ""
+        elif ctype == "html":
+            body = _strip_html(content.get("body", "") or "")
+        elif ctype == "formResponse":
+            # 表单 fallback 文本，或拼装字段
+            body = content.get("text_fallback") or ""
+            if not body:
+                fields = content.get("fields") or []
+                parts = []
+                for f in fields:
+                    label = f.get("label", "") or f.get("name", "")
+                    value = f.get("value", "") or f.get("text", "")
+                    if label or value:
+                        parts.append(f"{label}: {value}".strip(": "))
+                body = "\n".join(parts)
+        else:
+            # 其他类型（image/file/...）暂不处理
+            continue
+        body = body.strip()
+        if not body:
+            continue
+        out.append({
+            "id": e.get("id"),
+            "author_id": author.get("zen:support:user_id"),
+            "created_at": e.get("created_at"),
+            "body": body,
+            "public": True,
+        })
+    return out
+
+
 async def _fetch_customer_messages(ticket_id: int) -> tuple[list[dict], dict | None]:
-    """拉工单 + 客户 public 评论。返回 (comments, ticket_dict) 或 ([], None) 失败时。"""
+    """拉工单 + 客户消息（含 messaging 渠道）。
+
+    普通工单 → comments.json 里的 public 客户评论。
+    Messaging 渠道（via.channel=native_messaging）→ 额外查 conversation_log
+      把 end-user 事件作为客户消息（comments 里只有系统占位）。
+    """
     from zd.client import ZendeskClient
     import asyncio as _asyncio
 
@@ -50,15 +110,39 @@ async def _fetch_customer_messages(ticket_id: int) -> tuple[list[dict], dict | N
         client = ZendeskClient()
         t = client.get_ticket(ticket_id).get("ticket", {})
         c = client.get_ticket_comments(ticket_id).get("comments", [])
-        return t, c
+        events: list[dict] = []
+        via_channel = (t.get("via") or {}).get("channel", "")
+        if via_channel == "native_messaging":
+            try:
+                log = client.get_ticket_conversation_log(ticket_id, page_size=100)
+                events = log.get("events", []) or []
+            except Exception as e:
+                logger.warning(
+                    "conversation_log_fetch_failed",
+                    ticket_id=ticket_id, error=str(e),
+                )
+        return t, c, events
 
     try:
-        ticket, comments = await _asyncio.to_thread(_sync)
+        ticket, comments, events = await _asyncio.to_thread(_sync)
     except Exception as e:
         logger.error("trigger_fetch_ticket_failed",
                      ticket_id=ticket_id, error=str(e))
         return [], None
-    return _customer_public_comments(ticket, comments), ticket
+
+    msgs = _customer_public_comments(ticket, comments)
+    if events:
+        msgs.extend(_messaging_customer_messages(events))
+    msgs.sort(key=lambda c: c.get("created_at", ""))
+    logger.info(
+        "trigger_fetch_messages_ok",
+        ticket_id=ticket_id,
+        comments_count=len(comments),
+        events_count=len(events),
+        customer_msgs_count=len(msgs),
+        via=(ticket.get("via") or {}).get("channel"),
+    )
+    return msgs, ticket
 
 
 async def _trigger_consumer(
