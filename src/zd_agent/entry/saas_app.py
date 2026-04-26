@@ -28,7 +28,10 @@ async def _healthz(request: web.Request) -> web.Response:
 
 
 def _customer_public_comments(ticket: dict, comments: list[dict]) -> list[dict]:
-    """筛出工单请求者（客户）发的 public 评论，按时间升序。"""
+    """筛出工单请求者（客户）发的 public 评论，按时间升序。
+
+    每条评论里把图片附件抽出来记到 ``image_urls`` 字段，便于上层喂给 vision LLM。
+    """
     requester_id = ticket.get("requester_id")
     out = []
     for c in comments:
@@ -36,6 +39,15 @@ def _customer_public_comments(ticket: dict, comments: list[dict]) -> list[dict]:
             continue
         if c.get("author_id") != requester_id:
             continue
+        # 抽图片附件
+        image_urls: list[str] = []
+        for att in c.get("attachments", []) or []:
+            ctype = (att.get("content_type") or "").lower()
+            if ctype.startswith("image/"):
+                url = att.get("content_url") or att.get("mapped_content_url")
+                if url:
+                    image_urls.append(url)
+        c = {**c, "image_urls": image_urls}
         out.append(c)
     out.sort(key=lambda c: c.get("created_at", ""))
     return out
@@ -64,6 +76,7 @@ def _messaging_customer_messages(events: list[dict]) -> list[dict]:
         content = e.get("content") or {}
         ctype = content.get("type", "")
         body = ""
+        image_urls: list[str] = []
         if ctype == "text":
             body = content.get("text", "") or ""
         elif ctype == "html":
@@ -80,9 +93,23 @@ def _messaging_customer_messages(events: list[dict]) -> list[dict]:
                     if label or value:
                         parts.append(f"{label}: {value}".strip(": "))
                 body = "\n".join(parts)
+        elif ctype == "image":
+            # 客户发了截图 → 记录作为消息（含文件名 + URL 让 LLM 知晓）
+            alt = content.get("alt_text") or "image"
+            url = content.get("media_url", "")
+            body = f"[客户附图 / Customer attached image: {alt}]"
+            if url:
+                body += f"\nURL: {url}"
+                image_urls.append(url)
+        elif ctype in ("file", "video"):
+            alt = content.get("alt_text") or content.get("type")
+            url = content.get("media_url", "")
+            body = f"[客户附件 / Customer attached {ctype}: {alt}]"
+            if url:
+                body += f"\nURL: {url}"
         else:
-            # 其他类型（image/file/...）暂不处理
-            continue
+            # 未知类型 — 留个标记
+            body = f"[unsupported message content type: {ctype}]"
         body = body.strip()
         if not body:
             continue
@@ -92,8 +119,101 @@ def _messaging_customer_messages(events: list[dict]) -> list[dict]:
             "created_at": e.get("created_at"),
             "body": body,
             "public": True,
+            "image_urls": image_urls,
         })
     return out
+
+
+# Vision: image download config
+_IMG_MAX_BYTES = 4 * 1024 * 1024  # 单图 4 MiB 上限
+_IMG_TOTAL_BUDGET = 6  # 一次判定最多送几张图（控制 token + 速度）
+
+
+async def _download_image_data_url(
+    url: str,
+    *,
+    timeout: float = 15.0,
+    max_bytes: int = _IMG_MAX_BYTES,
+) -> str | None:
+    """下载图片返回 ``data:image/...;base64,...`` URL。
+
+    Zendesk 的 ``content_url`` 需要 basic auth；Smooch CDN 的 ``media_url`` 一般匿名可访问。
+    这里先尝试匿名；遇到 401/403 时若是 zendesk.com 域则用配置里的邮箱+token 重试。
+    """
+    import base64
+    import httpx
+    from zd_agent.config import EnvSettings, get_config
+
+    cfg = get_config()
+    env = EnvSettings()
+    is_zd = "zendesk.com" in url
+    auth = None
+    if is_zd and env.zendesk_email and env.zendesk_api_token:
+        auth = (f"{env.zendesk_email}/token", env.zendesk_api_token)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            # 先尝试无 auth（Zendesk 的 content_url 多数也接受预签名重定向）
+            resp = await client.get(url)
+            if resp.status_code in (401, 403) and auth is not None:
+                resp = await client.get(url, auth=auth)
+            if resp.status_code != 200:
+                logger.warning(
+                    "vision_image_download_http_error",
+                    url=url[:120], status=resp.status_code,
+                )
+                return None
+            data = resp.content
+            if len(data) > max_bytes:
+                logger.warning(
+                    "vision_image_too_large",
+                    url=url[:120], size=len(data), limit=max_bytes,
+                )
+                return None
+            ctype = (resp.headers.get("Content-Type") or "image/png").split(";")[0].strip()
+            if not ctype.startswith("image/"):
+                # 兜底
+                ctype = "image/png"
+            b64 = base64.b64encode(data).decode("ascii")
+            return f"data:{ctype};base64,{b64}"
+    except Exception as e:
+        logger.warning(
+            "vision_image_download_failed",
+            url=url[:120], error=str(e),
+        )
+        return None
+
+
+async def _collect_recent_image_data_urls(
+    customer_msgs: list[dict],
+    *,
+    lookback: int = 5,
+    budget: int = _IMG_TOTAL_BUDGET,
+) -> list[str]:
+    """从最后 ``lookback`` 条客户消息里抽图片，下载并编码为 data URL。
+
+    并发下载，按消息时间顺序保留最多 ``budget`` 张。
+    """
+    import asyncio as _asyncio
+
+    recent = customer_msgs[-lookback:] if customer_msgs else []
+    urls: list[str] = []
+    for m in recent:
+        for u in m.get("image_urls") or []:
+            urls.append(u)
+            if len(urls) >= budget:
+                break
+        if len(urls) >= budget:
+            break
+
+    if not urls:
+        return []
+
+    results = await _asyncio.gather(
+        *[_download_image_data_url(u) for u in urls],
+        return_exceptions=False,
+    )
+    return [r for r in results if r]
 
 
 async def _fetch_customer_messages(ticket_id: int) -> tuple[list[dict], dict | None]:
@@ -210,17 +330,21 @@ async def _trigger_consumer(
                 )
                 continue
 
-            # 4. LLM 预判
+            # 4. LLM 预判（如有客户截图，下载并喂给 vision 模型）
             bodies = [c.get("body", "") for c in customer_msgs]
+            image_data_urls = await _collect_recent_image_data_urls(customer_msgs)
             verdict = await classify_messages(
                 messages=bodies,
                 model=cfg.trigger_decider.llm_model,
                 api_key=env.openai_api_key,
+                image_data_urls=image_data_urls,
             )
             logger.info(
                 "trigger_verdict",
                 ticket_id=ticket_id, verdict=verdict.verdict,
-                completeness=verdict.completeness, reason=verdict.reason[:100],
+                completeness=verdict.completeness,
+                reason=verdict.reason[:100],
+                images_used=len(image_data_urls),
             )
 
             now = datetime.now(timezone.utc)
