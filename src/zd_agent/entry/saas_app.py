@@ -9,6 +9,7 @@ from aiohttp import web
 
 from zd_agent.config import get_config
 from zd_agent.entry.silence_waker import run_silence_waker
+from zd_agent.entry.waiting_poller import run_waiting_poller
 from zd_agent.entry.teleport_auth_web import (
     TokenStore,
     handle_teleport_auth_get,
@@ -265,20 +266,159 @@ async def _fetch_customer_messages(ticket_id: int) -> tuple[list[dict], dict | N
     return msgs, ticket
 
 
+def _form_data_from_msgs(customer_msgs: list[dict]) -> dict:
+    """Pull the formResponse 'fields' from messaging customer messages, if any.
+
+    SaaS messaging tickets always have a formResponse first event with
+    Name / Email / Workspace ID. This helper digs it out for downstream use
+    (nudge language detection, future prefetch, ...).
+
+    Returns empty dict if no formResponse or no recognisable fields found.
+    """
+    out: dict = {}
+    for m in customer_msgs:
+        body = m.get("body") or ""
+        # 不是结构化数据，但 nudge 语言检测够用：从 body 找名字行
+        # body 形如 "Name: 张三\nEmail: ...\nWorkspace ID: ..."
+        if "Name:" in body or "Workspace ID:" in body:
+            for line in body.splitlines():
+                if ":" not in line:
+                    continue
+                k, _, v = line.partition(":")
+                k = k.strip().lower()
+                v = v.strip()
+                if not v:
+                    continue
+                if k == "name":
+                    out["name"] = v
+                elif k == "email":
+                    out["email"] = v
+                elif k in ("workspace id", "wid"):
+                    out["workspace_id"] = v
+            break  # 只取第一条 formResponse
+    return out
+
+
+async def _handle_silence_expired_ask(
+    *,
+    ticket_id: int,
+    state: "TicketStateTracker",
+    log_path: Path,
+    nudge_message_fn,
+) -> None:
+    """Silence 期到期 + verdict 非 substantial 时的分支处理。
+
+    enable_public_nudge=true  → 用客户语言给工单回一条 public ask 消息
+    enable_public_nudge=false → 推飞书内部告警代替（保守默认）
+    任一情况都设 nudge_sent_at 防重复，并保持 state=waiting_for_issue。
+    """
+    from datetime import datetime, timezone
+    from zd_agent.trigger.decision_log import log_decision
+
+    cfg = get_config()
+    rec = state.get(ticket_id)
+    if rec is None:
+        logger.warning("silence_expired_ask_no_state", ticket_id=ticket_id)
+        return
+    if rec.nudge_sent_at is not None:
+        logger.info("silence_expired_ask_already_sent",
+                    ticket_id=ticket_id,
+                    sent_at=rec.nudge_sent_at.isoformat())
+        return
+
+    # 拉客户消息只为提取 form_data 做语言检测；这里允许失败，失败用英文兜底
+    customer_msgs, _ticket = await _fetch_customer_messages(ticket_id)
+    form = _form_data_from_msgs(customer_msgs or [])
+    customer_name = form.get("name", "")
+    lang, body = nudge_message_fn(customer_name=customer_name)
+
+    now = datetime.now(timezone.utc)
+
+    if cfg.trigger_decider.enable_public_nudge:
+        # 真的发到工单 public comment
+        try:
+            from zd.client import ZendeskClient
+            import asyncio as _asyncio
+
+            def _send_reply():
+                client = ZendeskClient()
+                client.reply_ticket(ticket_id, body=body, public=True)
+
+            await _asyncio.to_thread(_send_reply)
+            logger.info(
+                "public_nudge_sent",
+                ticket_id=ticket_id, lang=lang, body_chars=len(body),
+            )
+            log_decision(
+                log_path=log_path, ticket_id=ticket_id,
+                verdict=rec.last_verdict or "",
+                action="public_nudge_sent",
+                extra={"lang": lang},
+            )
+        except Exception as e:
+            logger.error(
+                "public_nudge_send_failed",
+                ticket_id=ticket_id, error=str(e),
+            )
+            # 不设 nudge_sent_at，下个 silence cycle 会重试（罕见）
+            return
+    else:
+        # feature 关：飞书内部告警，等真人介入
+        try:
+            from zd_agent.integrations.feishu.client import FeishuClient
+            fcfg = cfg.feishu
+            if fcfg.webhook_url:
+                client = FeishuClient(
+                    webhook_url=fcfg.webhook_url,
+                    webhook_secret=fcfg.webhook_secret,
+                )
+                await client.send_alert(
+                    title=f"Ticket #{ticket_id} 信息不足等待处理",
+                    message=(
+                        f"工单 #{ticket_id} 静默期已结束，但客户消息判为 "
+                        f"`{rec.last_verdict or 'unknown'}`，"
+                        "未达到处理标准。enable_public_nudge=false，"
+                        "未给客户发 ask 消息。请人工介入或确认是否打开 nudge。"
+                    ),
+                    urgent=False,
+                )
+            logger.info(
+                "silence_expired_ask_feishu_alert",
+                ticket_id=ticket_id, verdict=rec.last_verdict,
+            )
+            log_decision(
+                log_path=log_path, ticket_id=ticket_id,
+                verdict=rec.last_verdict or "",
+                action="silence_expired_feishu_alert",
+            )
+        except Exception as e:
+            logger.warning(
+                "silence_expired_ask_feishu_failed",
+                ticket_id=ticket_id, error=str(e),
+            )
+
+    rec.nudge_sent_at = now
+    state.set(ticket_id, rec)
+
+
 async def _trigger_consumer(
     queue: asyncio.Queue,
     manager: Any,
     state: "TicketStateTracker",
 ) -> None:
-    """Consume trigger_queue with TriggerDecider logic:
-    - webhook 来的：判断客户消息，是寒暄/信息不足 → 静默；是问题 → 进入 5min 静默期
-    - silence_waker 来的（静默期到期）：直接 dispatch
-    - mention 触发：直接 dispatch（绕过判定）
+    """Consume trigger_queue:
+
+    Source dispatch:
+      - webhook | poller_new_msg : LLM 判定 + state 转换（同入口）
+      - silence_waker            : 静默期到期 + 实质问题 → 直接 dispatch AgentSession
+      - silence_expired_ask      : 静默期到期 + 非实质问题 → 公开 ask 客户 / 飞书内部告警
+      - mention                  : 真人 @yonggang → 跳过判定直接 dispatch
     """
     from datetime import datetime, timezone, timedelta
     from zd_agent.config import EnvSettings
     from zd_agent.trigger.decider import classify_messages
     from zd_agent.trigger.decision_log import log_decision
+    from zd_agent.trigger.nudge import nudge_message
     from zd_agent.trigger.state_store import TicketState
 
     cfg = get_config()
@@ -303,6 +443,16 @@ async def _trigger_consumer(
                 await manager.dispatch(
                     ticket_id, dry_run=False,
                     trigger_type=f"webhook-{source}",
+                )
+                continue
+
+            # 1b. silence_expired_ask: 静默期到期 + 非实质问题
+            #     enable_public_nudge ON  → 给客户发 public ask
+            #     OFF                    → 推飞书内部告警代替
+            if source == "silence_expired_ask":
+                await _handle_silence_expired_ask(
+                    ticket_id=ticket_id, state=state, log_path=log_path,
+                    nudge_message_fn=nudge_message,
                 )
                 continue
 
@@ -357,6 +507,7 @@ async def _trigger_consumer(
                 latest_ts = now
 
             # 5. 根据 verdict 更新 state
+            #    客户新消息到达 → reset nudge_sent_at / alert_sent_at，让下一轮可重发
             if verdict.verdict == "substantial_issue":
                 # 进入静默期，等 N 分钟客户不再发新消息才处理
                 silence_min = cfg.trigger_decider.silence_minutes_default
@@ -369,16 +520,23 @@ async def _trigger_consumer(
                     last_eval_at=now,
                     silence_window_end=window_end,
                     last_verdict=verdict.verdict,
+                    # 客户又发新消息 → 清掉之前的 nudge / alert 标记
+                    nudge_sent_at=None,
+                    alert_sent_at=None,
+                    abandoned_alert_sent_at=(
+                        existing.abandoned_alert_sent_at if existing else None
+                    ),
                 ))
                 log_decision(
                     log_path=log_path, ticket_id=ticket_id,
                     verdict=verdict.verdict, completeness=verdict.completeness,
                     silence_min=silence_min, action="enter_silence",
+                    extra={"source": source},
                 )
                 logger.info(
                     "trigger_enter_silence",
                     ticket_id=ticket_id, silence_min=silence_min,
-                    window_end=window_end.isoformat(),
+                    window_end=window_end.isoformat(), source=source,
                 )
             else:
                 # greeting / insufficient_info → 等下一条客户消息
@@ -389,15 +547,21 @@ async def _trigger_consumer(
                     last_comment_ts=latest_ts,
                     last_eval_at=now,
                     last_verdict=verdict.verdict,
+                    nudge_sent_at=None,
+                    alert_sent_at=None,
+                    abandoned_alert_sent_at=(
+                        existing.abandoned_alert_sent_at if existing else None
+                    ),
                 ))
                 log_decision(
                     log_path=log_path, ticket_id=ticket_id,
                     verdict=verdict.verdict, completeness=verdict.completeness,
                     action="wait_for_issue",
+                    extra={"source": source},
                 )
                 logger.info(
                     "trigger_waiting_for_issue",
-                    ticket_id=ticket_id, verdict=verdict.verdict,
+                    ticket_id=ticket_id, verdict=verdict.verdict, source=source,
                 )
         except Exception as e:
             logger.error(
@@ -450,13 +614,22 @@ def create_saas_app(manager: Any) -> web.Application:
                 scan_interval_seconds=cfg.silence_waker.scan_interval_seconds,
             )
         )
+        _app["waiting_poller_task"] = asyncio.create_task(
+            run_waiting_poller(
+                state=state,
+                trigger_queue=trigger_queue,
+                scan_interval_seconds=cfg.waiting_poller.scan_interval_seconds,
+                abandoned_hours=cfg.waiting_poller.abandoned_hours,
+                greeting_alert_minutes=cfg.waiting_poller.greeting_alert_minutes,
+            )
+        )
         _app["trigger_task"] = asyncio.create_task(
             _trigger_consumer(trigger_queue, manager, state),
         )
         logger.info("saas_app_started", port=cfg.webhook.listen_port)
 
     async def _on_cleanup(_app: web.Application) -> None:
-        for key in ("silence_task", "trigger_task"):
+        for key in ("silence_task", "waiting_poller_task", "trigger_task"):
             task = _app.get(key)
             if task is not None:
                 task.cancel()

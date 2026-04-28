@@ -22,12 +22,18 @@ VALID_STATES = {
 class TicketState:
     state: str
     first_seen: datetime
-    last_customer_comment_id: Optional[int] = None
+    last_customer_comment_id: Optional[str] = None
     last_comment_ts: Optional[datetime] = None
     last_eval_at: Optional[datetime] = None
     silence_window_end: Optional[datetime] = None
     processed_count: int = 0
     last_verdict: str = ""
+    # 主动 public ask 时间，避免重复 nudge；客户新消息到达时由调用方重置为 None
+    nudge_sent_at: Optional[datetime] = None
+    # 30min greeting 飞书告警发送时间，去重
+    alert_sent_at: Optional[datetime] = None
+    # 24h abandoned 飞书告警发送时间，去重
+    abandoned_alert_sent_at: Optional[datetime] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -39,12 +45,18 @@ class TicketState:
     @classmethod
     def from_dict(cls, d: dict) -> "TicketState":
         data = dict(d)
-        for k in ("first_seen", "last_comment_ts", "last_eval_at", "silence_window_end"):
+        for k in (
+            "first_seen", "last_comment_ts", "last_eval_at", "silence_window_end",
+            "nudge_sent_at", "alert_sent_at", "abandoned_alert_sent_at",
+        ):
             if data.get(k):
                 data[k] = datetime.fromisoformat(data[k])
             elif k in data and data[k] is None:
                 # keep None
                 pass
+        # 旧 state.json 里没这几个字段，dataclass 会用 default — 但要剔除 dict 里多余的 key
+        valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
+        data = {k: v for k, v in data.items() if k in valid_keys}
         return cls(**data)
 
 

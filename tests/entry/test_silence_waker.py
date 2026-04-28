@@ -13,19 +13,43 @@ def _now():
 
 
 @pytest.mark.asyncio
-async def test_scan_once_wakes_expired(tmp_path):
+async def test_scan_once_dispatches_substantial_on_expiry(tmp_path):
+    """verdict=substantial → state=processing + source=silence_waker."""
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()
     state.set("1", TicketState(
         state="in_silence_window",
         first_seen=_now() - timedelta(minutes=10),
-        silence_window_end=_now() - timedelta(seconds=1),  # expired
+        silence_window_end=_now() - timedelta(seconds=1),
+        last_verdict="substantial_issue",
     ))
     n = await scan_once(state=state, trigger_queue=queue)
     assert n == 1
     msg = queue.get_nowait()
     assert msg["source"] == "silence_waker"
-    assert msg["ticket_id"] == "1"
+    assert msg["ticket_id"] == 1
+    rec = state.get("1")
+    assert rec.state == "processing"
+
+
+@pytest.mark.asyncio
+async def test_scan_once_asks_when_not_substantial_on_expiry(tmp_path):
+    """verdict=greeting/insufficient → state=waiting_for_issue + source=silence_expired_ask."""
+    for verdict in ("greeting", "insufficient_info", ""):
+        state = TicketStateTracker(tmp_path / f"tickets_{verdict or 'blank'}.json")
+        queue: asyncio.Queue = asyncio.Queue()
+        state.set("1", TicketState(
+            state="in_silence_window",
+            first_seen=_now() - timedelta(minutes=10),
+            silence_window_end=_now() - timedelta(seconds=1),
+            last_verdict=verdict,
+        ))
+        n = await scan_once(state=state, trigger_queue=queue)
+        assert n == 1
+        msg = queue.get_nowait()
+        assert msg["source"] == "silence_expired_ask", verdict
+        rec = state.get("1")
+        assert rec.state == "waiting_for_issue", verdict
 
 
 @pytest.mark.asyncio

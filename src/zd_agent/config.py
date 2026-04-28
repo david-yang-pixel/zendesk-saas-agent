@@ -61,6 +61,9 @@ class ZendeskConfig(BaseModel):
     search_query: str = "status:new tags:saas"
     mention_trigger: str = "@saas-bot"
     mention_poll_interval_seconds: int = 60
+    # 我（agent）在 Zendesk 上的 user_id；waiting_poller 用来判定 "工单是否被真人接手"
+    # （assignee != my_uid 视为真人接手 → agent 让位）
+    agent_user_id: int = 0
 
 
 class WebhookConfig(BaseModel):
@@ -122,12 +125,27 @@ class TriggerDeciderConfig(BaseModel):
     rapid_burst_window_seconds: int = 30
     rapid_burst_threshold: int = 2
     insufficient_timeout_minutes: int = 20
-    abandoned_hours: int = 6
+    abandoned_hours: int = 24
     greeting_only_alert_minutes: int = 30
+    # 主动公开询问开关：messaging 工单回复路径未验证前默认关闭，
+    # 关闭时 silence 到期 + verdict 非 substantial 会推飞书内部告警代替直接 ask 客户。
+    enable_public_nudge: bool = False
 
 
 class SilenceWakerConfig(BaseModel):
     scan_interval_seconds: int = 30
+
+
+class WaitingPollerConfig(BaseModel):
+    """每 60s 扫 status∈(new,open) + tags:saas 的工单，
+    重读 conversation_log 看客户是否发新消息；并推动超时分支。
+    """
+
+    scan_interval_seconds: int = 60
+    # 24h 上限，超时标记 abandoned 并停扫
+    abandoned_hours: int = 24
+    # 30min greeting 告警
+    greeting_alert_minutes: int = 30
 
 
 class PostgresConfig(BaseModel):
@@ -189,6 +207,7 @@ class AppConfig(BaseModel):
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     trigger_decider: TriggerDeciderConfig = Field(default_factory=TriggerDeciderConfig)
     silence_waker: SilenceWakerConfig = Field(default_factory=SilenceWakerConfig)
+    waiting_poller: WaitingPollerConfig = Field(default_factory=WaitingPollerConfig)
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     grafana: GrafanaConfig = Field(default_factory=GrafanaConfig)
     signoz: SignozConfig = Field(default_factory=SignozConfig)

@@ -1,4 +1,14 @@
-"""Silence Waker: scan tickets in silence window, wake those whose timer expired."""
+"""Silence Waker: scan tickets in silence window, route them by verdict.
+
+On expiry of ``silence_window_end``:
+  - last_verdict == "substantial_issue" → state="processing", push
+    ``{source: "silence_waker"}`` so AgentSession picks it up.
+  - else (greeting / insufficient_info / blank) → push
+    ``{source: "silence_expired_ask"}``; ``_trigger_consumer`` will either
+    send a public nudge (when ``enable_public_nudge`` is true) or push a
+    Feishu internal alert (when off). State is moved into
+    ``waiting_for_issue`` either way.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -19,10 +29,10 @@ async def scan_once(
     state: TicketStateTracker,
     trigger_queue: asyncio.Queue,
 ) -> int:
-    """Single scan pass. Returns the count of tickets woken."""
+    """Single scan pass. Returns the count of tickets advanced."""
     tickets_in_silence = state.list_by_state("in_silence_window")
     now = _now()
-    woken = 0
+    advanced = 0
     for ticket_id in tickets_in_silence:
         rec = state.get(ticket_id)
         if rec is None:
@@ -31,18 +41,38 @@ async def scan_once(
         if end is None:
             # malformed — skip
             continue
-        if end <= now:
-            # 立刻 advance state 避免下次扫时重复 fire
+        if end > now:
+            continue
+
+        verdict = rec.last_verdict or ""
+        if verdict == "substantial_issue":
+            # 真的去处理
             rec.state = "processing"
             state.set(ticket_id, rec)
             await trigger_queue.put({
                 "source": "silence_waker",
-                "ticket_id": ticket_id,
+                "ticket_id": int(ticket_id),
             })
-            logger.info("silence_woken", ticket_id=ticket_id,
-                        silence_end=end.isoformat())
-            woken += 1
-    return woken
+            logger.info(
+                "silence_expired_dispatch",
+                ticket_id=ticket_id, silence_end=end.isoformat(),
+                verdict=verdict,
+            )
+        else:
+            # 信息不够 / 寒暄 → 主动 ask 客户 OR 内部告警（_trigger_consumer 决定）
+            rec.state = "waiting_for_issue"
+            state.set(ticket_id, rec)
+            await trigger_queue.put({
+                "source": "silence_expired_ask",
+                "ticket_id": int(ticket_id),
+            })
+            logger.info(
+                "silence_expired_ask",
+                ticket_id=ticket_id, silence_end=end.isoformat(),
+                verdict=verdict,
+            )
+        advanced += 1
+    return advanced
 
 
 async def run_silence_waker(

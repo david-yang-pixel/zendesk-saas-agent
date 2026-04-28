@@ -23,6 +23,8 @@ zendesk:
   poll_interval_seconds: 300
   mention_trigger: '@yonggang'
   mention_poll_interval_seconds: 60
+  # yonggang@dify.ai 的 zendesk user_id；waiting_poller 据此判定真人接手
+  agent_user_id: 45433304089364
 webhook:
   listen_host: 127.0.0.1
   listen_port: 8080
@@ -33,15 +35,21 @@ feishu:
   daily_summary_timezone: Asia/Shanghai
 trigger_decider:
   llm_model: gpt-5.4-mini
-  silence_minutes_default: 5
+  silence_minutes_default: 3
   silence_extend_to_minutes: 5
   rapid_burst_window_seconds: 30
   rapid_burst_threshold: 2
   insufficient_timeout_minutes: 20
-  abandoned_hours: 6
+  abandoned_hours: 24
   greeting_only_alert_minutes: 30
+  # 主动公开 ask 默认关闭；等 messaging 回复路径验证后再 flip
+  enable_public_nudge: false
 silence_waker:
   scan_interval_seconds: 30
+waiting_poller:
+  scan_interval_seconds: 60
+  abandoned_hours: 24
+  greeting_alert_minutes: 30
 postgres:
   host: localhost
   port: 56061
