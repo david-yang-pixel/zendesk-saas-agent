@@ -75,13 +75,21 @@
 
 | Subagent | 职责 | 可用工具 |
 |---------|------|---------|
-| A | 源码分析（`saas源代码/dify` 等） | git_grep, git_show, sandbox_read |
+| A | 源码分析（先本地 5 个仓 + **fallback 到 GitHub remote**） | git_grep, git_show, sandbox_read, **github_code_search** |
 | B | GitHub Issues/PRs | github_search_prs, github_get_pr |
 | C | *[platform_issue 类]* Grafana 监控 | grafana_query_prometheus, grafana_list_dashboards |
 | D | *[platform_issue 类]* SigNoz 日志 / trace | signoz_search_logs, signoz_search_traces |
 
 C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 **严禁**为了省事用单个 subagent 或串行调用。
+
+**Subagent A 工作策略**：
+1. 先用 `git_grep` 在本地 5 个仓库（dify / dify-billing / dify-marketplace-backend / dify-marketplace-frontend / saas-deploy）搜
+2. 本地搜不到 → **立刻** `github_code_search query="..." scope="langgenius"`
+   覆盖第三方插件仓（dify-plugins / 各插件单独仓 / dify-cloud 等没在服务器 clone 的）
+3. **典型场景**：客户报的是 Lark/Notion/Google Drive/Slack/飞书多维表格等
+   插件相关的 invalid credential / scope 错误 → 本地查不到 → 直接 GitHub 远程搜
+4. 拿到匹配后用 `github_get_pr`/`github_search_prs` 看看有没有 fix PR
 
 ### 知识匹配（Step 15-18）⚡⚡⚡ **必须 `run_subagents_parallel` 并行**
 

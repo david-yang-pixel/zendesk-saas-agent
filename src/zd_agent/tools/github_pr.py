@@ -1,4 +1,4 @@
-"""GitHub PR 只读工具。"""
+"""GitHub PR + Code 搜索只读工具。"""
 
 from __future__ import annotations
 
@@ -13,10 +13,14 @@ from zd_agent.tools.base import Tool, ToolResult
 GITHUB_API_BASE = "https://api.github.com"
 
 
-def _github_headers() -> dict[str, str]:
+def _github_headers(*, text_match: bool = False) -> dict[str, str]:
     env = EnvSettings()
+    accept = (
+        "application/vnd.github.text-match+json" if text_match
+        else "application/vnd.github+json"
+    )
     headers = {
-        "Accept": "application/vnd.github+json",
+        "Accept": accept,
         "X-GitHub-Api-Version": "2022-11-28",
     }
     if env.github_token:
@@ -24,11 +28,16 @@ def _github_headers() -> dict[str, str]:
     return headers
 
 
-async def _github_request(url: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _github_request(
+    url: str,
+    params: dict[str, Any] | None = None,
+    *,
+    text_match: bool = False,
+) -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=30)
     async with aiohttp.ClientSession(
         timeout=timeout,
-        headers=_github_headers(),
+        headers=_github_headers(text_match=text_match),
     ) as session:
         async with session.get(url, params=params) as resp:
             data = await resp.json()
@@ -164,4 +173,137 @@ class GithubGetPr(Tool):
             lines.append(f"链接: {html_url}")
         if body:
             lines.extend(["", body])
+        return ToolResult(output="\n".join(lines))
+
+
+class GithubCodeSearch(Tool):
+    """远程在 GitHub 代码库里搜源码，不需要本地 clone。
+
+    覆盖那些没在服务器上 clone 的仓库（dify-plugins / 各插件仓 /
+    dify-cloud 等）。对找 Lark Bitable / Notion / Google Drive / Slack
+    各种第三方数据源 / 工具插件的认证逻辑、报错抛出点特别有用。
+
+    GitHub Code Search API 限速：authenticated 30 req/min, anon 10/min。
+    """
+
+    name = "github_code_search"
+    description = (
+        "远程在 GitHub 上搜源码（不依赖本地 clone）。"
+        "用于查 langgenius org 内 dify 主仓 + dify-plugins + 各插件仓 + "
+        "dify-cloud 等不在本地的代码。"
+        "返回匹配文件路径 + 文件链接 + 命中代码片段。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "搜索关键词。可以是错误信息片段、函数名、字符串字面量。"
+                    "不要写完整 URL 或太长的句子，关键词越精准越好。"
+                ),
+            },
+            "scope": {
+                "type": "string",
+                "description": (
+                    "搜索范围。两种写法：\n"
+                    "  - org 名（默认 'langgenius'，覆盖整个组织）\n"
+                    "  - 'owner/repo' 格式（精确到一个仓库，例如 "
+                    "'langgenius/dify-plugins'）"
+                ),
+                "default": "langgenius",
+            },
+            "language": {
+                "type": "string",
+                "description": "可选：限定语言，如 'python' / 'typescript' / 'go'",
+            },
+            "path": {
+                "type": "string",
+                "description": "可选：限定路径前缀，如 'core/tools' / 'plugins/tools/lark'",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "default": 10,
+                "description": "返回结果数量（1-30）",
+            },
+        },
+        "required": ["query"],
+    }
+
+    group = "source_code"
+    max_output_tokens = 5000
+
+    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        query = str(args["query"]).strip()
+        if not query:
+            return ToolResult(success=False, error="query 不能为空")
+
+        scope = str(args.get("scope") or "langgenius").strip()
+        language = (args.get("language") or "").strip()
+        path = (args.get("path") or "").strip()
+        limit = max(1, min(int(args.get("limit", 10)), 30))
+
+        # 拼 GitHub search 的 qualifier。scope 同时支持 org 名和 owner/repo 格式
+        qualifiers = [query]
+        if "/" in scope:
+            qualifiers.append(f"repo:{scope}")
+        elif scope:
+            qualifiers.append(f"org:{scope}")
+        if language:
+            qualifiers.append(f"language:{language}")
+        if path:
+            qualifiers.append(f"path:{path}")
+        full_query = " ".join(qualifiers)
+
+        url = f"{GITHUB_API_BASE}/search/code"
+        try:
+            data = await _github_request(
+                url,
+                params={"q": full_query, "per_page": limit},
+                text_match=True,
+            )
+        except Exception as e:
+            return ToolResult(success=False, error=f"{e}.{_token_hint()}".strip())
+
+        items = data.get("items", []) or []
+        total = data.get("total_count", 0)
+        if not items:
+            return ToolResult(
+                output=(
+                    f"未找到与「{query}」匹配的代码。"
+                    f"\n搜索 query: `{full_query}`"
+                    "\n建议：缩短关键词 / 去掉 path 限制 / 改用 org 范围。"
+                )
+            )
+
+        lines = [
+            "# GitHub Code Search 结果",
+            f"Query: `{full_query}`",
+            f"Total matches: {total}（仅显示前 {min(len(items), limit)}）",
+            "",
+        ]
+        for it in items[:limit]:
+            repo_full = (it.get("repository") or {}).get("full_name", "?")
+            file_path = it.get("path", "?")
+            html_url = it.get("html_url", "")
+            score = it.get("score", 0)
+            lines.append(f"## {repo_full} · `{file_path}`")
+            if html_url:
+                lines.append(f"- 链接: {html_url}")
+            lines.append(f"- 相关性 score: {score:.2f}")
+            # text_matches 是行级命中片段（auth 时启用 text_match accept）
+            tm = it.get("text_matches") or []
+            for m in tm[:3]:
+                fragment = (m.get("fragment") or "").strip()
+                if not fragment:
+                    continue
+                # 截断单段 fragment 避免一条 result 占太多 token
+                if len(fragment) > 600:
+                    fragment = fragment[:600] + "…"
+                lines.append("```")
+                lines.append(fragment)
+                lines.append("```")
+            lines.append("")
         return ToolResult(output="\n".join(lines))

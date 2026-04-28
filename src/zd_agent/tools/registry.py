@@ -18,7 +18,11 @@ from zd_agent.tools.git_source import (
     ListRepoTags,
     ListRepos,
 )
-from zd_agent.tools.github_pr import GithubGetPr, GithubSearchPrs
+from zd_agent.tools.github_pr import (
+    GithubCodeSearch,
+    GithubGetPr,
+    GithubSearchPrs,
+)
 from zd_agent.tools.knowledge import KnowledgeRead, KnowledgeSearch
 from zd_agent.tools.official_docs import OfficialDocsRead, OfficialDocsSearch
 from zd_agent.tools.sandbox_tools import (
@@ -86,6 +90,7 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ListRepoTags())
     registry.register(GithubSearchPrs())
     registry.register(GithubGetPr())
+    registry.register(GithubCodeSearch())
 
     # 环境工具组
     registry.register(RunScript())
