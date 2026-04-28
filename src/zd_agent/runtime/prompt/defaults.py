@@ -74,27 +74,24 @@ def register_default_sections(builder: PromptBuilder) -> None:
         )
     )
 
-    # SQL_TEMPLATES — loaded for categories that commonly need DB queries
-    _SQL_CATEGORIES = {
-        "platform_issue", "knowledge_base", "workflow",
-        "billing", "refund", "permissions",
-    }
+    # SQL_TEMPLATES — 每个工单都加载（不再按 category gate）
+    # 之前按 ticket_type ∈ {platform_issue,...} 条件加载，但 runner.py 调用时
+    # 没传 ticket_type → ctx.ticket_type 永远是空 → 这段 prompt 实际从未生效。
+    # 现按用户要求："就按照 prompt 里面的流程处理"，全部段落始终加载。
     builder.register(
         PromptSection(
             name="sql_templates",
             content=load_prompt("sql/SQL_TEMPLATES.md"),
             order=26,
-            condition=lambda ctx: ctx.ticket_type in _SQL_CATEGORIES,
         )
     )
 
-    # REFUND_FLOW — only for refund tickets
+    # REFUND_FLOW — 每个工单都加载
     builder.register(
         PromptSection(
             name="refund_flow",
             content=load_prompt("refund/REFUND_FLOW.md"),
             order=27,
-            condition=lambda ctx: ctx.ticket_type == "refund",
         )
     )
 
@@ -107,14 +104,12 @@ def register_default_sections(builder: PromptBuilder) -> None:
         )
     )
 
-    # DEV_REPORT — loaded when category is code-bug / platform_issue / workflow
-    _DEV_REPORT_CATEGORIES = {"platform_issue", "workflow", "api"}
+    # DEV_REPORT — 每个工单都加载
     builder.register(
         PromptSection(
             name="dev_report",
             content=load_prompt("templates/DEV_REPORT.md"),
             order=36,
-            condition=lambda ctx: ctx.ticket_type in _DEV_REPORT_CATEGORIES,
         )
     )
 

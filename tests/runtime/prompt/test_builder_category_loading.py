@@ -28,18 +28,21 @@ def test_sql_templates_loaded_for_workflow_category():
     assert "SELECT" in out.upper()
 
 
-def test_sql_templates_skipped_for_product_usage():
-    """product_usage category shouldn't pull in the SQL templates."""
+def test_sql_templates_always_loaded_regardless_of_category():
+    """Per user mandate: 所有 prompt 段始终加载，不再按 category gate。"""
     out = _build(PromptContext(ticket_type="product_usage"))
-    # The SQL_TEMPLATES file is not loaded; assert on a string unique to SQL_TEMPLATES header
-    assert "常用 SQL 查询模板" not in out
+    assert "SELECT" in out.upper()
+    out2 = _build(PromptContext())  # no category at all
+    assert "SELECT" in out2.upper()
 
 
-def test_refund_flow_only_for_refund():
+def test_refund_flow_always_loaded_regardless_of_category():
     out_refund = _build(PromptContext(ticket_type="refund"))
     out_other = _build(PromptContext(ticket_type="workflow"))
+    out_blank = _build(PromptContext())
     assert "退款工单处理流程" in out_refund
-    assert "退款工单处理流程" not in out_other
+    assert "退款工单处理流程" in out_other
+    assert "退款工单处理流程" in out_blank
 
 
 def test_followup_context_injected_when_mode_followup():
@@ -67,6 +70,8 @@ def test_dev_report_loaded_for_platform_issue():
     assert "开发转交格式" in out or "Dev Report" in out
 
 
-def test_dev_report_skipped_for_refund():
+def test_dev_report_always_loaded_regardless_of_category():
     out = _build(PromptContext(ticket_type="refund"))
-    assert "开发转交格式" not in out
+    assert "开发转交格式" in out or "Dev Report" in out
+    out_blank = _build(PromptContext())
+    assert "开发转交格式" in out_blank or "Dev Report" in out_blank
