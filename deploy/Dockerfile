@@ -21,6 +21,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip config --global set global.index-url https://mirrors.aliyun.com/pypi/simple/ \
     && pip config --global set global.trusted-host mirrors.aliyun.com
 
+# 容器以 root（uid 0）运行；bind-mount 进来的仓库归宿主 zd-agent (uid 998)。
+# git 2.35.2+ 的 safe.directory 检查在 uid 不匹配时拒绝操作，导致 git_grep /
+# git_show 等源码 subagent 全部失败。允许所有目录通过此检查（容器内已是 root，
+# 风险面就在这里，全 wildcard 是最简办法）。
+RUN git config --system --add safe.directory '*'
+
 # Install uv for fast dependency resolution
 RUN pip install --no-cache-dir uv
 
