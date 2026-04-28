@@ -38,7 +38,9 @@ from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 logger = get_logger(module="entry.waiting_poller")
 
 _TARGET_STATES = ("in_silence_window", "waiting_for_issue")
-_OPEN_STATUSES = ("new", "open")
+# 只关注新建状态的工单。一旦 Zendesk status 变成 open / pending / solved
+# （agent 或真人触发的 status 转换），poller 立刻让位停扫。
+_OPEN_STATUSES = ("new",)
 
 
 def _now() -> datetime:

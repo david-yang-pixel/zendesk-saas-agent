@@ -23,7 +23,7 @@ def queue():
     return asyncio.Queue()
 
 
-def _ticket(status="open", assignee_id=None, ticket_id=100):
+def _ticket(status="new", assignee_id=None, ticket_id=100):
     return {
         "id": ticket_id,
         "status": status,
@@ -84,6 +84,23 @@ async def test_status_pending_marks_abandoned(state, queue):
     msgs = [{"id": "C1", "body": "x"}]
     async def fake_fetch(_tid):
         return msgs, _ticket(status="pending")
+    with patch("zd_agent.entry.saas_app._fetch_customer_messages",
+               side_effect=fake_fetch):
+        await scan_once(state=state, trigger_queue=queue,
+                        abandoned_hours=24, greeting_alert_minutes=30)
+    assert state.get("1").state == "abandoned"
+
+
+@pytest.mark.asyncio
+async def test_status_open_also_marks_abandoned(state, queue):
+    """只关注 status=new；status=open 也要让位（agent 已触达，转人工/正在处理）。"""
+    state.set("1", TicketState(
+        state="waiting_for_issue", first_seen=_now(),
+        last_customer_comment_id="C1",
+    ))
+    msgs = [{"id": "C1", "body": "x"}]
+    async def fake_fetch(_tid):
+        return msgs, _ticket(status="open")
     with patch("zd_agent.entry.saas_app._fetch_customer_messages",
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,
