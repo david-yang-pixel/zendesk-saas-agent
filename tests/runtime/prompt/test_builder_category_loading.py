@@ -75,3 +75,58 @@ def test_dev_report_always_loaded_regardless_of_category():
     assert "开发转交格式" in out or "Dev Report" in out
     out_blank = _build(PromptContext())
     assert "开发转交格式" in out_blank or "Dev Report" in out_blank
+
+
+# ─────────── DB schema runtime-loaded section ───────────
+
+def test_db_schema_section_absent_when_file_missing(tmp_path, monkeypatch):
+    """Schema 文件不存在时（开发环境）db_schema section 应优雅跳过。"""
+    from zd_agent.runtime.prompt import defaults as defaults_mod
+
+    monkeypatch.setattr(defaults_mod, "_db_schema_path", lambda: tmp_path / "nope.md")
+    out = _build(PromptContext())
+    # 文件不存在 → schema 内容不该出现
+    assert "**用途**：Dify SaaS 主业务库" not in out
+
+
+def test_db_schema_section_loaded_when_file_present(tmp_path, monkeypatch):
+    """Schema 文件存在 → 内容注入 system prompt。"""
+    from zd_agent.runtime.prompt import defaults as defaults_mod
+
+    fake = (
+        "# Dify SaaS Database Schema\n\n"
+        "## langgenius\n\n"
+        "**用途**：Dify SaaS 主业务库 (mocked)\n\n"
+        "### `tenants`\n"
+        "`id` uuid*, `name` varchar, `plan` varchar\n"
+    )
+    schema_file = tmp_path / "schema.md"
+    schema_file.write_text(fake, encoding="utf-8")
+    monkeypatch.setattr(defaults_mod, "_db_schema_path", lambda: schema_file)
+    out = _build(PromptContext())
+    assert "Dify SaaS 主业务库 (mocked)" in out
+    assert "tenants" in out
+    assert "uuid*" in out
+
+
+def test_db_schema_section_re_reads_each_build(tmp_path, monkeypatch):
+    """schema 文件 mid-flight 被刷新 → 下一次 build 读到新内容（而不是缓存旧内容）。"""
+    from zd_agent.runtime.prompt import defaults as defaults_mod
+
+    schema_file = tmp_path / "schema.md"
+    schema_file.write_text(
+        "# Dify SaaS Database Schema\n## langgenius\nTABLE_VERSION_1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(defaults_mod, "_db_schema_path", lambda: schema_file)
+    out1 = _build(PromptContext())
+    assert "TABLE_VERSION_1" in out1
+
+    # 模拟 cron 刷了一次 schema
+    schema_file.write_text(
+        "# Dify SaaS Database Schema\n## langgenius\nTABLE_VERSION_2\n",
+        encoding="utf-8",
+    )
+    out2 = _build(PromptContext())
+    assert "TABLE_VERSION_2" in out2
+    assert "TABLE_VERSION_1" not in out2

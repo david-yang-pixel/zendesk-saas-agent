@@ -180,6 +180,7 @@ sudo journalctl -u zd-agent -f
 | Check status | Feishu `/status` |
 | Update SaaS branch | Feishu `/branch dify hotfix/1.11.2-fix3` |
 | Update agent code | `cd /opt/zd-agent/code && git pull && sudo docker build -f deploy/Dockerfile -t zd-agent:latest . && sudo systemctl restart zd-agent` |
+| Refresh DB schema cheat sheet | `bash /opt/zd-agent/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
 
 ## Daily Backups
 

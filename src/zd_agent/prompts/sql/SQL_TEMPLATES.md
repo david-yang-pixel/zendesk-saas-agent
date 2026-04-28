@@ -1,12 +1,16 @@
 # 常用 SQL 查询模板 — SaaS 工单排查
 
 > 按工单场景分类，直接替换占位符即可使用。
-> 表结构参考：`saas源代码/数据库表结构/数据库表结构参考.md`
+>
+> **真实 schema** 在 system prompt 的 "Dify SaaS Database Schema" 段（紧接本段后），
+> 由生产库 `information_schema` introspect 出来。**不要靠记忆瞎写表名 / 列名**——
+> 看那段拿真实结构再写 SQL。
 >
 > **注意事项：**
 > - `<workspace_id>` = 用户提供的 Workspace ID
-> - Dify-Prod 和 Dify-billing 是两个不同的数据库，不能跨库 JOIN
-> - `graph` 和 `features` 字段是 text 类型，使用 JSON 操作符前需要 `::jsonb` 转换
+> - `database=prod` (langgenius) / `database=billing` / `database=plugin`
+>   (dify_plugin_daemon) 三个独立 DB，**不能跨库 JOIN**
+> - `graph` / `features` 字段是 text 类型，使用 JSON 操作符前需要 `::jsonb` 转换
 
 ---
 

@@ -2,9 +2,36 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from zd_agent.runtime.prompt.builder import PromptBuilder
 from zd_agent.runtime.prompt.section import PromptContext, PromptSection
 from zd_agent.runtime.prompt_loader import load_prompt
+
+
+def _db_schema_path() -> Path:
+    """运行时生成的数据库 schema cheat sheet。
+
+    由 ``scripts/dump_db_schema.sh`` 周期性 introspect prod 库写入。
+    不存在时（开发环境）section 自动跳过。
+    """
+    # 延迟 import 避免顶层 config 副作用
+    from zd_agent.config import get_config
+
+    cfg = get_config()
+    return (
+        Path(cfg.resources.base_dir)
+        / cfg.resources.knowledge_base_dir
+        / "database_schema.md"
+    )
+
+
+def _load_db_schema() -> str:
+    p = _db_schema_path()
+    try:
+        return p.read_text(encoding="utf-8") if p.exists() else ""
+    except Exception:
+        return ""
 
 
 def register_default_sections(builder: PromptBuilder) -> None:
@@ -83,6 +110,19 @@ def register_default_sections(builder: PromptBuilder) -> None:
             name="sql_templates",
             content=load_prompt("sql/SQL_TEMPLATES.md"),
             order=26,
+        )
+    )
+
+    # DB_SCHEMA — 运行时从生产库 introspect 出来的真实 schema cheat sheet。
+    # 由 scripts/dump_db_schema.sh 周期生成到
+    # /opt/zd-agent/resources/saas版知识库/database_schema.md。
+    # 文件不存在（开发机 / 还没跑过脚本）则 section 自动跳过。
+    builder.register(
+        PromptSection(
+            name="db_schema",
+            content=lambda ctx: _load_db_schema(),
+            order=27,
+            condition=lambda ctx: bool(_load_db_schema()),
         )
     )
 
