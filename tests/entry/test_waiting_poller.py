@@ -23,11 +23,12 @@ def queue():
     return asyncio.Queue()
 
 
-def _ticket(status="new", assignee_id=None, ticket_id=100):
+def _ticket(status="new", assignee_id=None, ticket_id=100, tags=None):
     return {
         "id": ticket_id,
         "status": status,
         "assignee_id": assignee_id,
+        "tags": tags or [],
         "via": {"channel": "native_messaging"},
     }
 
@@ -92,8 +93,8 @@ async def test_status_pending_marks_abandoned(state, queue):
 
 
 @pytest.mark.asyncio
-async def test_status_open_also_marks_abandoned(state, queue):
-    """只关注 status=new；status=open 也要让位（agent 已触达，转人工/正在处理）。"""
+async def test_status_open_without_asked_tag_marks_abandoned(state, queue):
+    """status=open 且没有 zd-agent-asked tag → 让位 abandoned。"""
     state.set("1", TicketState(
         state="waiting_for_issue", first_seen=_now(),
         last_customer_comment_id="C1",
@@ -101,6 +102,53 @@ async def test_status_open_also_marks_abandoned(state, queue):
     msgs = [{"id": "C1", "body": "x"}]
     async def fake_fetch(_tid):
         return msgs, _ticket(status="open")
+    with patch("zd_agent.entry.saas_app._fetch_customer_messages",
+               side_effect=fake_fetch):
+        await scan_once(state=state, trigger_queue=queue,
+                        abandoned_hours=24, greeting_alert_minutes=30)
+    assert state.get("1").state == "abandoned"
+
+
+@pytest.mark.asyncio
+async def test_status_open_with_asked_tag_keeps_scanning(state, queue):
+    """agent 主动 ask 客户后 status=open + zd-agent-asked tag → 仍然继续扫。
+
+    场景：3min silence 到期 → public ask → status auto-flip new→open。
+    poller 应该认 tag 例外，继续追踪客户是否回应。
+    """
+    from zd_agent.entry.waiting_poller import AGENT_ASKED_TAG
+
+    state.set("1", TicketState(
+        state="waiting_for_issue", first_seen=_now() - timedelta(minutes=2),
+        last_customer_comment_id="OLD",
+        nudge_sent_at=_now() - timedelta(minutes=1),
+    ))
+    msgs = [{"id": "NEW", "body": "now I have the error message"}]
+    async def fake_fetch(_tid):
+        return msgs, _ticket(status="open", tags=[AGENT_ASKED_TAG])
+    with patch("zd_agent.entry.saas_app._fetch_customer_messages",
+               side_effect=fake_fetch):
+        await scan_once(state=state, trigger_queue=queue,
+                        abandoned_hours=24, greeting_alert_minutes=30)
+    # 状态没变（还在 waiting_for_issue），且因为客户发新消息推了 queue
+    assert state.get("1").state == "waiting_for_issue"
+    msg = queue.get_nowait()
+    assert msg["source"] == "poller_new_msg"
+    assert msg["ticket_id"] == 1
+
+
+@pytest.mark.asyncio
+async def test_status_pending_with_asked_tag_still_marks_abandoned(state, queue):
+    """tag 例外仅对 status=open 有效；pending/solved 仍让位。"""
+    from zd_agent.entry.waiting_poller import AGENT_ASKED_TAG
+
+    state.set("1", TicketState(
+        state="waiting_for_issue", first_seen=_now(),
+        last_customer_comment_id="C1",
+    ))
+    msgs = [{"id": "C1", "body": "x"}]
+    async def fake_fetch(_tid):
+        return msgs, _ticket(status="pending", tags=[AGENT_ASKED_TAG])
     with patch("zd_agent.entry.saas_app._fetch_customer_messages",
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,

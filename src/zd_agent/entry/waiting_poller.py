@@ -38,9 +38,13 @@ from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 logger = get_logger(module="entry.waiting_poller")
 
 _TARGET_STATES = ("in_silence_window", "waiting_for_issue")
-# 只关注新建状态的工单。一旦 Zendesk status 变成 open / pending / solved
-# （agent 或真人触发的 status 转换），poller 立刻让位停扫。
+# 默认只关注新建状态的工单。一旦 Zendesk status 变成 open/pending/solved
+# poller 立刻让位停扫；唯一例外是带 AGENT_ASKED_TAG 的工单——表示 agent
+# 主动给客户发了 public ask 导致 status 自动翻 open，此时仍需继续追踪
+# 客户是否回应。
 _OPEN_STATUSES = ("new",)
+# agent 发主动 public ask 后给工单打这个 tag，扩展 poller 作用域
+AGENT_ASKED_TAG = "zd-agent-asked"
 
 
 def _now() -> datetime:
@@ -81,16 +85,23 @@ async def _process_one(
         return
 
     status = ticket.get("status", "")
+    tags = ticket.get("tags") or []
     assignee_id = ticket.get("assignee_id")
     cfg_zd = get_config().zendesk
     my_uid = cfg_zd.agent_user_id or 0
 
-    # Guard 1: ticket no longer in scope (pending/solved/closed/hold)
-    if status not in _OPEN_STATUSES:
+    # Guard 1: ticket no longer in scope.
+    # 默认只看 status=new。但 agent 主动 ask 客户后 status 会自动翻 open —
+    # 我们之前给工单打了 AGENT_ASKED_TAG 表示这种情况，这种 open 仍要继续扫。
+    in_scope = status in _OPEN_STATUSES or (
+        status == "open" and AGENT_ASKED_TAG in tags
+    )
+    if not in_scope:
         if rec.state != "abandoned":
             logger.info(
                 "waiting_poller_status_out_of_scope",
                 ticket_id=ticket_id, status=status, prev_state=rec.state,
+                has_asked_tag=AGENT_ASKED_TAG in tags,
             )
             rec.state = "abandoned"
             state.set(ticket_id, rec)

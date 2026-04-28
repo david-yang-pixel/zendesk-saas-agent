@@ -336,24 +336,37 @@ async def _handle_silence_expired_ask(
 
     if cfg.trigger_decider.enable_public_nudge:
         # 真的发到工单 public comment
+        # 同时打 AGENT_ASKED_TAG —— 因为 reply_ticket(public=True) 会让 Zendesk
+        # 自动把 status 从 new 翻成 open，poller 默认 status=new only 会失去这条
+        # 工单的可见性。tag 让 poller 例外保留这条工单。
         try:
             from zd.client import ZendeskClient
+            from zd_agent.entry.waiting_poller import AGENT_ASKED_TAG
             import asyncio as _asyncio
 
-            def _send_reply():
+            def _send_reply_and_tag():
                 client = ZendeskClient()
                 client.reply_ticket(ticket_id, body=body, public=True)
+                # add_ticket_tags 是增量操作，不会覆盖已有 tags
+                try:
+                    client.add_ticket_tags(ticket_id, [AGENT_ASKED_TAG])
+                except Exception as e:
+                    logger.warning(
+                        "agent_asked_tag_add_failed",
+                        ticket_id=ticket_id, error=str(e),
+                    )
 
-            await _asyncio.to_thread(_send_reply)
+            await _asyncio.to_thread(_send_reply_and_tag)
             logger.info(
                 "public_nudge_sent",
                 ticket_id=ticket_id, lang=lang, body_chars=len(body),
+                tagged=True,
             )
             log_decision(
                 log_path=log_path, ticket_id=ticket_id,
                 verdict=rec.last_verdict or "",
                 action="public_nudge_sent",
-                extra={"lang": lang},
+                extra={"lang": lang, "tagged": True},
             )
         except Exception as e:
             logger.error(
