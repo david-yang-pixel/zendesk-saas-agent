@@ -8,6 +8,7 @@ from typing import Any
 from aiohttp import web
 
 from zd_agent.config import get_config
+from zd_agent.entry.mention_poller import run_mention_poller
 from zd_agent.entry.silence_waker import run_silence_waker
 from zd_agent.entry.waiting_poller import run_waiting_poller
 from zd_agent.entry.teleport_auth_web import (
@@ -451,11 +452,14 @@ async def _trigger_consumer(
 
             # 1. silence_waker 唤醒 or mention 触发 → 跳过判定，直接 dispatch
             if source in ("silence_waker", "mention"):
+                hint = msg.get("hint") or ""
                 logger.info("trigger_dispatch_direct",
-                            ticket_id=ticket_id, source=source)
+                            ticket_id=ticket_id, source=source,
+                            has_hint=bool(hint))
                 await manager.dispatch(
                     ticket_id, dry_run=False,
                     trigger_type=f"webhook-{source}",
+                    hint=hint,
                 )
                 continue
 
@@ -636,13 +640,28 @@ def create_saas_app(manager: Any) -> web.Application:
                 greeting_alert_minutes=cfg.waiting_poller.greeting_alert_minutes,
             )
         )
+        # @yonggang mention 识别（独立于 webhook，处理"工单已 processed/closed
+        # 后被人手动 mention"的场景；webhook 触发的 mention 也走同 queue 分支）
+        from zd_agent.mention.tracker import MentionTracker
+        mention_tracker = MentionTracker(state_dir / "processed_mentions.json")
+        _app["mention_tracker"] = mention_tracker
+        _app["mention_poller_task"] = asyncio.create_task(
+            run_mention_poller(
+                trigger_queue=trigger_queue,
+                tracker=mention_tracker,
+                poll_interval_seconds=cfg.zendesk.mention_poll_interval_seconds,
+            )
+        )
         _app["trigger_task"] = asyncio.create_task(
             _trigger_consumer(trigger_queue, manager, state),
         )
         logger.info("saas_app_started", port=cfg.webhook.listen_port)
 
     async def _on_cleanup(_app: web.Application) -> None:
-        for key in ("silence_task", "waiting_poller_task", "trigger_task"):
+        for key in (
+            "silence_task", "waiting_poller_task",
+            "mention_poller_task", "trigger_task",
+        ):
             task = _app.get(key)
             if task is not None:
                 task.cancel()
