@@ -1,13 +1,16 @@
 # 客户回复模板（SaaS 版）
 
-> 签名格式：`Best regards,`（空一行）`Dify Support` / `此致`（空一行）`Dify Support`
-> 双语：EN ≤ 150 词，CN ≤ 200 字（不含签名）
-> 禁止：markdown 超链接 `[name](url)`；用 "文档名：URL"
+> **二选一语言**：客户用**中文**沟通 → 用**中文**回复；客户用**任何其他语言**
+> （English / 日本語 / Português / 한국어 / ...）→ 一律用 **English** 回复。
+> 绝不 EN + 中文双语对照。绝不让 agent 输出日语 / 葡语等非中英文（质量不可控）。
+> 长度上限：≤ 200 字 / 字符（不含签名）。
+> 禁止：markdown 超链接 `[name](url)` —— 用 "文档名：URL"。
 
 ---
 
 ## 1. Missing Critical Info（信息不足）
 
+**English customer**:
 ```
 Hi,
 
@@ -21,7 +24,10 @@ Once we have these we can dig in right away.
 Best regards,
 
 Dify Support
+```
 
+**中文 customer**:
+```
 您好，
 
 感谢联系。为了更快定位，请提供：
@@ -38,6 +44,7 @@ Dify Support
 
 ## 2. Issue Identified, Workaround Available
 
+**English**:
 ```
 Hi,
 
@@ -47,7 +54,10 @@ We'll ship a fix in an upcoming release; I'll update you when it's live.
 Best regards,
 
 Dify Support
+```
 
+**中文**:
+```
 您好，
 
 已经定位到了——是 <根因>。临时绕行方案：<步骤>。
@@ -60,16 +70,20 @@ Dify Support
 
 ## 3. Issue Confirmed, No Workaround (Escalated)
 
+**English**:
 ```
 Hi,
 
-We've confirmed this is a platform-side issue and escalated it to our engineering team. 
+We've confirmed this is a platform-side issue and escalated it to our engineering team.
 No reliable workaround yet. I'll follow up as soon as we have an ETA.
 
 Best regards,
 
 Dify Support
+```
 
+**中文**:
+```
 您好，
 
 已确认是平台侧问题，已升级给开发团队。
@@ -82,6 +96,7 @@ Dify Support
 
 ## 4. Documentation Reference
 
+**English**:
 ```
 Hi,
 
@@ -94,7 +109,10 @@ If you run into issues following those steps, let me know the specifics and I'll
 Best regards,
 
 Dify Support
+```
 
+**中文**:
+```
 您好，
 
 这个场景我们文档里有说明：
@@ -110,36 +128,32 @@ Dify Support
 
 ## 5. Sorry for the Wait
 
-```
-Hi, sorry for the wait — pulling in our relevant team to look at this carefully.
-<后续正文>
-
-您好，让你久等了——已经在拉相关同事一起看。
-<后续正文>
-```
+- EN: `Hi, sorry for the wait — pulling in our relevant team to look at this carefully.`
+- CN: `您好，让你久等了——已经在拉相关同事一起看。`
 
 ## 6. Empathetic Opening (Frustrated Customer)
 
-```
-Hi, I understand this is frustrating — let me help.
-<立即进入排查，不堆废话>
+- EN: `Hi, I understand this is frustrating — let me help.`
+- CN: `您好，理解你的困扰，我来帮你看。`
 
-您好，理解你的困扰，我来帮你看。
-<立即进入排查，不堆废话>
-```
+后续立即进入排查，不堆废话。
 
 ## 7. Follow-up（跟进回复示例）
 
 **跟进**回复应该更短，不重复已说过的内容：
 
+**English**:
 ```
-Thanks for the screenshot. The error confirms it's <具体原因>. This is a known product-side behavior we're tracking.
-I'll update you once the fix is available.
+Thanks for the screenshot. The error confirms it's <具体原因>. This is a known
+product-side behavior we're tracking. I'll update you once the fix is available.
 
 Best regards,
 
 Dify Support
+```
 
+**中文**:
+```
 您好，
 
 收到截图，确认是 <具体原因>。这是我们已经在跟进的产品侧行为。
@@ -154,7 +168,10 @@ Dify Support
 
 ## Anti-patterns（反模式，**禁止**）
 
-- ❌ 英文中文一字不差互译（各自用母语者的自然表达）
+- ❌ **EN + 中文双语对照**（即使客户是中文母语，也只输出中文一遍即可）
+- ❌ **给非中文客户写中文**（包括日语客户）
+- ❌ **给日语客户写日语 / 葡语客户写葡语 / 韩语客户写韩语 ...** —— agent 的非中英文输出
+  质量不可控（语法错、敬语错、文化差异），一律用 English 兜底
 - ❌ 每次都 "Hi there,"（机器人感太强）
 - ❌ `We sincerely apologize for any inconvenience this may have caused.`
 - ❌ `I hope this email finds you well.`
@@ -165,8 +182,5 @@ Dify Support
 
 ## 写作节奏
 
-1. **开头**自然（Hi / Hey / Thanks for the update / Got it）
+1. **开头**自然（Hi / Hey / Thanks for the update / Got it / 您好 / 收到 …）
 2. **正文**有过渡（先说查了什么 / 发现了什么，再给方案）
-3. **结尾**有下一步指引（告诉客户下一步做什么）
-
-简单问题 3-5 句话就够；越长越稀释重点。

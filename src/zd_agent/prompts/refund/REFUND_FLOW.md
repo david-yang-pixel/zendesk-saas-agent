@@ -38,20 +38,26 @@ SELECT * FROM tenant_stripe_customers WHERE tenant_id = '<wid>';
 
 ### 4. 内部备注必须包含两段
 
-#### 段 1：客户回复草稿（英文 + 中文）
+#### 段 1：客户回复草稿（**只写一遍**，二选一语言）
 
+**二选一规则**：客户用中文 → 中文；其他客户（含日语 / 葡语 / 英语 ...）→ 一律 English。
+
+**English customer**（含日语 / 葡语等非中文客户都走这条）:
 ```
 Hi <name>,
 
 Thank you for reaching out. I've reviewed your subscription...
 <一句简短挽留，可选>
-We can process <partial/full> refund of <amount> for <period>. <or 拒绝的原因>
+We can process <partial/full> refund of <amount> for <period>. <or rejection reason>
 Could you confirm whether you'd like to proceed?
 
 Best regards,
 
 Dify Support
+```
 
+**中文 customer**:
+```
 您好 <name>，
 
 感谢联系我们，我已经查看了您的订阅...

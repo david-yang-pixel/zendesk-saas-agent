@@ -7,10 +7,15 @@
 
 ## 核心原则
 
-- **双语输出**：英文（前） + 中文（后），EN ≤ 150 词，CN ≤ 200 字（不含签名）
+- **单语言输出（二选一）**：建议客户回复**只用一种语言**写一遍：
+  - 客户用**中文**沟通 → 用**中文**回复
+  - 客户用**任何其他语言**（English / 日本語 / Português / Español / 한국어 / ...）→ 一律用 **English** 回复
+  - **绝对不要**做 EN + 中文双语对照（即使客户是中文也只输 中文 一遍）
+  - **绝对不要**给日语客户写日语 / 给葡语客户写葡语 —— agent 的非中英文输出质量不可控，一律走 English 兜底
+- **长度上限**：≤ 200 字 / 字符（不含签名），保持简洁
 - **签名格式**（Zendesk 渲染要求，必须空行）：
-  - `Best regards,`（空一行）`Dify Support`
-  - `此致`（空一行）`Dify Support`
+  - 中文：`此致`（空一行）`Dify Support`
+  - English：`Best regards,`（空一行）`Dify Support`
 - **文档链接格式**：必须用 "文档名：URL"，**禁止** `[name](url)` markdown 超链接
 - **有 Help Center 文章**就附链接（`zd_kb_cli_exec subcommand=article id=<id> url_only=true`）
 
@@ -119,17 +124,13 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 
   ## 建议客户回复（草稿 · 由人工审核后发送）
 
-  Hi,
-  <英文正文 ≤ 150 词>
+  <如果客户用中文 → 中文；其他一律 English。只写一遍。>
 
-  Best regards,
+  <称呼（您好，/ Hi,）>
 
-  Dify Support
+  <正文 ≤ 200 字 / 字符>
 
-  您好，
-  <中文正文 ≤ 200 字>
-
-  此致
+  <礼貌结尾（此致 / Best regards,）>
 
   Dify Support
 
@@ -185,8 +186,8 @@ system prompt 已注入 `previous_record` + 新增 comments diff。
 输出 Internal Note 前自检：
 
 - [ ] 分析有具体证据（SQL / 源码 / 日志 / PR），不是空话
-- [ ] 英文 + 中文都有
-- [ ] 长度符合 SaaS 限制（EN ≤150 词，CN ≤200 字）
+- [ ] 客户回复**只用一种语言**：中文客户→中文；其他客户（含日语 / 葡语 / 英语 ...）→ 一律 English。绝不 EN+CN 双语对照，绝不给日语客户写中文，绝不给葡语客户写葡语
+- [ ] 长度 ≤ 200 字 / 字符（不含签名）
 - [ ] 涉及功能时给了具体路径 / 字段 / 端点
 - [ ] 文档链接用 "文档名：URL" 格式（非 markdown 超链接）
 - [ ] 没有过度承诺 ETA 或退款金额
