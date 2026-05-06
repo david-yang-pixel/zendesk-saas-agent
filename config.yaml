@@ -73,6 +73,8 @@ teleport:
   auth_home: /opt/zd-agent/.tsh
   warn_threshold_minutes: 30
   check_interval_seconds: 300
+  # 同 reason 的飞书推送之间最短间隔（秒）。证书过期后不重复推，1h 一次。
+  notify_interval_seconds: 3600
 repos:
   base_dir: ''
   repositories:

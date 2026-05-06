@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -26,6 +27,11 @@ from zd_agent.integrations.teleport import get_tsh_status
 from zd_agent.log import get_logger
 
 logger = get_logger(module="scripts.auth-watchdog")
+
+# Throttle: 上次按 reason 推送的 UNIX 时间戳。同 reason 距离上次 < notify_interval
+# 时跳过，防止过期后每个 check 周期（5min）都推一遍。进程内存不持久化——
+# watchdog 重启后第一次必推（这是期望行为：重启就该重发提醒）。
+_LAST_PUSH_TS: dict[str, float] = {}
 
 
 async def _issue_auth_url(internal_secret: str) -> str | None:
@@ -48,9 +54,26 @@ async def _issue_auth_url(internal_secret: str) -> str | None:
         return None
 
 
+def _should_push(reason: str, notify_interval_seconds: int) -> bool:
+    """Throttle 判定：同 reason 距离上次推送 < notify_interval 则跳过。"""
+    now = time.time()
+    last = _LAST_PUSH_TS.get(reason)
+    if last is not None and (now - last) < notify_interval_seconds:
+        remaining_quiet = notify_interval_seconds - (now - last)
+        logger.info(
+            "auth_push_throttled",
+            reason=reason,
+            quiet_remaining_s=int(remaining_quiet),
+        )
+        return False
+    _LAST_PUSH_TS[reason] = now
+    return True
+
+
 async def check_and_notify(cfg, feishu, internal_secret: str) -> None:
     """One iteration: check status, push auth URL via Feishu if expiring."""
     warn_threshold = timedelta(minutes=cfg.teleport.warn_threshold_minutes)
+    notify_interval = cfg.teleport.notify_interval_seconds
 
     try:
         status = await get_tsh_status(
@@ -63,9 +86,10 @@ async def check_and_notify(cfg, feishu, internal_secret: str) -> None:
         return
 
     if status is None:
-        logger.warning("tsh_not_logged_in_pushing_auth_url")
-        await _push_auth_url(feishu, cfg, internal_secret,
-                             reason="not logged in", remaining="?")
+        logger.warning("tsh_not_logged_in")
+        if _should_push("not logged in", notify_interval):
+            await _push_auth_url(feishu, cfg, internal_secret,
+                                 reason="not logged in", remaining="?")
         return
 
     if status.remaining < warn_threshold:
@@ -74,13 +98,16 @@ async def check_and_notify(cfg, feishu, internal_secret: str) -> None:
             remaining=str(status.remaining),
             threshold=str(warn_threshold),
         )
-        await _push_auth_url(
-            feishu, cfg, internal_secret,
-            reason="expiring soon", remaining=str(status.remaining),
-        )
+        if _should_push("expiring soon", notify_interval):
+            await _push_auth_url(
+                feishu, cfg, internal_secret,
+                reason="expiring soon", remaining=str(status.remaining),
+            )
         return
 
+    # 证书 OK → 清掉 throttle，下次过期立刻推
     logger.info("tsh_ok", remaining=str(status.remaining))
+    _LAST_PUSH_TS.clear()
 
 
 async def _push_auth_url(feishu, cfg, internal_secret: str, *, reason: str, remaining: str) -> None:

@@ -191,6 +191,9 @@ class TeleportConfig(BaseModel):
     auth_home: str = "/opt/zd-agent/.tsh"
     warn_threshold_minutes: int = 30
     check_interval_seconds: int = 300
+    # 同一 reason（"not logged in" / "expiring soon"）的飞书推送之间最短间隔。
+    # 避免证书过期后每次 check loop（5min）都推一遍，扰人。
+    notify_interval_seconds: int = 3600
 
 
 class AppConfig(BaseModel):
