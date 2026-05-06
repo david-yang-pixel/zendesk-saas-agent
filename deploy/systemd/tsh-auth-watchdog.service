@@ -16,6 +16,7 @@ ExecStart=/usr/bin/docker run --rm --name tsh-auth-watchdog \
     -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
     -v /opt/zd-agent/.tsh:/opt/zd-agent/.tsh \
     -v /usr/local/bin/tsh:/usr/local/bin/tsh:ro \
+    -e HOST_TSH_UID=998 -e HOST_TSH_GID=997 \
     --memory=128m --cpus=0.2 \
     --log-driver=journald \
     zd-agent:latest \
