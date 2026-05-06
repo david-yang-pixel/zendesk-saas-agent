@@ -178,124 +178,19 @@ def render_result(*, ok: bool, message: str, detail: str = "") -> str:
 
 
 # ====================== tsh login via pexpect ======================
+# 实际逻辑抽到 zd_agent.integrations.teleport_login 共享给 watchdog auto-renewal
+
 
 async def _run_tsh_login(
     *, proxy: str, user: str, password: str, otp: str,
     auth_home: str, timeout_s: int = 60,
 ) -> tuple[bool, str]:
-    """Spawn `tsh login` via pexpect, feed password + OTP, wait for completion.
-
-    Returns (success, error_message_or_success_info).
-    """
-    try:
-        import pexpect
-    except ImportError:
-        return False, "pexpect module not installed in container"
-
-    env = dict(os.environ)
-    env["TELEPORT_HOME"] = auth_home
-    # ⚠️ 关键：清除 HTTP(S)_PROXY env 变量
-    # 主机上 Clash/V2Ray 设了 127.0.0.1:7890 代理，Teleport login 时会被代理 MITM → invalid credentials
-    # tsh 直接连 teleport.dify.dev 才能完成密码校验
-    for proxy_var in (
-        "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-        "ALL_PROXY", "all_proxy",
-    ):
-        env.pop(proxy_var, None)
-    # 显式告诉所有工具不走代理
-    env["NO_PROXY"] = "*"
-    env["no_proxy"] = "*"
-
-    logger.info("tsh_login_start", proxy=proxy, user=user, no_proxy_enforced=True)
-
-    def _run_sync() -> tuple[bool, str]:
-        # Step 0: 清掉现有 session（tsh logout + 强制删 keys 目录）
-        # tsh logout 有时不能清彻底（进程持有 keys 文件时）
-        try:
-            import subprocess, shutil
-            from pathlib import Path as _P
-            r = subprocess.run(
-                ["tsh", "logout", "--all"],
-                env=env, capture_output=True, timeout=10, check=False,
-            )
-            logger.info(
-                "tsh_logout_result",
-                rc=r.returncode,
-                stdout=r.stdout.decode("utf-8", errors="replace")[:200],
-                stderr=r.stderr.decode("utf-8", errors="replace")[:200],
-            )
-            # 兜底：硬删 keys / current-profile，确保 tsh login 一定走密码流程
-            keys_dir = _P(auth_home) / "keys"
-            if keys_dir.exists():
-                shutil.rmtree(keys_dir, ignore_errors=True)
-            for fname in ("current-profile", "teleport.dify.dev.yaml"):
-                fpath = _P(auth_home) / fname
-                if fpath.exists():
-                    try:
-                        fpath.unlink()
-                    except Exception:
-                        pass
-            logger.info("tsh_profile_purged", auth_home=auth_home)
-        except Exception as e:
-            return False, f"pre-logout failed: {e}"
-
-        # Step 1: 正式 login，走 PTY + password + OTP
-        try:
-            child = pexpect.spawn(
-                "tsh", ["login", f"--proxy={proxy}", f"--user={user}"],
-                env=env, timeout=timeout_s, encoding="utf-8",
-            )
-
-            # Password prompt
-            idx = child.expect([
-                r"[Ee]nter password.*:",
-                r"[Pp]assword.*:",
-                pexpect.EOF,
-                pexpect.TIMEOUT,
-            ])
-            if idx in (2, 3):
-                return False, f"Unexpected output before password prompt:\n{child.before}"
-            child.sendline(password)
-
-            # OTP prompt
-            idx = child.expect([
-                r"[Ee]nter.*OTP.*:",
-                r"[Oo]ne.*time.*password.*:",
-                r"[Tt]wo-?factor.*:",
-                r"[Aa]uthentication.*code.*:",
-                pexpect.EOF,
-                pexpect.TIMEOUT,
-            ])
-            if idx in (4, 5):
-                # EOF 可能代表密码错（tsh 直接退出）
-                return False, f"Unexpected output (likely bad password)\n{child.before}"
-            child.sendline(otp)
-
-            # 等 login 完成
-            child.expect([pexpect.EOF, pexpect.TIMEOUT])
-            rc = child.wait()
-            output = child.before or ""
-
-            if rc == 0:
-                # 容器内 root 写出来的证书归属是 root；把所有权还给宿主机的 zd-agent 用户
-                # 否则 systemd 下的 tsh-proxy-db.service（以 zd-agent 身份运行）下次重启读不到
-                host_uid = os.environ.get("HOST_TSH_UID")
-                host_gid = os.environ.get("HOST_TSH_GID")
-                if host_uid and host_gid:
-                    try:
-                        import subprocess
-                        subprocess.run(
-                            ["chown", "-R", f"{host_uid}:{host_gid}", auth_home],
-                            check=False, timeout=10,
-                        )
-                    except Exception as e:
-                        logger.warning("chown_tsh_failed", error=str(e))
-                return True, "tsh login succeeded"
-            return False, f"tsh login failed (rc={rc}):\n{output[-800:]}"
-        except Exception as e:
-            return False, f"pexpect error: {e}"
-
-    return await asyncio.to_thread(_run_sync)
+    """Wrapper to keep call sites stable; delegates to shared runner."""
+    from zd_agent.integrations.teleport_login import run_tsh_login
+    return await run_tsh_login(
+        proxy=proxy, user=user, password=password, otp=otp,
+        auth_home=auth_home, timeout_s=timeout_s,
+    )
 
 
 # ====================== HTTP handlers ======================

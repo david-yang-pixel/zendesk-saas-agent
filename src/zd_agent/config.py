@@ -251,6 +251,11 @@ class EnvSettings(BaseSettings):
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
     teleport_user: str = ""
+    # 自动续期凭证：服务器持有 → watchdog 检测过期时自动 tsh login。
+    # 安全模型：只读 ops account，与 .env 一同 chmod 600，仅 root 可读。
+    # 任一为空 → watchdog 退回旧行为（推飞书 URL 让人工登录）。
+    teleport_password: str = ""
+    teleport_totp_secret: str = ""
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
