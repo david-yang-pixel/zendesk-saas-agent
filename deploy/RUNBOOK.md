@@ -154,14 +154,18 @@ sudo useradd --system --home /opt/zd-agent --shell /bin/false zd-agent
 sudo chown -R zd-agent:zd-agent /opt/zd-agent
 
 sudo cp /opt/zd-agent/code/deploy/systemd/*.service /etc/systemd/system/
+sudo cp /opt/zd-agent/code/deploy/systemd/*.path /etc/systemd/system/
 sudo systemctl daemon-reload
 
-sudo systemctl enable --now tsh-proxy-db.service
+sudo systemctl enable --now tsh-proxy-db.service \
+                            tsh-proxy-db-billing.service \
+                            tsh-proxy-db-plugin.service
 sudo systemctl enable --now tsh-auth-watchdog.service
+sudo systemctl enable --now tsh-cert.path  # 续期成功后自动 restart 上面 3 个 proxy
 sudo systemctl enable --now zd-agent.service
 
 # Verify
-sudo systemctl status zd-agent tsh-proxy-db tsh-auth-watchdog
+sudo systemctl status zd-agent tsh-proxy-db tsh-auth-watchdog tsh-cert.path
 sudo journalctl -u zd-agent -f
 ```
 

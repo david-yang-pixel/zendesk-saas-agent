@@ -1,0 +1,11 @@
+[Unit]
+Description=Restart 3 tsh-proxy-db services after cert renewal
+# Triggered by tsh-cert.path; do not start manually unless debugging.
+
+[Service]
+Type=oneshot
+# 短 sleep 让 watchdog 完成 chown + 文件 fsync 之后再重启 proxies
+# （path unit 已 debounce 5s，再加 2s 兜底）
+ExecStart=/bin/sleep 2
+ExecStart=/usr/bin/systemctl restart tsh-proxy-db tsh-proxy-db-billing tsh-proxy-db-plugin
+ExecStart=/bin/sh -c 'echo "[$(date -Iseconds)] proxies restarted after cert change" >> /var/log/tsh-cert-restarts.log'

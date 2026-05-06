@@ -1,0 +1,18 @@
+[Unit]
+Description=Watch Teleport cert directory; trigger proxy restart on renewal
+After=tsh-auth-watchdog.service
+
+[Path]
+# Watch the cert keys dir; any change (file create / modify) triggers the
+# linked .service. tbot/auto-renew rewrites the keys/teleport.dify.dev
+# subdir on each successful tsh login.
+PathChanged=/opt/zd-agent/.tsh/keys/teleport.dify.dev
+# debounce: don't fire more than once every 5s even if cert files change
+# in quick succession (tsh login writes several files in a few ms)
+TriggerLimitIntervalSec=5s
+TriggerLimitBurst=1
+
+Unit=tsh-restart-proxies.service
+
+[Install]
+WantedBy=multi-user.target
