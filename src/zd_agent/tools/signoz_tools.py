@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 
 from zd_agent.config import get_config
@@ -22,54 +21,6 @@ def _client() -> SignozClient:
 
 def _trunc_json(data: Any, limit: int = 15000) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2)[:limit]
-
-
-_NOW_OFFSET_RE = __import__("re").compile(
-    r"^now(?:\s*-\s*(\d+)\s*([smhd]))?$",
-    __import__("re").IGNORECASE,
-)
-_UNIT_TO_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-
-
-def _to_epoch_ms(value: str | int) -> int:
-    """规范化 SigNoz 时间参数到 **epoch ms 整数**。
-
-    支持的输入格式：
-    - int（epoch s 或 epoch ms，自动判别）
-    - 全数字字符串（同上）
-    - ISO 8601: "2026-05-07T06:00:00+00:00" / "2026-05-07T06:00:00Z" / 无时区
-    - "now" / "now-5m" / "now-1h" / "now-2d"（LLM 可能这么传）
-    """
-    if isinstance(value, int):
-        # 区分秒和毫秒：> 1e12 ≈ 2001 年 9 月之后，按 ms；否则当 s
-        return value if value > 10**12 else value * 1000
-
-    s = str(value).strip()
-
-    # 全数字 → 当 epoch
-    if s.isdigit():
-        return _to_epoch_ms(int(s))
-
-    # "now" / "now-5m"
-    m = _NOW_OFFSET_RE.match(s)
-    if m:
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        amt, unit = m.group(1), m.group(2)
-        if amt and unit:
-            return now_ms - int(amt) * _UNIT_TO_SECONDS[unit.lower()] * 1000
-        return now_ms
-
-    # ISO 8601
-    try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1000)
-    except ValueError:
-        pass
-    raise ValueError(
-        f"signoz: 无法识别的时间格式 {value!r}；用 ISO 8601 / epoch ms / 'now-5m'"
-    )
 
 
 class SignozSearchLogs(Tool):
@@ -101,8 +52,8 @@ class SignozSearchLogs(Tool):
                 severity=args.get("severity"),
                 query=args.get("query"),
                 # /api/v3/query_range 期望 epoch ms 整数
-                start=_to_epoch_ms(args["start"]),
-                end=_to_epoch_ms(args["end"]),
+                start=args["start"],
+                end=args["end"],
                 limit=args.get("limit", 100),
             )
         except Exception as e:
@@ -131,8 +82,8 @@ class SignozSearchTraces(Tool):
             client = _client()
             result = await client.search_traces(
                 service_name=args["service_name"],
-                start=_to_epoch_ms(args["start"]),
-                end=_to_epoch_ms(args["end"]),
+                start=args["start"],
+                end=args["end"],
                 limit=args.get("limit", 50),
             )
         except Exception as e:
@@ -157,10 +108,10 @@ class SignozListServices(Tool):
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
         try:
             client = _client()
-            # /api/v1/services 这边历史上也接受 string，但保险起见也用 int
+            # /api/v1/services（v1，老 endpoint）期待字符串 epoch ms
             result = await client.list_services(
-                start=_to_epoch_ms(args["start"]),
-                end=_to_epoch_ms(args["end"]),
+                start=args["start"],
+                end=args["end"],
             )
         except Exception as e:
             return ToolResult(success=False, error=str(e))
