@@ -71,6 +71,12 @@ async def run_agent(session: AgentSession) -> None:
 
     # 创建工具注册中心
     registry = create_tool_registry()
+    # 异步附加：SigNoz MCP 工具（subprocess + JSON-RPC）
+    try:
+        from zd_agent.tools.registry import augment_registry_async
+        await augment_registry_async(registry)
+    except Exception as e:
+        logger.warning("registry_async_augment_failed", error=str(e))
 
     # 创建 LLM 客户端
     llm = LLMClient()

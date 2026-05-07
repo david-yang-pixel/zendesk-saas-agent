@@ -32,13 +32,6 @@ from zd_agent.tools.sandbox_tools import (
     SandboxWrite,
 )
 from zd_agent.tools.script_runner import RunScript, SandboxExec
-from zd_agent.tools.signoz_tools import (
-    SignozGetFieldKeys,
-    SignozGetFieldValues,
-    SignozListServices,
-    SignozSearchLogs,
-    SignozSearchTraces,
-)
 from zd_agent.tools.feishu_tools import FeishuPush
 from zd_agent.tools.saas_branch import SaasBranchSwitch
 from zd_agent.tools.sql_query import SqlQuery
@@ -134,13 +127,27 @@ def create_tool_registry() -> ToolRegistry:
         registry.register(GrafanaGetDashboard())
         registry.register(GrafanaQueryPrometheus())
 
-    # SigNoz 日志/追踪工具组（条件注册：仅当配置了 URL + API key）
-    _scfg = get_config().signoz
-    if _scfg.url and _scfg.api_key:
-        registry.register(SignozSearchLogs())
-        registry.register(SignozSearchTraces())
-        registry.register(SignozListServices())
-        registry.register(SignozGetFieldKeys())
-        registry.register(SignozGetFieldValues())
+    # SigNoz 工具走 MCP subprocess（详见 tools/signoz_mcp_tools.py 的 docstring）
+    # 异步注册——由 runner.py 在 dispatch 之前 await 进来。这里不挂手写 v3 client。
 
     return registry
+
+
+async def augment_registry_async(registry: "ToolRegistry") -> None:
+    """Async-only 工具组的注册（spawn MCP subprocess + tools/list）。
+
+    runner.py 在 ``create_tool_registry()`` 之后 ``await`` 这个函数，把
+    SigNoz MCP 暴露的 ~20 个工具加到 registry。MCP subprocess 是 module-level
+    singleton，多次 dispatch 复用同一进程。
+    """
+    from zd_agent.tools.signoz_mcp_tools import discover_signoz_mcp_tools
+
+    for tool in await discover_signoz_mcp_tools():
+        try:
+            registry.register(tool)
+        except Exception as e:
+            from zd_agent.log import get_logger
+            get_logger(module="tools.registry").warning(
+                "signoz_mcp_register_failed",
+                name=getattr(tool, "name", "?"), error=str(e),
+            )
