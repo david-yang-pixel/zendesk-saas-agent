@@ -92,6 +92,8 @@ class SignozClient:
                     "A": {
                         "dataSource": "logs",
                         "queryName": "A",
+                        "expression": "A",
+                        "aggregateOperator": "noop",
                         "filters": {"items": filters, "op": "AND"},
                         "orderBy": [{"columnName": "timestamp", "order": "desc"}],
                         "pageSize": limit,
@@ -117,6 +119,8 @@ class SignozClient:
                     "A": {
                         "dataSource": "traces",
                         "queryName": "A",
+                        "expression": "A",
+                        "aggregateOperator": "noop",
                         "filters": {
                             "items": [
                                 {"key": {"key": "service.name"}, "op": "=", "value": service_name}
