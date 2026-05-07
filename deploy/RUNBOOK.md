@@ -162,12 +162,11 @@ sudo systemctl enable --now tsh-proxy-db.service \
                             tsh-proxy-db-billing.service \
                             tsh-proxy-db-plugin.service
 sudo systemctl enable --now tsh-auth-watchdog.service
-sudo systemctl enable --now tsh-cert.path  # 续期成功后自动 restart 上面 3 个 proxy
 sudo systemctl enable --now proxy-health.timer  # 每 2min 探测 3 端口、socket 死自动 restart
 sudo systemctl enable --now zd-agent.service
 
 # Verify
-sudo systemctl status zd-agent tsh-proxy-db tsh-auth-watchdog tsh-cert.path proxy-health.timer
+sudo systemctl status zd-agent tsh-proxy-db tsh-auth-watchdog proxy-health.timer
 sudo journalctl -u zd-agent -f
 ```
 
