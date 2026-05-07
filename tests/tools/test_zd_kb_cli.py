@@ -28,7 +28,9 @@ async def test_search_builds_correct_cmd(fake_session):
             fake_session,
         )
     assert r.success is True
-    assert captured["args"] == ("zd", "kb", "search", "workflow 500")
+    # 第一个 arg 是 zd 可执行路径（解析到本机 venv 或 PATH）；只校验后续 args
+    assert captured["args"][0].endswith("zd"), f"first arg should be zd binary: {captured['args'][0]}"
+    assert captured["args"][1:] == ("kb", "search", "workflow 500")
 
 
 @pytest.mark.asyncio
@@ -46,7 +48,8 @@ async def test_article_with_url_only(fake_session):
             fake_session,
         )
     assert r.success is True
-    assert captured["args"] == ("zd", "kb", "article", "123", "--url-only")
+    assert captured["args"][0].endswith("zd")
+    assert captured["args"][1:] == ("kb", "article", "123", "--url-only")
 
 
 @pytest.mark.asyncio

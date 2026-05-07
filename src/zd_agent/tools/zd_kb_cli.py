@@ -2,12 +2,36 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import sys
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from zd_agent.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:
     from zd_agent.session.agent_session import AgentSession
+
+
+def _resolve_zd_bin() -> str | None:
+    """找到 zd CLI 可执行路径。
+
+    优先级：
+    1. shutil.which("zd")（PATH 里）
+    2. sys.executable 同目录（运行的 python venv 的 bin/）
+    3. /app/.venv/bin/zd（容器固定位置）
+    """
+    found = shutil.which("zd")
+    if found:
+        return found
+    py_bin_dir = Path(sys.executable).parent
+    candidate = py_bin_dir / "zd"
+    if candidate.exists():
+        return str(candidate)
+    fallback = Path("/app/.venv/bin/zd")
+    if fallback.exists():
+        return str(fallback)
+    return None
 
 
 class ZdKbCliExec(Tool):
@@ -48,7 +72,10 @@ class ZdKbCliExec(Tool):
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
         sub = args.get("subcommand", "")
-        cmd: list[str] = ["zd", "kb"]
+        zd_bin = _resolve_zd_bin()
+        if zd_bin is None:
+            return ToolResult(success=False, error="zd CLI not installed")
+        cmd: list[str] = [zd_bin, "kb"]
 
         if sub == "search":
             q = args.get("query")
