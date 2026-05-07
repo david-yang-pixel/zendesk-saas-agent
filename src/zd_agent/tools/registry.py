@@ -45,7 +45,6 @@ from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.ticket_record import TicketRecordRead, TicketRecordSearch
 from zd_agent.tools.subagent import RunSubagent
 from zd_agent.tools.subagent_parallel import RunSubagentsParallel
-from zd_agent.tools.zendesk_kg import ZendeskKgSearch
 from zd_agent.tools.zendesk import (
     ZendeskAddTags,
     ZendeskGetArticle,
@@ -74,9 +73,11 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ZendeskAddTags())
 
     # 知识库工具组
+    # ZendeskKgSearch 不再注册：依赖独立 zendesk-kg-cli（github.com/sorphwer/...）
+    # 该 CLI 未安装在生产容器内，且 zd_kb_cli_exec / zendesk_search_articles
+    # 已完全覆盖 Help Center 文章查询能力。让 LLM 看不到它，避免选错。
     registry.register(KnowledgeSearch())
     registry.register(KnowledgeRead())
-    registry.register(ZendeskKgSearch())
     registry.register(OfficialDocsSearch())
     registry.register(OfficialDocsRead())
     registry.register(ZdKbCliExec())
