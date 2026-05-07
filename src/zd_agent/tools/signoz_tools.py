@@ -100,8 +100,9 @@ class SignozSearchLogs(Tool):
                 service_name=args["service_name"],
                 severity=args.get("severity"),
                 query=args.get("query"),
-                start=str(_to_epoch_ms(args["start"])),
-                end=str(_to_epoch_ms(args["end"])),
+                # /api/v3/query_range 期望 epoch ms 整数
+                start=_to_epoch_ms(args["start"]),
+                end=_to_epoch_ms(args["end"]),
                 limit=args.get("limit", 100),
             )
         except Exception as e:
@@ -130,8 +131,8 @@ class SignozSearchTraces(Tool):
             client = _client()
             result = await client.search_traces(
                 service_name=args["service_name"],
-                start=str(_to_epoch_ms(args["start"])),
-                end=str(_to_epoch_ms(args["end"])),
+                start=_to_epoch_ms(args["start"]),
+                end=_to_epoch_ms(args["end"]),
                 limit=args.get("limit", 50),
             )
         except Exception as e:
@@ -156,9 +157,10 @@ class SignozListServices(Tool):
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
         try:
             client = _client()
+            # /api/v1/services 这边历史上也接受 string，但保险起见也用 int
             result = await client.list_services(
-                start=str(_to_epoch_ms(args["start"])),
-                end=str(_to_epoch_ms(args["end"])),
+                start=_to_epoch_ms(args["start"]),
+                end=_to_epoch_ms(args["end"]),
             )
         except Exception as e:
             return ToolResult(success=False, error=str(e))

@@ -33,8 +33,8 @@ class SignozClient:
         service_name: str,
         severity: Optional[str] = None,
         query: Optional[str] = None,
-        start: str,
-        end: str,
+        start: int | str,
+        end: int | str,
         limit: int = 100,
     ) -> dict[str, Any]:
         filters: list[dict[str, Any]] = [
@@ -66,7 +66,8 @@ class SignozClient:
         return await self._query_range(body)
 
     async def search_traces(
-        self, *, service_name: str, start: str, end: str, limit: int = 50,
+        self, *, service_name: str, start: int | str, end: int | str,
+        limit: int = 50,
     ) -> dict[str, Any]:
         body = {
             "start": start,
@@ -94,7 +95,7 @@ class SignozClient:
         }
         return await self._query_range(body)
 
-    async def list_services(self, *, start: str, end: str) -> dict[str, Any]:
+    async def list_services(self, *, start: int | str, end: int | str) -> dict[str, Any]:
         endpoint = f"{self.url}/api/v1/services"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(

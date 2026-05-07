@@ -24,12 +24,22 @@ _CONTEXT_LINES = 2
 
 
 def _resolve_docs_dir() -> Path | None:
-    """统一解析 docs_dir：先 knowledge.docs_dir，不存在再退到 resources。"""
+    """统一解析 SaaS 知识库目录。
+
+    优先使用 ``cfg.resources.base_dir / cfg.resources.knowledge_base_dir``
+    （生产部署的真实 saas 知识库位置）；这个路径不存在时才退到
+    ``cfg.knowledge.docs_dir``。
+
+    注意：``knowledge.docs_dir`` 默认 ``./ai-docs`` 与 ``archive_dir`` 同根，
+    archive_ticket 写入的工单分析也在那里。如果优先选 docs_dir 会让
+    knowledge_search **搜到 agent 自己写的工单 archive 而不是真实知识库**——
+    所以这里把 resources 的 knowledge_base_dir 设为优先。
+    """
     cfg = get_config()
-    primary = Path(cfg.knowledge.docs_dir)
+    primary = Path(cfg.resources.base_dir) / cfg.resources.knowledge_base_dir
     if primary.exists() and primary.is_dir():
         return primary
-    fallback = Path(cfg.resources.base_dir) / cfg.resources.knowledge_base_dir
+    fallback = Path(cfg.knowledge.docs_dir)
     if fallback.exists() and fallback.is_dir():
         return fallback
     return None
