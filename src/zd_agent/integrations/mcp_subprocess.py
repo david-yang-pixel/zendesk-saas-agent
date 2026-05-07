@@ -56,6 +56,13 @@ class MCPSubprocessClient:
             stderr=asyncio.subprocess.PIPE,
             env=merged_env,
         )
+        # Bump StreamReader limits to 16 MiB — MCP tools/list returns ~80KB
+        # for 20 tools and individual tool/call results can be 1+ MB (logs).
+        # asyncio default is 64KB and `Separator is found, but chunk is longer
+        # than limit` errors out reading anything > 64KB.
+        for stream in (self._proc.stdout, self._proc.stderr):
+            if stream is not None and hasattr(stream, "_limit"):
+                stream._limit = 16 * 1024 * 1024  # type: ignore[attr-defined]
 
         # initialize handshake
         init_resp = await self._raw_request({
