@@ -128,13 +128,39 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 
 ### 输出（Step 19-22）
 
+- **Step 18.5** — 🚨 **Confidence 自检 + 必要时 Redo**（强制环节，不可跳过）
+
+  在写 Internal Note 之前先在自己脑子里答这 6 个问题：
+
+  | # | 自检 | 不及格 → 行动 |
+  |---|---|---|
+  | 1 | 我是否真**看到**了客户截图？（vision 能描述图里的具体内容，例如"截图显示 workflow run 节点 X 报 timeout"）| 没看到 → 检查 _inject_images 日志，截图丢失这件事**写到 Internal Note**（诚实归因），不要假装客户没发图 |
+  | 2 | 我是否调过 sql_query 拿到 workspace 的真实 DB 状态？（不仅是"试过"，是有具体行返回 / 或具体 0 row 证据）| 没 → 立刻补一轮 sql |
+  | 3 | Subagent A 的任务描述里**是否明写**了当前 category 的必查路径表？（看 `## 针对性处理策略` 段，每个 category 都列了具体路径）| 没 → 重新派 subagent A，把路径粘进任务描述 |
+  | 4 | 我是否**用了多个同义词**搜历史工单？（一个关键词 0 hit 不算搜过 — 至少 2 个同义/近义词）| 没 → 补 ticket_record_search |
+  | 5 | 我的回复里**有没有引用具体证据**？（"看到 message_credit_service.py:39 quota_limit=5000" 这种；不是"经查相关代码")| 没 → 必须要么找到证据，要么诚实说"未找到" |
+  | 6 | 我打算给的 confidence 是 high / medium / low？ | medium / low → 见下面 "Redo 规则" |
+
+  **Redo 规则**：
+  - **confidence ≥ high 且回复有具体诊断 + 证据** → 可以发
+  - **confidence = medium 但有具体根因（带证据）+ 验证步骤** → 可以发，但 Review Guide 必须明说"建议客户先验证 X 再决定下一步"
+  - **confidence = medium 且回复主要是"请客户补充信息"** → ❌ **不许发**。回到 Step 10-18 重派一轮 subagent，重点是：
+    - 重看 strategies 段必查路径表，是不是漏了某条
+    - 重看截图，是不是漏了图里的细节
+    - 重 sql_query，问题是不是出在 staging vs prod、或 wid 拼错（试 SQL `WHERE id LIKE '<前 8 字符>%'` 模糊匹配）
+  - **confidence = low** → 同 medium 同条件，必须 redo 一轮再决定
+
+  **客户回复必须有的两件事**（任一缺失 = 重写）：
+  - **具体诊断**：不是"may be related to" / "could be"，是"是 X 引起的，因为 Y 证据"
+  - **具体行动**：要么"请按 Z 步骤验证"，要么"无需操作，已为你重置 / 已交开发"
+
 - **Step 19** — 综合所有 subagent 结论，产出 Internal Note（三段式）：
 
   ```
   ## 内部分析
   - 分类：<platform_issue/...>
-  - 根因判断：<...>
-  - 关键证据：源码 line X / SigNoz log / GitHub PR #N
+  - 根因判断：<具体根因，带源码 / SQL / 截图证据>
+  - 关键证据：源码 line X / SigNoz log / GitHub PR #N / SQL 返回 N 行 / 截图显示 ...
   - 置信度：high/medium/low
 
   ---
@@ -145,7 +171,10 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 
   <称呼（您好，/ Hi,）>
 
-  <正文 ≤ 200 字 / 字符>
+  <按问题复杂度选长度（SOUL 第 3 条）：
+   简单 ≤200 字、中等 ≤400 字、复杂 ≤700 字。
+   绝对不能：用空话填长度（"我们会进一步排查"），
+   绝对必须：每句要么承载事实结论，要么承载具体行动。>
 
   <礼貌结尾（此致 / Best regards,）>
 
