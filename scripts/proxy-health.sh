@@ -16,10 +16,23 @@ declare -A PORTS=(
 )
 
 LOG_FILE=/var/log/proxy-health.log
+# 让出 watchdog/path-unit 的 grace 期：cert 在 GRACE 秒内被续期过则跳过本轮探测
+# （path-unit 自己会 restart proxies；proxy-health 不要插一脚加剧 crashloop）
+CERT_FILE=/opt/zd-agent/.tsh/keys/teleport.dify.dev/yangyonggang.crt
+GRACE_SECONDS=60
 
 log() {
     echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE" >&2
 }
+
+# Skip whole probe if cert was just rotated; let tsh-cert.path handle restart.
+if [ -f "$CERT_FILE" ]; then
+    cert_age=$(( $(date +%s) - $(stat -c %Y "$CERT_FILE") ))
+    if [ "$cert_age" -lt "$GRACE_SECONDS" ]; then
+        log "cert rotated $cert_age s ago (< ${GRACE_SECONDS}s); skipping probe — path-unit owns restart"
+        exit 0
+    fi
+fi
 
 probe() {
     # Returns 0 if port is reachable + responds (TCP handshake completes).

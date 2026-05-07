@@ -4,8 +4,15 @@ Description=Restart 3 tsh-proxy-db services after cert renewal
 
 [Service]
 Type=oneshot
-# 短 sleep 让 watchdog 完成 chown + 文件 fsync 之后再重启 proxies
-# （path unit 已 debounce 5s，再加 2s 兜底）
-ExecStart=/bin/sleep 2
-ExecStart=/usr/bin/systemctl restart tsh-proxy-db tsh-proxy-db-billing tsh-proxy-db-plugin
-ExecStart=/bin/sh -c 'echo "[$(date -Iseconds)] proxies restarted after cert change" >> /var/log/tsh-cert-restarts.log'
+# tsh login 续期会在几秒内连续写多个 cert 文件（yangyonggang / .crt / .key / .pub /
+# certs.pem / current-profile / yangyonggang-db/...）每个 fs 事件都触发一次
+# tsh-cert.path → 多次进来抢 restart，proxy 进程被反复 kill 进 crashloop。
+# 用 flock 串行化：第一次执行的拿到锁，剩下的瞬时被拒（exit 1，按 success 处理）。
+# 锁内 sleep 8 等所有 cert 文件 settle 之后再 restart，确保 proxy 用最终态 cert。
+ExecStart=/usr/bin/flock -n /var/lock/tsh-restart.lock /bin/sh -c '\
+    sleep 8; \
+    systemctl restart tsh-proxy-db tsh-proxy-db-billing tsh-proxy-db-plugin; \
+    echo "[$$(date -Iseconds)] proxies restarted via path-trigger" >> /var/log/tsh-cert-restarts.log; \
+'
+# flock -n 抢不到锁时 exit 1 → 视作成功（这是预期）
+SuccessExitStatus=0 1
