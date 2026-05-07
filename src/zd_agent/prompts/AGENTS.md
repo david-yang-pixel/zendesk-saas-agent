@@ -91,10 +91,27 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 **Subagent A 工作策略**：
 1. 先用 `git_grep` 在本地 5 个仓库（dify / dify-billing / dify-marketplace-backend / dify-marketplace-frontend / saas-deploy）搜
 2. 本地搜不到 → **立刻** `github_code_search query="..." scope="langgenius"`
-   覆盖第三方插件仓（dify-plugins / 各插件单独仓 / dify-cloud 等没在服务器 clone 的）
-3. **典型场景**：客户报的是 Lark/Notion/Google Drive/Slack/飞书多维表格等
-   插件相关的 invalid credential / scope 错误 → 本地查不到 → 直接 GitHub 远程搜
-4. 拿到匹配后用 `github_get_pr`/`github_search_prs` 看看有没有 fix PR
+   覆盖第三方插件仓（dify-official-plugins / 各插件单独仓 / dify-cloud 等没在服务器 clone 的）
+3. 拿到匹配后用 `github_get_pr`/`github_search_prs` 看看有没有 fix PR
+
+#### Subagent A 按 category **必查仓库 + 路径**（不查这里就是答错）
+
+派 subagent A 时务必把这些路径**显式写进它的任务描述**，不要只写"搜源码":
+
+| Category | 必查的仓库 + 路径（git_grep 优先；不在本地的用 github_code_search） |
+|---|---|
+| **billing** / **refund** | `dify-billing/app/services/billing/*`<br>`dify-billing/app/services/dify/provider_service.py`（credit pool）<br>`dify-billing/app/models/billing/*`（subscription / message_credit_log schema）<br>`dify/api/services/billing/*`<br>`dify/api/services/credit_pool_service.py`<br>`dify/api/core/app/llm/quota.py`（quota 扣费逻辑） |
+| **platform_issue** | `dify/api/core/*`<br>`dify/api/services/*`<br>`dify/api/controllers/*`<br>+ Grafana / SigNoz subagent C/D 同时跑 |
+| **workflow** | `dify/api/core/app/workflow/*`<br>`dify/api/services/workflow_*`<br>`dify/api/models/workflow.py` |
+| **api** | `dify/api/controllers/*`<br>`dify/api/services/*`<br>**插件类（Lark / Notion / Slack / Google Drive ...）→ `github_code_search scope="langgenius/dify-official-plugins"`**（这些不在本地 clone 里） |
+| **knowledge_base** | `dify/api/services/dataset_service.py`<br>`dify/api/services/document_service.py`<br>`dify/api/core/rag/*` |
+| **permissions** | `dify/api/services/account_service.py`<br>`dify/api/services/workspace_service.py`<br>`dify/api/models/account.py`（Role / TenantAccountJoin） |
+| **product_usage** | KB 优先（subagent A 不要硬挖源码） |
+
+**反例（绝不能这样）**：
+- "billing 类工单只搜了 dify 主仓 i18n + workspace_service" → 漏掉 dify-billing 是真理之源
+- "插件类问题在本地 dify 仓搜了 0 hit 就下结论代码里没有" → 必须 github_code_search dify-official-plugins
+- "git_grep 命中 1 个文件就停" → subagent A 要把所有命中文件的关键代码读完再 summarize
 
 ### 知识匹配（Step 15-18）⚡⚡⚡ **必须 `run_subagents_parallel` 并行**
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Probe tsh-proxy-db ports and restart any that dropped sockets
+# Triggered by proxy-health.timer; can also be started manually for debugging.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/zd-agent/code/scripts/proxy-health.sh
+# Restart on failure of the script itself (e.g. systemctl call denied) so
+# we don't silently stop probing.
+StandardOutput=journal
+StandardError=journal
