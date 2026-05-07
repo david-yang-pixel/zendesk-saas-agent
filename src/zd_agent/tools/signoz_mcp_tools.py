@@ -123,6 +123,29 @@ class _SignozMcpTool(Tool):
         return ToolResult(output=dumped)
 
 
+# SigNoz Cloud 歧义字段提示。MCP 上游 tool description 给的示例
+# (`body CONTAINS 'x'`, `service.name = 'x'`) 在 SigNoz Cloud 上会触发字段歧义
+# warning ——`body` 同时存在于 attribute / log context，`service.name` 同时存在
+# 于 attribute / resource。SigNoz 不报错而是默认选一个解释跑，结果命中 0 行。
+# 在 description 里追加这段，让 LLM 改用 searchText 或带 context 前缀的字段。
+_LOG_QUERY_HINT = (
+    "\n\n[SigNoz Cloud 用法须知 — 重要]\n"
+    "上面示例里的 `body CONTAINS 'x'` / `service.name = 'x'` 在 SigNoz Cloud 上**会触发字段歧义**\n"
+    "（`body` 和 `service.name` 同时存在 attribute/log/resource 上下文），导致命中 0 行但不报错。\n"
+    "正确写法（任选其一）：\n"
+    "  1. 文本匹配 body：**用 `searchText` 参数**（不要把 `body CONTAINS '...'` 写进 query）。\n"
+    "  2. 服务过滤：**用 `service` 参数**（不要在 query 里写 `service.name = '...'`）。\n"
+    "  3. 自定义 query 里引用字段时，加上 context 前缀：\n"
+    "     - `attributes.workflow_run_id = '...'`\n"
+    "     - `resources.workspace_id = '...'`\n"
+    "     - `log.body LIKE '%xxx%'`（注意是 LIKE 不是 CONTAINS，且要 % 通配）\n"
+    "  4. 不要用多个 `body CONTAINS` AND 起来 — 拆成 searchText（一段文本）+ "
+    "其它结构化条件用 query 字段。\n"
+    "结果若有 `meta.warning.warnings` 含 'is ambiguous' 或 `rowsScanned: 0`，"
+    "说明 query 条件没生效，需按上面规则重写。"
+)
+
+
 async def discover_signoz_mcp_tools() -> list[_SignozMcpTool]:
     """Bootstrap once: spawn MCP subprocess, list its tools, wrap each."""
     client = _make_client()
@@ -136,9 +159,14 @@ async def discover_signoz_mcp_tools() -> list[_SignozMcpTool]:
     out: list[_SignozMcpTool] = []
     for meta in tools_meta:
         try:
+            description = meta.get("description", "")
+            # 给 logs 类工具追加 Cloud 歧义字段提示
+            name = meta["name"]
+            if name in ("signoz_search_logs", "signoz_aggregate_logs"):
+                description = description + _LOG_QUERY_HINT
             t = _SignozMcpTool(
-                mcp_name=meta["name"],
-                description=meta.get("description", ""),
+                mcp_name=name,
+                description=description,
                 parameters=meta.get("inputSchema") or {
                     "type": "object", "properties": {}, "required": [],
                 },
