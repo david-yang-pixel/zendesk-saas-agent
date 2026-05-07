@@ -131,6 +131,9 @@ _IMG_MAX_BYTES = 4 * 1024 * 1024  # 单图 4 MiB 上限
 _IMG_TOTAL_BUDGET = 6  # 一次判定最多送几张图（控制 token + 速度）
 
 
+_SC_ATTACHMENT_RE = __import__("re").compile(r"/sc/attachments/v2/([^/]+)/")
+
+
 async def _download_image_data_url(
     url: str,
     *,
@@ -139,8 +142,12 @@ async def _download_image_data_url(
 ) -> str | None:
     """下载图片返回 ``data:image/...;base64,...`` URL。
 
-    Zendesk 的 ``content_url`` 需要 basic auth；Smooch CDN 的 ``media_url`` 一般匿名可访问。
-    这里先尝试匿名；遇到 401/403 时若是 zendesk.com 域则用配置里的邮箱+token 重试。
+    三种 Zendesk 附件 URL 都要支持：
+    1. Smooch CDN ``media_url``（匿名可下） — 第一次直接 GET 即可
+    2. Zendesk Help Center ``content_url`` — 401/403 时用 email/token basic auth 重试
+    3. **Sunshine ``/sc/attachments/v2/{att_id}/...``**（messaging 工单的截图）
+       直接 GET 永远 401。要绕路：
+       ``GET /api/v2/ticket_attachments/{att_id}/content`` → 302 → 预签名 URL → 下载
     """
     import base64
     import httpx
@@ -153,31 +160,80 @@ async def _download_image_data_url(
     if is_zd and env.zendesk_email and env.zendesk_api_token:
         auth = (f"{env.zendesk_email}/token", env.zendesk_api_token)
 
+    async def _from_response(resp: httpx.Response) -> str | None:
+        if resp.status_code != 200:
+            return None
+        data = resp.content
+        if len(data) > max_bytes:
+            logger.warning(
+                "vision_image_too_large",
+                url=url[:120], size=len(data), limit=max_bytes,
+            )
+            return None
+        ctype = (resp.headers.get("Content-Type") or "image/png").split(";")[0].strip()
+        if not ctype.startswith("image/"):
+            ctype = "image/png"
+        return f"data:{ctype};base64,{base64.b64encode(data).decode('ascii')}"
+
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            # 先尝试无 auth（Zendesk 的 content_url 多数也接受预签名重定向）
+            # 路径 1：直接 GET（Smooch CDN / 预签名 URL 走这条）
             resp = await client.get(url)
+            if resp.status_code == 200:
+                return await _from_response(resp)
+
+            # 路径 2：401/403 + Zendesk 域名 → 试 basic auth
             if resp.status_code in (401, 403) and auth is not None:
                 resp = await client.get(url, auth=auth)
-            if resp.status_code != 200:
-                logger.warning(
-                    "vision_image_download_http_error",
-                    url=url[:120], status=resp.status_code,
-                )
-                return None
-            data = resp.content
-            if len(data) > max_bytes:
-                logger.warning(
-                    "vision_image_too_large",
-                    url=url[:120], size=len(data), limit=max_bytes,
-                )
-                return None
-            ctype = (resp.headers.get("Content-Type") or "image/png").split(";")[0].strip()
-            if not ctype.startswith("image/"):
-                # 兜底
-                ctype = "image/png"
-            b64 = base64.b64encode(data).decode("ascii")
-            return f"data:{ctype};base64,{b64}"
+                if resp.status_code == 200:
+                    return await _from_response(resp)
+
+            # 路径 3：仍然 401 + URL 是 /sc/attachments/v2/{att_id}/...
+            #         → 走 ticket_attachments/{id}/content 重定向（messaging 截图必经）
+            sc_match = _SC_ATTACHMENT_RE.search(url)
+            if (
+                resp.status_code in (401, 403)
+                and sc_match
+                and is_zd
+                and auth is not None
+            ):
+                att_id = sc_match.group(1)
+                subdomain = (env.zendesk_subdomain or cfg.zendesk.subdomain or "").strip()
+                if not subdomain:
+                    # 从 url 抽（langgenius.zendesk.com → langgenius）
+                    import re as _re
+                    sd_match = _re.search(r"https://([^.]+)\.zendesk\.com", url)
+                    if sd_match:
+                        subdomain = sd_match.group(1)
+                if subdomain:
+                    redir_url = f"https://{subdomain}.zendesk.com/api/v2/ticket_attachments/{att_id}/content"
+                    redir_resp = await client.get(
+                        redir_url, auth=auth, follow_redirects=False,
+                    )
+                    if redir_resp.status_code in (301, 302, 303, 307):
+                        loc = redir_resp.headers.get("Location", "")
+                        if loc:
+                            # 预签名 URL 自带 token，匿名 GET 即可
+                            final = await client.get(loc)
+                            if final.status_code == 200:
+                                return await _from_response(final)
+                            logger.warning(
+                                "vision_sc_redirect_dl_failed",
+                                url=url[:120], status=final.status_code,
+                            )
+                            return None
+                    logger.warning(
+                        "vision_sc_redirect_unexpected",
+                        url=url[:120],
+                        attempted=redir_url[:120],
+                        status=redir_resp.status_code,
+                    )
+
+            logger.warning(
+                "vision_image_download_http_error",
+                url=url[:120], status=resp.status_code,
+            )
+            return None
     except Exception as e:
         logger.warning(
             "vision_image_download_failed",

@@ -104,30 +104,55 @@ def _assistant_message_dict(response: LLMResponse) -> dict[str, Any]:
     return msg
 
 
-def _inject_images(session: AgentSession, message_store: MessageStore) -> None:
-    """将工单截图以多模态 user 消息注入上下文。"""
-    images = session.image_urls[:MAX_IMAGES]
-    if not images:
+async def _inject_images(session: AgentSession, message_store: MessageStore) -> None:
+    """将工单截图以多模态 user 消息注入上下文。
+
+    必须把图**预下载**成 data URL 注入。原始 URL（特别是
+    Zendesk Sunshine ``/sc/attachments/v2/...``）OpenAI 那边
+    fetch 会 401 —— 客户截图本质看不到。
+    """
+    raw_images = session.image_urls[:MAX_IMAGES]
+    if not raw_images:
+        return
+
+    # Lazy import to avoid circular saas_app ↔ runtime
+    from zd_agent.entry.saas_app import _download_image_data_url
+
+    # 并发下载，跳过失败的（不阻断 dispatch）
+    results = await asyncio.gather(
+        *(_download_image_data_url(img["url"]) for img in raw_images),
+        return_exceptions=False,
+    )
+    data_urls = [(img, dl) for img, dl in zip(raw_images, results) if dl]
+
+    if not data_urls:
+        logger.warning(
+            "images_inject_all_failed",
+            ticket_id=session.ticket_id,
+            attempted=len(raw_images),
+        )
         return
 
     content: list[dict[str, Any]] = [
         {
             "type": "text",
             "text": (
-                f"以下是工单中客户提交的 {len(images)} 张截图，请仔细查看并结合对话内容分析问题："
+                f"以下是工单中客户提交的 {len(data_urls)} 张截图（已预下载并以 base64 内嵌），"
+                "请仔细查看并结合对话内容分析问题："
             ),
         },
     ]
-    for img in images:
+    for img, durl in data_urls:
         content.append({
             "type": "image_url",
-            "image_url": {"url": img["url"], "detail": "low"},
+            "image_url": {"url": durl, "detail": "low"},
         })
     message_store.append_user(content)
     logger.info(
         "images_injected",
         ticket_id=session.ticket_id,
-        count=len(images),
+        count=len(data_urls),
+        attempted=len(raw_images),
         truncated=len(session.image_urls) > MAX_IMAGES,
     )
 
@@ -313,7 +338,7 @@ async def agent_loop(
                     yield r
 
             if session.image_urls and not session.images_injected:
-                _inject_images(session, message_store)
+                await _inject_images(session, message_store)
                 session.images_injected = True
 
             _inject_language_reminder(session, message_store)
