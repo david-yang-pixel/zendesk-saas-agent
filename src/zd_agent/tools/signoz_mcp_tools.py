@@ -88,21 +88,39 @@ class _SignozMcpTool(Tool):
                 success=False,
                 error="SigNoz MCP unavailable (binary missing or not configured)",
             )
+        # Structured logging: see exactly what we send to MCP. Helps diagnose
+        # "rowsScanned=0" cases — distinguishes bad args from API-side empty response.
+        try:
+            args_preview = json.dumps(args, ensure_ascii=False)[:500]
+        except Exception:
+            args_preview = repr(args)[:500]
+        logger.info("signoz_mcp_call", tool=self._mcp_name, args=args_preview)
         try:
             result = await client.call_tool(self._mcp_name, args)
         except MCPClientError as e:
+            logger.warning("signoz_mcp_error", tool=self._mcp_name, error=str(e))
             return ToolResult(success=False, error=f"MCP error: {e}")
         # MCP returns {content: [{type:'text', text:'...'}], isError: bool}
         if result.get("isError"):
             content = result.get("content", [])
             err = content[0].get("text", "") if content else "unknown MCP error"
+            logger.warning("signoz_mcp_tool_error", tool=self._mcp_name, error=err[:200])
             return ToolResult(success=False, error=err[:500])
         # Unwrap text content (most SigNoz tools return single text item with JSON)
         content = result.get("content", [])
         if content and isinstance(content[0], dict) and content[0].get("type") == "text":
-            return ToolResult(output=content[0]["text"])
+            text = content[0]["text"]
+            logger.info(
+                "signoz_mcp_ok",
+                tool=self._mcp_name,
+                bytes=len(text),
+                preview=text[:200].replace("\n", " "),
+            )
+            return ToolResult(output=text)
         # Fallback — dump the raw result
-        return ToolResult(output=json.dumps(result, ensure_ascii=False, indent=2)[:5000])
+        dumped = json.dumps(result, ensure_ascii=False, indent=2)[:5000]
+        logger.info("signoz_mcp_ok_raw", tool=self._mcp_name, bytes=len(dumped))
+        return ToolResult(output=dumped)
 
 
 async def discover_signoz_mcp_tools() -> list[_SignozMcpTool]:
