@@ -93,7 +93,19 @@ async def run_agent(session: AgentSession) -> None:
     # 构造 user message
     user_content = f"请处理工单 #{session.ticket_id}。"
     if session.hint:
-        user_content += f"\n\n额外提示：{session.hint}"
+        # hint 显式标记为"辅助提示"——避免它把 agent 的诊断主线带歪。
+        # 之前观察到：用户给的 hint（如"重点验证 SigNoz"、"忽略我的备注"）
+        # 容易被 LLM 当主任务，反而弱化了核心诊断（如 provider 维度分析）。
+        # 现在明示：hint 只是辅助约束，不应改变 SOUL/AGENTS/strategies 定义的诊断流程。
+        user_content += (
+            "\n\n---\n"
+            "【辅助提示，仅做参考，不应改变或限制诊断范围 / 主导分析方向】\n"
+            f"{session.hint}\n"
+            "---\n"
+            "提醒：即使有上述辅助提示，你仍必须按 SOUL.md / AGENTS.md / "
+            "strategies/<category>.md 的完整流程跑诊断，不能因为辅助提示就跳过 "
+            "Quality Bar 必跑步骤（找基线、维度聚合、统计量、对照对比）。"
+        )
     if session.dry_run:
         user_content += "\n\n注意：当前为 Dry Run 模式，分析完成后生成回复草稿即可，不要实际发送回复。"
 
