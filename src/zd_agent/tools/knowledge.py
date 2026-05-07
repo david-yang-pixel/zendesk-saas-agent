@@ -1,4 +1,10 @@
-"""知识库工具组：搜索和读取 ai-docs/ 中的文档"""
+"""知识库工具组：搜索和读取本地 SaaS 知识库的文档。
+
+知识库实际路径优先级：
+  1. cfg.knowledge.docs_dir 如果存在
+  2. {cfg.resources.base_dir}/{cfg.resources.knowledge_base_dir}（默认指向
+     /opt/zd-agent/resources/saas版知识库/，SaaS 部署的真实位置）
+"""
 
 from __future__ import annotations
 
@@ -15,6 +21,18 @@ _SEARCH_EXTENSIONS = {".md", ".json", ".txt", ".yaml", ".yml"}
 _MAX_MATCHES = 30
 _MAX_OUTPUT_CHARS = 5000
 _CONTEXT_LINES = 2
+
+
+def _resolve_docs_dir() -> Path | None:
+    """统一解析 docs_dir：先 knowledge.docs_dir，不存在再退到 resources。"""
+    cfg = get_config()
+    primary = Path(cfg.knowledge.docs_dir)
+    if primary.exists() and primary.is_dir():
+        return primary
+    fallback = Path(cfg.resources.base_dir) / cfg.resources.knowledge_base_dir
+    if fallback.exists() and fallback.is_dir():
+        return fallback
+    return None
 
 
 class KnowledgeSearch(Tool):
@@ -42,11 +60,15 @@ class KnowledgeSearch(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        cfg = get_config()
-        docs_dir = Path(cfg.knowledge.docs_dir)
-
-        if not docs_dir.exists():
-            return ToolResult(success=False, error=f"知识库目录不存在: {docs_dir}")
+        docs_dir = _resolve_docs_dir()
+        if docs_dir is None:
+            return ToolResult(
+                success=False,
+                error=(
+                    "知识库目录不存在。检查 cfg.knowledge.docs_dir 或 "
+                    "{resources.base_dir}/{resources.knowledge_base_dir} 是否挂载"
+                ),
+            )
 
         search_dir = docs_dir
         if sub := args.get("path"):
@@ -171,8 +193,10 @@ class KnowledgeRead(Tool):
     group = "knowledge"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        cfg = get_config()
-        docs_dir = Path(cfg.knowledge.docs_dir).resolve()
+        docs_dir = _resolve_docs_dir()
+        if docs_dir is None:
+            return ToolResult(success=False, error="知识库目录不存在")
+        docs_dir = docs_dir.resolve()
         target = (docs_dir / args["filepath"]).resolve()
 
         try:

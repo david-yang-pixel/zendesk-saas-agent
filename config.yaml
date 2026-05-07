@@ -64,7 +64,8 @@ postgres:
   port_plugin: 56063
 grafana:
   url: https://grafana.ops.dify.dev
-  prom_datasource_id: 1
+  # 实际 prometheus datasource ID — 通过 GET /api/datasources 拿
+  prom_datasource_id: 5
 signoz:
   url: https://dify.us2.signoz.cloud
 teleport:
