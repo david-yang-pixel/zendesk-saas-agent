@@ -283,7 +283,7 @@ LIMIT 20;
 ### 🚫 禁止的 SQL 失败处理方式
 
 - ❌ "SQL 失败了，跳过这一步" → 必须按上表 retry 至少一次
-- ❌ "改用 SigNoz 查日志补数据" → SigNoz 不是 SQL 替代品，且当前可能 ingest 异常
+- ❌ "改用 SigNoz 查日志补数据" → SigNoz 不是 SQL 替代品；workflow 慢类问题主要看 DB 表里的 elapsed_time 分布，SigNoz 是补充而非主线
 - ❌ "我假设 elapsed_time 是 X" → 数据缺失就老实写"未能获得节点级数据，限制了诊断深度"
 - ❌ 第一次 retry 还失败就放弃 → 至少试两次不同的简化方向
 
@@ -303,7 +303,7 @@ LIMIT 20;
    - A. 源码（按上表）
    - B. GitHub Issues/PRs（搜慢相关 PR：parallel iteration、SSE、streaming、provider timeout）
    - C. 历史工单（ticket_record_search 用同义词扩展："slow" / "latency" / "timeout" / "卡" / "慢" / "耗时"）
-   - D. SigNoz worker 日志（若涉及异步执行；SigNoz 集群当前可能 ingest 异常，0 行不能反证"无日志"）
+   - D. SigNoz worker 日志（若涉及异步执行）。**workflow 异步任务实际跑在 `k8s.deployment.name = dify-app-worker`，不是 `dify-api-oltp`**；查询规则详见 `strategies/platform_issue.md` 的 SigNoz 章节（service.name prod/staging 命名差异、必加 deployment.environment 过滤、聚合先于搜索）
 6. **参考本地知识库** `saas版知识库/03-workflow.md`
 
 ---
