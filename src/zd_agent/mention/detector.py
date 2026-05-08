@@ -43,7 +43,13 @@ def is_mention(comment: dict, trigger: str) -> bool:
       - 原始文字：``@yonggang``
       - Zendesk API 返回的 markdown 格式：``**yonggang**``
     """
-    if comment.get("is_public", True):
+    # Zendesk Comments API 字段名是 ``public``（不是 ``is_public``）。
+    # 之前用 ``is_public`` 永远拿默认 True → 所有 mention 被当成 public 而过滤掉。
+    # 兼容两种命名：先看 ``public``，没有再 fallback ``is_public``。
+    public_flag = comment.get("public")
+    if public_flag is None:
+        public_flag = comment.get("is_public", True)
+    if public_flag:
         return False
 
     # 防自触发：agent 用的是 yonggang@dify.ai 本人账号，所以单靠 author_id ==

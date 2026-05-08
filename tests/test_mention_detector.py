@@ -94,6 +94,31 @@ class TestIsMention(unittest.TestCase):
         ):
             self.assertFalse(is_mention(comment, "@yonggang"))
 
+    def test_real_zendesk_shape_uses_public_not_is_public(self) -> None:
+        """真实 Zendesk Comments API 返回的字段是 ``public`` 不是 ``is_public``。
+        之前的 detector 用 ``is_public`` → 永远拿 default True → 所有 mention 被
+        过滤为 public 而漏触发。这是导致 #2320 工单 @yonggang 不响应的根因。"""
+        comment = {
+            "public": False,  # ← Zendesk 真实字段名
+            "body": "**yonggang** 看下这个问题",
+            "author_id": 45433304089364,
+            "via": {"channel": "web"},
+        }
+        with patch(
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=45433304089364,
+        ):
+            self.assertTrue(is_mention(comment, "@yonggang"))
+
+    def test_real_zendesk_shape_public_true_returns_false(self) -> None:
+        """``public: true`` 表示公开评论，不应触发。"""
+        comment = {
+            "public": True,
+            "body": "@yonggang please help",
+            "via": {"channel": "web"},
+        }
+        self.assertFalse(is_mention(comment, "@yonggang"))
+
     def test_human_via_chat_channel_triggers(self) -> None:
         """messaging / chat 渠道也算人类操作。"""
         comment = {
