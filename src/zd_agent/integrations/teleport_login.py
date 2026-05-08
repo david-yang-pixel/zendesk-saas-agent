@@ -72,18 +72,25 @@ async def run_tsh_login(
                 stdout=r.stdout.decode("utf-8", errors="replace")[:200],
                 stderr=r.stderr.decode("utf-8", errors="replace")[:200],
             )
-            # 兜底：硬删 keys / current-profile
+            # 兜底：硬删 keys / current-profile / <cluster>.yaml
+            # 集群名 = proxy 去掉端口（tsh 用集群名做 profile 文件名而不是 proxy 字符串）
+            # 例：proxy="teleport.dify.dev:443" → 文件名 "teleport.dify.dev.yaml"
+            cluster_name = proxy.split(":", 1)[0]
             keys_dir = _P(auth_home) / "keys"
             if keys_dir.exists():
                 shutil.rmtree(keys_dir, ignore_errors=True)
-            for fname in ("current-profile", "teleport.dify.dev.yaml"):
+            for fname in ("current-profile", f"{cluster_name}.yaml"):
                 fpath = _P(auth_home) / fname
                 if fpath.exists():
                     try:
                         fpath.unlink()
                     except Exception:
                         pass
-            logger.info("tsh_profile_purged", auth_home=auth_home)
+            logger.info(
+                "tsh_profile_purged",
+                auth_home=auth_home,
+                cluster_name=cluster_name,
+            )
         except Exception as e:
             return False, f"pre-logout failed: {e}"
 
