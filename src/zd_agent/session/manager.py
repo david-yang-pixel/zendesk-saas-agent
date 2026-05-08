@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
@@ -20,6 +20,10 @@ from zd_agent.runtime.runner import run_agent
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 
 logger = get_logger(module="session_manager")
+
+# 回调签名：(session) → coroutine。在 session 完成后异步触发，主要给 saas_app
+# 用来更新 trigger state（last_agent_finish_ts）实现 post-agent cooldown。
+SessionFinishedCallback = Callable[[AgentSession], Awaitable[None]]
 
 
 @dataclass
@@ -49,7 +53,12 @@ class _TrackedSession:
 class SessionManager:
     """工单会话并发管理器"""
 
-    def __init__(self, max_concurrent: int | None = None) -> None:
+    def __init__(
+        self,
+        max_concurrent: int | None = None,
+        *,
+        on_finished: SessionFinishedCallback | None = None,
+    ) -> None:
         cfg = get_config()
         self._max_concurrent = max_concurrent or cfg.agent.max_concurrent_sessions
         self._semaphore = asyncio.Semaphore(self._max_concurrent)
@@ -59,6 +68,11 @@ class SessionManager:
         # 已完成的 session 记录（供 status 查看最近结果）
         self._completed: list[_TrackedSession] = []
         self._lock = asyncio.Lock()
+        self._on_finished = on_finished
+
+    def set_on_finished(self, callback: SessionFinishedCallback | None) -> None:
+        """注册 session 完成回调（典型用于 saas_app 在 state 创建后挂钩）。"""
+        self._on_finished = callback
 
     @property
     def max_concurrent(self) -> int:
@@ -157,6 +171,17 @@ class SessionManager:
                     elapsed=f"{time.monotonic() - tracked.start_time:.1f}s",
                     remaining_active=len(self._active),
                 )
+
+                # 触发完成回调（用于更新 trigger state 的 last_agent_finish_ts）
+                # 失败不影响 session 结果，只 warn。
+                if self._on_finished is not None:
+                    try:
+                        await self._on_finished(session)
+                    except Exception as e:
+                        logger.warning(
+                            "session_on_finished_callback_failed",
+                            ticket_id=ticket_id, error=str(e),
+                        )
 
     async def dispatch_batch(
         self,

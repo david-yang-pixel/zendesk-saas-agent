@@ -110,3 +110,28 @@ def test_valid_states_constant_has_expected_entries():
     assert "processed" in VALID_STATES
     assert "waiting_for_auth" in VALID_STATES
     assert "abandoned" in VALID_STATES
+
+
+def test_last_agent_finish_ts_persists(tmp_path):
+    """post-agent cooldown 字段往返序列化。"""
+    path = tmp_path / "tickets.json"
+    finish_ts = _now()
+    store1 = TicketStateTracker(path)
+    store1.set("1", TicketState(
+        state="processed",
+        first_seen=_now(),
+        last_agent_finish_ts=finish_ts,
+    ))
+    store2 = TicketStateTracker(path)
+    rec = store2.get("1")
+    assert rec is not None
+    assert rec.last_agent_finish_ts is not None
+    assert rec.last_agent_finish_ts.isoformat() == finish_ts.isoformat()
+
+
+def test_last_agent_finish_ts_default_none(tmp_path):
+    """老 state.json 没这个字段时 from_dict 默认 None。"""
+    store = TicketStateTracker(tmp_path / "tickets.json")
+    store.set("1", TicketState(state="waiting_for_issue", first_seen=_now()))
+    rec = store.get("1")
+    assert rec.last_agent_finish_ts is None

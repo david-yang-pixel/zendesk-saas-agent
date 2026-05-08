@@ -553,6 +553,32 @@ async def _trigger_consumer(
                 )
                 continue
 
+            # 3b. Post-agent cooldown：上次 agent 完成后 N 秒内的客户新消息
+            #     视为"补充上一条问题"，跳过新一轮 dispatch（防止客户连发两条
+            #     —— 如日文+英文翻译 —— 触发 agent 跑两次同语义任务）。
+            if existing and existing.last_agent_finish_ts is not None:
+                cooldown_s = cfg.trigger_decider.post_agent_cooldown_seconds
+                elapsed_s = (
+                    datetime.now(timezone.utc) - existing.last_agent_finish_ts
+                ).total_seconds()
+                if elapsed_s < cooldown_s:
+                    # 仍把 last_customer_comment_id 推进，避免下一次 webhook
+                    # 重复评估这条；但不入静默、不 dispatch
+                    existing.last_customer_comment_id = latest_cid
+                    state.set(ticket_id, existing)
+                    logger.info(
+                        "trigger_skip_post_agent_cooldown",
+                        ticket_id=ticket_id,
+                        comment_id=latest_cid,
+                        elapsed_s=round(elapsed_s, 1),
+                        cooldown_s=cooldown_s,
+                    )
+                    log_decision(
+                        log_path=log_path, ticket_id=ticket_id,
+                        verdict="post_agent_cooldown", action="skip",
+                    )
+                    continue
+
             # 4. LLM 预判（如有客户截图，下载并喂给 vision 模型）
             bodies = [c.get("body", "") for c in customer_msgs]
             image_data_urls = await _collect_recent_image_data_urls(customer_msgs)
@@ -662,6 +688,27 @@ def create_saas_app(manager: Any) -> web.Application:
         max_size=10000,
     )
     teleport_auth_token_store = TokenStore()
+
+    # 挂 session 完成回调：写 last_agent_finish_ts 到 state，供
+    # trigger_consumer 的 post-agent cooldown 检查使用（防止客户连发两条
+    # 触发 agent 跑两次）。回调签名 `(session) -> coroutine`。
+    async def _on_session_finished(session: Any) -> None:  # noqa: ANN401
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            ticket_state = state.get(session.ticket_id)
+            if ticket_state is None:
+                return  # 没 state 说明根本没走 trigger 路径（CLI 手动派单等），跳过
+            ticket_state.last_agent_finish_ts = _dt.now(_tz.utc)
+            state.set(session.ticket_id, ticket_state)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "set_last_agent_finish_ts_failed",
+                ticket_id=getattr(session, "ticket_id", None),
+                error=str(e),
+            )
+
+    if hasattr(manager, "set_on_finished"):
+        manager.set_on_finished(_on_session_finished)
 
     app = web.Application()
     app["config"] = cfg

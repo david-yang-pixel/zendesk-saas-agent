@@ -130,6 +130,10 @@ class TriggerDeciderConfig(BaseModel):
     # 主动公开询问开关：messaging 工单回复路径未验证前默认关闭，
     # 关闭时 silence 到期 + verdict 非 substantial 会推飞书内部告警代替直接 ask 客户。
     enable_public_nudge: bool = False
+    # agent 跑完后多少秒内的客户新消息视为"补充上一条问题"，跳过新一轮 dispatch。
+    # 防止客户连发两条（如日文+英文翻译）触发 agent 跑两次同语义任务。
+    # 60s 经验值：客户在 1 分钟内追加多半是补充/翻译，1 分钟后才发的视为真新问题。
+    post_agent_cooldown_seconds: int = 60
 
 
 class SilenceWakerConfig(BaseModel):

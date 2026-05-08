@@ -34,6 +34,10 @@ class TicketState:
     alert_sent_at: Optional[datetime] = None
     # 24h abandoned 飞书告警发送时间，去重
     abandoned_alert_sent_at: Optional[datetime] = None
+    # 上次 AgentSession 完成时刻；客户新消息到达时若距此 < cooldown，则跳过 dispatch
+    # （防止客户连发两条触发 agent 跑两次同语义任务）。由 SessionManager / runner finally
+    # 钩子在 agent_done 后写入。
+    last_agent_finish_ts: Optional[datetime] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -48,6 +52,7 @@ class TicketState:
         for k in (
             "first_seen", "last_comment_ts", "last_eval_at", "silence_window_end",
             "nudge_sent_at", "alert_sent_at", "abandoned_alert_sent_at",
+            "last_agent_finish_ts",
         ):
             if data.get(k):
                 data[k] = datetime.fromisoformat(data[k])
