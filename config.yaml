@@ -67,7 +67,7 @@ grafana:
   # 实际 prometheus datasource ID — 通过 GET /api/datasources 拿
   prom_datasource_id: 5
 signoz:
-  url: https://dify.us2.signoz.cloud
+  url: https://signoz.dify.dev
 teleport:
   # SRE 把 Teleport 切到 443 单端口模式后，3080 不再可达。
   # 必须显式带 :443，否则 tsh 默认走 3080 会 Connection refused。
