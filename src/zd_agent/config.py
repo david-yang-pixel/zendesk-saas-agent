@@ -189,6 +189,18 @@ class FeishuConfig(BaseModel):
     daily_summary_timezone: str = "Asia/Shanghai"
 
 
+class InspectorConfig(BaseModel):
+    """Inspector CLI（langgenius/infra-toolkit）配置。
+
+    Inspector 是私有 CLI，把 SaaS 主库 + billing 库的高频查询打包成命令，
+    支持跨库聚合（如 quota / workflow_run / account drill-down），手写 SQL
+    很容易漏字段（例如 `is_universal=false` / TiDB 知识库存储统计）。
+    """
+    binary: str = "/usr/local/bin/inspector"
+    config_file: str = "/opt/zd-agent/inspector-config/prod.yaml"
+    timeout_seconds: int = 30
+
+
 class TeleportConfig(BaseModel):
     proxy: str = ""
     user: str = ""  # from env TELEPORT_USER
@@ -220,6 +232,7 @@ class AppConfig(BaseModel):
     signoz: SignozConfig = Field(default_factory=SignozConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     teleport: TeleportConfig = Field(default_factory=TeleportConfig)
+    inspector: InspectorConfig = Field(default_factory=InspectorConfig)
 
 
 class EnvSettings(BaseSettings):

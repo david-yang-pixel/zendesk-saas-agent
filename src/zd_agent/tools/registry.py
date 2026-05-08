@@ -34,6 +34,7 @@ from zd_agent.tools.sandbox_tools import (
 from zd_agent.tools.script_runner import RunScript, SandboxExec
 from zd_agent.tools.feishu_tools import FeishuPush
 from zd_agent.tools.saas_branch import SaasBranchSwitch
+from zd_agent.tools.inspector_exec import InspectorExec
 from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.ticket_record import TicketRecordRead, TicketRecordSearch
 from zd_agent.tools.subagent import RunSubagent
@@ -110,6 +111,9 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(SaasBranchSwitch())
 
     # 数据库只读查询工具组（SaaS）
+    # InspectorExec 优先于 SqlQuery：quota / workflow run / UUID 类型未知
+    # 类查询用 inspector，跨 main+billing+TiDB 自动聚合，避免手写 SQL 漏字段
+    registry.register(InspectorExec())
     registry.register(SqlQuery())
 
     # 历史工单记录检索工具组（SaaS 知识复用）

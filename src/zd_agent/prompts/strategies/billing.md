@@ -20,8 +20,14 @@
 
 ## 关键步骤
 1. 收集：Workspace ID、涉及时间段、具体金额 / 发票号
-2. SQL 直查（sql_query database=billing）：`tenant_stripe_customers` / `tenant_subscription_settings`
-3. 额度相关：`tenant_feature_usages` / `tenant_message_credit_logs`
+2. **首选 `inspector_exec` 工具**（跨 main+billing+TiDB 自动聚合，比手写 SQL 更稳）：
+   - 套餐 / 订阅 / Stripe 状态：`inspector_exec tenant_id=<workspace_id> section=billing` —— 拿 Plan、Subscription Status、Paid Since、Expires At、最近发票号
+   - 配额 / 用量（apps / 文档 / 知识库存储 / 成员）：`inspector_exec tenant_id=<workspace_id> section=quota` —— 含 TiDB 知识库存储（手写 SQL 拿不到）
+   - 全部 section：`inspector_exec tenant_id=<workspace_id> section=all`
+   - 通过邮箱反查账号：`inspector_exec email=<customer@example.com>`
+3. **inspector 不覆盖**的场景才走 `sql_query database=billing`：
+   - AI Credits 时间窗聚合（`tenant_message_credit_logs` 按 day 累计）
+   - 自定义跨字段 JOIN / 任意聚合
 4. **必查 dify-billing 仓**（按上面的路径表 git_grep）
 5. 参考本地知识库 `saas版知识库/08-billing-and-subscription.md`
 

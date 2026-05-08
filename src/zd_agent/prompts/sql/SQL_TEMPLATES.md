@@ -2,6 +2,23 @@
 
 > 按工单场景分类，直接替换占位符即可使用。
 >
+> ## ⚡ 优先用 Inspector，再考虑手写 SQL
+>
+> 下面这些场景**优先调 `inspector_exec` 工具**，不要手写 SQL：
+>
+> | 场景 | inspector 调用 | 为什么不手写 SQL |
+> |---|---|---|
+> | **配额/用量类**（应用数 / 文档数 / 知识库存储 / 成员数） | `inspector_exec tenant_id=<id> section=quota` | 知识库存储在 TiDB 不在 PG，手写 SQL 拿不到 |
+> | **workflow run 失败定位** | `inspector_exec workflow_run_id=<uuid>` | 一次拿 run + 节点链 + 错误，比 JOIN 两表全 |
+> | **app 失败排查**（"今天报错很多"） | `inspector_exec app_id=<uuid> section=runs query=failed limit=5` | 自动按时间筛 + 关联节点 |
+> | **UUID 类型未知**（客户给一串 UUID 没说是啥） | `inspector_exec id=<uuid>` | 自动跨表识别 |
+> | **账号/租户 drill-down** | `inspector_exec email=<x>` 或 `tenant_id=<x> section=billing/runs/apps/members` | 跨 main+billing 一次返回 |
+>
+> Inspector **不覆盖**的场景才走下面的 sql_query 路径：
+> - 任意自定义 SQL（多表 JOIN / 聚合 / 表结构未覆盖）
+> - plugin_daemon 库（dify_plugin_daemon）
+> - 需要 percentile / time-series 等聚合分析（如 workflow 慢类工单的 latency 分位数）
+>
 > **真实 schema** 在 system prompt 的 "Dify SaaS Database Schema" 段（紧接本段后），
 > 由生产库 `information_schema` introspect 出来。**不要靠记忆瞎写表名 / 列名**——
 > 看那段拿真实结构再写 SQL。
