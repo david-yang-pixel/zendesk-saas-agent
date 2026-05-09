@@ -19,6 +19,7 @@ from zd_agent.entry.teleport_auth_web import (
 )
 from zd_agent.entry.webhook_dedup import WebhookDedup
 from zd_agent.entry.zendesk_webhook import handle_zendesk_webhook
+from zd_agent.entry.zendesk_messaging_webhook import handle_zendesk_messaging_webhook
 from zd_agent.log import get_logger
 from zd_agent.trigger.state_store import TicketStateTracker
 
@@ -751,6 +752,11 @@ def create_saas_app(manager: Any) -> web.Application:
     app["session_manager"] = manager
 
     app.router.add_post(cfg.webhook.zendesk_path, handle_zendesk_webhook)
+    # Messaging webhook：messaging_ticket.message_added 事件，独立 endpoint + secret
+    app.router.add_post(
+        cfg.webhook.zendesk_messaging_path,
+        handle_zendesk_messaging_webhook,
+    )
     app.router.add_get("/healthz", _healthz)
     # Teleport 认证中转页：watchdog 生成 token 后推飞书，用户点开这个 URL
     app.router.add_get("/teleport-auth", handle_teleport_auth_get)

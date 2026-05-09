@@ -67,10 +67,14 @@ class ZendeskConfig(BaseModel):
 
 
 class WebhookConfig(BaseModel):
-    signing_secret: str | None = None  # keep for backward compat
+    signing_secret: str | None = None  # 经典 Tickets webhook（conditional_ticket_events）
+    # 新增 messaging webhook（messaging_ticket.message_added）独立 secret。
+    # 两个 webhook 走两个 endpoint、两套 signing secret，避免一个泄露牵连另一个。
+    messaging_signing_secret: str | None = None
     listen_host: str = "127.0.0.1"
     listen_port: int = 8080
     zendesk_path: str = "/webhook/zendesk"
+    zendesk_messaging_path: str = "/webhook/zendesk-messaging"
     feishu_path: str = "/webhook/feishu"
 
 
@@ -145,15 +149,22 @@ class SilenceWakerConfig(BaseModel):
 
 
 class WaitingPollerConfig(BaseModel):
-    """每 60s 扫 status∈(new,open) + tags:saas 的工单，
-    重读 conversation_log 看客户是否发新消息；并推动超时分支。
+    """Waiting poller 主要职责：推动超时分支（24h abandoned / 30min greeting alert）。
+
+    2026-05 后客户新消息检测**主要走 messaging webhook**，poller 退化为低频兜底：
+    - scan_interval_seconds 默认从 60s 拉长到 300s
+    - poll_new_messages flag 控制是否做"消息 diff 兜底"——webhook 丢消息时才有用
     """
 
-    scan_interval_seconds: int = 60
+    # 60s → 300s：messaging webhook 接管后，poller 不再是消息检测主力
+    scan_interval_seconds: int = 300
     # 24h 上限，超时标记 abandoned 并停扫
     abandoned_hours: int = 24
     # 30min greeting 告警
     greeting_alert_minutes: int = 30
+    # webhook 兜底开关：True=poller 也 diff 客户消息（防 webhook 漏发）
+    # False=纯靠 webhook（更省 API 配额，但 webhook 故障时会漏消息）
+    poll_new_messages: bool = True
 
 
 class PostgresConfig(BaseModel):
@@ -271,6 +282,7 @@ class EnvSettings(BaseSettings):
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
+    zendesk_messaging_webhook_secret: str = ""
     teleport_user: str = ""
     # 自动续期凭证：服务器持有 → watchdog 检测过期时自动 tsh login。
     # 安全模型：只读 ops account，与 .env 一同 chmod 600，仅 root 可读。
@@ -351,6 +363,9 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.webhook.signing_secret = env.zendesk_webhook_secret
     elif env.zd_webhook_signing_secret is not None:
         cfg.webhook.signing_secret = env.zd_webhook_signing_secret
+    # Messaging webhook secret (独立于 Tickets webhook secret，两套 signing 用不同 key)
+    if env.zendesk_messaging_webhook_secret:
+        cfg.webhook.messaging_signing_secret = env.zendesk_messaging_webhook_secret
     # Teleport
     if env.teleport_user:
         cfg.teleport.user = env.teleport_user

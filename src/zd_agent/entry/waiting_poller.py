@@ -120,13 +120,25 @@ async def _process_one(
         return
 
     # Step 3: did the customer send a new message since last evaluation?
-    if msgs:
+    #
+    # 2026-05: messaging webhook（messaging_ticket.message_added）已经接管这一职
+    # 责——客户每条消息都会通过 webhook 立即推 trigger_queue。这里的 diff 检测改
+    # 为低频"兜底"模式（每 5min 才扫一次，见 run_waiting_poller scan_interval）：
+    # 仅当 webhook 真的丢了某条消息时才会跑这个分支，正常情况 latest_cid 应该跟
+    # rec.last_customer_comment_id 一致。
+    #
+    # 完全删掉这段代码也行（webhook 100% 可靠时），但保留作为 belt-and-suspenders。
+    # poll_new_messages flag 控制是否启用：默认 True（兜底），将来对 webhook 信
+    # 心更足后可以关掉。
+    cfg = get_config()
+    if cfg.waiting_poller.poll_new_messages and msgs:
         latest_cid = msgs[-1].get("id")
         if latest_cid and latest_cid != rec.last_customer_comment_id:
             logger.info(
-                "waiting_poller_new_customer_msg",
+                "waiting_poller_new_customer_msg_fallback",
                 ticket_id=ticket_id,
                 from_cid=rec.last_customer_comment_id, to_cid=latest_cid,
+                note="webhook 漏了，poller 兜底",
             )
             await trigger_queue.put({
                 "source": "poller_new_msg",
