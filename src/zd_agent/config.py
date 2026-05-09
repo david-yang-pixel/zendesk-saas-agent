@@ -98,7 +98,9 @@ class ReposConfig(BaseModel):
 
 
 class SandboxConfig(BaseModel):
-    type: Literal["local", "docker"] = "local"
+    # type 字段保留向后兼容（旧配置可能写了 "docker"）；当前一律按 LocalSandbox
+    # 处理，DockerSandbox 实现已移除（见 session/sandbox.py 顶部注释）。
+    type: str = "local"
     base_dir: str = "/tmp/zd-agent"
     cleanup_on_success: bool = True
     cleanup_on_failure: bool = False
@@ -132,8 +134,10 @@ class TriggerDeciderConfig(BaseModel):
     enable_public_nudge: bool = False
     # agent 跑完后多少秒内的客户新消息视为"补充上一条问题"，跳过新一轮 dispatch。
     # 防止客户连发两条（如日文+英文翻译）触发 agent 跑两次同语义任务。
-    # 60s 经验值：客户在 1 分钟内追加多半是补充/翻译，1 分钟后才发的视为真新问题。
-    post_agent_cooldown_seconds: int = 60
+    # 180s（3 min）经验值：实测 60s 漏过率高（客户经常 1-2 min 才发翻译版/补图），
+    # 提到 180s 后 ticket 2320 类"3 条相邻 mention 各跑一次"场景命中率明显下降。
+    # 真正的"新问题"通常会等 SE 回复后再发，3 min 等待对客户体验无感。
+    post_agent_cooldown_seconds: int = 180
 
 
 class SilenceWakerConfig(BaseModel):

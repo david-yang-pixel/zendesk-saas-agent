@@ -26,11 +26,58 @@ VALID_TYPES = {
 }
 DEFAULT_TYPE = "general"
 
+# Lazy-load 矩阵：每个 ticket_type 在 classify 后需要附加哪些"重型 prompt 段"
+# 到 tool result（不进 system prompt 以保 prompt cache）。
+#
+# - SQL_TEMPLATES + DB_SCHEMA: 需要查 PG/billing 库的类目
+# - REFUND_FLOW: 只有 refund 工单需要
+# - 其他类目（product_usage / insufficient_info / mention / general / api）
+#   完全不附加，节省 ~9-10k tokens
+NEEDS_SQL = {"platform_issue", "billing", "workflow", "knowledge_base", "permissions", "refund"}
+NEEDS_REFUND_FLOW = {"refund"}
+
 
 def _load_strategy(ticket_type: str) -> str:
     filename = f"{ticket_type}.md"
     ref = resources.files("zd_agent.prompts.strategies").joinpath(filename)
     return ref.read_text(encoding="utf-8")
+
+
+def _load_prompt_file(package: str, filename: str) -> str:
+    """从 prompts 子包读 .md 文件；失败返回空串。"""
+    try:
+        ref = resources.files(package).joinpath(filename)
+        return ref.read_text(encoding="utf-8")
+    except Exception as e:
+        logger.warning("prompt_file_load_failed", package=package, filename=filename, error=str(e))
+        return ""
+
+
+def _build_lazy_sections(ticket_type: str) -> str:
+    """根据 ticket_type 拼装本次工单需要的"重型 prompt 段"（lazy load）。
+
+    返回拼好的 markdown，调用方（classify tool）会把它附加到 tool result，
+    LLM 在下一轮就能看到。
+    """
+    parts: list[str] = []
+
+    if ticket_type in NEEDS_SQL:
+        sql_md = _load_prompt_file("zd_agent.prompts.sql", "SQL_TEMPLATES.md")
+        if sql_md:
+            parts.append(f"## SQL 查询模板（lazy-loaded）\n\n{sql_md}")
+
+        # DB schema 是运行时生成的，路径不在 package 内
+        from zd_agent.runtime.prompt.defaults import load_db_schema
+        db_schema = load_db_schema()
+        if db_schema:
+            parts.append(f"## 生产库 Schema 速查（lazy-loaded）\n\n{db_schema}")
+
+    if ticket_type in NEEDS_REFUND_FLOW:
+        refund_md = _load_prompt_file("zd_agent.prompts.refund", "REFUND_FLOW.md")
+        if refund_md:
+            parts.append(f"## 退款流程（lazy-loaded）\n\n{refund_md}")
+
+    return "\n\n---\n\n".join(parts)
 
 
 class ClassifyTicket(Tool):
@@ -107,11 +154,31 @@ class ClassifyTicket(Tool):
                 output=f"工单已分类为 [{ticket_type}]，但策略文件加载失败；按默认 SaaS 流程继续。",
             )
 
-        return ToolResult(
-            output=(
-                f"工单已分类为 **{ticket_type}**\n"
-                f"分类依据：{reasoning}\n\n"
-                f"---\n\n"
-                f"## 针对性处理策略\n\n{strategy}"
-            ),
+        # Lazy-load 重型段：SQL_TEMPLATES + DB_SCHEMA + REFUND_FLOW 不再
+        # always-load 进 system prompt（per改动 3），改为按 ticket_type 选择性
+        # 附加到 tool result。这样：
+        #   - refund/product_usage/insufficient_info/mention/api/general 类工单
+        #     完全不加载这些段 → 节省 ~9-10k tokens
+        #   - 需要查 SQL 的类（platform_issue/billing/workflow/...）按需注入
+        #   - system prompt 永远固定 → prompt cache 不失效
+        lazy_sections = _build_lazy_sections(ticket_type)
+        lazy_section_count = lazy_sections.count("## ") if lazy_sections else 0
+        logger.info(
+            "classify_lazy_sections_attached",
+            ticket_id=session.ticket_id,
+            ticket_type=ticket_type,
+            lazy_section_count=lazy_section_count,
+            lazy_chars=len(lazy_sections),
         )
+
+        output_parts = [
+            f"工单已分类为 **{ticket_type}**",
+            f"分类依据：{reasoning}",
+            "---",
+            f"## 针对性处理策略\n\n{strategy}",
+        ]
+        if lazy_sections:
+            output_parts.append("---")
+            output_parts.append(lazy_sections)
+
+        return ToolResult(output="\n\n".join(output_parts))

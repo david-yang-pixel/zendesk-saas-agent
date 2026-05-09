@@ -509,6 +509,38 @@ async def _trigger_consumer(
             # 1. silence_waker 唤醒 or mention 触发 → 跳过判定，直接 dispatch
             if source in ("silence_waker", "mention"):
                 hint = msg.get("hint") or ""
+
+                # Post-agent cooldown 也覆盖直 dispatch 路径：
+                # - silence_waker：同一静默窗口可能被多次 schedule（看到 ticket
+                #   2393 在 5 分钟间隔被 dispatch 两次，verdict 都 substantial）
+                # - mention：SE 在 agent 跑完后短时间内连发 mention（看到 ticket
+                #   2320 三次相邻 mention 各跑一次）。SE 主动 mention 通常是给
+                #   新 hint，所以 hint 非空时 cooldown 缩短到 30s 以保留"立即
+                #   re-run"语义；hint 为空（poller 自动塞入的固定模板）则按完整
+                #   cooldown。
+                existing_state = state.get(ticket_id)
+                if existing_state and existing_state.last_agent_finish_ts is not None:
+                    full_cd = cfg.trigger_decider.post_agent_cooldown_seconds
+                    short_cd = 30
+                    cd_seconds = short_cd if (source == "mention" and hint) else full_cd
+                    elapsed_s = (
+                        datetime.now(timezone.utc) - existing_state.last_agent_finish_ts
+                    ).total_seconds()
+                    if elapsed_s < cd_seconds:
+                        logger.info(
+                            "trigger_skip_post_agent_cooldown_direct",
+                            ticket_id=ticket_id, source=source,
+                            elapsed_s=round(elapsed_s, 1),
+                            cooldown_s=cd_seconds,
+                            had_hint=bool(hint),
+                        )
+                        log_decision(
+                            log_path=log_path, ticket_id=ticket_id,
+                            verdict=f"post_agent_cooldown_{source}",
+                            action="skip",
+                        )
+                        continue
+
                 logger.info("trigger_dispatch_direct",
                             ticket_id=ticket_id, source=source,
                             has_hint=bool(hint))
@@ -760,20 +792,63 @@ def create_saas_app(manager: Any) -> web.Application:
         )
         logger.info("saas_app_started", port=cfg.webhook.listen_port)
 
+    async def _on_shutdown(_app: web.Application) -> None:
+        """Graceful shutdown: 停止接受新工单，等 in-flight session 自然结束。
+
+        aiohttp 触发顺序：on_shutdown → on_cleanup。在 on_shutdown 阶段：
+          1. cancel poller / trigger consumer → 不再产生新 dispatch
+          2. wait_all() in-flight AgentSession，最多等 in_flight_grace_seconds 秒
+          3. 超时 → 走 on_cleanup 强制 cancel
+
+        修之前的 RuntimeError: Event loop is closed —— 那是 SIGTERM 直接 kill
+        了循环，asyncio task 还在 run，loop 被 close 后 tools 里挂着的 httpx
+        client / subprocess 报错。
+        """
+        # 先 cancel poller / consumer，不再吃新事件
+        for key in (
+            "silence_task", "waiting_poller_task",
+            "mention_poller_task", "trigger_task",
+        ):
+            task = _app.get(key)
+            if task is not None and not task.done():
+                task.cancel()
+
+        # 等 manager 里在跑的 session 收尾（不要 cancel，让它正常 archive）
+        grace_s = 30  # 经验值：典型 session 8-15s，给 30s 容忍长尾
+        if hasattr(manager, "wait_all"):
+            in_flight = getattr(manager, "active_count", 0)
+            if in_flight > 0:
+                logger.info(
+                    "shutdown_waiting_in_flight_sessions",
+                    in_flight=in_flight, grace_s=grace_s,
+                )
+                try:
+                    await asyncio.wait_for(manager.wait_all(), timeout=grace_s)
+                    logger.info("shutdown_in_flight_drained")
+                except asyncio.TimeoutError:
+                    remaining = getattr(manager, "active_count", 0)
+                    logger.warning(
+                        "shutdown_grace_expired_forcing_cleanup",
+                        still_in_flight=remaining,
+                    )
+
     async def _on_cleanup(_app: web.Application) -> None:
+        # on_shutdown 已经 cancel 过 task；这里 await 等真正退出
         for key in (
             "silence_task", "waiting_poller_task",
             "mention_poller_task", "trigger_task",
         ):
             task = _app.get(key)
             if task is not None:
-                task.cancel()
+                if not task.cancelled() and not task.done():
+                    task.cancel()
                 try:
                     await task
-                except asyncio.CancelledError:
+                except (asyncio.CancelledError, Exception):
                     pass
 
     app.on_startup.append(_on_startup)
+    app.on_shutdown.append(_on_shutdown)
     app.on_cleanup.append(_on_cleanup)
 
     return app

@@ -54,6 +54,23 @@
 ### `run_subagent`（单个）
 只有在明确"只需查一件事"时用。默认应该用 parallel 版本。
 
+### Subagent 任务描述写法（重要）
+
+Subagent 已内置统一 contract（数据类必给 count+p50+p90+max+基线对比；维度查不到时按
+service.name/endpoint 回退；源码类先 grep 上下文再下结论），**不要在 task 里重复列这些
+通用约束**——重复反而稀释主任务，且每次调用浪费 ~200-400 tokens。
+
+✅ 正确（聚焦"查什么"）：
+- `task: "SigNoz 查 workspace=70b5cf9a... 最近 7 天 webapp/site/embed/init 的错误"`
+- `task: "git_grep dify-saas/api/services 里所有 BillingPlan.refund_eligibility 的调用点"`
+
+❌ 错误（重复 contract，应删掉）：
+- `"...必须给 count+p50+p90+max，且至少找一个正常参考样本做对比；若 tenant 维度查不到也要按..."`
+- `"...请引用具体行号 / commit / 文件路径..."`
+
+只有在**任务有非通用的特殊要求**时（如"只看一眼别 deep dive"、"窗口必须 30 天而非默认 7 天"、
+"只关心 5xx 不要看 4xx"）才在 task 里加约束，否则交给 contract。
+
 ## 通知工具
 
 ### `feishu_push`

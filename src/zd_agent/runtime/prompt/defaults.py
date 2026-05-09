@@ -13,7 +13,10 @@ def _db_schema_path() -> Path:
     """运行时生成的数据库 schema cheat sheet。
 
     由 ``scripts/dump_db_schema.sh`` 周期性 introspect prod 库写入。
-    不存在时（开发环境）section 自动跳过。
+    不存在时（开发环境）此文件可能为空。
+
+    注：此函数现也被 ``tools/classify.py`` 调用（lazy load DB schema 到 tool
+    result），所以保留 module 级 helper。
     """
     # 延迟 import 避免顶层 config 副作用
     from zd_agent.config import get_config
@@ -26,12 +29,20 @@ def _db_schema_path() -> Path:
     )
 
 
-def _load_db_schema() -> str:
+def load_db_schema() -> str:
+    """读取生产库 schema cheat sheet；不存在或读失败返回空串。
+
+    Public API：classify.py 在 ticket_type 需要 SQL 时调用此函数注入。
+    """
     p = _db_schema_path()
     try:
         return p.read_text(encoding="utf-8") if p.exists() else ""
     except Exception:
         return ""
+
+
+# 向后兼容旧 section 引用（已弃用，新代码请用 load_db_schema）
+_load_db_schema = load_db_schema
 
 
 def register_default_sections(builder: PromptBuilder) -> None:
@@ -110,39 +121,23 @@ def register_default_sections(builder: PromptBuilder) -> None:
         )
     )
 
-    # SQL_TEMPLATES — 每个工单都加载（不再按 category gate）
-    # 之前按 ticket_type ∈ {platform_issue,...} 条件加载，但 runner.py 调用时
-    # 没传 ticket_type → ctx.ticket_type 永远是空 → 这段 prompt 实际从未生效。
-    # 现按用户要求："就按照 prompt 里面的流程处理"，全部段落始终加载。
-    builder.register(
-        PromptSection(
-            name="sql_templates",
-            content=load_prompt("sql/SQL_TEMPLATES.md"),
-            order=26,
-        )
-    )
+    # SQL_TEMPLATES + DB_SCHEMA + REFUND_FLOW —— 不再 always-load 进 system
+    # prompt，改为 classify_ticket 工具返回时按 ticket_type 选择性附加到 tool
+    # result（见 tools/classify.py）。
+    #
+    # 为什么不直接做"按 ctx.ticket_type 条件 load 进 system prompt"：
+    #   - system prompt 第一次构造时（runner.py:88）ticket_type 还没有值，
+    #     classify 在第一轮 tool call 才出来
+    #   - 如果 classify 后重写 system prompt，prompt cache 会失效（OpenAI/
+    #     Anthropic 都按 system prefix 哈希），第二轮起 cache miss 反而更贵
+    #   - 通过 tool result 注入：system prompt 永远固定 → cache 命中
+    #     ticket-specific 内容随 tool message 进入 history，下一轮 cache 仍续命
+    #
+    # 收益：refund / product_usage / insufficient_info 等不需要 SQL 的工单，
+    # system prompt 省 ~9-10k tokens × 100% 工单首次调用。
 
-    # DB_SCHEMA — 运行时从生产库 introspect 出来的真实 schema cheat sheet。
-    # 由 scripts/dump_db_schema.sh 周期生成到
-    # /opt/zd-agent/resources/saas版知识库/database_schema.md。
-    # 文件不存在（开发机 / 还没跑过脚本）则 section 自动跳过。
-    builder.register(
-        PromptSection(
-            name="db_schema",
-            content=lambda ctx: _load_db_schema(),
-            order=27,
-            condition=lambda ctx: bool(_load_db_schema()),
-        )
-    )
-
-    # REFUND_FLOW — 每个工单都加载
-    builder.register(
-        PromptSection(
-            name="refund_flow",
-            content=load_prompt("refund/REFUND_FLOW.md"),
-            order=27,
-        )
-    )
+    # ⚠️ 历史遗留 section 已被 classify.py 接管，此处保留 stub 占位避免
+    # 别的地方意外引用——实际不再注册任何内容。
 
     # REPLY_TEMPLATES — always loaded (reply drafting is on every ticket)
     builder.register(

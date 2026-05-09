@@ -1,7 +1,10 @@
 """Sandbox 抽象基类与具体实现
 
-- LocalSandbox: 基于临时目录的本地沙箱（当前使用）
-- DockerSandbox: 基于 Docker 容器的隔离沙箱（骨架，未来实现）
+- LocalSandbox: 基于临时目录的本地沙箱（当前唯一实现）
+
+之前还有 DockerSandbox 占位类（仅 NotImplementedError stub），2026-05 删除：
+未来真要做容器隔离时会换更现代的方案（如 Firecracker / gVisor），不会复用
+docker-py 接口；保留死代码反而误导。
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ class ExecResult:
 
 
 class Sandbox(ABC):
-    """沙箱抽象基类"""
+    """沙箱抽象基类（保留以便将来扩展隔离实现）。"""
 
     @abstractmethod
     async def create(self, ticket_id: int) -> Path:
@@ -115,51 +118,18 @@ class LocalSandbox(Sandbox):
         return self._sandbox_dir
 
 
-class DockerSandbox(Sandbox):
-    """基于 Docker 容器的隔离沙箱（骨架）
-
-    未来实现要点：
-    - 每个 session 启动一个临时 Docker 容器
-    - 挂载 repos/ 为只读卷，sandbox 工作目录为读写卷
-    - 容器内执行命令有完全的文件系统和网络隔离
-    - session 结束时自动销毁容器
-    - 通过 Docker SDK (docker-py) 管理容器生命周期
-
-    配置项（config.yaml sandbox.docker_*）：
-    - docker_image: 容器基础镜像（如 python:3.12-slim）
-    - docker_memory_limit: 内存限制（如 512m）
-    - docker_cpu_limit: CPU 限制（如 1.0）
-    - docker_network_mode: 网络模式（如 none 禁止网络）
-    """
-
-    def __init__(self) -> None:
-        self._sandbox_dir: Path | None = None
-        self._ticket_id: int | None = None
-        self._container_id: str | None = None
-
-    async def create(self, ticket_id: int) -> Path:
-        # TODO: 实现 Docker 容器创建
-        # 1. 创建临时目录作为挂载点
-        # 2. docker.from_env().containers.run(...)
-        # 3. 保存 container_id
-        raise NotImplementedError(
-            "DockerSandbox 尚未实现，请在 config.yaml 中设置 sandbox.type: local"
-        )
-
-    async def cleanup(self) -> None:
-        # TODO: 实现容器销毁和目录清理
-        # 1. container.stop() + container.remove()
-        # 2. 清理挂载目录
-        if self._container_id:
-            logger.info("docker_sandbox_cleanup", container=self._container_id)
-
-    def get_dir(self) -> Path | None:
-        return self._sandbox_dir
-
-
 def create_sandbox() -> Sandbox:
-    """根据配置创建对应类型的 Sandbox"""
+    """创建 Sandbox 实例。当前唯一实现是 LocalSandbox。
+
+    config.yaml 里 ``sandbox.type`` 字段保留向后兼容（可能旧配置文件设了
+    "docker" 或别的值），但目前一律忽略并返回 LocalSandbox。如果将来加新
+    实现，再在这里按 type 分发。
+    """
     cfg = get_config()
-    if cfg.sandbox.type == "docker":
-        return DockerSandbox()
+    if cfg.sandbox.type and cfg.sandbox.type != "local":
+        logger.warning(
+            "sandbox_type_ignored",
+            requested=cfg.sandbox.type,
+            note="DockerSandbox 已移除；当前一律使用 LocalSandbox",
+        )
     return LocalSandbox()
