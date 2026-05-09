@@ -47,7 +47,9 @@ trigger_decider:
 silence_waker:
   scan_interval_seconds: 30
 waiting_poller:
-  scan_interval_seconds: 60
+  # 60s → 300s：messaging webhook 接管客户消息检测后，poller 退化为低频兜底。
+  # 真正的实时来源是 /webhook/zendesk-messaging（messaging_ticket.message_added）。
+  scan_interval_seconds: 300
   abandoned_hours: 24
   greeting_alert_minutes: 30
 postgres:
