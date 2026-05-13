@@ -216,6 +216,38 @@ class InspectorConfig(BaseModel):
     timeout_seconds: int = 30
 
 
+class PublicReplyConfig(BaseModel):
+    """Public Reply 功能配置（agent 自动公开回复客户）。
+
+    设计文档：2026-05-13 跟用户的设计讨论。
+
+    Public reply 是高风险动作（不可撤回 + 邮件投递给客户）。本 config 提供：
+    - ``enabled``: 总开关 / kill switch，出问题一秒下线
+    - ``max_ask_count``: 同工单内自动 ask 客户的上限次数；超过自动转人工
+    - 各类 timing 窗口（observation / silence / abandoned）
+    """
+    # 总开关。false 时所有 ZendeskPublicReply 工具调用直接返回失败，
+    # agent 退回写 Internal Note。
+    enabled: bool = False
+
+    # 同工单内最多自动 ask 几次客户（每次 trigger_decider 评 verdict 不 substantial
+    # 计一次）。超过此上限直接转人工 + 飞书告警，不再 ask。
+    # 10 次：messaging 场景下给客户充分机会描述问题，但不无限循环。
+    max_ask_count: int = 10
+
+    # 工单刚创建后 agent 启动前的观察期。等客户首批 burst 消息到达。
+    silent_initial_wait_seconds: int = 60
+
+    # 客户每次回复后 agent 启动前的合并窗。避免 agent 在客户连发 burst 时被打断。
+    silence_window_seconds: int = 30
+
+    # ask 客户后多久没回 → 推飞书"客户失联"告警（不立刻 abandon）
+    ask_followup_alert_minutes: int = 30
+
+    # 24h 客户彻底无回复 → 标 abandoned + 飞书最终告警
+    abandoned_hours: int = 24
+
+
 class TeleportConfig(BaseModel):
     proxy: str = ""
     user: str = ""  # from env TELEPORT_USER
@@ -248,6 +280,7 @@ class AppConfig(BaseModel):
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     teleport: TeleportConfig = Field(default_factory=TeleportConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
+    public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
 
 
 class EnvSettings(BaseSettings):

@@ -49,6 +49,7 @@ from zd_agent.tools.zendesk import (
     ZendeskSearch,
     ZendeskSearchArticles,
 )
+from zd_agent.tools.zendesk_public_reply import ZendeskPublicReply
 from zd_agent.tools.zd_kb_cli import ZdKbCliExec
 
 
@@ -64,6 +65,7 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ZendeskGetArticle())
     registry.register(ZendeskGetUser())
     registry.register(ZendeskInternalReply())
+    registry.register(ZendeskPublicReply())  # ⚠️ 受 cfg.public_reply.enabled 门控
     registry.register(ZendeskAddTags())
 
     # 知识库工具组
