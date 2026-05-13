@@ -472,6 +472,294 @@ async def _handle_silence_expired_ask(
     state.set(ticket_id, rec)
 
 
+async def _send_ask_template(
+    *,
+    ticket_id: int,
+    verdict_kind: str,
+    customer_msgs: list[dict],
+    ticket_info: dict,
+    ask_count: int,
+    source: str,
+) -> bool:
+    """发公开 ask 模板给客户索取问题信息。
+
+    **M4 阶段为 stub** —— 只 log，不真发。M6 会填入真正的模板生成 + 发送
+    （调 ZendeskPublicReply 工具）。
+
+    返回值：True 表示"已发"，False 表示"未发（出错/未实施）"。
+    M4 永远返回 True 让 ask_count 正常累加，模拟 M6 实施后的行为。
+
+    设计：
+    - verdict_kind ∈ {no_message, greeting, insufficient_info} → 对应模板 A/B/C
+    - ask_count >= 1 时升级为模板 D（"再问一次，更直接"措辞）
+    - 客户语言永远 English（messaging 工单统一英文回复，决策见 2026-05-13 讨论）
+    """
+    logger.info(
+        "send_ask_template_stub",
+        ticket_id=ticket_id,
+        verdict_kind=verdict_kind,
+        ask_count=ask_count,
+        source=source,
+        note="M4 stub — M6 will implement actual template + send",
+    )
+    # M6 之前永远返回 True：保持 trigger_consumer 状态机正常推进
+    # （ask_count 累加），便于早期烟测和集成测试。
+    return True
+
+
+def _set_escalated_to_human(
+    *,
+    ticket_id: int,
+    reason: str,
+    existing,
+    state: "TicketStateTracker",
+    log_path: Path,
+    source: str,
+    now,
+    verdict_str: str,
+    latest_cid,
+    latest_ts,
+    completeness: int,
+    extra_log: dict | None = None,
+) -> None:
+    """把工单标记为 escalated_to_human，4 个 entry 入口后续会 skip 它。
+
+    **M4 阶段** state 字段已经写对，但 **飞书推送 + Zendesk tag 加在 M7 实施**。
+    所以这里只写 state + log，不做对外 effect。
+    """
+    from zd_agent.trigger.decision_log import log_decision
+    from zd_agent.trigger.state_store import TicketState
+
+    state.set(ticket_id, TicketState(
+        state="escalated_to_human",
+        first_seen=existing.first_seen if existing else now,
+        last_customer_comment_id=latest_cid,
+        last_comment_ts=latest_ts,
+        last_eval_at=now,
+        last_verdict=verdict_str,
+        ask_count=existing.ask_count if existing else 0,
+        escalated_at=now,
+        escalated_reason=reason,
+        # 升级后这些 alert 状态不再相关，但保留 nudge_sent_at / abandoned_alert
+        # 等便于事后审计
+        nudge_sent_at=existing.nudge_sent_at if existing else None,
+        alert_sent_at=existing.alert_sent_at if existing else None,
+        abandoned_alert_sent_at=(
+            existing.abandoned_alert_sent_at if existing else None
+        ),
+        last_agent_finish_ts=(
+            existing.last_agent_finish_ts if existing else None
+        ),
+    ))
+
+    log_payload = {"source": source, "reason": reason}
+    if extra_log:
+        log_payload.update(extra_log)
+    log_decision(
+        log_path=log_path, ticket_id=ticket_id,
+        verdict=verdict_str, completeness=completeness,
+        action="escalated_to_human",
+        extra=log_payload,
+    )
+    logger.info(
+        "trigger_escalated_to_human",
+        ticket_id=ticket_id, reason=reason, source=source,
+        verdict=verdict_str,
+        note="M4: state 已写；M7 将加飞书推送 + Zendesk tag",
+    )
+
+
+async def _handle_post_verdict_dispatch(
+    *,
+    ticket_id: int,
+    verdict,
+    customer_msgs: list[dict],
+    ticket_info: dict,
+    latest_cid,
+    latest_ts,
+    existing,
+    state: "TicketStateTracker",
+    log_path: Path,
+    source: str,
+    now,
+    cfg,
+) -> None:
+    """根据 verdict 派发到对应 state transition + 副作用动作。
+
+    分发优先级（高 → 低，分别对应客户类不同行为）：
+
+    1. ``request_human``                       → escalate (reason=customer_requested)
+    2. ``self_resolved``                       → state=processed（工单收尾）
+    3. ``substantial_issue`` + high_risk       → escalate (reason=high_risk_<cat>)
+    4. ``substantial_issue`` + safe            → enter silence（agent 后续处理）
+    5. ``no_message``/``greeting``/``insufficient_info`` + ask_count >= max
+                                               → escalate (reason=max_asks_reached)
+    6. ``no_message``/``greeting``/``insufficient_info`` + ask_count < max
+                                               → send ask + ask_count++
+                                                 (M6 才真发，M4 stub)
+    """
+    from datetime import timedelta
+    from zd_agent.trigger.decision_log import log_decision
+    from zd_agent.trigger.state_store import TicketState
+
+    verdict_str = verdict.verdict
+    ask_count_now = existing.ask_count if existing else 0
+    max_asks = cfg.public_reply.max_ask_count
+
+    # ───── Priority 1: request_human ─────
+    if verdict_str == "request_human":
+        _set_escalated_to_human(
+            ticket_id=ticket_id, reason="customer_requested",
+            existing=existing, state=state, log_path=log_path,
+            source=source, now=now, verdict_str=verdict_str,
+            latest_cid=latest_cid, latest_ts=latest_ts,
+            completeness=verdict.completeness,
+            extra_log={"customer_phrase": (verdict.reason or "")[:120]},
+        )
+        return
+
+    # ───── Priority 2: self_resolved ─────
+    if verdict_str == "self_resolved":
+        state.set(ticket_id, TicketState(
+            state="processed",
+            first_seen=existing.first_seen if existing else now,
+            last_customer_comment_id=latest_cid,
+            last_comment_ts=latest_ts,
+            last_eval_at=now,
+            last_verdict=verdict_str,
+            ask_count=ask_count_now,
+            nudge_sent_at=existing.nudge_sent_at if existing else None,
+            abandoned_alert_sent_at=(
+                existing.abandoned_alert_sent_at if existing else None
+            ),
+            last_agent_finish_ts=(
+                existing.last_agent_finish_ts if existing else None
+            ),
+        ))
+        log_decision(
+            log_path=log_path, ticket_id=ticket_id,
+            verdict=verdict_str, completeness=verdict.completeness,
+            action="self_resolved",
+            extra={"source": source},
+        )
+        logger.info(
+            "trigger_self_resolved",
+            ticket_id=ticket_id, source=source,
+        )
+        return
+
+    # ───── Priority 3: substantial + high_risk → escalate ─────
+    if verdict_str == "substantial_issue" and verdict.high_risk_category:
+        _set_escalated_to_human(
+            ticket_id=ticket_id,
+            reason=f"high_risk_{verdict.high_risk_category}",
+            existing=existing, state=state, log_path=log_path,
+            source=source, now=now, verdict_str=verdict_str,
+            latest_cid=latest_cid, latest_ts=latest_ts,
+            completeness=verdict.completeness,
+            extra_log={
+                "high_risk_category": verdict.high_risk_category,
+                "high_risk_reason": (verdict.high_risk_reason or "")[:120],
+            },
+        )
+        return
+
+    # ───── Priority 4: substantial + safe → 入静默 ─────
+    if verdict_str == "substantial_issue":
+        silence_min = cfg.trigger_decider.silence_minutes_default
+        window_end = now + timedelta(minutes=silence_min)
+        state.set(ticket_id, TicketState(
+            state="in_silence_window",
+            first_seen=existing.first_seen if existing else now,
+            last_customer_comment_id=latest_cid,
+            last_comment_ts=latest_ts,
+            last_eval_at=now,
+            silence_window_end=window_end,
+            last_verdict=verdict_str,
+            ask_count=ask_count_now,
+            nudge_sent_at=None,
+            alert_sent_at=None,
+            abandoned_alert_sent_at=(
+                existing.abandoned_alert_sent_at if existing else None
+            ),
+            last_agent_finish_ts=(
+                existing.last_agent_finish_ts if existing else None
+            ),
+        ))
+        log_decision(
+            log_path=log_path, ticket_id=ticket_id,
+            verdict=verdict_str, completeness=verdict.completeness,
+            silence_min=silence_min, action="enter_silence",
+            extra={"source": source},
+        )
+        logger.info(
+            "trigger_enter_silence",
+            ticket_id=ticket_id, silence_min=silence_min,
+            window_end=window_end.isoformat(), source=source,
+        )
+        return
+
+    # ───── Priority 5/6: ask 路径（no_message / greeting / insufficient_info）─────
+    # 上限检查：累计 ask 已达 max → 转人工
+    if ask_count_now >= max_asks:
+        _set_escalated_to_human(
+            ticket_id=ticket_id, reason="max_asks_reached",
+            existing=existing, state=state, log_path=log_path,
+            source=source, now=now, verdict_str=verdict_str,
+            latest_cid=latest_cid, latest_ts=latest_ts,
+            completeness=verdict.completeness,
+            extra_log={
+                "ask_count": ask_count_now, "max_ask_count": max_asks,
+            },
+        )
+        return
+
+    # 还有 ask 配额 → 发模板 + 累加（M4 stub，M6 实际实施）
+    sent = await _send_ask_template(
+        ticket_id=ticket_id,
+        verdict_kind=verdict_str,
+        customer_msgs=customer_msgs,
+        ticket_info=ticket_info,
+        ask_count=ask_count_now,
+        source=source,
+    )
+
+    new_ask_count = ask_count_now + 1 if sent else ask_count_now
+    state.set(ticket_id, TicketState(
+        state="waiting_for_issue",
+        first_seen=existing.first_seen if existing else now,
+        last_customer_comment_id=latest_cid,
+        last_comment_ts=latest_ts,
+        last_eval_at=now,
+        last_verdict=verdict_str,
+        ask_count=new_ask_count,
+        # 客户新消息到达 → 清 nudge/alert 标记让下一轮可重发
+        nudge_sent_at=None,
+        alert_sent_at=None,
+        abandoned_alert_sent_at=(
+            existing.abandoned_alert_sent_at if existing else None
+        ),
+        last_agent_finish_ts=(
+            existing.last_agent_finish_ts if existing else None
+        ),
+    ))
+    log_decision(
+        log_path=log_path, ticket_id=ticket_id,
+        verdict=verdict_str, completeness=verdict.completeness,
+        action="ask_customer",
+        extra={
+            "source": source, "ask_count_before": ask_count_now,
+            "ask_count_after": new_ask_count, "sent": sent,
+        },
+    )
+    logger.info(
+        "trigger_ask_customer",
+        ticket_id=ticket_id, verdict=verdict_str,
+        ask_count_before=ask_count_now, ask_count_after=new_ask_count,
+        source=source, sent=sent,
+    )
+
+
 async def _trigger_consumer(
     queue: asyncio.Queue,
     manager: Any,
@@ -638,63 +926,22 @@ async def _trigger_consumer(
             except Exception:
                 latest_ts = now
 
-            # 5. 根据 verdict 更新 state
-            #    客户新消息到达 → reset nudge_sent_at / alert_sent_at，让下一轮可重发
-            if verdict.verdict == "substantial_issue":
-                # 进入静默期，等 N 分钟客户不再发新消息才处理
-                silence_min = cfg.trigger_decider.silence_minutes_default
-                window_end = now + timedelta(minutes=silence_min)
-                state.set(ticket_id, TicketState(
-                    state="in_silence_window",
-                    first_seen=existing.first_seen if existing else now,
-                    last_customer_comment_id=latest_cid,
-                    last_comment_ts=latest_ts,
-                    last_eval_at=now,
-                    silence_window_end=window_end,
-                    last_verdict=verdict.verdict,
-                    # 客户又发新消息 → 清掉之前的 nudge / alert 标记
-                    nudge_sent_at=None,
-                    alert_sent_at=None,
-                    abandoned_alert_sent_at=(
-                        existing.abandoned_alert_sent_at if existing else None
-                    ),
-                ))
-                log_decision(
-                    log_path=log_path, ticket_id=ticket_id,
-                    verdict=verdict.verdict, completeness=verdict.completeness,
-                    silence_min=silence_min, action="enter_silence",
-                    extra={"source": source},
-                )
-                logger.info(
-                    "trigger_enter_silence",
-                    ticket_id=ticket_id, silence_min=silence_min,
-                    window_end=window_end.isoformat(), source=source,
-                )
-            else:
-                # greeting / insufficient_info → 等下一条客户消息
-                state.set(ticket_id, TicketState(
-                    state="waiting_for_issue",
-                    first_seen=existing.first_seen if existing else now,
-                    last_customer_comment_id=latest_cid,
-                    last_comment_ts=latest_ts,
-                    last_eval_at=now,
-                    last_verdict=verdict.verdict,
-                    nudge_sent_at=None,
-                    alert_sent_at=None,
-                    abandoned_alert_sent_at=(
-                        existing.abandoned_alert_sent_at if existing else None
-                    ),
-                ))
-                log_decision(
-                    log_path=log_path, ticket_id=ticket_id,
-                    verdict=verdict.verdict, completeness=verdict.completeness,
-                    action="wait_for_issue",
-                    extra={"source": source},
-                )
-                logger.info(
-                    "trigger_waiting_for_issue",
-                    ticket_id=ticket_id, verdict=verdict.verdict, source=source,
-                )
+            # 5. 根据 verdict 分发 state transition + 副作用动作
+            #    详细分发规则见 _handle_post_verdict_dispatch()
+            await _handle_post_verdict_dispatch(
+                ticket_id=ticket_id,
+                verdict=verdict,
+                customer_msgs=customer_msgs,
+                ticket_info=ticket_info,
+                latest_cid=latest_cid,
+                latest_ts=latest_ts,
+                existing=existing,
+                state=state,
+                log_path=log_path,
+                source=source,
+                now=now,
+                cfg=cfg,
+            )
         except Exception as e:
             logger.error(
                 "trigger_consumer_error",
