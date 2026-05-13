@@ -481,29 +481,82 @@ async def _send_ask_template(
     ask_count: int,
     source: str,
 ) -> bool:
-    """发公开 ask 模板给客户索取问题信息。
+    """发公开 ask 模板给客户索取问题信息（M6 实施版本）。
 
-    **M4 阶段为 stub** —— 只 log，不真发。M6 会填入真正的模板生成 + 发送
-    （调 ZendeskPublicReply 工具）。
+    流程：
+    1. 从 formResponse 抽 customer_name
+    2. 按 verdict_kind + ask_count 选模板（A/B/C/D）
+    3. 调 send_public_reply 直接送出（含 footer + kill switch 检查）
 
-    返回值：True 表示"已发"，False 表示"未发（出错/未实施）"。
-    M4 永远返回 True 让 ask_count 正常累加，模拟 M6 实施后的行为。
+    返回值：True 表示"已发"，False 表示"未发（kill switch / 出错）"。
+    返回 False 时 trigger_consumer **不**累加 ask_count（避免空跑吞 quota）。
 
     设计：
-    - verdict_kind ∈ {no_message, greeting, insufficient_info} → 对应模板 A/B/C
-    - ask_count >= 1 时升级为模板 D（"再问一次，更直接"措辞）
-    - 客户语言永远 English（messaging 工单统一英文回复，决策见 2026-05-13 讨论）
+    - verdict_kind ∈ {no_message, greeting, insufficient_info} → 模板 A/B/C
+    - ask_count >= 1 → 一律升级模板 D（措辞更直接）
+    - 客户语言永远 English（决策见 2026-05-13 讨论）
     """
+    from zd_agent.config import EnvSettings
+    from zd_agent.prompts.public_reply.templates import build_ask_body
+    from zd_agent.tools.zendesk_public_reply import send_public_reply
+
+    cfg = get_config()
+    env = EnvSettings()
+
+    # 1. 从 formResponse 抽客户名
+    form = _form_data_from_msgs(customer_msgs or [])
+    customer_name = (form.get("name", "") or "").strip()
+
+    # 2. 选模板 + 生成 body
+    customer_bodies = [m.get("body", "") for m in (customer_msgs or [])]
+    try:
+        body, template_name = await build_ask_body(
+            verdict_kind=verdict_kind,
+            ask_count=ask_count,
+            customer_name=customer_name,
+            customer_messages=customer_bodies,
+            model=cfg.trigger_decider.llm_model,
+            api_key=env.openai_api_key,
+        )
+    except Exception as e:
+        logger.error(
+            "ask_template_build_failed",
+            ticket_id=ticket_id, verdict_kind=verdict_kind,
+            error=str(e)[:200], exc_info=True,
+        )
+        return False
+
     logger.info(
-        "send_ask_template_stub",
+        "ask_template_built",
         ticket_id=ticket_id,
         verdict_kind=verdict_kind,
         ask_count=ask_count,
+        template=template_name,
+        customer_name=customer_name or "(none)",
+        body_len=len(body),
         source=source,
-        note="M4 stub — M6 will implement actual template + send",
     )
-    # M6 之前永远返回 True：保持 trigger_consumer 状态机正常推进
-    # （ask_count 累加），便于早期烟测和集成测试。
+
+    # 3. 发送（reply_type="ask"，footer 由 send_public_reply 内部追加）
+    success, msg = await send_public_reply(
+        ticket_id=ticket_id,
+        body=body,
+        reply_type="ask",
+    )
+    if not success:
+        logger.warning(
+            "ask_template_send_failed",
+            ticket_id=ticket_id, template=template_name,
+            error=msg[:200], source=source,
+        )
+        return False
+
+    logger.info(
+        "ask_template_sent",
+        ticket_id=ticket_id, template=template_name,
+        ask_count_now=ask_count + 1,
+        source=source,
+    )
     return True
 
 

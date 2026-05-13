@@ -99,6 +99,87 @@ def _append_footer(body: str, reply_type: str) -> str:
     return body.rstrip() + footer
 
 
+async def send_public_reply(
+    *,
+    ticket_id: int,
+    body: str,
+    reply_type: str,
+    dry_run: bool = False,
+) -> tuple[bool, str]:
+    """直接发 public reply 的公共入口（不需要 AgentSession）。
+
+    给 trigger_consumer / 集成测试 / CLI 用。和 ZendeskPublicReply Tool 共享
+    底层送达逻辑（footer 追加 + kill switch + reply_ticket(public=True)），但
+    **不跑 pre_send_check**（pre_send_check 主要给 agent 长时间分析后用，
+    trigger 层 evaluate→send 间隔毫秒级，没必要）。
+
+    Returns:
+        (success, message_or_error)
+    """
+    # Kill switch
+    cfg = get_config()
+    if not getattr(cfg, "public_reply", None) or not cfg.public_reply.enabled:
+        logger.warning(
+            "public_reply_disabled_direct",
+            ticket_id=ticket_id,
+            reason="cfg.public_reply.enabled=false",
+        )
+        return (
+            False,
+            "Public reply is currently disabled (kill switch).",
+        )
+
+    # 参数校验
+    body = (body or "").strip()
+    if not body:
+        return False, "body is empty"
+    if reply_type not in _VALID_REPLY_TYPES:
+        return False, f"invalid reply_type: {reply_type!r}"
+
+    # Footer 追加
+    body_with_footer = _append_footer(body, reply_type)
+
+    if dry_run:
+        logger.info(
+            "public_reply_dry_run_direct",
+            ticket_id=ticket_id, reply_type=reply_type,
+            body_len=len(body_with_footer),
+        )
+        return True, "[Dry Run] Not sent."
+
+    logger.info(
+        "public_reply_send_start_direct",
+        ticket_id=ticket_id, reply_type=reply_type,
+        body_len=len(body_with_footer),
+    )
+    try:
+        client = _get_client()
+        await _call_with_rate_limit_retry(
+            client.reply_ticket,
+            ticket_id,
+            body_with_footer,
+            True,  # public=True
+        )
+        logger.info(
+            "public_reply_sent_direct",
+            ticket_id=ticket_id, reply_type=reply_type,
+        )
+        return True, f"已发送 Public Reply 到工单 #{ticket_id}"
+    except ZendeskError as e:
+        logger.warning(
+            "public_reply_direct_zendesk_error",
+            ticket_id=ticket_id, error=str(e)[:200],
+        )
+        return False, _format_error(e)
+    except Exception as e:
+        logger.error(
+            "public_reply_direct_send_failed",
+            ticket_id=ticket_id, error=str(e)[:200],
+            exc_info=True,
+        )
+        return False, f"{type(e).__name__}: {e}"
+
+
 class ZendeskPublicReply(Tool):
     """发送公开回复（客户可见）。**只用于 SaaS messaging 工单**。
 

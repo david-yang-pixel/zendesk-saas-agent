@@ -67,8 +67,14 @@ async def _dispatch(
     cfg: AppConfig | None = None,
     source: str = "zendesk_webhook",
     tmp_path=None,
+    send_ask_returns: bool = True,
 ) -> None:
-    """共用 helper：调用 dispatch 并补默认参数。"""
+    """共用 helper：调用 dispatch 并补默认参数。
+
+    自动 patch ``_send_ask_template`` 返回 ``send_ask_returns``（默认 True），
+    避免 M6 实施后 ask_template 依赖 kill switch / Zendesk client 真发送。
+    要测试发送失败路径时显式传 ``send_ask_returns=False``。
+    """
     from pathlib import Path
     now = _now()
     log_path = (
@@ -76,20 +82,25 @@ async def _dispatch(
         if tmp_path is not None
         else Path("/tmp/trigger_test.jsonl")
     )
-    await _handle_post_verdict_dispatch(
-        ticket_id=ticket_id,
-        verdict=verdict,
-        customer_msgs=[],
-        ticket_info={"id": ticket_id},
-        latest_cid="cid-1",
-        latest_ts=now,
-        existing=existing,
-        state=state,
-        log_path=log_path,
-        source=source,
-        now=now,
-        cfg=cfg or _make_cfg(),
-    )
+    with patch(
+        "zd_agent.entry.saas_app._send_ask_template",
+        new_callable=AsyncMock,
+        return_value=send_ask_returns,
+    ):
+        await _handle_post_verdict_dispatch(
+            ticket_id=ticket_id,
+            verdict=verdict,
+            customer_msgs=[],
+            ticket_info={"id": ticket_id},
+            latest_cid="cid-1",
+            latest_ts=now,
+            existing=existing,
+            state=state,
+            log_path=log_path,
+            source=source,
+            now=now,
+            cfg=cfg or _make_cfg(),
+        )
 
 
 # ============================================================================
@@ -304,18 +315,26 @@ class TestAskPath:
         assert rec.ask_count == 10  # 这次是第 10 次（最后一次）
 
     @pytest.mark.asyncio
-    async def test_send_ask_template_stub_called(self, tmp_path) -> None:
-        """验证 _send_ask_template stub 被调用（M4 阶段只 log 不真发）"""
+    async def test_send_ask_template_called_with_correct_args(self, tmp_path) -> None:
+        """_send_ask_template 被传入正确的参数"""
         state = _make_state(tmp_path)
+        from pathlib import Path
+        now = _now()
+        log_path = Path(tmp_path) / "trigger.jsonl"
         with patch(
             "zd_agent.entry.saas_app._send_ask_template",
             new_callable=AsyncMock,
             return_value=True,
         ) as mock_send:
-            await _dispatch(
-                state=state,
+            await _handle_post_verdict_dispatch(
+                ticket_id=12345,
                 verdict=_make_verdict(kind="greeting"),
-                tmp_path=tmp_path,
+                customer_msgs=[],
+                ticket_info={"id": 12345},
+                latest_cid="cid-1", latest_ts=now,
+                existing=None, state=state, log_path=log_path,
+                source="zendesk_webhook", now=now,
+                cfg=_make_cfg(),
             )
         mock_send.assert_called_once()
         kwargs = mock_send.call_args.kwargs
@@ -325,21 +344,17 @@ class TestAskPath:
 
     @pytest.mark.asyncio
     async def test_send_ask_template_returns_false_no_increment(self, tmp_path) -> None:
-        """模拟 M6 实施后发送失败：ask_count 不该累加（避免空跑也吞 quota）"""
+        """发送失败（kill switch off / API 错）→ ask_count 不该累加（避免空跑吞 quota）"""
         state = _make_state(tmp_path)
         existing = TicketState(
             state="waiting_for_issue", first_seen=_now(), ask_count=3,
         )
         state.set(12345, existing)
-        with patch(
-            "zd_agent.entry.saas_app._send_ask_template",
-            new_callable=AsyncMock,
-            return_value=False,
-        ):
-            await _dispatch(
-                state=state, verdict=_make_verdict(kind="greeting"),
-                existing=existing, tmp_path=tmp_path,
-            )
+        await _dispatch(
+            state=state, verdict=_make_verdict(kind="greeting"),
+            existing=existing, tmp_path=tmp_path,
+            send_ask_returns=False,
+        )
         # 发送失败 → ask_count 保持 3 不变
         assert state.get(12345).ask_count == 3
 
