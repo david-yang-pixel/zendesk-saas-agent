@@ -632,6 +632,17 @@ async def _set_escalated_to_human(
         verdict=verdict_str,
     )
 
+    # M8 metric: 客户主动喊 human 才算 "customer_requested_human"
+    # （max_asks_reached / high_risk_* 是 agent 主动放弃，不算客户拒绝）
+    if reason == "customer_requested":
+        from zd_agent.observability.metrics import emit_customer_requested_human
+        emit_customer_requested_human(
+            ticket_id=ticket_id,
+            source=source,
+            customer_phrase=customer_phrase,
+            ask_count_so_far=existing.ask_count if existing else 0,
+        )
+
     # ───── 2. 发 handoff 模板给客户（kill switch 受控，best-effort）─────
     try:
         from zd_agent.prompts.public_reply.templates import handoff_template
@@ -1075,6 +1086,25 @@ async def _trigger_consumer(
                     current_state=existing.state,
                 )
                 continue
+
+            # 3a. M8 metric: 客户在 agent 标 processed 之后又回来 → reopen
+            #     （新 comment 不重复 + 状态是 processed）
+            if existing and existing.state == "processed":
+                from zd_agent.observability.metrics import emit_customer_reopen
+                hours_since = None
+                if existing.last_eval_at is not None:
+                    last_eval = existing.last_eval_at
+                    if last_eval.tzinfo is None:
+                        last_eval = last_eval.replace(tzinfo=timezone.utc)
+                    hours_since = (
+                        datetime.now(timezone.utc) - last_eval
+                    ).total_seconds() / 3600
+                emit_customer_reopen(
+                    ticket_id=ticket_id,
+                    prev_state=existing.state,
+                    source=source,
+                    hours_since_processed=hours_since,
+                )
 
             # 3b. Post-agent cooldown：上次 agent 完成后 N 秒内的客户新消息
             #     视为"补充上一条问题"，跳过新一轮 dispatch（防止客户连发两条

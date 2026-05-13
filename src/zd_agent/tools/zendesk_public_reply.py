@@ -164,6 +164,18 @@ async def send_public_reply(
             "public_reply_sent_direct",
             ticket_id=ticket_id, reply_type=reply_type,
         )
+        # M8 metric: 成功发出一条公共回复
+        try:
+            from zd_agent.observability.metrics import (
+                emit_agent_public_reply_sent,
+            )
+            emit_agent_public_reply_sent(
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                body_chars=len(body),  # 不含 footer
+            )
+        except Exception:
+            pass  # metric 失败不影响主流程
         return True, f"已发送 Public Reply 到工单 #{ticket_id}"
     except ZendeskError as e:
         logger.warning(
@@ -363,6 +375,18 @@ class ZendeskPublicReply(Tool):
                 "public_reply_sent",
                 ticket_id=ticket_id, reply_type=reply_type,
             )
+            # M8 metric: agent 通过 Tool 路径成功发出公共回复
+            try:
+                from zd_agent.observability.metrics import (
+                    emit_agent_public_reply_sent,
+                )
+                emit_agent_public_reply_sent(
+                    ticket_id=ticket_id,
+                    reply_type=reply_type,
+                    body_chars=len(body),  # 不含 footer
+                )
+            except Exception:
+                pass  # metric 失败不影响主流程
             return ToolResult(
                 output=(
                     f"已发送 Public Reply 到工单 #{ticket_id}（reply_type={reply_type}）"

@@ -159,6 +159,7 @@ async def _process_one(
 
     # 24h cap → abandoned + alert
     if age_seconds >= abandoned_hours * 3600:
+        first_abandon = rec.state != "abandoned"
         if rec.abandoned_alert_sent_at is None:
             await _alert_feishu(
                 title=f"Ticket #{ticket_id} 已 24h 无客户回应",
@@ -176,6 +177,18 @@ async def _process_one(
             "waiting_poller_abandoned",
             ticket_id=ticket_id, age_hours=round(age_seconds / 3600, 1),
         )
+        # M8 metric: 首次进入 abandoned 才埋点（避免重复扫描产生噪声）
+        if first_abandon:
+            try:
+                from zd_agent.observability.metrics import emit_abandoned
+                emit_abandoned(
+                    ticket_id=ticket_id,
+                    age_hours=age_seconds / 3600,
+                    last_verdict=rec.last_verdict or "",
+                    ask_count=rec.ask_count,
+                )
+            except Exception:
+                pass
         return
 
     # 30min greeting alert (one-shot)
