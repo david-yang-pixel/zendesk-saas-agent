@@ -93,6 +93,14 @@ class AgentSession:
     hint: str = ""
     dry_run: bool = False
 
+    # ───── M5 (2026-05-13) pre-send freshness check 用 ─────
+    # agent dispatch 起跑时的客户消息 snapshot。public reply 发送前会再 fetch
+    # 一次客户消息，对比 snapshot 决定是否 abort（客户在 agent 分析期间发了
+    # 实质性新消息时 abort）。
+    # 仅 public reply 路径使用；internal reply 不需要（同事看见草稿后会自己决定）。
+    customer_msgs_snapshot_count: int = 0
+    customer_msgs_snapshot_last_id: str = ""
+
     def log_tool_call(
         self,
         tool_name: str,

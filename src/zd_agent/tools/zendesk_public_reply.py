@@ -212,6 +212,57 @@ class ZendeskPublicReply(Tool):
                 ),
             )
 
+        # 4b. Pre-send freshness check（M5）
+        # 只在 session 有 snapshot 时跑（snapshot=0 表示未设置 / legacy 路径，跳过）
+        # handoff / closed 类回复跳过 freshness check：
+        #   - handoff 是"已转人工"通知，发就发，不需等更多客户消息
+        #   - closed 是客户已说解决，发就发
+        if (
+            reply_type in ("ask", "solution")
+            and session.customer_msgs_snapshot_count > 0
+        ):
+            from zd_agent.config import EnvSettings
+            from zd_agent.runtime.pre_send_check import pre_send_check_or_abort
+            from zd_agent.entry.saas_app import _fetch_customer_messages
+
+            async def _fetch():
+                msgs, _ticket = await _fetch_customer_messages(ticket_id)
+                return msgs or []
+
+            env = EnvSettings()
+            try:
+                check = await pre_send_check_or_abort(
+                    ticket_id=ticket_id,
+                    snapshot_count=session.customer_msgs_snapshot_count,
+                    snapshot_last_id=session.customer_msgs_snapshot_last_id or None,
+                    fetch_messages_fn=_fetch,
+                    model=cfg.trigger_decider.llm_model,
+                    api_key=env.openai_api_key,
+                )
+            except Exception as e:
+                logger.warning(
+                    "public_reply_pre_send_check_error",
+                    ticket_id=ticket_id, error=str(e)[:200],
+                )
+                # check 失败保守放行（避免阻塞所有回复）
+                check = None
+
+            if check is not None and not check.continue_send:
+                logger.info(
+                    "public_reply_aborted_pre_send_check",
+                    ticket_id=ticket_id, reply_type=reply_type,
+                    reason=check.reason,
+                    new_msg_count=check.new_messages_count,
+                )
+                return ToolResult(
+                    success=False,
+                    error=(
+                        f"Pre-send check abort: customer added "
+                        f"{check.new_messages_count} new substantive message(s) "
+                        f"({check.reason}). Re-analyze with fresh context."
+                    ),
+                )
+
         # 5. 真发送：调 client.reply_ticket(..., public=True)
         logger.info(
             "public_reply_send_start",

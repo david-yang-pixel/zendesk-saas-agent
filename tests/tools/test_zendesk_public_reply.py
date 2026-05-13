@@ -77,6 +77,9 @@ def _make_session(dry_run: bool = False) -> MagicMock:
     s.dry_run = dry_run
     s.reply_draft = ""
     s.reply_sent = False
+    # M5: pre_send_check 默认跳过（snapshot=0 表示"未挂 snapshot 直接发"）
+    s.customer_msgs_snapshot_count = 0
+    s.customer_msgs_snapshot_last_id = ""
     return s
 
 
@@ -190,6 +193,105 @@ class TestExecute:
         assert call_args[0][0] == 42  # ticket_id
         assert "Dify SaaS Agent" in call_args[0][1]  # body 含 footer
         assert call_args[0][2] is True  # public=True ← 关键
+
+
+class TestPreSendCheckIntegration:
+    """M5: ZendeskPublicReply 接入 pre_send_check（snapshot > 0 时调）"""
+
+    @pytest.mark.asyncio
+    async def test_snapshot_zero_skips_pre_send_check(self) -> None:
+        """snapshot_count=0 → 跳过 freshness check 直接发（legacy 路径）"""
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.customer_msgs_snapshot_count = 0
+
+        mock_client = MagicMock()
+        mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
+
+        async def _passthrough(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._get_client",
+            return_value=mock_client,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._call_with_rate_limit_retry",
+            side_effect=_passthrough,
+        ):
+            r = await tool.execute(
+                {"ticket_id": 1, "body": "test", "reply_type": "ask"}, sess,
+            )
+        assert r.success
+        mock_client.reply_ticket.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handoff_skips_pre_send_check_even_with_snapshot(self) -> None:
+        """handoff 类型跳过 freshness check（已经决定转人工了）"""
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.customer_msgs_snapshot_count = 5  # 即使有 snapshot
+
+        mock_client = MagicMock()
+        mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
+
+        async def _passthrough(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._get_client",
+            return_value=mock_client,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._call_with_rate_limit_retry",
+            side_effect=_passthrough,
+        ), patch(
+            "zd_agent.runtime.pre_send_check.pre_send_check_or_abort",
+            new_callable=lambda: pytest.fail,  # 不应被调
+        ):
+            r = await tool.execute(
+                {"ticket_id": 1, "body": "transferred", "reply_type": "handoff"},
+                sess,
+            )
+        assert r.success
+
+    @pytest.mark.asyncio
+    async def test_ask_with_snapshot_aborts_on_substantive_new_msg(self) -> None:
+        """ask + snapshot 设了 + freshness check 返回 abort → tool 返回失败"""
+        from zd_agent.runtime.pre_send_check import FreshnessResult
+
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.customer_msgs_snapshot_count = 1
+        sess.customer_msgs_snapshot_last_id = "m1"
+
+        async def _abort_check(**kwargs):
+            return FreshnessResult(
+                continue_send=False,
+                reason="substantive_heuristic",
+                new_messages_count=1,
+            )
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ), patch(
+            "zd_agent.runtime.pre_send_check.pre_send_check_or_abort",
+            side_effect=_abort_check,
+        ), patch(
+            "zd_agent.entry.saas_app._fetch_customer_messages",
+            new_callable=lambda: (lambda tid: ([], {})),
+        ):
+            r = await tool.execute(
+                {"ticket_id": 1, "body": "ask", "reply_type": "ask"}, sess,
+            )
+        assert not r.success
+        assert "Pre-send check abort" in r.error
+        assert "substantive_heuristic" in r.error
 
 
 class TestRegistryRegistration:
