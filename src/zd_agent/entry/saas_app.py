@@ -560,7 +560,7 @@ async def _send_ask_template(
     return True
 
 
-def _set_escalated_to_human(
+async def _set_escalated_to_human(
     *,
     ticket_id: int,
     reason: str,
@@ -573,16 +573,28 @@ def _set_escalated_to_human(
     latest_cid,
     latest_ts,
     completeness: int,
+    customer_msgs: list[dict] | None = None,
+    customer_phrase: str = "",
+    agent_last_reply: str = "",
     extra_log: dict | None = None,
 ) -> None:
-    """把工单标记为 escalated_to_human，4 个 entry 入口后续会 skip 它。
+    """把工单标记为 escalated_to_human + 触发 3 个对外动作。
 
-    **M4 阶段** state 字段已经写对，但 **飞书推送 + Zendesk tag 加在 M7 实施**。
-    所以这里只写 state + log，不做对外 effect。
+    state 写入是**强制**的（哪怕副作用全失败也保证 state 正确），3 个副作用是
+    **best-effort**（任一失败不影响其它，全部记 log）：
+
+    1. 发 public handoff 模板 E 给客户（让客户知道有人接手）
+    2. 飞书推送 ticket_escalate 卡片给 SE
+    3. Zendesk 工单加 tag ``escalated-to-human``
+
+    所有副作用都受 ``cfg.public_reply.enabled`` 总开关门控：
+    - kill switch OFF → 仅写 state + 飞书 + tag（不发客户公开回复）
+    - kill switch ON  → 全部 3 个副作用都发
     """
     from zd_agent.trigger.decision_log import log_decision
     from zd_agent.trigger.state_store import TicketState
 
+    # ───── 1. 写 state（强制）─────
     state.set(ticket_id, TicketState(
         state="escalated_to_human",
         first_seen=existing.first_seen if existing else now,
@@ -618,8 +630,102 @@ def _set_escalated_to_human(
         "trigger_escalated_to_human",
         ticket_id=ticket_id, reason=reason, source=source,
         verdict=verdict_str,
-        note="M4: state 已写；M7 将加飞书推送 + Zendesk tag",
     )
+
+    # ───── 2. 发 handoff 模板给客户（kill switch 受控，best-effort）─────
+    try:
+        from zd_agent.prompts.public_reply.templates import handoff_template
+        from zd_agent.tools.zendesk_public_reply import send_public_reply
+
+        form = _form_data_from_msgs(customer_msgs or [])
+        customer_name = (form.get("name", "") or "").strip()
+        handoff_body = handoff_template(customer_name=customer_name)
+
+        success, msg = await send_public_reply(
+            ticket_id=ticket_id, body=handoff_body, reply_type="handoff",
+        )
+        if success:
+            logger.info(
+                "escalated_handoff_reply_sent",
+                ticket_id=ticket_id, reason=reason,
+            )
+        else:
+            logger.warning(
+                "escalated_handoff_reply_failed",
+                ticket_id=ticket_id, error=msg[:200],
+            )
+    except Exception as e:
+        logger.warning(
+            "escalated_handoff_reply_exception",
+            ticket_id=ticket_id, error=str(e)[:200], exc_info=True,
+        )
+
+    # ───── 3. 飞书推送 ticket_escalate 卡片（best-effort）─────
+    try:
+        from zd_agent.config import get_config as _gc
+        from zd_agent.integrations.feishu.client import FeishuClient
+
+        cfg = _gc()
+        if cfg.feishu.webhook_url:
+            zendesk_url = (
+                f"https://{cfg.zendesk.subdomain}.zendesk.com"
+                f"/agent/tickets/{ticket_id}"
+                if cfg.zendesk.subdomain else ""
+            )
+            # 构造 reason 内容（含客户原话 + agent 上次回复摘要）
+            reason_lines = [f"**升级原因**: {reason}"]
+            if customer_phrase:
+                reason_lines.append(
+                    f"**客户原话**: {customer_phrase[:200]}",
+                )
+            if agent_last_reply:
+                reason_lines.append(
+                    f"**Agent 上次回复**: {agent_last_reply[:200]}",
+                )
+            reason_lines.append(f"**source**: {source}")
+
+            client = FeishuClient(
+                webhook_url=cfg.feishu.webhook_url,
+                webhook_secret=cfg.feishu.webhook_secret,
+            )
+            await client.send_ticket_escalate(
+                ticket_id=str(ticket_id),
+                reason="\n".join(reason_lines),
+                zendesk_url=zendesk_url,
+            )
+            logger.info(
+                "escalated_feishu_pushed",
+                ticket_id=ticket_id, reason=reason,
+            )
+        else:
+            logger.debug(
+                "escalated_feishu_skipped_no_webhook", ticket_id=ticket_id,
+            )
+    except Exception as e:
+        logger.warning(
+            "escalated_feishu_failed",
+            ticket_id=ticket_id, error=str(e)[:200], exc_info=True,
+        )
+
+    # ───── 4. Zendesk 加 tag escalated-to-human（best-effort）─────
+    try:
+        from zd.client import ZendeskClient
+        import asyncio as _asyncio
+
+        def _add_tag():
+            ZendeskClient().add_ticket_tags(
+                ticket_id, ["escalated-to-human"],
+            )
+
+        await _asyncio.to_thread(_add_tag)
+        logger.info(
+            "escalated_zendesk_tag_added", ticket_id=ticket_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "escalated_zendesk_tag_failed",
+            ticket_id=ticket_id, error=str(e)[:200], exc_info=True,
+        )
 
 
 async def _handle_post_verdict_dispatch(
@@ -661,12 +767,18 @@ async def _handle_post_verdict_dispatch(
 
     # ───── Priority 1: request_human ─────
     if verdict_str == "request_human":
-        _set_escalated_to_human(
+        # 客户原话：用最近一条客户消息（fast-path 走的就是这个）
+        last_msg_body = ""
+        if customer_msgs:
+            last_msg_body = (customer_msgs[-1].get("body") or "")[:200]
+        await _set_escalated_to_human(
             ticket_id=ticket_id, reason="customer_requested",
             existing=existing, state=state, log_path=log_path,
             source=source, now=now, verdict_str=verdict_str,
             latest_cid=latest_cid, latest_ts=latest_ts,
             completeness=verdict.completeness,
+            customer_msgs=customer_msgs,
+            customer_phrase=last_msg_body,
             extra_log={"customer_phrase": (verdict.reason or "")[:120]},
         )
         return
@@ -703,13 +815,18 @@ async def _handle_post_verdict_dispatch(
 
     # ───── Priority 3: substantial + high_risk → escalate ─────
     if verdict_str == "substantial_issue" and verdict.high_risk_category:
-        _set_escalated_to_human(
+        last_msg_body = ""
+        if customer_msgs:
+            last_msg_body = (customer_msgs[-1].get("body") or "")[:200]
+        await _set_escalated_to_human(
             ticket_id=ticket_id,
             reason=f"high_risk_{verdict.high_risk_category}",
             existing=existing, state=state, log_path=log_path,
             source=source, now=now, verdict_str=verdict_str,
             latest_cid=latest_cid, latest_ts=latest_ts,
             completeness=verdict.completeness,
+            customer_msgs=customer_msgs,
+            customer_phrase=last_msg_body,
             extra_log={
                 "high_risk_category": verdict.high_risk_category,
                 "high_risk_reason": (verdict.high_risk_reason or "")[:120],
@@ -755,12 +872,17 @@ async def _handle_post_verdict_dispatch(
     # ───── Priority 5/6: ask 路径（no_message / greeting / insufficient_info）─────
     # 上限检查：累计 ask 已达 max → 转人工
     if ask_count_now >= max_asks:
-        _set_escalated_to_human(
+        last_msg_body = ""
+        if customer_msgs:
+            last_msg_body = (customer_msgs[-1].get("body") or "")[:200]
+        await _set_escalated_to_human(
             ticket_id=ticket_id, reason="max_asks_reached",
             existing=existing, state=state, log_path=log_path,
             source=source, now=now, verdict_str=verdict_str,
             latest_cid=latest_cid, latest_ts=latest_ts,
             completeness=verdict.completeness,
+            customer_msgs=customer_msgs,
+            customer_phrase=last_msg_body,
             extra_log={
                 "ask_count": ask_count_now, "max_ask_count": max_asks,
             },
@@ -847,6 +969,33 @@ async def _trigger_consumer(
         try:
             ticket_id = int(msg["ticket_id"])
             source = msg.get("source", "unknown")
+
+            # 0. M7: 已转人工的工单 4 个 entry 入口（mention / webhook /
+            #    silence_waker / waiting_poller）一律 skip。所有 entry 都经
+            #    trigger_queue 进来，所以一处检查覆盖全部。
+            existing_state_for_escalate_check = state.get(ticket_id)
+            if (
+                existing_state_for_escalate_check is not None
+                and existing_state_for_escalate_check.state == "escalated_to_human"
+            ):
+                logger.info(
+                    "trigger_skip_escalated",
+                    ticket_id=ticket_id, source=source,
+                    escalated_reason=existing_state_for_escalate_check.escalated_reason,
+                    escalated_at=(
+                        existing_state_for_escalate_check.escalated_at.isoformat()
+                        if existing_state_for_escalate_check.escalated_at else None
+                    ),
+                )
+                log_decision(
+                    log_path=log_path, ticket_id=ticket_id,
+                    verdict="escalated_to_human", action="skip",
+                    extra={
+                        "source": source,
+                        "escalated_reason": existing_state_for_escalate_check.escalated_reason,
+                    },
+                )
+                continue
 
             # 1. silence_waker 唤醒 or mention 触发 → 跳过判定，直接 dispatch
             if source in ("silence_waker", "mention"):
