@@ -15,6 +15,7 @@ VALID_STATES = {
     "processed",            # done (first pass or followup)
     "waiting_for_auth",     # Teleport down, suspended
     "abandoned",            # customer gone too long
+    "escalated_to_human",   # 已转人工：agent 完全退出此工单，4 个 entry 入口 skip
 }
 
 
@@ -39,6 +40,23 @@ class TicketState:
     # 钩子在 agent_done 后写入。
     last_agent_finish_ts: Optional[datetime] = None
 
+    # ───── M3 (2026-05-13) auto-public-reply 新增字段 ─────
+    # 同工单内 agent 累计自动 ask 客户的次数（每次发 public ask 模板 A/B/C/D 累加）。
+    # 用于 M4 实施 max_ask_count（默认 10）上限：超过后强制转人工。
+    # 客户 verdict 终于变 substantial 后保留计数不重置（说明 agent 花了几轮才拿到信息，
+    # 用于事后复盘 + 调 prompt）。
+    ask_count: int = 0
+    # 转人工时刻（仅 state=escalated_to_human 时填）。供飞书卡片显示 + 事后审计。
+    escalated_at: Optional[datetime] = None
+    # 转人工原因。已支持的值：
+    #   - customer_requested      客户主动说 "human" / 触发 fast-path
+    #   - max_asks_reached        累计 ask >= max_ask_count 上限
+    #   - high_risk_category      工单被判定为 refund / emotional / incident
+    #   - low_confidence          agent 自评 confidence=low
+    #   - agent_error             agent 自身出错（异常 / 工具失败 / token 超额等）
+    #   - manual                  人工通过 mention 主动接手（兼容旧路径）
+    escalated_reason: str = ""
+
     def to_dict(self) -> dict:
         d = asdict(self)
         for k, v in list(d.items()):
@@ -52,7 +70,7 @@ class TicketState:
         for k in (
             "first_seen", "last_comment_ts", "last_eval_at", "silence_window_end",
             "nudge_sent_at", "alert_sent_at", "abandoned_alert_sent_at",
-            "last_agent_finish_ts",
+            "last_agent_finish_ts", "escalated_at",
         ):
             if data.get(k):
                 data[k] = datetime.fromisoformat(data[k])
