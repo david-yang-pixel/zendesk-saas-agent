@@ -18,7 +18,7 @@ except ImportError:
 from openai import RateLimitError as OpenAIRateLimitError
 
 from zd_agent.log import get_logger
-from zd_agent.runtime.compaction import compact_messages
+from zd_agent.runtime.compaction import multi_level_compact
 from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, ToolExecuted
 from zd_agent.runtime.guardrails import GuardrailTriggered, Guardrails
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
@@ -201,7 +201,11 @@ async def agent_loop(
 
             if guardrails.should_compact():
                 logger.info("compaction_triggered", ticket_id=session.ticket_id)
-                compacted = await compact_messages(
+                # 用 multi_level_compact：先 Level 1 history_snip（cheap，截 tool
+                # 输出到 200 字符）；如果还不够再 Level 2 LLM 摘要。之前直接调
+                # Level 2 在已经短的内容上跑 LLM，反而 saved_tokens < 0（观察
+                # 服务器日志: -18 / -12 / -23）。
+                compacted = await multi_level_compact(
                     message_store.to_api_messages(),
                     provider,
                 )
