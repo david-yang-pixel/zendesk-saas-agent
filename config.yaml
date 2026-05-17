@@ -7,7 +7,7 @@ agent:
     compaction_threshold: 0.65
 llm:
   provider: openai
-  model: gpt-5.4
+  model: gpt-5.5
   temperature: 0.2
   max_tokens: 0
 resources:
