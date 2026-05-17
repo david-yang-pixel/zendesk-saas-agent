@@ -158,8 +158,20 @@ def render_internal_note(
     summary: dict[str, Any],
     body_markdown: str,
 ) -> str:
-    """将摘要 + Markdown 正文渲染为完整的 Internal Note HTML。"""
+    """将摘要 + Markdown 正文渲染为完整的 Internal Note HTML。
+
+    P1-6 紧凑模式：当 confidence=high AND needs_human=False 时（agent 表态
+    "这条可以直接 forward 给客户"），只渲染 Banner + Summary + Suggested
+    Reply，**省略** Internal Analysis + Review Guide。SE 真要审细节再去
+    看工单 archive 里的 .md 文件。
+    """
     parts: list[str] = []
+
+    # P1-6 紧凑模式判定（必须在最前面算好，下面多处用到）
+    needs_human = summary.get("needs_human", False)
+    confidence = summary.get("confidence", "medium")
+    is_safe = not needs_human
+    compact_mode = is_safe and confidence == "high"
 
     # Banner
     parts.append(
@@ -178,13 +190,6 @@ def render_internal_note(
     result = _find_section(sections, ["Suggested Reply", "客户回复建议", "Customer Reply", "Reply Suggestion"])
     if result:
         title, content = result
-        # 默认与 render_summary_card 保持一致：needs_human 默认 False，
-        # 让 agent 必须 opt-in 人工审核而不是 opt-out。
-        # is_safe 判定放宽：只要 not needs_human 就走 safe 路径（之前还要求
-        # confidence == "high"，导致 medium 也被红警告，agent 进而不敢用 high）。
-        needs_human = summary.get("needs_human", False)
-        confidence = summary.get("confidence", "medium")
-        is_safe = not needs_human
 
         if is_safe:
             box_bg = "#f0fdf4"
@@ -210,35 +215,46 @@ def render_internal_note(
             f'{warn}{section_html}</div></div>'
         )
 
-    # 分隔线
-    parts.append(
-        '<div style="border-top:1px solid #e5e7eb;margin:20px 0;padding-top:8px">'
-        '<em style="color:#9ca3af;font-size:12px">Detailed analysis below for reference ↓</em></div>'
-    )
-
-    result = _find_section(sections, ["Internal Analysis", "内部分析", "Analysis"])
-    if result:
-        title, content = result
-        section_html = _md(content.strip())
+    # P1-6 紧凑模式：跳过"详细分析"和"复核指引" — SE 直接看 Suggested Reply
+    # 即可决策，不被冗长 Internal Analysis 干扰
+    if not compact_mode:
+        # 分隔线
         parts.append(
-            f'<div style="border:1px solid #e5e7eb;border-radius:6px;margin-bottom:16px;overflow:hidden">'
-            f'<div style="background:#f9fafb;padding:10px 16px;font-weight:bold;color:#374151;font-size:14px">'
-            f'🔍 {title}</div>'
-            f'<div style="padding:14px 16px;font-size:13px;color:#4b5563">'
-            f'{section_html}</div></div>'
+            '<div style="border-top:1px solid #e5e7eb;margin:20px 0;padding-top:8px">'
+            '<em style="color:#9ca3af;font-size:12px">Detailed analysis below for reference ↓</em></div>'
         )
 
-    result = _find_section(sections, ["Review Guide", "人工复核指引", "Reviewer Checklist"])
-    if result:
-        title, content = result
-        section_html = _md(content.strip())
-        parts.append(
-            f'<div style="border:1px solid #fde68a;border-radius:6px;margin-bottom:16px;overflow:hidden">'
-            f'<div style="background:#fef9c3;padding:10px 16px;font-weight:bold;color:#92400e;font-size:14px">'
-            f'✅ {title}</div>'
-            f'<div style="padding:14px 16px;font-size:13px;color:#4b5563">'
-            f'{section_html}</div></div>'
-        )
+        result = _find_section(sections, ["Internal Analysis", "内部分析", "Analysis"])
+        if result:
+            title, content = result
+            section_html = _md(content.strip())
+            parts.append(
+                f'<div style="border:1px solid #e5e7eb;border-radius:6px;margin-bottom:16px;overflow:hidden">'
+                f'<div style="background:#f9fafb;padding:10px 16px;font-weight:bold;color:#374151;font-size:14px">'
+                f'🔍 {title}</div>'
+                f'<div style="padding:14px 16px;font-size:13px;color:#4b5563">'
+                f'{section_html}</div></div>'
+            )
+
+        result = _find_section(sections, ["Review Guide", "人工复核指引", "Reviewer Checklist"])
+        if result:
+            title, content = result
+            section_html = _md(content.strip())
+            parts.append(
+                f'<div style="border:1px solid #fde68a;border-radius:6px;margin-bottom:16px;overflow:hidden">'
+                f'<div style="background:#fef9c3;padding:10px 16px;font-weight:bold;color:#92400e;font-size:14px">'
+                f'✅ {title}</div>'
+                f'<div style="padding:14px 16px;font-size:13px;color:#4b5563">'
+                f'{section_html}</div></div>'
+            )
+    else:
+        # compact 模式下也丢弃 Internal Analysis / Review Guide section
+        # （从 sections 字典里删，避免"剩余 section 兜底"再渲染出来）
+        for candidates in (
+            ["Internal Analysis", "内部分析", "Analysis"],
+            ["Review Guide", "人工复核指引", "Reviewer Checklist"],
+        ):
+            _find_section(sections, candidates)  # 副作用：从 sections pop
 
     # 剩余 section（兜底）
     for title, content in sections.items():

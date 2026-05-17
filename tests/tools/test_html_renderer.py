@@ -68,3 +68,60 @@ def test_summary_card_renders_confidence() -> None:
     html = render_summary_card(summary)
     # 不强测具体颜色，但 medium 字符串应出现在 card 里
     assert "medium" in html.lower() or "🟡" in html
+
+
+# ---------------------------------------------------------------------------
+# P1-6 紧凑模式：confidence=high + needs_human=False → 省略 Internal Analysis
+# ---------------------------------------------------------------------------
+
+class TestCompactMode:
+    def _body(self) -> str:
+        return (
+            "## Suggested Reply\nHi, the answer is X.\n"
+            "## Internal Analysis\nDetailed reasoning here.\n"
+            "## Review Guide\nNext steps for SE.\n"
+        )
+
+    def test_high_confidence_safe_skips_analysis_and_review(self) -> None:
+        summary = {
+            "problem_type": "usage-howto",
+            "confidence": "high",
+            "key_finding": "x",
+            "needs_human": False,
+        }
+        html = render_internal_note(summary, self._body())
+        # Suggested Reply 仍渲染
+        assert "Suggested Reply" in html
+        assert "the answer is X" in html
+        # Internal Analysis + Review Guide 被压缩掉
+        assert "Internal Analysis" not in html
+        assert "Review Guide" not in html
+        # 分隔线提示也省略
+        assert "Detailed analysis below" not in html
+
+    def test_medium_confidence_keeps_full(self) -> None:
+        summary = {
+            "problem_type": "platform_issue",
+            "confidence": "medium",
+            "key_finding": "x",
+            "needs_human": False,
+        }
+        html = render_internal_note(summary, self._body())
+        # 完整模式：3 段都在
+        assert "Suggested Reply" in html
+        assert "Internal Analysis" in html
+        assert "Review Guide" in html
+
+    def test_needs_human_keeps_full_even_high_confidence(self) -> None:
+        """需人工审核 → 即使 high confidence 也保留详细分析（SE 真的要看）"""
+        summary = {
+            "problem_type": "refund",
+            "confidence": "high",
+            "key_finding": "x",
+            "needs_human": True,
+            "needs_human_reason": "退款需财务",
+        }
+        html = render_internal_note(summary, self._body())
+        assert "Suggested Reply" in html
+        assert "Internal Analysis" in html
+        assert "Review Guide" in html
