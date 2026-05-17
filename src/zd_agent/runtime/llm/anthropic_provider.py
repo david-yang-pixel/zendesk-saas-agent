@@ -12,7 +12,10 @@ except ImportError as e:
 
 from anthropic.types.message import Message
 
+from zd_agent.log import get_logger
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
+
+logger = get_logger(module="llm.anthropic")
 
 
 def _tool_schemas_to_anthropic(tools: list[ToolSchema]) -> list[dict[str, Any]]:
@@ -160,6 +163,23 @@ def _parse_message_response(response: Message) -> LLMResponse:
     if content == "":
         content = None
     usage = response.usage
+
+    # Prompt caching 观测：Anthropic 返回 cache_read_input_tokens（命中）+
+    # cache_creation_input_tokens（首次写）。Log 一行供 SigNoz 算命中率。
+    if usage:
+        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+        cache_create = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        if cache_read > 0 or cache_create > 0:
+            logger.info(
+                "metric.anthropic_prompt_cache",
+                input_tokens=usage.input_tokens,
+                cache_read_tokens=cache_read,
+                cache_create_tokens=cache_create,
+                cache_hit_rate=round(
+                    cache_read / max(usage.input_tokens + cache_read, 1), 3
+                ),
+            )
+
     return LLMResponse(
         content=content,
         tool_calls=tool_calls,
@@ -203,7 +223,17 @@ class AnthropicProvider(LLMProvider):
             "temperature": temperature,
         }
         if system is not None:
-            req["system"] = system
+            # Prompt caching：system prompt 通常稳定（SOUL+AGENTS+TOOLS+templates
+            # ~12K tokens），把它包成 list[block] 加 cache_control=ephemeral 后
+            # Anthropic 会 cache 整个 prefix，下次同 prompt 来 cache hit 价格 1/10。
+            # 5 分钟 TTL，足够同工单多轮 LLM 调用复用。
+            req["system"] = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
         if tools:
             req["tools"] = _tool_schemas_to_anthropic(tools)
         response = await self._client.messages.create(**req)

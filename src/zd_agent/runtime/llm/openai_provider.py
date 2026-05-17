@@ -7,7 +7,10 @@ from typing import Any
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 
+from zd_agent.log import get_logger
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
+
+logger = get_logger(module="llm.openai")
 
 
 def _tool_schemas_to_openai(tools: list[ToolSchema]) -> list[dict[str, Any]]:
@@ -34,6 +37,21 @@ def _parse_completion(response: ChatCompletion) -> LLMResponse:
         tool_calls.append(
             ToolCallRequest(id=tc.id, name=fn.name, arguments=fn.arguments)
         )
+
+    # OpenAI gpt-4o / gpt-5.x 自动 prompt caching：> 1024 tokens 的稳定 prefix
+    # 自动 cache，cache hit 后 input token 价格 ÷10。日志记 cached_tokens 方便
+    # SigNoz 看 cache hit rate（低 → system prompt 不稳定 / 经常变）。
+    cached_tokens = 0
+    if usage and getattr(usage, "prompt_tokens_details", None):
+        cached_tokens = getattr(usage.prompt_tokens_details, "cached_tokens", 0) or 0
+    if cached_tokens > 0 and usage:
+        logger.info(
+            "metric.openai_prompt_cache_hit",
+            prompt_tokens=usage.prompt_tokens,
+            cached_tokens=cached_tokens,
+            cache_hit_rate=round(cached_tokens / max(usage.prompt_tokens, 1), 3),
+        )
+
     return LLMResponse(
         content=message.content,
         tool_calls=tool_calls,
