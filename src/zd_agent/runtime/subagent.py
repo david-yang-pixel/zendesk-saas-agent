@@ -52,6 +52,31 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个专注于特定分析任务的子 Agent�
 - 找不到时先尝试同义词（中英、API 名 / 内部 wording）再说"无相关代码"
 """
 
+# Subagent 返回硬截断长度（字符数，约 ≈ 2K tokens）：父 loop 收到的最大长度。
+# 之前 subagent final_content 不截断，复杂工单 4-6 个 subagent 各返回 20-50K
+# 字符 → 主 loop history 暴涨 → 触发 max_tokens guardrail 强制总结。
+# 4000 字符≈ 1K-2K tokens，足够装结论 + 关键证据；细节可以让 agent 主 loop
+# 看 task description / context 自己补查。
+_MAX_SUBAGENT_OUTPUT_CHARS = 4000
+
+
+def _truncate_subagent_output(text: str) -> tuple[str, bool]:
+    """把 subagent 输出截断到 _MAX_SUBAGENT_OUTPUT_CHARS。
+
+    返回 (text, truncated) — truncated 为 True 时表示被截了。
+    截断策略：保留前 90% 字符 + 末尾"...(已截断)"提示。保留前段而非
+    后段因为子 agent 的结论 / 证据通常在开头总结。
+    """
+    if len(text) <= _MAX_SUBAGENT_OUTPUT_CHARS:
+        return text, False
+    keep = int(_MAX_SUBAGENT_OUTPUT_CHARS * 0.9)
+    return (
+        text[:keep]
+        + f"\n\n[...subagent 输出已截断，原 {len(text)} 字符 → "
+          f"{keep} 字符。若需细节请重新派一个更具体的 subagent 任务]"
+    ), True
+
+
 SUBAGENT_DEFAULT_TOOLS = [
     "git_show", "git_grep", "git_log", "git_diff",
     "list_repos", "list_repo_tags",
@@ -141,18 +166,24 @@ async def run_subagent(
     parent_session.token_usage.prompt_tokens += sub_session.token_usage.prompt_tokens
     parent_session.token_usage.completion_tokens += sub_session.token_usage.completion_tokens
 
+    # P1-4：硬截断 subagent 输出（避免父 loop history 暴涨触发 token guardrail）
+    final_content_trunc, was_truncated = _truncate_subagent_output(final_content)
+
     logger.info(
         "subagent_done",
         ticket_id=parent_session.ticket_id,
         rounds=sub_session.round_count,
         tokens=sub_session.token_usage.total_tokens,
+        output_chars=len(final_content),
+        truncated=was_truncated,
     )
 
     return ToolResult(
         success=True,
         output=(
-            f"[子 Agent 分析结论]\n\n{final_content}\n\n"
+            f"[子 Agent 分析结论]\n\n{final_content_trunc}\n\n"
             f"(子 Agent 用了 {sub_session.round_count} 轮, "
-            f"{sub_session.token_usage.total_tokens:,} tokens)"
+            f"{sub_session.token_usage.total_tokens:,} tokens"
+            f"{'，输出已截断' if was_truncated else ''})"
         ),
     )
