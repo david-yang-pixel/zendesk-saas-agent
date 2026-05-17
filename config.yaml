@@ -3,7 +3,10 @@ agent:
   guardrails:
     max_rounds: 30
     timeout_seconds: 600
-    max_tokens_per_session: 500000
+    # 500K → 1500K：观察到 5/8 工单（62.5%）触发 Token 超预算被强制截断，
+    # 导致 agent "I couldn't verify" 频发。gpt-5.x 支持 1M context，
+    # 单 ticket 累计 1.5M 足够覆盖 fan-out + 多轮总结。
+    max_tokens_per_session: 1500000
     compaction_threshold: 0.65
 llm:
   provider: openai
@@ -34,7 +37,9 @@ feishu:
   daily_summary_time: 09:00
   daily_summary_timezone: Asia/Shanghai
 trigger_decider:
-  llm_model: gpt-5.4-mini
+  # gpt-5.4-mini → gpt-5.5：verdict 误分类会让 dispatch 走错路径
+  # （substantial 误判成 greeting 等），mini 省的钱不抵后续 agent 跑歪的代价
+  llm_model: gpt-5.5
   silence_minutes_default: 3
   silence_extend_to_minutes: 5
   rapid_burst_window_seconds: 30
