@@ -84,8 +84,13 @@ async def run_agent(session: AgentSession) -> None:
     # 创建护栏
     guardrails = Guardrails(config=cfg.agent.guardrails)
 
+    # P2-8: 预拉客户画像（best-effort，超时/失败不影响主流程）
+    from zd_agent.runtime.customer_profile import prefetch_customer_profile
+    customer_profile = await prefetch_customer_profile(session.ticket_id)
+    session.customer_profile = customer_profile
+
     # 构造初始 messages
-    system_prompt = build_system_prompt()
+    system_prompt = build_system_prompt(customer_profile=customer_profile)
     session.messages = [
         {"role": "system", "content": system_prompt},
     ]

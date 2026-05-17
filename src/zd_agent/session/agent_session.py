@@ -101,6 +101,13 @@ class AgentSession:
     customer_msgs_snapshot_count: int = 0
     customer_msgs_snapshot_last_id: str = ""
 
+    # ───── P2-8 (2026-05-17) 客户画像预拉 ─────
+    # runner.py 在 build_system_prompt 之前调用 prefetch_customer_profile()，
+    # 拿到 {requester_email, recent_ticket_ids, recent_ticket_count}。
+    # 注入 system prompt 让 agent 知道"这是 repeat customer"。
+    # 失败/超时时为空 dict，不影响主流程。
+    customer_profile: dict[str, Any] = field(default_factory=dict)
+
     def log_tool_call(
         self,
         tool_name: str,

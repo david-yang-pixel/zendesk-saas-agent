@@ -20,6 +20,8 @@ class PromptContext:
     mode: str = "first_pass"          # "first_pass" | "followup"
     previous_record: str = ""         # 历史工单记录内容（followup 模式注入）
     new_comments_diff: str = ""       # 与上次比新增的客户对话
+    # P2-8 客户画像（dispatch 前预拉）
+    customer_profile: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
 
 

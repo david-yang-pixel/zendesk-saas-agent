@@ -171,3 +171,41 @@ def register_default_sections(builder: PromptBuilder) -> None:
             condition=lambda ctx: ctx.mode == "followup" and bool(ctx.previous_record),
         )
     )
+
+    # P2-8: 客户画像（dispatch 前预拉）—— 放最后（order=90），prefix cache 尽量
+    # 保住（前面 SOUL/AGENTS/TOOLS 跨工单可复用，只有这段是 ticket-specific）。
+    def _customer_profile_section(ctx: PromptContext) -> str:
+        p = ctx.customer_profile or {}
+        email = p.get("requester_email", "")
+        recent_ids = p.get("recent_ticket_ids") or []
+        count = p.get("recent_ticket_count", 0)
+
+        lines = [
+            "## 客户画像（dispatch 前预拉，供 agent 决策参考）",
+            "",
+            f"- requester: {email or '(未知)'}",
+        ]
+        if count > 0:
+            lines.append(
+                f"- 过去 30 天同 requester SaaS 工单 **{count}** 个："
+                f"{', '.join('#' + str(t) for t in recent_ids)}"
+            )
+            lines.append(
+                "- **强烈建议**：在你写 Internal Note 前，至少 `ticket_record_read` "
+                "或 `zendesk_get_ticket` 看 1-2 个历史工单 — 该 requester 已多次"
+                "联系，可能在追同一个问题或有相关上下文。**不要重复 ask 客户**"
+                "已经在历史工单里回答过的信息。"
+            )
+        else:
+            lines.append("- 过去 30 天无历史 SaaS 工单 → 新客户，按常规流程处理")
+
+        return "\n".join(lines)
+
+    builder.register(
+        PromptSection(
+            name="customer_profile",
+            content=_customer_profile_section,
+            order=90,
+            condition=lambda ctx: bool(ctx.customer_profile),
+        )
+    )
