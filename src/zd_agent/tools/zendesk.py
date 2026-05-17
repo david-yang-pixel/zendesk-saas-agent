@@ -908,6 +908,33 @@ class ZendeskInternalReply(Tool):
         if llm_language and session.context:
             session.context.customer_language = llm_language
 
+        # P2-9: 工具使用审计 - 检测 reply 里的 PR#/源码路径/版本号
+        # 是否真的出现过在 tool_call_log 里，可能虚构 → 加 warning section
+        try:
+            from zd_agent.runtime.reply_audit import audit_reply_against_tools
+            audit_warnings = audit_reply_against_tools(
+                body=body_md,
+                tool_call_log=session.tool_call_log,
+                current_ticket_id=session.ticket_id,
+            )
+            if audit_warnings:
+                logger.warning(
+                    "reply_audit_warnings",
+                    ticket_id=session.ticket_id,
+                    warning_count=len(audit_warnings),
+                    warnings=audit_warnings[:5],
+                )
+                # 把 warning 追加到 body_md 末尾，render_internal_note 会照样渲染
+                body_md += (
+                    "\n\n## ⚠️ Audit Warnings (potential hallucination)\n\n"
+                    + "\n".join(f"- {w}" for w in audit_warnings)
+                )
+        except Exception as e:
+            logger.warning(
+                "reply_audit_failed",
+                ticket_id=session.ticket_id, error=str(e)[:200],
+            )
+
         # 纯文本版（作为 body 回退）
         plain_body = _prepend_internal_reply_banner(body_md)
         plain_body = _append_mention_footer(plain_body)
