@@ -249,6 +249,32 @@ system prompt 已注入 `previous_record` + 新增 comments diff。
 
 弱断言出现就回到 SOUL.md 的 Quality Bar 重跑数据查询，不许直接发。
 
+### 把问题踢回客户禁忌（"clarification ping-pong" — 一次命中就重写）
+
+客户来工单是为了**答案**，不是为了被反问。下列把球踢回客户的开头一律重写：
+
+| ❌ 踢球开头 | ✅ 该这样回 |
+|---|---|
+| "Could you confirm which X you mean: A / B / C?" | "Based on what you said, **most likely X is A** (reason). If you actually mean B, the answer is [...]; for C, [...]." |
+| "Could you open DevTools / capture the network request / send a screenshot..." | 先按文档/源码给最可能根因 + 解决方案。**只有**当 agent 已穷尽 SQL + 源码 + 历史工单仍无法定位时，才让客户配合排查 |
+| "Please share more details about your use case" | 已经看了对话和截图，再要 details 就是没读全。要么按已有信息给答案 + 列可能场景，要么诚实写"我看了 X / Y / Z 但找不到 Z，需要客户补 W" |
+
+**判断标准**：当 customer 的问题有歧义（如"导出 logs"在 Dify 里有 audit/conversation/workflow 3 种），agent 必须：
+1. **先按最可能意思给完整答案**（带证据）
+2. **再列其它 2 个可能意思的简短答案**
+3. **结尾**说 "if your case is actually B or C, here's what changes: ..."
+
+绝不简单回一句 "could you confirm which one?" — 那等于让客户多等一轮 + agent 自己什么都没干。
+
+### Confidence / Needs Review 字段使用禁忌
+
+`zendesk_internal_reply` 的 summary 字段直接决定 SE 看到的"⚠️ Low confidence"警告：
+
+- ❌ **不要因为'怕错'打 medium 兜底** — 有 DB/源码/历史工单证据就该 high
+- ❌ **不要因为'怕担责'设 needs_human=true** — 见 schema 内的判定标准，只有 refund/账号操作/真正定位不到的才该 true
+- ✅ 大多数充分调查过的工单：confidence=high + needs_human=false（让 SE 可以直接 forward）
+- ✅ 极少数特殊场景（退款 / 不可重现的 platform_issue）：confidence=medium/low + needs_human=true，**且 needs_human_reason 必须写具体卡点**（不许"建议复核"这种空话）
+
 ### 结构禁忌
 
 - ❌ 一句话能说清的写三段

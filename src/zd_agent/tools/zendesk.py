@@ -827,7 +827,14 @@ class ZendeskInternalReply(Tool):
                     "confidence": {
                         "type": "string",
                         "enum": ["high", "medium", "low"],
-                        "description": "置信度等级",
+                        "description": (
+                            "置信度判定标准（不要默认 medium 兜底）：\n"
+                            "- high: 有直接证据（DB 行返回 / 源码具体行 / GitHub PR / 历史工单同类 / 官方文档明确条款）"
+                            "证明根因或答案，且客户诉求无歧义。**大多数处理充分的工单都应该是 high**。\n"
+                            "- medium: 证据是间接的或部分的（如：能查到现象但无法定位根因；或客户描述含 2-3 种可能解读）。\n"
+                            "- low: 已按 strategies 段完整跑过所有必查路径仍无法定位（罕见）。\n"
+                            "**不要因为'怕错'而打 medium**——agent 的 confidence 应该反映证据强度，不是反映安全感。"
+                        ),
                     },
                     "confidence_reason": {
                         "type": "string",
@@ -856,11 +863,20 @@ class ZendeskInternalReply(Tool):
                     },
                     "needs_human": {
                         "type": "boolean",
-                        "description": "是否需要人工复核后才能发送给客户",
+                        "description": (
+                            "是否需要人工复核才能发送给客户。**默认应该是 false**——"
+                            "agent 写的 Suggested Reply 是为了 SE 可以直接 forward 给客户，"
+                            "不是给 SE 改的。只有下列场景才设 true：\n"
+                            "- refund / 计费纠纷（任何 Stripe 操作）\n"
+                            "- 账号级敏感操作（封号 / 数据删除 / 转移）\n"
+                            "- 不可重现的 platform_issue（agent 没拿到决定性证据，需 SRE 进一步 drill down）\n"
+                            "- agent 已按 strategies 跑完所有必查路径仍 confidence=low\n"
+                            "**不要因为'怕错'而 opt-in 人工审核**——大多数充分调查过的工单 needs_human 应该是 false。"
+                        ),
                     },
                     "needs_human_reason": {
                         "type": "string",
-                        "description": "需要/不需要人工的原因",
+                        "description": "needs_human=true 的具体原因（如：'退款金额需财务审批' / 'platform_issue 但 Grafana/SigNoz 未见错误信号'）。needs_human=false 可省略。",
                     },
                     "tags": {
                         "type": "array",

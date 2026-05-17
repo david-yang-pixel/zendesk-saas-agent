@@ -94,7 +94,11 @@ def render_summary_card(summary: dict[str, Any]) -> str:
             text += f" &mdash; {detail}"
         _row("Fix Status", text)
 
-    needs = summary.get("needs_human", True)
+    # 默认 False：agent 必须主动 opt-in 人工审核（schema 已把 needs_human 列为
+    # required，正常路径不会走到这个 default；只有 agent 漏字段或 legacy 数据
+    # 才会用 default）。改成 False 是为了避免"⚠️ Low confidence"红警告在 90%
+    # 工单上被无差别触发（之前默认 True 导致 SE 习惯性忽略警告）。
+    needs = summary.get("needs_human", False)
     reason = summary.get("needs_human_reason", "")
     if needs:
         verdict = '<strong style="color:#dc2626">⚠️ Yes</strong>'
@@ -174,9 +178,13 @@ def render_internal_note(
     result = _find_section(sections, ["Suggested Reply", "客户回复建议", "Customer Reply", "Reply Suggestion"])
     if result:
         title, content = result
-        needs_human = summary.get("needs_human", True)
+        # 默认与 render_summary_card 保持一致：needs_human 默认 False，
+        # 让 agent 必须 opt-in 人工审核而不是 opt-out。
+        # is_safe 判定放宽：只要 not needs_human 就走 safe 路径（之前还要求
+        # confidence == "high"，导致 medium 也被红警告，agent 进而不敢用 high）。
+        needs_human = summary.get("needs_human", False)
         confidence = summary.get("confidence", "medium")
-        is_safe = not needs_human and confidence == "high"
+        is_safe = not needs_human
 
         if is_safe:
             box_bg = "#f0fdf4"
