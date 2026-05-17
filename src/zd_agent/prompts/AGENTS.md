@@ -208,9 +208,24 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 - **Step 21** — 判断是否新问题/新方案 → 如是，`archive_ticket` 已写入 工单记录
   （进阶：可写入 `saas版知识库/` 对应分类文件 — 留作后续）
 
-- **Step 22** — `feishu_push` 推送卡片
+- **Step 22** — `feishu_push` 推送卡片（**自执行原则**）
   - 正常完成：`card_type=ticket_done`，content=摘要 + 关键发现，zendesk_url=工单链接
-  - 需人工介入（退款 / 信息不足 / 敏感决策）：`card_type=ticket_escalate` + 原因
+  - 需人工介入（退款 / 信息不足 / 敏感决策）：`card_type=ticket_escalate`
+
+  **自执行原则（重要）**：如果你在 Internal Note 里写了"建议人工 X"（如"建议提
+  Dev Report" / "建议转财务退款" / "建议开 GitHub issue"），**对应的草稿内容**
+  **必须直接 inline 到这条 feishu_push 的 content 字段里**——不要让 SE 还要去
+  Zendesk 读 Internal Note 再手动整理。
+
+  | 场景 | content 必须包含 |
+  |---|---|
+  | refund | 完整 `[REFUND REQUEST]` 草稿（见 REFUND_FLOW.md Step 5） |
+  | 建议提 Dev Report | 完整 `[DEV REPORT]` 草稿（见 templates/DEV_REPORT.md） |
+  | 建议转 SRE | reproduce 步骤 + 时间窗 + 受影响 workspace_id + 已查 Grafana/SigNoz 结论 |
+  | 客户失联 | 工单关键信息 + agent 上次询问内容 + 建议下一步（关单 / 再 ping） |
+
+  **反例**：feishu_push content 只写"退款待审批，详见工单 #1234" → SE/财务还要
+  跳到 Zendesk 读，没节省任何手工 → 整个 push 等于白发。
 
 ---
 

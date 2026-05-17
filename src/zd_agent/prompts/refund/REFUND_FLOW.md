@@ -88,15 +88,39 @@ Policy Applies: <是否符合现行退款政策>
 Evidence: <SQL 查出的订阅记录关键字段>
 ```
 
-### 5. 推送飞书 ticket_escalate
+### 5. 推送飞书 ticket_escalate（**完整 draft 必须 inline**）
+
+> ⚠️ **不要只推一句"退款待审批"**。财务同事看到飞书卡片必须能**直接根据 content
+> 做出退款决策**，不需要再去 Zendesk 翻 Internal Note。
 
 ```python
 feishu_push(
     card_type="ticket_escalate",
-    content="退款申请待审批：<金额> / <类型>",
+    content="""**退款申请待审批**
+
+[REFUND REQUEST]
+Ticket: #<id>
+Requester: <email>
+Workspace ID: <wid>
+Stripe Customer: <cus_xxx>
+Stripe Subscription: <sub_xxx>
+Plan: <plan>
+Refund Type: <full / partial / review>
+Amount: <USD or "need finance confirmation">
+Period: <对应周期>
+Reason: <简述原因>
+Policy Applies: <是否符合现行退款政策>
+Evidence: <SQL 关键字段>
+
+**建议**: <approve / reject / 需要财务进一步核实>
+""",
     zendesk_url="https://<domain>.zendesk.com/agent/tickets/<id>",
 )
 ```
+
+**为什么 inline 而不是简单通知**：财务在飞书上看到完整 draft → 直接判断
+→ 直接回复"approve"或"reject" + 在 Zendesk 操作 → 流程压缩到一次跳转。
+之前简短通知 → 财务点 Zendesk 链接 → 读 Internal Note → 再决定，多 2 步。
 
 ### 6. archive_ticket 用 `category=refund`
 
