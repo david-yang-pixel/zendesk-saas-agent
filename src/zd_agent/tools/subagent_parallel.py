@@ -13,17 +13,26 @@ if TYPE_CHECKING:
 class RunSubagentsParallel(Tool):
     name = "run_subagents_parallel"
     description = (
-        "一次并行派发多个独立 subagent。用于根因分析阶段（Step 10-14，"
-        "源码 / GitHub / Grafana / SigNoz 并行）和知识匹配阶段（Step 15-18，"
-        "Help Center / 历史工单 / 本地知识库 / Web 并行）。"
-        "每个 task 拥有独立上下文，互不污染。"
+        "一次并行派发多个独立 subagent。每个 task 拥有独立上下文，互不污染。\n\n"
+        "**Subagent 预算规则（每次工单处理累计）**：\n"
+        "- 简单问题（usage-howto / product_usage / 文档引用 / 单一已知 bug）：\n"
+        "  全工单累计 **≤ 2 个** subagent。直接搜 KB 即可，不要 fan-out。\n"
+        "- 中等问题（billing / refund / api / permissions / knowledge_base）：\n"
+        "  分两阶段，每阶段 **≤ 3 个**（根因 3 个 + 知识匹配 3 个 = 累计 6 个）。\n"
+        "- 复杂问题（platform_issue / workflow / 多组件交互）：\n"
+        "  分两阶段，每阶段 **≤ 4 个**（根因 4 个 + 知识匹配 4 个 = 累计 8 个）。\n\n"
+        "**反例**：客户问'能不能导出日志' 这种 yes/no 问题不要 fan-out 6 个 subagent —"
+        "用 1 个 subagent 查 KB 即可。预算用完后再补充派发会让 token 爆。"
     )
     parameters = {
         "type": "object",
         "properties": {
             "tasks": {
                 "type": "array",
-                "description": "要并行派发的子任务列表",
+                "description": (
+                    "要并行派发的子任务列表。**按工单复杂度选数量**（见 description）：\n"
+                    "simple ≤2 / medium ≤3 / complex ≤4，单次调用最多 4 个 task。"
+                ),
                 "items": {
                     "type": "object",
                     "properties": {
@@ -44,7 +53,7 @@ class RunSubagentsParallel(Tool):
                     "required": ["task"],
                 },
                 "minItems": 1,
-                "maxItems": 6,
+                "maxItems": 4,
             }
         },
         "required": ["tasks"],

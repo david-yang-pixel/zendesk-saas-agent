@@ -76,7 +76,18 @@
 
 ### 根因分析（Step 10-14）⚡⚡⚡ **必须 `run_subagents_parallel` 并行**
 
-调用一次 `run_subagents_parallel`，**同时**派发最多 4 个 subagent：
+**Subagent 预算（按 ticket 复杂度，整张工单累计）**：
+
+| 复杂度 | 触发条件 | 单阶段上限 | 两阶段累计上限 |
+|---|---|---|---|
+| **simple** | usage-howto / product_usage / 文档引用 / 客户问 yes-no | **1-2 个** | **≤ 2** |
+| **medium** | billing / refund / api / permissions / knowledge_base / 单一已知 bug | 2-3 个 | ≤ 6 |
+| **complex** | platform_issue / workflow / 多组件交互 / 数据驱动诊断 | 3-4 个 | ≤ 8 |
+
+**判定**：classify_ticket 返回的 category + 客户问题长度（< 3 句通常 simple，多组件交叉通常 complex）。
+**反例**：客户问"能不能导出日志" 这种 yes/no 问题不要 fan-out 6 个 subagent — 用 1 个 subagent 查 KB 即可。
+
+调用一次 `run_subagents_parallel`，**同时**派发对应预算内的 subagent：
 
 | Subagent | 职责 | 可用工具 |
 |---------|------|---------|
