@@ -134,6 +134,30 @@ Bad examples (don't write):
 Return JSON: {{"bullets": ["- ...", "- ...", "- ..."]}}"""
 
 
+# LLM 即使被 prompt 明确禁止，偶尔仍会生成"请提供 Workspace ID / 邮箱 / 姓名"
+# 之类的 bullet —— 这三项 formResponse 已经有了，再问会让客户觉得冗余 + 不专业。
+# 用 substring match (lowercased) 过滤掉，没什么误伤面：
+#   - "workspace id" / "wid"        → 已知字段
+#   - "your email" / "email address"→ 已知字段
+#   - "your name" / "full name"     → 已知字段
+_FORBIDDEN_BULLET_PHRASES = (
+    "workspace id",
+    "your workspace",
+    "wid:",
+    "your email",
+    "email address",
+    "your name",
+    "full name",
+    "your account name",
+)
+
+
+def _is_forbidden_bullet(bullet: str) -> bool:
+    """判断 bullet 是否要求已知字段（应被过滤）。"""
+    low = bullet.lower()
+    return any(phrase in low for phrase in _FORBIDDEN_BULLET_PHRASES)
+
+
 async def _generate_missing_info_bullets(
     *,
     customer_messages: list[str],
@@ -204,7 +228,19 @@ async def _generate_missing_info_bullets(
             if not b.startswith("- "):
                 b = "- " + b.lstrip("-").lstrip()
             normalized.append(b)
-        return normalized
+
+        # post-filter：去掉问已知字段的 bullet（Workspace ID / email / name）
+        # LLM 偶尔不听 prompt 约束，把 formResponse 已有的字段又写进 bullet
+        # → SE 看到必觉得不专业。filter 后不足 2 条直接 fallback。
+        filtered = [b for b in normalized if not _is_forbidden_bullet(b)]
+        if len(filtered) < 2:
+            dropped = [b for b in normalized if _is_forbidden_bullet(b)]
+            logger.warning(
+                "template_c_llm_filtered_too_many",
+                kept=len(filtered), dropped=dropped,
+            )
+            return fallback_bullets
+        return filtered
     except Exception as e:
         logger.warning("template_c_llm_parse_error", error=str(e)[:200])
         return fallback_bullets

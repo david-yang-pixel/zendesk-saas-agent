@@ -227,6 +227,95 @@ class TestMissingInfoBullets:
         assert len(bullets) == 3
         mock_post.assert_not_called()
 
+    # ── post-filter：LLM 不听话问了已知字段（workspace id / email / name）──
+
+    @pytest.mark.asyncio
+    async def test_llm_asks_workspace_id_filtered_out(self) -> None:
+        """LLM 生成的 bullet 含 'Workspace ID' → 过滤掉，剩 2 个仍可用"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content":
+                '{"bullets": ['
+                '"- Your Workspace ID",'          # 必须被过滤
+                '"- The error message text",'
+                '"- When this started"]}'
+            }}],
+        })
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            bullets = await _generate_missing_info_bullets(
+                customer_messages=["x"], model="m", api_key="k",
+            )
+        # workspace id 那条被过滤掉
+        assert len(bullets) == 2
+        for b in bullets:
+            assert "workspace id" not in b.lower()
+
+    @pytest.mark.asyncio
+    async def test_llm_asks_email_filtered_out(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content":
+                '{"bullets": ['
+                '"- Your email address",'
+                '"- A screenshot of the error",'
+                '"- The app ID"]}'
+            }}],
+        })
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            bullets = await _generate_missing_info_bullets(
+                customer_messages=["x"], model="m", api_key="k",
+            )
+        assert len(bullets) == 2
+        for b in bullets:
+            low = b.lower()
+            assert "email" not in low or "address" not in low
+
+    @pytest.mark.asyncio
+    async def test_llm_asks_all_forbidden_falls_back(self) -> None:
+        """LLM 全部生成已知字段问题 → 过滤后 < 2 条 → fallback 3 个通用"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content":
+                '{"bullets": ['
+                '"- Your Workspace ID",'
+                '"- Your email",'
+                '"- Your name"]}'
+            }}],
+        })
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            bullets = await _generate_missing_info_bullets(
+                customer_messages=["x"], model="m", api_key="k",
+            )
+        # 全被过滤 → fallback
+        assert len(bullets) == 3
+        all_text = " ".join(bullets).lower()
+        assert "workspace id" not in all_text
+        assert "your email" not in all_text
+        assert "your name" not in all_text
+
+    @pytest.mark.asyncio
+    async def test_llm_asks_one_forbidden_two_kept(self) -> None:
+        """1 个被过滤 + 2 个保留 → 不 fallback（≥2 条 OK）"""
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content":
+                '{"bullets": ['
+                '"- Full name of the affected app",'  # ← "full name" 触发过滤
+                '"- Error message text",'
+                '"- When this started"]}'
+            }}],
+        })
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            bullets = await _generate_missing_info_bullets(
+                customer_messages=["x"], model="m", api_key="k",
+            )
+        # 第一条命中 "full name" 被过滤，剩 2 个
+        assert len(bullets) == 2
+
 
 class TestInsufficientInfoTemplate:
     @pytest.mark.asyncio
