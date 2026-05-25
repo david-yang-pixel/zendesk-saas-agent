@@ -64,6 +64,10 @@ class ZendeskConfig(BaseModel):
     # 我（agent）在 Zendesk 上的 user_id；waiting_poller 用来判定 "工单是否被真人接手"
     # （assignee != my_uid 视为真人接手 → agent 让位）
     agent_user_id: int = 0
+    # 新分支上线时的灰度边界：trigger_consumer 顶部 skip 一切 ticket_id < min_ticket_id
+    # 的工单。0 = 不过滤（处理全部 SaaS 工单）。设 2624 = 只处理 ID ≥ 2624 的新工单，
+    # 历史工单不受新逻辑影响（避免上线初期把已有 in-flight 工单搞乱）。
+    min_ticket_id: int = 0
 
 
 class WebhookConfig(BaseModel):

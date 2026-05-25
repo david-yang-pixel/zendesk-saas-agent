@@ -1071,6 +1071,22 @@ async def _trigger_consumer(
             ticket_id = int(msg["ticket_id"])
             source = msg.get("source", "unknown")
 
+            # 0a. 灰度边界：trigger_consumer 顶部按 ticket_id 过滤。
+            #     上线初期 min_ticket_id=2624 → 只处理 ≥ 2624 的新工单，
+            #     已经在飞的旧工单不让新逻辑搞乱。设为 0 = 处理全部。
+            min_tid = cfg.zendesk.min_ticket_id
+            if min_tid and ticket_id < min_tid:
+                logger.info(
+                    "trigger_skip_below_min_ticket_id",
+                    ticket_id=ticket_id, source=source, min_ticket_id=min_tid,
+                )
+                log_decision(
+                    log_path=log_path, ticket_id=ticket_id,
+                    verdict="below_min_ticket_id", action="skip",
+                    extra={"source": source, "min_ticket_id": min_tid},
+                )
+                continue
+
             # 0. M7: 已转人工的工单 4 个 entry 入口（mention / webhook /
             #    silence_waker / waiting_poller）一律 skip。所有 entry 都经
             #    trigger_queue 进来，所以一处检查覆盖全部。

@@ -33,10 +33,23 @@ zendesk:
   mention_poll_interval_seconds: 60
   # yonggang@dify.ai 的 zendesk user_id；waiting_poller 据此判定真人接手
   agent_user_id: 45433304089364
+  # 灰度上线：feat/auto-public-reply 分支首次部署只处理 ID ≥ 2624 的工单。
+  # 0 = 不过滤；上线稳定后改 0 处理全部 SaaS 工单。
+  min_ticket_id: 2624
 webhook:
   listen_host: 127.0.0.1
   listen_port: 8080
   zendesk_path: /webhook/zendesk
+public_reply:
+  # 总开关：true = agent 自动给客户发 public reply（ask 模板 A/B/C/D / handoff /
+  # solution / closed）。false = 全部走 Internal Note，SE 看到后手动 forward。
+  # 上线灰度：true + min_ticket_id=2624 限缩处理范围，出问题立即 flip 为 false。
+  enabled: true
+  max_ask_count: 10
+  silent_initial_wait_seconds: 60
+  silence_window_seconds: 30
+  ask_followup_alert_minutes: 30
+  abandoned_hours: 24
 feishu:
   webhook_url: ''
   daily_summary_time: 09:00
