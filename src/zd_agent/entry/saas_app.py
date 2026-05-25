@@ -275,6 +275,96 @@ async def _collect_recent_image_data_urls(
     return [r for r in results if r]
 
 
+# Agent 发出去的 public reply / Internal Note 都会带这个 footer 文本（见
+# zendesk_public_reply._FOOTER_STANDARD / _FOOTER_HANDOFF / _FOOTER_CLOSED）。
+# 用作"区分 agent 自动发 vs yonggang 通过 Zendesk UI 手动发"的标记 —
+# 因为两者 author_id 都是 agent_user_id，无法靠 author 区分。
+_AGENT_REPLY_MARKER = "Dify SaaS Agent"
+
+
+async def _detect_human_takeover(
+    *, ticket_id: int, ticket_info: dict, agent_user_id: int,
+) -> tuple[bool, str]:
+    """检测此工单是否已有"非 agent 人工 SE"接手 → 若是，应停止 agent 处理。
+
+    检测三种情况：
+    1. ``assignee_id`` 是非零的其他人（不是 agent_user_id）→ 真人 SE 被 assign
+    2. 最后一条 public comment 的 author **不是** agent_user_id → 其他 SE 发的
+    3. 最后一条 public comment author **是** agent_user_id 但 body **不含**
+       agent footer 标记 → yonggang 在 Zendesk UI 手动发的（不是 agent 自动）
+
+    Returns:
+        (detected, reason)。detected=False 时 reason=""。
+
+    检测失败（fetch 拉不到 comments 等）→ 返回 (False, "") 保守放过。
+    """
+    if not agent_user_id:
+        # 没配 agent_user_id → 无法区分，保守放过
+        return False, ""
+
+    # Case 1: assignee 检查
+    assignee_id = ticket_info.get("assignee_id")
+    try:
+        if assignee_id and int(assignee_id) != int(agent_user_id):
+            return True, f"assignee={assignee_id}（非 agent_uid={agent_user_id}）"
+    except (TypeError, ValueError):
+        pass  # 字段异常忽略
+
+    # Case 2/3: 看最后一条 public comment
+    try:
+        from zd.client import ZendeskClient
+        import asyncio as _asyncio
+        comments_resp = await _asyncio.to_thread(
+            lambda: ZendeskClient().get_ticket_comments(ticket_id),
+        )
+    except Exception as e:
+        logger.warning(
+            "takeover_fetch_comments_failed",
+            ticket_id=ticket_id, error=str(e)[:200],
+        )
+        return False, ""  # 拉不到就保守放过
+
+    comments = (comments_resp or {}).get("comments") or []
+    # 从尾往前找最后一条 public comment
+    last_public = None
+    for c in reversed(comments):
+        if c.get("public"):
+            last_public = c
+            break
+
+    if last_public is None:
+        # 没 public 回复过 → 不算 takeover
+        return False, ""
+
+    last_author = last_public.get("author_id")
+    last_body = last_public.get("body") or ""
+
+    # Case 2: 其他 SE 发的 public（author 不是 agent_user_id 且不是客户 requester）
+    requester_id = ticket_info.get("requester_id")
+    try:
+        if (
+            last_author
+            and int(last_author) != int(agent_user_id)
+            and (not requester_id or int(last_author) != int(requester_id))
+        ):
+            return True, f"last public reply by other SE (author={last_author})"
+    except (TypeError, ValueError):
+        pass
+
+    # Case 3: author = agent_uid 但 body 不含 agent footer → yonggang 手动发的
+    try:
+        if (
+            last_author
+            and int(last_author) == int(agent_user_id)
+            and _AGENT_REPLY_MARKER not in last_body
+        ):
+            return True, "last public reply from agent_uid but missing agent footer (yonggang 手动发?)"
+    except (TypeError, ValueError):
+        pass
+
+    return False, ""
+
+
 async def _fetch_customer_messages(ticket_id: int) -> tuple[list[dict], dict | None]:
     """拉工单 + 客户消息（含 messaging 渠道）。
 
@@ -1073,6 +1163,53 @@ async def _trigger_consumer(
                 logger.info("trigger_skip_no_customer_msg", ticket_id=ticket_id)
                 log_decision(log_path=log_path, ticket_id=ticket_id,
                              verdict="no_customer_message", action="skip")
+                continue
+
+            # 2b. 人工 SE 中途接手检测（Case 3 gap）
+            #    检测 3 种情况：assignee=非 agent / 最后 public reply 是其他 SE /
+            #    yonggang 通过 Zendesk UI 手动发了 public（body 缺 agent footer）
+            takeover, takeover_reason = await _detect_human_takeover(
+                ticket_id=ticket_id,
+                ticket_info=ticket_info,
+                agent_user_id=cfg.zendesk.agent_user_id,
+            )
+            if takeover:
+                logger.info(
+                    "trigger_human_takeover_detected",
+                    ticket_id=ticket_id, reason=takeover_reason,
+                )
+                log_decision(
+                    log_path=log_path, ticket_id=ticket_id,
+                    verdict="human_takeover", action="escalate",
+                    extra={"reason": takeover_reason},
+                )
+                # 标记 state=escalated_to_human，后续 webhook 一律 M7 顶部 skip
+                existing_for_takeover = state.get(ticket_id)
+                latest_for_takeover = customer_msgs[-1] if customer_msgs else {}
+                latest_cid_takeover = latest_for_takeover.get("id", "")
+                latest_ts_takeover = datetime.now(timezone.utc)
+                try:
+                    latest_ts_takeover = datetime.fromisoformat(
+                        (latest_for_takeover.get("created_at") or "").replace("Z", "+00:00")
+                    )
+                except Exception:
+                    pass
+                await _set_escalated_to_human(
+                    ticket_id=ticket_id,
+                    reason="human_takeover_detected",
+                    existing=existing_for_takeover,
+                    state=state,
+                    log_path=log_path,
+                    source=source,
+                    now=datetime.now(timezone.utc),
+                    verdict_str="human_takeover",
+                    latest_cid=latest_cid_takeover,
+                    latest_ts=latest_ts_takeover,
+                    completeness=0,
+                    customer_msgs=customer_msgs,
+                    customer_phrase="",
+                    extra_log={"takeover_reason": takeover_reason},
+                )
                 continue
 
             # 3. 幂等：同 comment_id 已处理过则 skip
