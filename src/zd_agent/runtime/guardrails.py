@@ -56,10 +56,27 @@ class Guardrails:
         self.check_timeout()
         self.check_tokens()
 
-    def should_compact(self) -> bool:
-        """判断是否需要触发 compaction"""
-        threshold = int(self.config.max_tokens_per_session * self.config.compaction_threshold)
-        return self.total_tokens > threshold
+    def should_compact(self, message_store_tokens: int = 0) -> bool:
+        """判断是否需要触发 compaction，二选一触发：
+
+        1. cumulative ``total_tokens > max_tokens_per_session * compaction_threshold``
+           （传统：累计触发，控制总成本）
+        2. ``message_store_tokens > 80_000``（**修法 2 新增**：每轮 message_store
+           太大就压缩，控制单次 LLM input 大小，避免 forced_summary on token）
+
+        message_store_tokens=0（不传）时只检查累计条件，向后兼容。
+        """
+        # 累计条件（原逻辑）
+        cum_threshold = int(
+            self.config.max_tokens_per_session * self.config.compaction_threshold,
+        )
+        if self.total_tokens > cum_threshold:
+            return True
+        # message_store 大小条件（新增，更主动）
+        # 80K tokens ≈ 单次 LLM call input 上限，超过就有 forced_summary 风险
+        if message_store_tokens > 80_000:
+            return True
+        return False
 
     def increment_round(self) -> None:
         self.current_round += 1

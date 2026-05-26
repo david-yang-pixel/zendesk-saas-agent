@@ -199,8 +199,18 @@ async def agent_loop(
         while True:
             guardrails.check_all()
 
-            if guardrails.should_compact():
-                logger.info("compaction_triggered", ticket_id=session.ticket_id)
+            # 计算 message_store 当前 token 数（不算很贵，每轮一次）—
+            # 用于"修法 2"基于 message_store 大小的提前 compaction 触发。
+            from zd_agent.runtime.compaction import count_tokens as _count_msg_tokens
+            ms_tokens = _count_msg_tokens(message_store.to_api_messages())
+
+            if guardrails.should_compact(message_store_tokens=ms_tokens):
+                logger.info(
+                    "compaction_triggered",
+                    ticket_id=session.ticket_id,
+                    message_store_tokens=ms_tokens,
+                    cumulative_tokens=guardrails.total_tokens,
+                )
                 # 用 multi_level_compact：先 Level 1 history_snip（cheap，截 tool
                 # 输出到 200 字符）；如果还不够再 Level 2 LLM 摘要。之前直接调
                 # Level 2 在已经短的内容上跑 LLM，反而 saved_tokens < 0（观察
@@ -356,17 +366,29 @@ async def agent_loop(
             total_tokens=guardrails.total_tokens,
         )
 
-        # 强制总结：不传工具，让 LLM 基于已有上下文输出最终分析
+        # 修法 4：强制总结时**仍允许调用 reply 工具**（内部 + 公开），
+        # 让 agent 即使 guardrail 触发也能至少写出一条 reply 给客户 / SE
+        # 看到结论，不再丢回复。其它工具（subagent / SigNoz / SQL / etc）
+        # 仍禁用，避免循环。
+        _REPLY_TOOL_NAMES = {"zendesk_internal_reply", "zendesk_public_reply"}
+        reply_only_schemas = [
+            s for s in (tool_schemas or [])
+            if s.name in _REPLY_TOOL_NAMES
+        ] or None  # 万一 registry 没注册（如 dry test）则用 None
+
         try:
             message_store.append_user(
                 f"[系统] {e.reason}。请基于目前收集到的所有信息，"
-                "立即输出你的最终分析和回复建议，不要再调用任何工具。"
+                "立即输出你的最终分析。"
+                "**如有具体方案 → 必须调 zendesk_public_reply 把 reply 发给客户**；"
+                "**如还需 SE 兜底 → 调 zendesk_internal_reply 写 Internal Note 让 SE 接手**。"
+                "不要再调其它工具（SigNoz / SQL / subagent 等都已禁用）。"
             )
             summary_start = time.monotonic()
             try:
                 summary_response = await provider.chat(
                     message_store.to_api_messages(),
-                    tools=None,
+                    tools=reply_only_schemas,
                     temperature=0.2,
                 )
             except Exception as chat_err:
@@ -380,7 +402,7 @@ async def agent_loop(
                 )
                 summary_response = await provider.chat(
                     message_store.to_api_messages(),
-                    tools=None,
+                    tools=reply_only_schemas,
                     temperature=0.2,
                 )
             summary_elapsed = time.monotonic() - summary_start
@@ -396,13 +418,54 @@ async def agent_loop(
                 llm_elapsed=summary_elapsed,
                 prompt_tokens=summary_response.prompt_tokens,
                 completion_tokens=summary_response.completion_tokens,
-                tool_call_count=0,
+                tool_call_count=(
+                    len(summary_response.tool_calls)
+                    if summary_response.tool_calls else 0
+                ),
                 assistant_content=summary_response.content,
                 stop_reason="guardrail_summary",
             )
 
             if summary_response.content:
                 session.analysis += f"\n{summary_response.content}"
+
+            # 修法 4: 如果 LLM 在 forced_summary 时调了 reply 工具（we 允许
+            # 了 zendesk_internal_reply / zendesk_public_reply），**执行它**。
+            # 否则之前 tools=None agent 没法 reply → 客户/SE 啥都看不到。
+            if summary_response.tool_calls:
+                message_store.append_assistant(_assistant_message_dict(summary_response))
+                for tc in summary_response.tool_calls:
+                    if tc.name not in _REPLY_TOOL_NAMES:
+                        # 防御：万一 LLM 调了非 reply 工具（schema 应该不允许）
+                        logger.warning(
+                            "guardrail_summary_unexpected_tool",
+                            ticket_id=session.ticket_id, tool=tc.name,
+                        )
+                        message_store.append_tool_result(
+                            tc.id, tc.name,
+                            "Tool unavailable in forced_summary mode.",
+                        )
+                        continue
+                    try:
+                        tc_result = await registry.execute(
+                            tc.name, tc.arguments, session,
+                        )
+                        out = tc_result.output if tc_result.success else (
+                            f"❌ {tc_result.error}"
+                        )
+                        message_store.append_tool_result(tc.id, tc.name, out)
+                        logger.info(
+                            "guardrail_summary_reply_sent",
+                            ticket_id=session.ticket_id,
+                            tool=tc.name,
+                            success=tc_result.success,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "guardrail_summary_reply_failed",
+                            ticket_id=session.ticket_id,
+                            tool=tc.name, error=str(exc),
+                        )
 
             session.status = SessionStatus.COMPLETED
             yield LoopFinished(
