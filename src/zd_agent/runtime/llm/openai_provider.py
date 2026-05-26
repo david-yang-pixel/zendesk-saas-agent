@@ -93,8 +93,15 @@ class OpenAIProvider(LLMProvider):
         req: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
-            "temperature": temperature,
         }
+        # gpt-5 系列**只支持 default temperature (1.0)**，传 0.2 会 400
+        # "Unsupported value: 'temperature' does not support 0.2 with this model"
+        # → 检测 gpt-5.x 模型时整个跳过 temperature 字段。其它模型（gpt-4o /
+        # gpt-3.5 等）正常传。
+        # 观察发现：服务器上线 gpt-5.5 后 #2643 工单 silence_waker dispatch agent
+        # 立刻 400 挂掉 → state 卡 processing → 客户永远收不到回复。
+        if not self._model.lower().startswith("gpt-5"):
+            req["temperature"] = temperature
         if self._max_tokens > 0:
             req["max_completion_tokens"] = self._max_tokens
         if tools:
