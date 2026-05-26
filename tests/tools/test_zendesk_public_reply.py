@@ -71,6 +71,56 @@ class TestFooterAppend:
             assert t in _FOOTER_BY_TYPE
 
 
+# ---------- .md URL post-process (#2645 修复) ----------
+
+class TestStripDocsMdSuffix:
+    def test_strips_md_from_docs_dify_ai(self) -> None:
+        body = "See https://docs.dify.ai/api-reference/files/upload-file.md for details."
+        out = _append_footer(body, "ask")
+        assert "upload-file.md" not in out
+        assert "upload-file" in out
+        # 验证 URL 完整保留前缀
+        assert "https://docs.dify.ai/api-reference/files/upload-file" in out
+
+    def test_strips_multiple_docs_md_urls(self) -> None:
+        body = (
+            "Run Workflow: https://docs.dify.ai/api-reference/workflows/run-workflow.md\n"
+            "Upload File: https://docs.dify.ai/api-reference/files/upload-file.md"
+        )
+        out = _append_footer(body, "ask")
+        assert "run-workflow.md" not in out
+        assert "upload-file.md" not in out
+        assert "run-workflow\n" in out  # 后面跟换行说明 URL 被正确截断
+        assert "upload-file\n" in out
+
+    def test_does_not_strip_md_from_github_urls(self) -> None:
+        """GitHub 的 .md URL 是合法的（README.md 等），不该被去掉"""
+        body = "See github.com/langgenius/dify/blob/main/README.md"
+        out = _append_footer(body, "ask")
+        assert "README.md" in out
+
+    def test_no_docs_url_no_change(self) -> None:
+        """body 里没 docs URL 时不影响内容"""
+        body = "Hello, please check your config."
+        out = _append_footer(body, "ask")
+        assert "Hello, please check your config." in out
+
+    def test_strip_works_in_real_world_reply(self) -> None:
+        """模拟 #2645 实际 case：body 含 2 个 docs .md URL"""
+        body = (
+            "Use the exact `id` returned by `POST /v1/files/upload`.\n\n"
+            "Run Workflow: https://docs.dify.ai/api-reference/workflows/run-workflow.md\n"
+            "Upload File: https://docs.dify.ai/api-reference/files/upload-file.md\n\n"
+            "Best regards,\nDify Support"
+        )
+        out = _append_footer(body, "solution")
+        # 两个 .md 都被去掉
+        assert ".md" not in out.split("Dify SaaS Agent")[0]  # body 部分无 .md
+        # URL 主体仍在
+        assert "run-workflow" in out
+        assert "upload-file" in out
+
+
 # ---------- tool execute() ----------
 
 def _make_cfg(enabled: bool = True) -> AppConfig:

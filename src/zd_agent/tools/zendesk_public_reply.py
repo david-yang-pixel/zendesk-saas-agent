@@ -93,11 +93,32 @@ _FOOTER_BY_TYPE = {
 _VALID_REPLY_TYPES = frozenset(_FOOTER_BY_TYPE)
 
 
+# docs.dify.ai 的源码 markdown 文件路径会带 .md 后缀（给 LLM 用的 llms.txt
+# 索引列出的就是 .md 形式），但客户点开看到的是 raw markdown 源文本（content-type:
+# text/markdown），非常丑。HTML 形式（无 .md）才是给人看的正常文档页。
+# Regex：替换 docs.dify.ai/<path>.md → docs.dify.ai/<path>（保留 path）
+import re as _re
+_DOCS_MD_PATTERN = _re.compile(
+    r"(https?://docs\.dify\.ai/[^\s\)\]>]+?)\.md\b"
+)
+
+
+def _strip_docs_md_suffix(body: str) -> str:
+    """把 body 里所有 docs.dify.ai/...md 形式去掉 .md 后缀。
+
+    只针对 docs.dify.ai 域名，避免误伤其它合法 .md URL（如 GitHub）。
+    """
+    return _DOCS_MD_PATTERN.sub(r"\1", body)
+
+
 def _append_footer(body: str, reply_type: str) -> str:
     """按 reply_type 在 body 末尾追加 footer。
 
     幂等：如果 body 已经以对应 footer 结尾（说明 LLM 试图自己加），不重复。
+    顺手清理：docs.dify.ai 的 .md 后缀（agent 易从 llms.txt 抓到 .md 形式
+    给客户但 .md 服务的是 raw markdown 不是渲染好的文档）。
     """
+    body = _strip_docs_md_suffix(body)
     footer = _FOOTER_BY_TYPE[reply_type]
     if body.rstrip().endswith(footer.rstrip()):
         return body
