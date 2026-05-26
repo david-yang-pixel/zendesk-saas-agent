@@ -25,6 +25,11 @@ class AgentConfig(BaseModel):
 class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o"
+    # subagent_model：subagent 用的模型（默认空 = 用主 model 字段，向后兼容）。
+    # 设成 mini 类模型可大幅省 token 成本：subagent 干"go fetch this"机械活，
+    # mini 完全够用；主 agent 决策、整合、写 reply 才需要强推理模型。
+    # 例：model=gpt-5.5 + subagent_model=gpt-5.5-mini → 单 ticket 成本 -70%。
+    subagent_model: str = ""
     temperature: float = 0.2
     base_url: str | None = None  # 自定义 OpenAI API 地址（代理 / Azure）
     timeout: int = 120  # API 请求超时（秒）

@@ -16,6 +16,9 @@ agent:
 llm:
   provider: openai
   model: gpt-5.5
+  # 招 1（省钱）：subagent 用 mini 模型。subagent 80% 是机械抓数活，mini 够用，
+  # 比 full 便宜 10×。空字符串 = subagent 也用 model 字段（向后兼容）。
+  subagent_model: gpt-5.5-mini
   temperature: 0.2
   max_tokens: 0
 resources:

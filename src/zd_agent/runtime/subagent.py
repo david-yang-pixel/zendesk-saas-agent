@@ -120,7 +120,20 @@ async def run_subagent(
     """执行子 Agent：独立上下文 + 有限工具集 + 精简护栏。"""
     cfg = get_config()
     env = EnvSettings()
-    provider = create_llm_provider(cfg.llm, env)
+
+    # 招 1: subagent 用 cfg.llm.subagent_model（如果配了）替代主模型。
+    # subagent 通常做"机械抓数"，mini 模型够用，省 70%+ token 成本。
+    # 空字符串 = 用主模型（向后兼容 / 未配置场景）。
+    sub_llm_cfg = cfg.llm
+    if cfg.llm.subagent_model:
+        # 浅拷贝 + 覆盖 model 字段，不动主 cfg 实例
+        sub_llm_cfg = cfg.llm.model_copy(update={"model": cfg.llm.subagent_model})
+        logger.info(
+            "subagent_using_cheap_model",
+            model=cfg.llm.subagent_model,
+            ticket_id=parent_session.ticket_id,
+        )
+    provider = create_llm_provider(sub_llm_cfg, env)
 
     sub_session = AgentSession(
         ticket_id=parent_session.ticket_id,
