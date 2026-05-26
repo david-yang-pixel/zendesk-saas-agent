@@ -72,7 +72,10 @@ class _SignozMcpTool(Tool):
 
     group = "platform_issue"
     concurrency_safe = False  # subprocess single-flight via internal lock
-    max_output_tokens = 5000
+    # 8K tokens（≈32K chars）。SigNoz raw log search 一次返回可达 146 KB，
+    # 之前 max_output_tokens 装饰未被 ToolRegistry enforce，message_store 暴涨。
+    # agent 要详细 logs 应该 aggregate / narrow time range / 按 service 过滤。
+    max_output_tokens = 8000
 
     def __init__(self, *, mcp_name: str, description: str, parameters: dict):
         # Cannot set class attrs at instance time; rely on __dict__ override

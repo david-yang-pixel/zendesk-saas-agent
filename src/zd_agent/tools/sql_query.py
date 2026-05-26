@@ -56,6 +56,9 @@ class SqlQuery(Tool):
     }
     group = "database_query"
     concurrency_safe = True
+    # 限 8K tokens（约 32K chars）。SQL 返回大表会让 message_store 暴涨。
+    # agent 要详细数据可以 LIMIT / WHERE narrow 再查。
+    max_output_tokens = 8000
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
         db_key = args.get("database")

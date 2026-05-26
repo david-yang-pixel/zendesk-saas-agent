@@ -50,6 +50,39 @@ class Tool(ABC):
         }
 
 
+# 粗估 token ≈ chars / 4（英文 / 结构化数据偏保守，中文实际比例更高）。
+# 工具输出多是结构化 JSON / log 行，4 倍率合理。
+_CHARS_PER_TOKEN = 4
+
+
+def _enforce_max_output(
+    result: ToolResult, max_tokens: int, tool_name: str,
+) -> ToolResult:
+    """强制截断 tool 返回，超过 max_tokens*4 字符就截到 90% + 截断标记。
+
+    max_tokens=0 → 不截断（默认行为，向后兼容）。
+    截断只动 output 字段，error/success 不动。
+    """
+    if max_tokens <= 0 or not result.output:
+        return result
+    max_chars = max_tokens * _CHARS_PER_TOKEN
+    if len(result.output) <= max_chars:
+        return result
+    keep = int(max_chars * 0.9)
+    truncated_output = (
+        result.output[:keep]
+        + f"\n\n[... {tool_name} output truncated from {len(result.output)} "
+          f"to {keep} chars (max_output_tokens={max_tokens}). "
+          f"Add filters / GROUP BY / LIMIT to narrow your query, "
+          f"or call again with a more specific argument.]"
+    )
+    return ToolResult(
+        success=result.success,
+        output=truncated_output,
+        error=result.error,
+    )
+
+
 class ToolRegistry:
     """工具注册中心：管理所有可用工具，提供统一的注册、查找和执行接口"""
 
@@ -74,7 +107,16 @@ class ToolRegistry:
     async def execute(
         self, tool_name: str, args_json: str, session: AgentSession
     ) -> ToolResult:
-        """根据工具名执行工具，args_json 是 LLM 返回的 JSON 字符串"""
+        """根据工具名执行工具，args_json 是 LLM 返回的 JSON 字符串。
+
+        ⚠️ enforce ``tool.max_output_tokens``：之前各 tool 声明的 max_output_tokens
+        是装饰未生效，导致 SigNoz 一次返回 146KB / 35K tokens 塞回 agent，
+        message_store 暴涨 → token guardrail 触发 forced_summary。
+
+        现在在 ToolRegistry 这层强制截断：result.output 字符数超过
+        ``max_output_tokens × 4``（粗估 1 token ≈ 4 chars）→ 保留前 90%，
+        加截断提示让 agent 改 query 重查。max_output_tokens=0 不截。
+        """
         tool = self._tools.get(tool_name)
         if tool is None:
             return ToolResult(success=False, error=f"未知工具: {tool_name}")
@@ -85,9 +127,12 @@ class ToolRegistry:
             return ToolResult(success=False, error=f"参数解析失败: {e}")
 
         try:
-            return await tool.execute(args, session)
+            result = await tool.execute(args, session)
         except Exception as e:
             return ToolResult(success=False, error=f"工具执行异常: {e}")
+
+        # Enforce max_output_tokens
+        return _enforce_max_output(result, tool.max_output_tokens, tool_name)
 
     def __len__(self) -> int:
         return len(self._tools)
