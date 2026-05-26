@@ -1360,10 +1360,39 @@ def create_saas_app(manager: Any) -> web.Application:
     async def _on_session_finished(session: Any) -> None:  # noqa: ANN401
         try:
             from datetime import datetime as _dt, timezone as _tz
+            from zd_agent.session.agent_session import SessionStatus
             ticket_state = state.get(session.ticket_id)
             if ticket_state is None:
                 return  # 没 state 说明根本没走 trigger 路径（CLI 手动派单等），跳过
             ticket_state.last_agent_finish_ts = _dt.now(_tz.utc)
+
+            # 修法 e2: session failed 时回滚 state=processing 到 in_silence_window
+            # 让下次 webhook（客户新消息）能重新评估并 dispatch，否则永远卡 processing。
+            # 跑成功的也回滚（已经发了 reply，没必要继续 processing）。
+            # 只有特殊 state (escalated_to_human / abandoned) 不动。
+            if (
+                ticket_state.state == "processing"
+                and session.status in (SessionStatus.FAILED, SessionStatus.COMPLETED)
+            ):
+                # 失败 → 回到 in_silence_window 让客户下次发消息重触发
+                # 成功 → 标 processed，避免重复跑同一 ticket
+                new_state = (
+                    "in_silence_window"
+                    if session.status == SessionStatus.FAILED
+                    else "processed"
+                )
+                logger.info(
+                    "session_finished_state_reset",
+                    ticket_id=session.ticket_id,
+                    from_state="processing",
+                    to_state=new_state,
+                    session_status=session.status.value,
+                )
+                ticket_state.state = new_state
+                # 失败的话清掉 silence_window_end（不再等了，下次客户消息直接评估）
+                if session.status == SessionStatus.FAILED:
+                    ticket_state.silence_window_end = None
+
             state.set(session.ticket_id, ticket_state)
         except Exception as e:  # noqa: BLE001
             logger.warning(

@@ -428,6 +428,16 @@ async def agent_loop(
 
             if summary_response.content:
                 session.analysis += f"\n{summary_response.content}"
+                # 修法 e1: subagent 通过 run_subagent 从 message_store.raw 尾部
+                # extract assistant content 作为 final_content。之前 forced_summary
+                # 路径只把 content 加到 session.analysis 没 append_assistant →
+                # subagent 返回 output_chars=0，父 agent 拿不到结论。
+                # 现在也 append_assistant，让 subagent extract 拿到正确内容。
+                # （注意如果有 tool_calls 下面会再 append 一次包含 tool_calls
+                # 的 dict — 那种情况优先 tool_calls 版本，所以这里只在没 tool
+                # call 时 append。）
+                if not summary_response.tool_calls:
+                    message_store.append_assistant(_assistant_message_dict(summary_response))
 
             # 修法 4: 如果 LLM 在 forced_summary 时调了 reply 工具（we 允许
             # 了 zendesk_internal_reply / zendesk_public_reply），**执行它**。
