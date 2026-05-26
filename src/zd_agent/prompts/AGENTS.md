@@ -199,7 +199,25 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
   - 升级建议：<是否需要 escalate SRE/Dev>
   ```
 
-  调用 `zendesk_internal_reply` 写入 Zendesk。
+  ### 🚨 选哪个 reply 工具？(Step 19 关键决策)
+
+  **默认走 `zendesk_public_reply` — 让客户直接看到。** 只有下列特殊情况才用 `zendesk_internal_reply`：
+
+  | 工单情况 | 用哪个 tool | reply_type |
+  |---|---|---|
+  | substantial_issue + 有具体方案 + confidence ≥ medium | **`zendesk_public_reply`** | `solution` |
+  | substantial_issue + 需要客户提供更多信息 | **`zendesk_public_reply`** | `ask` |
+  | 客户主动说解决了 (self_resolved) | **`zendesk_public_reply`** | `closed` |
+  | refund / 退款 / Stripe 操作 | `zendesk_internal_reply` ✋ | （不发 public，飞书推财务）|
+  | 涉及账号封禁 / 数据删除 / 转移 | `zendesk_internal_reply` ✋ | （需人工敏感决策）|
+  | confidence = low + 没把握 | `zendesk_internal_reply` ✋ | （让 SE 兜底）|
+  | 不可重现 platform_issue，需 SRE drill down | `zendesk_internal_reply` ✋ | （转 SRE）|
+
+  **背景**：messaging 工单走自动化路径（M1-M9 实施），客户**期待 agent 直接回**而不是 SE 转手。
+  之前默认 `zendesk_internal_reply` 是 messaging 路径还没开发好时的兜底，现在 messaging 路径
+  完备后，**substantial + 有方案 → 必须用 public_reply** 否则客户什么都看不到。
+
+  调用对应工具写入 Zendesk。`zendesk_public_reply` 会自动追加 footer 并门控 kill switch。
 
 - **Step 20** — `archive_ticket`
   - 参数：`ticket_id`, `analysis`（Step 19 的内部分析段）, `solution`（回复草稿要点）, `category`（Step 4 的分类）
