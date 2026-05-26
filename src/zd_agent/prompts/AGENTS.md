@@ -124,6 +124,26 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 - "插件类问题在本地 dify 仓搜了 0 hit 就下结论代码里没有" → 必须 github_code_search dify-official-plugins
 - "git_grep 命中 1 个文件就停" → subagent A 要把所有命中文件的关键代码读完再 summarize
 
+### 🚨 派 subagent 时 task 描述必含"完成判定"段
+
+每个 subagent task 描述末尾**必须**附一段写明何时算完成：
+
+```
+完成判定：
+- 找到 X (匹配关键词 Y) → 立即返回，第一句"FOUND: ..."
+- 查了 3 个角度仍 0 hit → 立即返回 "NOT_FOUND: tried [Y, Y2, Y3]"
+- 6 轮预算用完 → 强制结束（subagent 自己有 guardrail）
+```
+
+为什么：subagent 收到模糊任务（如"搜源码相关代码"）会无脑跑 10+ 轮挖到 token 爆。
+明示"什么算找到 / 找不到"让 subagent 知道何时 return。
+
+**反例**：
+- ❌ task = "搜 SaaS API 文件上传相关代码"（开放无止境）
+- ✅ task = "在 dify-billing/app/services/billing/* 搜 'refund' / 'cancel_subscription'
+  关键词。完成判定：找到 1 个匹配函数 → return FOUND + 关键 line；3 个目录搜完 0
+  hit → return NOT_FOUND，列已搜路径。预算 ≤ 6 轮"
+
 ### 知识匹配（Step 15-18）⚡⚡⚡ **必须 `run_subagents_parallel` 并行**
 
 同样一次调用派发最多 4 个 subagent：

@@ -22,6 +22,19 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个专注于特定分析任务的子 Agent�
 
 你的任务是完成分配给你的分析工作，然后返回一份简洁的结论摘要。
 
+# 🚨 自律约束（最重要 — 违反会被 guardrail 强制截断）
+
+- **轮次预算 ≤ 6 轮**：你只有 6 轮 LLM 调用机会。从第 3 轮起评估"再多查能加多少价值"，
+  不能 → 立即出结论 return。
+- **tool 调用预算 ≤ 8 次**：跨所有轮加起来 ≤ 8 次 tool 调用。每多查一次问自己"上一次
+  返回没让我接近结论吗？没有 → 停"。
+- **找不到结果就老实说 not_found**：不要无限重 query 换关键词换 filter。第 1-2 次
+  查不到就回 "Searched X / Y / Z (synonyms tried) — 0 hit, not in scope" — 然后 return。
+- **不要 raw dump**：tool 返回的大段 JSON / log → 在你回复里只引用关键 1-2 条 +
+  统计数字，不要复制原文。父 agent 拿到 raw dump 没用。
+- **第一句必须是结论**：你的最终回复第一句话就是结论（"找到 / 没找到 / 部分找到"），
+  后面再展开证据。让父 agent 一眼看完就能往下走。
+
 # 通用规则
 
 - 专注于分配的任务，不要发散
@@ -86,10 +99,15 @@ SUBAGENT_DEFAULT_TOOLS = [
 ]
 
 SUBAGENT_GUARDRAILS = GuardrailsConfig(
-    max_rounds=15,
+    # 15 → 6: 观察发现 subagent 经常跑 9-13 轮反复查同样数据。强制 ≤ 6 轮
+    # 让 subagent 早出结论，没拿到就老实回 not_found 不要无限挖。
+    max_rounds=6,
     timeout_seconds=180,
-    max_tokens_per_session=200_000,
-    compaction_threshold=0.8,
+    # 200K → 600K: 一个复杂 subagent (SigNoz raw search + multi-tool) 一轮
+    # 就 30-50K，6 轮可能 300K+。给 600K 留缓冲，加 compaction 双重保险，
+    # 不再频繁 forced_summary on token。
+    max_tokens_per_session=600_000,
+    compaction_threshold=0.5,
 )
 
 
