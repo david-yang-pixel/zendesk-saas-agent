@@ -1030,13 +1030,35 @@ _SUGGESTED_REPLY_HEADERS = (
 
 
 def _extract_suggested_reply_section(body_md: str) -> str:
-    """从 markdown body 里抽 ## Suggested Reply 段正文（不含标题，不含后续段）。
+    """从 agent body 里抽 Suggested Reply 段正文。
+
+    支持两种实际格式（agent 输出不一定带 ## 前缀）：
+    1. ``## Suggested Reply\\n\\n<content>\\n## Next Section``（标准 markdown）
+    2. ``💬 Suggested Reply\\n\\n<content>\\n⚠️ Audit Warnings``（实际 agent
+       常见格式，emoji 充当 header 标志，**没有 ## 前缀**）
+
+    截止条件：下一个 section header（## / emoji header / 'Audit Warnings' /
+    'Internal Analysis' / 'Review Guide' / '人工指引' 等）或 body 末尾。
 
     返回 trim 后的正文，找不到返回空串。
     """
+    # 下一段终止符：另一个 ## 标题，或常见 emoji header 行
+    # （📋 / 💬 / 🔍 / ✅ / ⚠️ / _You can / _Detailed analysis），或 body 末尾
+    next_section = (
+        r"(?=\n##\s"
+        r"|\n📋\s|\n💬\s|\n🔍\s|\n✅\s|\n⚠️\s"
+        r"|\n_You can|\n_Detailed analysis"
+        r"|\Z)"
+    )
     for header in _SUGGESTED_REPLY_HEADERS:
+        # 同时匹配：(a) "## [emoji ]Header" markdown 标准
+        #          (b) "[emoji ]Header" 行首裸标题（实际 agent 输出）
+        # 用同义的捕获：(?:##\s+)?\s*(?:emoji\s+)? 然后 header 文本
         pattern = _re.compile(
-            r"##\s+(?:[^\w\n]+\s+)?" + _re.escape(header) + r"\s*\n+(.*?)(?=\n##\s|\Z)",
+            r"(?:^|\n)(?:##\s+)?(?:[💬📋🔍✅⚠️]+\s+)?"
+            + _re.escape(header)
+            + r"\s*\n+(.*?)"
+            + next_section,
             _re.DOTALL,
         )
         m = pattern.search(body_md)

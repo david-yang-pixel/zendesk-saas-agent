@@ -55,6 +55,49 @@ class TestExtract:
         out = _extract_suggested_reply_section(body)
         assert out == "final answer here."
 
+    def test_real_agent_output_emoji_no_markdown_prefix(self) -> None:
+        """#2651 真实格式: 💬 Suggested Reply 裸 emoji header 没有 ## 前缀"""
+        body = (
+            "🤖 AI-generated reply for reference only.\n\n"
+            "📋 Summary\n"
+            "Type config-deploy\n"
+            "Confidence 🟢 High\n\n"
+            "💬 Suggested Reply\n\n"
+            "Hi Ayaka,\n\n"
+            "I checked the scheduled trigger records. The workflow fails "
+            "with `Model is not configured`.\n\n"
+            "Best regards,\nDify Support\n\n"
+            "⚠️ Audit Warnings (potential hallucination)\n\n"
+            "- Reply 引用 PR #29982 但 tool 调用结果里未见\n"
+        )
+        out = _extract_suggested_reply_section(body)
+        # 必须抽到内容（不再返回空串）
+        assert out
+        assert "Hi Ayaka" in out
+        assert "Model is not configured" in out
+        # 不能漏到 Audit Warnings 段
+        assert "Audit Warnings" not in out
+        assert "PR #29982" not in out
+
+    def test_real_format_followed_by_review_guide(self) -> None:
+        body = (
+            "📋 Summary\nstuff\n\n"
+            "💬 Suggested Reply\n\nHi, please try X.\n\n"
+            "🔍 Internal Analysis\n\nDeep dive...\n"
+        )
+        out = _extract_suggested_reply_section(body)
+        assert out == "Hi, please try X."
+
+    def test_real_format_followed_by_mention_footer(self) -> None:
+        """agent body 末尾的 '_You can follow up by mentioning @yonggang' 不该被吞"""
+        body = (
+            "💬 Suggested Reply\n\nFix is to enable provider Y.\n\n"
+            "_You can follow up by mentioning @yonggang in an internal note._\n"
+        )
+        out = _extract_suggested_reply_section(body)
+        assert out == "Fix is to enable provider Y."
+        assert "@yonggang" not in out
+
 
 # ---------- _infer_reply_type ----------
 
