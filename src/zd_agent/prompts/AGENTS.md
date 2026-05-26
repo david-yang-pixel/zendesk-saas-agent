@@ -97,7 +97,15 @@
 | D | *[platform_issue 类]* SigNoz 日志 / trace | signoz_search_logs, signoz_search_traces |
 
 C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
-**严禁**为了省事用单个 subagent 或串行调用。
+
+**🚨 不要无脑 fan-out（违反会浪费 token + 钱）**：
+- **simple** 工单（usage-howto / product_usage / yes-no 问题）：派 **1 个** subagent
+  就够，**不要** ABCD 全派 —— KB 一搜就有答案的情况下，4 个 subagent 都干同样
+  的 KB 搜索 = 浪费 3 个 subagent 的 token
+- **medium** 工单：默认派 2 个（A 源码 + B GitHub），其它按需
+- **complex** 才派 4 个并行
+- 派**少**比派多好——subagent 用 mini 模型成本低但**不是零**，每个 subagent
+  ≥10K token，无谓 fan-out 一单多花 $0.1-0.3
 
 **Subagent A 工作策略**：
 1. 先用 `git_grep` 在本地 5 个仓库（dify / dify-billing / dify-marketplace-backend / dify-marketplace-frontend / saas-deploy）搜
@@ -144,9 +152,7 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
   关键词。完成判定：找到 1 个匹配函数 → return FOUND + 关键 line；3 个目录搜完 0
   hit → return NOT_FOUND，列已搜路径。预算 ≤ 6 轮"
 
-### 知识匹配（Step 15-18）⚡⚡⚡ **必须 `run_subagents_parallel` 并行**
-
-同样一次调用派发最多 4 个 subagent：
+### 知识匹配（Step 15-18）— 按需派发
 
 | Subagent | 职责 | 可用工具 |
 |---------|------|---------|
@@ -154,6 +160,12 @@ C / D 仅在分类为 `platform_issue` 或疑似平台故障时派发。
 | B | 历史工单（`工单记录/*.md` grep） | ticket_record_search, ticket_record_read |
 | C | 本地知识库（`saas版知识库/`） | sandbox_read (读对应 md 文件) |
 | D | *[A-C 无匹配 或 涉及外部知识]* Web 搜索 | web_search（如有） |
+
+**🚨 同样不要无脑 fan-out**：
+- 已经在根因阶段拿到明确结论 → 知识匹配 **只派 1 个**（找文档链接附 reply）即可
+- simple ticket 大多数情况根本不需要知识匹配，直接根据根因写 reply 就行
+- 真需要的话默认 A（Help Center）一个搞定，B/C/D 按需
+- 两阶段加起来超过 6 个 subagent 就是浪费，自己心里有数
 
 两阶段（根因分析 → 知识匹配）**之间串行**，各阶段内部并行。
 
