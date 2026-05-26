@@ -957,12 +957,108 @@ class ZendeskInternalReply(Tool):
                 html_body=html_body,
             )
             session.reply_sent = True
-            return ToolResult(output=f"已发送 Internal Note 到工单 #{args['ticket_id']}")
-
         except ZendeskError as e:
             return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
+
+        # B 路径 (2026-05-26)：发完 Internal Note 后，**自动抽 Suggested Reply
+        # 段同步发 public_reply** 给客户。原因：之前 agent 写完 Internal Note
+        # 客户什么都看不到，全靠 SE 手动 forward → 自动化没闭环。
+        # 抽段失败 / kill switch off / 已 escalate 等情况不发，不影响 Internal
+        # Note 主流程已成功。
+        public_status = "skipped"
+        try:
+            suggested = _extract_suggested_reply_section(body_md)
+            if suggested:
+                from zd_agent.tools.zendesk_public_reply import send_public_reply
+                # reply_type 选择：默认 solution（agent 走 internal_reply 通常是
+                # 写完分析有方案）。如果 Suggested Reply 段里出现"could you
+                # share"/"clarify"/"please confirm"等 ask 信号，改 reply_type=ask。
+                rtype = _infer_reply_type(suggested)
+                ok, msg = await send_public_reply(
+                    ticket_id=args["ticket_id"],
+                    body=suggested,
+                    reply_type=rtype,
+                )
+                if ok:
+                    public_status = f"sent({rtype})"
+                    logger.info(
+                        "internal_reply_auto_public_sent",
+                        ticket_id=args["ticket_id"], reply_type=rtype,
+                        body_chars=len(suggested),
+                    )
+                else:
+                    public_status = f"failed:{msg[:80]}"
+                    logger.warning(
+                        "internal_reply_auto_public_failed",
+                        ticket_id=args["ticket_id"], reason=msg[:200],
+                    )
+            else:
+                public_status = "no_suggested_reply_section"
+                logger.info(
+                    "internal_reply_auto_public_no_section",
+                    ticket_id=args["ticket_id"],
+                )
+        except Exception as e:
+            public_status = f"exception:{type(e).__name__}"
+            logger.warning(
+                "internal_reply_auto_public_exception",
+                ticket_id=args["ticket_id"], error=str(e)[:200],
+            )
+
+        return ToolResult(
+            output=(
+                f"已发送 Internal Note 到工单 #{args['ticket_id']}; "
+                f"自动同步 public_reply: {public_status}"
+            ),
+        )
+
+
+# B 路径辅助函数 (2026-05-26)：从 agent 写的结构化 body 里抽客户面 Suggested
+# Reply 段，丢给 public_reply。匹配 ## Suggested Reply / ## 客户回复建议
+# 等中英文标题（含 emoji 前缀如 ## 💬 Suggested Reply）。
+import re as _re
+
+_SUGGESTED_REPLY_HEADERS = (
+    "Suggested Reply",
+    "客户回复建议",
+    "Customer Reply",
+    "Reply Suggestion",
+    "建议客户回复",
+)
+
+
+def _extract_suggested_reply_section(body_md: str) -> str:
+    """从 markdown body 里抽 ## Suggested Reply 段正文（不含标题，不含后续段）。
+
+    返回 trim 后的正文，找不到返回空串。
+    """
+    for header in _SUGGESTED_REPLY_HEADERS:
+        pattern = _re.compile(
+            r"##\s+(?:[^\w\n]+\s+)?" + _re.escape(header) + r"\s*\n+(.*?)(?=\n##\s|\Z)",
+            _re.DOTALL,
+        )
+        m = pattern.search(body_md)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+# Reply_type 推断：Suggested Reply 段含问句信号 → ask；否则 solution
+_ASK_SIGNAL_PATTERNS = (
+    "could you share", "could you provide", "could you confirm",
+    "please share", "please provide", "please confirm",
+    "请提供", "请确认", "能否分享", "能否提供",
+)
+
+
+def _infer_reply_type(suggested_reply: str) -> str:
+    low = suggested_reply.lower()
+    for sig in _ASK_SIGNAL_PATTERNS:
+        if sig in low:
+            return "ask"
+    return "solution"
 
 
 def _prepend_internal_reply_banner(body: str) -> str:
