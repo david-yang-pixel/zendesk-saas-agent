@@ -18,7 +18,9 @@ llm:
   model: gpt-5.5
   # 招 1（省钱）：subagent 用 mini 模型。subagent 80% 是机械抓数活，mini 够用，
   # 比 full 便宜 10×。空字符串 = subagent 也用 model 字段（向后兼容）。
-  subagent_model: gpt-5.5-mini
+  # ⚠️ 注意：必须用 LLM proxy 实际存在的模型名。之前试 gpt-5.5-mini 不存在
+  # 全 404。gpt-5.4-mini 是 trigger_decider 之前用过的，确认存在。
+  subagent_model: gpt-5.4-mini
   temperature: 0.2
   max_tokens: 0
 resources:
