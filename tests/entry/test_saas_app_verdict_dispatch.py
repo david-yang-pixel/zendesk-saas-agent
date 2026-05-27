@@ -163,7 +163,13 @@ class TestSelfResolved:
 
 class TestHighRiskEscalation:
     @pytest.mark.asyncio
-    async def test_refund_escalates(self, tmp_path) -> None:
+    async def test_refund_does_not_auto_escalate(self, tmp_path) -> None:
+        """refund hint 不再 auto-escalate —— agent 进 silence_window 查证后
+        用 public_reply 告诉客户判定结论，同时飞书推财务实操 Stripe。
+
+        旧逻辑（沉默 escalate）客户体验差：等几小时无回复，看不到任何进度。
+        新逻辑：agent 查 DB + 政策 → 告知客户符合/不符合 → 财务实操。
+        """
         state = _make_state(tmp_path)
         await _dispatch(
             state=state,
@@ -175,8 +181,11 @@ class TestHighRiskEscalation:
             tmp_path=tmp_path,
         )
         rec = state.get(12345)
-        assert rec.state == "escalated_to_human"
-        assert rec.escalated_reason == "high_risk_refund"
+        # 不再直接升级
+        assert rec.escalated_reason == ""
+        # 而是落到 silence_window，等 agent 调查 + 公开回复
+        assert rec.state == "in_silence_window"
+        assert rec.silence_window_end is not None
 
     @pytest.mark.asyncio
     async def test_emotional_escalates(self, tmp_path) -> None:

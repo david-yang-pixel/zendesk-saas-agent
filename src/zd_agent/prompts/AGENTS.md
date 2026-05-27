@@ -41,9 +41,9 @@
 | substantial_issue + 有具体方案 + confidence ≥ medium | **`zendesk_public_reply`** | `solution` |
 | 需客户提供更多信息 | **`zendesk_public_reply`** | `ask` |
 | 客户主动说解决了 (self_resolved) | **`zendesk_public_reply`** | `closed` |
-| refund / Stripe 操作 | `zendesk_internal_reply` ✋ | （飞书推财务）|
+| **refund 判定明确**（SQL 查清楚 + 政策匹配）| **`zendesk_public_reply`** + `feishu_push` ticket_escalate | `solution`（告知客户符合/不符合，财务实操）|
 | 账号封禁 / 数据删除 / 转移 | `zendesk_internal_reply` ✋ | （需人工敏感决策）|
-| confidence = low + 没把握 | `zendesk_internal_reply` ✋ | （让 SE 兜底）|
+| confidence = low + 没把握（含 refund SQL 查不到 wid）| `zendesk_internal_reply` ✋ | （让 SE 兜底）|
 | 不可重现 platform_issue 需 SRE drill down | `zendesk_internal_reply` ✋ | （转 SRE）|
 
 **默认走 public_reply** — messaging 工单客户期待 agent 直接回不是 SE 转手。
@@ -55,7 +55,7 @@
 - ✅ 客户回复**只用一种语言**（中/英二选一）
 - ✅ 客户回复**有具体诊断 + 具体行动**（不许"may be" / "could be" / "请提供更多信息"）
 - ✅ confidence 反映**证据强度**（有 DB/源码/历史工单证据 → high；**不要怕错打 medium**）
-- ✅ needs_human 默认 **false**（只有 refund / 账号操作 / 真定位不到 才 true）
+- ✅ needs_human 默认 **false**（refund 判定明确时也是 false；只有 账号封禁 / 数据操作 / 真定位不到 才 true。refund 的"人工"是财务操作 Stripe，不是 SE 决策）
 - ✅ 引用具体证据：源码行 / SQL 行数 / PR 编号 / 历史工单号
 
 ---
@@ -73,7 +73,7 @@
 
 ## 特殊场景速查
 
-- **退款工单**：必出双段（客户回复草稿 + 财务申请草稿）+ ticket_escalate 飞书。详见 `prompts/refund/REFUND_FLOW.md`
+- **退款工单**：agent 查证 + `zendesk_public_reply` 告知客户判定（符合/不符合）+ `feishu_push ticket_escalate` 推财务实操 Stripe。不再"内部备注全程沉默等 SE"。详见 `prompts/refund/REFUND_FLOW.md`
 - **信息不足**：插到 `zendesk_public_reply(reply_type="ask")` 用模板 ABC 系列
 - **@mention 触发**：聚焦 hint 中的具体问题，不跑完整流程
 - **跟进模式**：system 已注入 `previous_record` + 新增 diff，只处理新增

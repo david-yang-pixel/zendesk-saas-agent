@@ -41,7 +41,8 @@ async def test_classify_refund_loads_strategy(fake_session):
     assert "refund" in r.output.lower() or "退款" in r.output
     assert fake_session.ticket_type == "refund"
     # refund strategy content should be included
-    assert "财务申请" in r.output or "两部分" in r.output
+    assert "退款工单处理策略" in r.output
+    assert "ticket_escalate" in r.output  # 飞书推财务这一步必出现
 
 
 @pytest.mark.asyncio

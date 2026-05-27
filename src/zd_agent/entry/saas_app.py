@@ -916,19 +916,22 @@ async def _handle_post_verdict_dispatch(
 
     # ───── Priority 3: substantial + high_risk → escalate ─────
     #
-    # 修正（2026-05-27）：incident 类**不能凭客户一句话直接 escalate**。
-    # 之前 #2680 case：客户说"影响整个组织" → 直接转人工，没去 SigNoz 验证。
-    # 实际可能只是单 workspace 问题。
+    # 演化（2026-05-27）：原本 refund / emotional / incident 三类高风险
+    # 都直接 escalate（客户看不到任何 agent 回复，纯沉默等 SE），但实践证明
+    # 这"看似安全"的设计反而把客户体验拉低 + agent 学不到决策：
     #
-    # 现在分流：
-    # - refund / emotional → 立刻 escalate（金钱 / 公关风险，不容 agent 误判）
-    # - incident          → **进 silence window 走正常 agent 路径**，让 agent
-    #                       用 SigNoz / Grafana / SQL 实际验证是不是真平台故障。
-    #                       SOUL.md / strategies/platform_issue.md 里有"必查
-    #                       基线对照 + GROUP BY 维度 + 4 个统计量"规则——agent
-    #                       查完数据若真 incident 再 escalate；若单 workspace
-    #                       则正常 reply。
-    _AUTO_ESCALATE_RISKS = {"refund", "emotional"}
+    # - #2680 case：客户说"影响整个组织" → 旧逻辑直接转人工，没去 SigNoz 验证。
+    #   实际只是单 workspace 问题。**incident 凭客户一句话 escalate 是误判**。
+    # - refund case：客户问退款 → 旧逻辑直接转人工，客户经常等几小时无回复。
+    #   实际 agent 完全可以：查订阅状态 + 查政策 → 告知"您符合 X 条退款条件，
+    #   财务团队会跟进具体操作"。这给客户一个明确预期，比沉默好得多。
+    #   实际退款操作（Stripe）仍然必须人工，agent 同时 escalate 飞书。
+    #
+    # 现在只有 emotional 立刻 escalate（情绪客户必须人接手安抚，agent 写得
+    # 再好都可能火上浇油）。其他高风险类**进 silence_window 走 agent 路径**：
+    # - refund   → agent 查 DB/政策后用 public_reply 告知客户判定 + 飞书推财务
+    # - incident → agent 用 SigNoz/Grafana 验证是不是真平台故障再决定
+    _AUTO_ESCALATE_RISKS = {"emotional"}
     if (
         verdict_str == "substantial_issue"
         and verdict.high_risk_category in _AUTO_ESCALATE_RISKS
@@ -952,16 +955,21 @@ async def _handle_post_verdict_dispatch(
         )
         return
 
-    # incident 类提示但不 escalate：log + 后续走正常 silence_window 路径
+    # refund / incident 类只是 hint，不直接 escalate：log + 走 silence_window
+    # 由 agent 在主循环里查证据后决定回复内容 + 是否还要 escalate
     if (
         verdict_str == "substantial_issue"
-        and verdict.high_risk_category == "incident"
+        and verdict.high_risk_category in ("refund", "incident")
     ):
         logger.info(
-            "verdict_incident_hint_not_auto_escalating",
+            "verdict_high_risk_hint_not_auto_escalating",
             ticket_id=ticket_id,
+            high_risk_category=verdict.high_risk_category,
             high_risk_reason=(verdict.high_risk_reason or "")[:120],
-            note="incident 类必须先 SigNoz/Grafana 验证，不直接转人工",
+            note=(
+                "refund: agent 查 DB/政策后 public_reply + 飞书推财务；"
+                "incident: agent 用 SigNoz/Grafana 验证再决定"
+            ),
         )
         # 不 return，让代码流到下面 Priority 4（silence_window → agent 处理）
 

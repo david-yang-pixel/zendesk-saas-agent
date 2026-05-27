@@ -1,102 +1,118 @@
 # 退款工单处理流程（SaaS）
 
-退款是**敏感操作**，涉及真钱。必须按此流程，不得跳步。
+退款涉及**真钱**。流程铁律：
+
+> **agent 负责查证 + 告知客户判定（public_reply），人工/财务负责实际操作 Stripe。**
+> 不要又沉默又把客户晾在那儿等几小时——客户能等的是"具体操作"，等不了的是"没回音"。
 
 ## 核心约束
 
-- ⚠️ **不得自动发起 Stripe 退款**
-- ⚠️ **不得承诺具体退款金额 / 时间**
-- ⚠️ 必须产出**两部分草稿**：客户回复 + 财务申请
-- ⚠️ 推送飞书 `ticket_escalate` 卡片要求人工审批
+- ⚠️ **不得自动发起 Stripe 退款**（必须人工/财务在 dashboard 操作）
+- ⚠️ **不得承诺具体到账时间**（"我们会尽快处理"OK，"3 天内到账"不行）
+- ⚠️ **可以告诉客户是否符合退款条件** —— 这是 agent 的核心价值
+- ⚠️ 必须同时推送飞书 `ticket_escalate` 让财务跟进实际操作
 
-## 处理步骤
+## 处理步骤（按顺序）
 
-### 1. 判定退款类型
-
-- **全额退款**：服务从未使用 / 重大平台故障 / 7 天内新订阅
-- **按比例退款**：部分月份未使用 / 降级申请
-- **拒绝退款**：已过退款期 / 正常使用后单方面取消 / 超出政策范围
-
-详细政策参考 skill `references/refunds.md`（如项目内有副本则读本地版本）。
-
-### 2. SQL 查订阅状态
+### 1. SQL 查订阅状态（database=billing）
 
 ```sql
--- billing 库
 SELECT * FROM tenant_subscription_settings WHERE tenant_id = '<wid>';
-SELECT * FROM tenant_stripe_status WHERE tenant_id = '<wid>';
-SELECT * FROM tenant_stripe_customers WHERE tenant_id = '<wid>';
+SELECT * FROM tenant_stripe_status         WHERE tenant_id = '<wid>';
+SELECT * FROM tenant_stripe_customers      WHERE tenant_id = '<wid>';
+SELECT * FROM subscriptions WHERE tenant_id = '<wid>' ORDER BY created_at DESC;
 ```
 
-调用 `sql_query database=billing sql="..."`。记录：plan / interval / expiration / stripe_subscription_id。
+记下：plan / interval / 续费时间 / stripe_subscription_id / 上次 charge 金额。
 
-### 3. 适当时先做一次简短挽留
+### 2. 判定退款类型
 
-如果客户没明确拒绝，且场景合理（比如因某功能不满），可以在客户回复中提一个简短的挽留方案（如"调整配置试试"、"迁移到其他套餐" 等），再给出退款选项。
+| 类型 | 判定依据 |
+|---|---|
+| **全额退款** | 7 天内新订阅 / 服务从未使用 / 重大平台故障期间订阅 |
+| **按比例退款** | 部分月份未使用 / 主动降级 |
+| **拒绝退款** | 已过退款期 / 正常使用后单方面取消 / 超出政策范围 |
 
-**不过度挽留**——客户明确要求退款时，简短挽留一次就够。
+详细政策见 skill `references/refunds.md`（如项目内有副本则读本地版本）。
 
-### 4. 内部备注必须包含两段
+### 3. ticket_record_search 看历史先例
 
-#### 段 1：客户回复草稿（**只写一遍**，二选一语言）
+```python
+ticket_record_search(keywords=["退款", "refund", <相关 plan/场景词>])
+```
 
-**二选一规则**：客户用中文 → 中文；其他客户（含日语 / 葡语 / 英语 ...）→ 一律 English。
+看 SE 以前类似单是怎么判的，避免和先例不一致。
 
-**English customer**（含日语 / 葡语等非中文客户都走这条）:
+### 4. 写 public_reply 告诉客户**判定结果**
+
+⚠️ **关键变化**：不再"内部备注 + 全程沉默等 SE"，而是直接 public_reply
+告诉客户判定结论，让客户有明确预期。
+
+**符合退款条件的回复模板（English）**：
 ```
 Hi <name>,
 
-Thank you for reaching out. I've reviewed your subscription...
-<一句简短挽留，可选>
-We can process <partial/full> refund of <amount> for <period>. <or rejection reason>
-Could you confirm whether you'd like to proceed?
+I've reviewed your subscription and our refund policy:
+- Plan: <plan>, started on <date>
+- Reason qualifying: <e.g., within 7-day window / unused remaining months>
+
+Good news — your request **qualifies** for a <full / partial> refund of approximately <amount>.
+
+Our finance team has been notified and will process the actual refund via Stripe within
+the next 1-2 business days. You'll receive a separate email once it's issued.
 
 Best regards,
 
 Dify Support
 ```
 
-**中文 customer**:
+**符合退款条件的回复模板（中文）**：
 ```
 您好 <name>，
 
-感谢联系我们，我已经查看了您的订阅...
-<简短挽留，可选>
-我们可以为您处理 <部分/全额> 退款，金额 <金额>，对应 <周期>。<或拒绝理由>
-请确认是否继续。
+我已根据退款政策核查了您的订阅：
+- 套餐：<plan>，订阅起始：<日期>
+- 符合条件的原因：<如"7 天内新订阅" / "剩余月份未使用">
+
+您的退款申请**符合**<全额/部分>退款条件，预计金额约 <金额>。
+
+财务团队已收到通知，将在 1-2 个工作日内通过 Stripe 实际处理退款。
+退款发起后您将收到单独的邮件确认。
 
 此致
 
 Dify Support
 ```
 
-#### 段 2：财务申请草稿（纯文字，给财务看）
-
+**不符合退款条件的回复模板（English）**：
 ```
-[REFUND REQUEST]
-Ticket: #<id>
-Requester: <email>
-Workspace ID: <wid>
-Stripe Customer: <cus_id>
-Stripe Subscription: <sub_id>
-Plan: <plan>
-Refund Type: <全额/按比例/拒绝>
-Amount: <金额 + 币种>
-Period: <对应周期>
-Reason: <简述原因，如"7 天内新订阅 + 功能不符合预期">
-Policy Applies: <是否符合现行退款政策>
-Evidence: <SQL 查出的订阅记录关键字段>
+Hi <name>,
+
+I've reviewed your subscription against our refund policy:
+- Plan: <plan>, started on <date>
+- Request falls outside refund window: <具体原因>
+
+Unfortunately, this request **does not qualify** for a refund under our current policy.
+
+Alternative options we can offer:
+- <option 1, e.g., pause subscription / switch plan / credit toward next renewal>
+
+If you'd like to proceed with any of these, just reply here.
+
+Best regards,
+
+Dify Support
 ```
 
-### 5. 推送飞书 ticket_escalate（**完整 draft 必须 inline**）
+**语言规则**：客户中文 → 中文；其他语言（含日 / 葡 / 英）→ 一律 English。
+**绝不双语对照**。
 
-> ⚠️ **不要只推一句"退款待审批"**。财务同事看到飞书卡片必须能**直接根据 content
-> 做出退款决策**，不需要再去 Zendesk 翻 Internal Note。
+### 5. 同步推送飞书 ticket_escalate（**必须 inline 完整 draft**）
 
 ```python
 feishu_push(
     card_type="ticket_escalate",
-    content="""**退款申请待审批**
+    content="""**退款申请待财务处理**（agent 已告知客户判定）
 
 [REFUND REQUEST]
 Ticket: #<id>
@@ -105,45 +121,40 @@ Workspace ID: <wid>
 Stripe Customer: <cus_xxx>
 Stripe Subscription: <sub_xxx>
 Plan: <plan>
-Refund Type: <full / partial / review>
-Amount: <USD or "need finance confirmation">
+Refund Type: <full / partial / rejected>
+Amount: <USD>
 Period: <对应周期>
-Reason: <简述原因>
+Reason: <简述>
 Policy Applies: <是否符合现行退款政策>
 Evidence: <SQL 关键字段>
 
-**建议**: <approve / reject / 需要财务进一步核实>
+**Agent 已向客户回复**：<符合 / 不符合> 退款条件
+**财务下一步**：<dashboard 操作 / 无需操作（已拒绝）>
 """,
     zendesk_url="https://<domain>.zendesk.com/agent/tickets/<id>",
 )
 ```
 
-**为什么 inline 而不是简单通知**：财务在飞书上看到完整 draft → 直接判断
-→ 直接回复"approve"或"reject" + 在 Zendesk 操作 → 流程压缩到一次跳转。
-之前简短通知 → 财务点 Zendesk 链接 → 读 Internal Note → 再决定，多 2 步。
+财务在飞书看到完整 draft → 知道 agent 已经回复客户 → 只需要在 Stripe
+dashboard 实际点退款（或不操作）。**财务不需要再写客户回复**，agent 已经写好了。
 
 ### 6. archive_ticket 用 `category=refund`
 
-确保工单记录文件里 frontmatter 的 `category: refund`，便于后续追溯所有退款工单。
+便于后续追溯所有退款工单 + agent 学习历史判定。
 
-## 拒绝退款场景的回复
+## 拒绝退款的额外要求
 
-拒绝时**必须**给客户清晰的原因，不要打太极。
+拒绝时 **必须**：
+- 给客户清晰的具体原因（不要打太极）
+- 给一个 alternative（暂停 / 切换 plan / credit），除非客户已明确不接受
 
-```
-Hi,
+## ⚠️ 什么情况依然 escalate 不公开回复
 
-Based on our refund policy, this request doesn't qualify for a refund because:
-- <具体原因 1>
-- <具体原因 2>
-
-<Alternative if any: e.g. pause subscription, switch plan>
-
-Best regards,
-
-Dify Support
-```
+- 客户**情绪激动**（emotional 类）—— 由 trigger_decider 标记，直接转人工
+  不走 agent，agent 看到 escalated 状态就不会进入了
+- 客户**SQL 查不到 workspace** / 数据严重异常 → Internal Note 标
+  `confidence=low + needs_human=True`，让 SE 介入而不是公开回复
 
 ## 参考案例
 
-历史退款工单可用 `ticket_record_search keywords=["退款", "refund"]` 检索，参考 Support Engineer 以往的处理方式。
+历史退款工单可用 `ticket_record_search keywords=["退款", "refund"]` 检索，参考 SE 以往的处理方式。
