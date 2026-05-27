@@ -8,12 +8,16 @@ import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from openai import BadRequestError
+from openai import APIConnectionError, APITimeoutError, BadRequestError
 
 try:
     from anthropic import RateLimitError as AnthropicRateLimitError
+    from anthropic import APIConnectionError as AnthropicConnectionError
+    from anthropic import APITimeoutError as AnthropicTimeoutError
 except ImportError:
     AnthropicRateLimitError = None  # type: ignore[assignment,misc]
+    AnthropicConnectionError = None  # type: ignore[assignment,misc]
+    AnthropicTimeoutError = None  # type: ignore[assignment,misc]
 
 from openai import RateLimitError as OpenAIRateLimitError
 
@@ -31,6 +35,8 @@ logger = get_logger(module="agent_loop")
 MAX_IMAGES = 10
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY = 30  # Anthropic 每分钟限额，等 30s 比较安全
+_CONNECTION_MAX_RETRIES = 2
+_CONNECTION_BASE_DELAY = 5  # 网络瞬时抖动通常 5s 内恢复
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -39,6 +45,22 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     if AnthropicRateLimitError is not None and isinstance(exc, AnthropicRateLimitError):
         return True
     return False
+
+
+def _is_connection_error(exc: Exception) -> bool:
+    """OpenAI / Anthropic 的网络瞬时错误（连接 reset / TLS / timeout）。"""
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+        return True
+    if AnthropicConnectionError is not None and isinstance(exc, AnthropicConnectionError):
+        return True
+    if AnthropicTimeoutError is not None and isinstance(exc, AnthropicTimeoutError):
+        return True
+    # generic Connection error / TimeoutError 字符串兜底
+    name = type(exc).__name__
+    if name in ("ConnectionError", "TimeoutError", "ReadTimeout", "ConnectTimeout"):
+        return True
+    msg = str(exc).lower()
+    return "connection error" in msg or "connection reset" in msg
 
 
 def _get_retry_after(exc: Exception) -> float:
@@ -227,9 +249,21 @@ async def agent_loop(
             llm_start = time.monotonic()
 
             async def _chat_with_retry() -> LLMResponse:
-                """带 rate-limit 重试的 LLM 调用。"""
+                """LLM 调用，含 rate-limit 和 connection 错误重试。
+
+                之前只 retry rate_limit，OpenAI Connection error 一次就挂导致
+                整个 session reply_sent=False（#2664 case）。现在两类瞬时错误
+                都重试：
+                - rate_limit: 最多 3 次，指数 base=30s（Anthropic 配额需更长等待）
+                - connection: 最多 2 次，指数 base=5s（网络瞬时抖动通常 < 5s 恢复）
+                """
                 last_exc: Exception | None = None
-                for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+                rate_attempts = 0
+                conn_attempts = 0
+                max_total = (
+                    _RATE_LIMIT_MAX_RETRIES + _CONNECTION_MAX_RETRIES + 1
+                )
+                for _ in range(max_total):
                     try:
                         return await provider.chat(
                             message_store.to_api_messages(),
@@ -237,18 +271,30 @@ async def agent_loop(
                             temperature=0.2,
                         )
                     except Exception as e:
-                        if _is_rate_limit_error(e):
-                            last_exc = e
-                            if attempt < _RATE_LIMIT_MAX_RETRIES:
-                                delay = _get_retry_after(e)
-                                logger.warning(
-                                    "rate_limit_retry",
-                                    ticket_id=session.ticket_id,
-                                    attempt=attempt + 1,
-                                    delay=delay,
-                                )
-                                await asyncio.sleep(delay)
-                                continue
+                        last_exc = e
+                        if _is_rate_limit_error(e) and rate_attempts < _RATE_LIMIT_MAX_RETRIES:
+                            rate_attempts += 1
+                            delay = _get_retry_after(e)
+                            logger.warning(
+                                "rate_limit_retry",
+                                ticket_id=session.ticket_id,
+                                attempt=rate_attempts,
+                                delay=delay,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        if _is_connection_error(e) and conn_attempts < _CONNECTION_MAX_RETRIES:
+                            conn_attempts += 1
+                            delay = _CONNECTION_BASE_DELAY * (2 ** (conn_attempts - 1))
+                            logger.warning(
+                                "connection_error_retry",
+                                ticket_id=session.ticket_id,
+                                attempt=conn_attempts,
+                                delay=delay,
+                                error=str(e)[:200],
+                            )
+                            await asyncio.sleep(delay)
+                            continue
                         raise
                 raise last_exc  # type: ignore[misc]
 
@@ -522,6 +568,47 @@ async def agent_loop(
         session.status = SessionStatus.FAILED
         session.error_message = str(e)
         session.analysis += f"\n\n❌ 处理异常: {e}"
+
+        # 兜底救援：即使 generic Exception 也试一次写 Internal Note 让 SE
+        # 看到失败 + 已收集到的信息，不要让客户工单完全没痕迹。
+        # 失败本身也吞掉，不让兜底救援的 error 覆盖原始 error 信息。
+        try:
+            _REPLY_TOOL_NAMES_LOCAL = {"zendesk_internal_reply"}
+            reply_only_schemas = [
+                s for s in (tool_schemas or [])
+                if s.name in _REPLY_TOOL_NAMES_LOCAL
+            ] or None
+            if reply_only_schemas:
+                message_store.append_user(
+                    f"[系统] 处理过程出现异常({type(e).__name__}: {str(e)[:200]})。"
+                    "请基于已收集到的信息立即写一条 zendesk_internal_reply 让 SE "
+                    "看到当前结论 + 失败原因，body 简洁不超过 200 字。"
+                )
+                fallback_resp = await provider.chat(
+                    message_store.to_api_messages(),
+                    tools=reply_only_schemas,
+                    temperature=0.2,
+                )
+                if fallback_resp.tool_calls:
+                    for tc in fallback_resp.tool_calls:
+                        if tc.name in _REPLY_TOOL_NAMES_LOCAL:
+                            try:
+                                await registry.execute(
+                                    tc.name, tc.arguments, session,
+                                )
+                                logger.info(
+                                    "agent_loop_error_fallback_reply_sent",
+                                    ticket_id=session.ticket_id, tool=tc.name,
+                                )
+                            except Exception:
+                                pass
+        except Exception as fallback_err:
+            logger.warning(
+                "agent_loop_error_fallback_failed",
+                ticket_id=session.ticket_id,
+                fallback_error=str(fallback_err)[:200],
+            )
+
         yield LoopFinished(
             status="error",
             total_rounds=guardrails.current_round,
