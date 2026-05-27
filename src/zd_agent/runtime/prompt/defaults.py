@@ -45,8 +45,13 @@ def load_db_schema() -> str:
 _load_db_schema = load_db_schema
 
 
-def register_default_sections(builder: PromptBuilder) -> None:
-    """注册默认 prompt 段（SOUL / AGENTS / TOOLS + 可选动态段）。"""
+def register_static_sections(builder: PromptBuilder) -> None:
+    """注册**只 byte-identical 跨工单**的静态 prompt 段。
+
+    招法 4: 这些段进 system prompt，让 OpenAI/Anthropic prefix cache 拉满。
+    动态段（date / strategy / language / followup / customer_profile）请
+    用 register_dynamic_sections。
+    """
     builder.register(
         PromptSection(
             name="soul",
@@ -70,12 +75,33 @@ def register_default_sections(builder: PromptBuilder) -> None:
     )
     builder.register(
         PromptSection(
-            name="strategy",
-            content=lambda ctx: f"## 当前工单处理策略\n\n{ctx.strategy_content}",
-            order=25,
-            condition=lambda ctx: bool(ctx.strategy_content),
+            name="common_playbook",
+            content=load_prompt("playbook/COMMON_PLAYBOOK.md"),
+            order=22,
         )
     )
+    builder.register(
+        PromptSection(
+            name="reply_templates",
+            content=load_prompt("templates/REPLY_TEMPLATES.md"),
+            order=35,
+        )
+    )
+    builder.register(
+        PromptSection(
+            name="dev_report",
+            content=load_prompt("templates/DEV_REPORT.md"),
+            order=36,
+        )
+    )
+
+
+def register_dynamic_sections(builder: PromptBuilder) -> None:
+    """注册**每 ticket / 每天可能变**的动态 prompt 段。
+
+    招法 4: 这些段单独生成为 user-message 前缀文本，不进 system prompt，
+    保证 system prompt 跨工单 byte-identical → cache 拉满。
+    """
     builder.register(
         PromptSection(
             name="date_context",
@@ -84,12 +110,19 @@ def register_default_sections(builder: PromptBuilder) -> None:
             condition=lambda ctx: bool(ctx.current_date),
         )
     )
+    builder.register(
+        PromptSection(
+            name="strategy",
+            content=lambda ctx: f"## 当前工单处理策略\n\n{ctx.strategy_content}",
+            order=25,
+            condition=lambda ctx: bool(ctx.strategy_content),
+        )
+    )
 
     _LANG_NAMES = {"zh": "中文", "en": "English", "ja": "日本語"}
 
     def _reply_language_section(ctx: PromptContext) -> str:
         detected = _LANG_NAMES.get(ctx.customer_language, ctx.customer_language)
-        # 二选一规则：客户中文 → 中文；其他一律 English（不强行说葡/日等小语种）
         is_zh = ctx.customer_language == "zh"
         target = "中文" if is_zh else "English"
         return (
@@ -111,53 +144,6 @@ def register_default_sections(builder: PromptBuilder) -> None:
             condition=lambda ctx: bool(ctx.customer_language),
         )
     )
-
-    # COMMON_PLAYBOOK — always loaded (after AGENTS, before strategy)
-    builder.register(
-        PromptSection(
-            name="common_playbook",
-            content=load_prompt("playbook/COMMON_PLAYBOOK.md"),
-            order=22,
-        )
-    )
-
-    # SQL_TEMPLATES + DB_SCHEMA + REFUND_FLOW —— 不再 always-load 进 system
-    # prompt，改为 classify_ticket 工具返回时按 ticket_type 选择性附加到 tool
-    # result（见 tools/classify.py）。
-    #
-    # 为什么不直接做"按 ctx.ticket_type 条件 load 进 system prompt"：
-    #   - system prompt 第一次构造时（runner.py:88）ticket_type 还没有值，
-    #     classify 在第一轮 tool call 才出来
-    #   - 如果 classify 后重写 system prompt，prompt cache 会失效（OpenAI/
-    #     Anthropic 都按 system prefix 哈希），第二轮起 cache miss 反而更贵
-    #   - 通过 tool result 注入：system prompt 永远固定 → cache 命中
-    #     ticket-specific 内容随 tool message 进入 history，下一轮 cache 仍续命
-    #
-    # 收益：refund / product_usage / insufficient_info 等不需要 SQL 的工单，
-    # system prompt 省 ~9-10k tokens × 100% 工单首次调用。
-
-    # ⚠️ 历史遗留 section 已被 classify.py 接管，此处保留 stub 占位避免
-    # 别的地方意外引用——实际不再注册任何内容。
-
-    # REPLY_TEMPLATES — always loaded (reply drafting is on every ticket)
-    builder.register(
-        PromptSection(
-            name="reply_templates",
-            content=load_prompt("templates/REPLY_TEMPLATES.md"),
-            order=35,
-        )
-    )
-
-    # DEV_REPORT — 每个工单都加载
-    builder.register(
-        PromptSection(
-            name="dev_report",
-            content=load_prompt("templates/DEV_REPORT.md"),
-            order=36,
-        )
-    )
-
-    # followup_context — when session.mode == "followup", inject previous record
     builder.register(
         PromptSection(
             name="followup_context",
@@ -167,19 +153,16 @@ def register_default_sections(builder: PromptBuilder) -> None:
                 f"### 上次分析记录\n\n{ctx.previous_record}\n\n"
                 f"### 本次新增客户对话\n\n{ctx.new_comments_diff or '(无)'}"
             ),
-            order=15,  # right after SOUL, before AGENTS
+            order=15,
             condition=lambda ctx: ctx.mode == "followup" and bool(ctx.previous_record),
         )
     )
 
-    # P2-8: 客户画像（dispatch 前预拉）—— 放最后（order=90），prefix cache 尽量
-    # 保住（前面 SOUL/AGENTS/TOOLS 跨工单可复用，只有这段是 ticket-specific）。
     def _customer_profile_section(ctx: PromptContext) -> str:
         p = ctx.customer_profile or {}
         email = p.get("requester_email", "")
         recent_ids = p.get("recent_ticket_ids") or []
         count = p.get("recent_ticket_count", 0)
-
         lines = [
             "## 客户画像（dispatch 前预拉，供 agent 决策参考）",
             "",
@@ -198,7 +181,6 @@ def register_default_sections(builder: PromptBuilder) -> None:
             )
         else:
             lines.append("- 过去 30 天无历史 SaaS 工单 → 新客户，按常规流程处理")
-
         return "\n".join(lines)
 
     builder.register(
@@ -209,3 +191,13 @@ def register_default_sections(builder: PromptBuilder) -> None:
             condition=lambda ctx: bool(ctx.customer_profile),
         )
     )
+
+
+def register_default_sections(builder: PromptBuilder) -> None:
+    """注册默认 prompt 段（向后兼容包装：static + dynamic 一起）。
+
+    新代码应使用 register_static_sections + register_dynamic_sections
+    分离静态/动态以实现 cache 优化（招法 4）。
+    """
+    register_static_sections(builder)
+    register_dynamic_sections(builder)

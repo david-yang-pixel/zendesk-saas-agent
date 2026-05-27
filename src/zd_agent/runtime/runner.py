@@ -89,14 +89,45 @@ async def run_agent(session: AgentSession) -> None:
     customer_profile = await prefetch_customer_profile(session.ticket_id)
     session.customer_profile = customer_profile
 
-    # 构造初始 messages
-    system_prompt = build_system_prompt(customer_profile=customer_profile)
+    # 招法 4 (cache 拉满)：system prompt 保持完全静态，不再注入 ticket-specific
+    # 内容（customer_profile / current_date / hint / etc）。这些内容改放 user
+    # message。OpenAI/Anthropic prompt cache 按 prefix 哈希命中，system 稳定
+    # 后跨 ticket cache hit > 90% → input token 价格 ÷10。
+    from zd_agent.runtime.prompt_loader import build_static_system_prompt
+    system_prompt = build_static_system_prompt()
     session.messages = [
         {"role": "system", "content": system_prompt},
     ]
 
-    # 构造 user message
-    user_content = f"请处理工单 #{session.ticket_id}。"
+    # 构造 user message（所有 ticket-specific 上下文都放这里，不污染 system prompt）
+    user_content_parts = [f"请处理工单 #{session.ticket_id}。"]
+
+    # 当前日期（agent 可能引用，但不能放 system prompt 否则每天 cache miss）
+    from datetime import date as _date
+    user_content_parts.append(f"\n\n_当前日期: {_date.today().isoformat()}_")
+
+    # customer_profile 注入到 user message
+    if customer_profile:
+        email = customer_profile.get("requester_email", "")
+        recent_ids = customer_profile.get("recent_ticket_ids") or []
+        count = customer_profile.get("recent_ticket_count", 0)
+        if count > 0:
+            user_content_parts.append(
+                f"\n\n## 客户画像\n"
+                f"- requester: {email}\n"
+                f"- 过去 30 天同 requester SaaS 工单 **{count}** 个："
+                f"{', '.join('#' + str(t) for t in recent_ids)}\n"
+                f"- **强烈建议**在写 Internal Note 前用 `ticket_record_read` "
+                f"看 1-2 个历史工单，避免重复 ask 已答过的信息。"
+            )
+        else:
+            user_content_parts.append(
+                f"\n\n## 客户画像\n"
+                f"- requester: {email}\n"
+                f"- 过去 30 天无历史 SaaS 工单 → 新客户，按常规流程处理"
+            )
+
+    user_content = "".join(user_content_parts)
     if session.hint:
         # hint 显式标记为"辅助提示"——避免它把 agent 的诊断主线带歪。
         # 之前观察到：用户给的 hint（如"重点验证 SigNoz"、"忽略我的备注"）

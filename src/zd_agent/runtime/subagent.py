@@ -140,10 +140,22 @@ async def run_subagent(
         sandbox_dir=parent_session.sandbox_dir,
     )
 
-    # 构建子 Agent 可用的工具子集
+    # 构建子 Agent 可用的工具子集（招法 3）：
+    # tool_names 应该由 caller 通过 run_subagents_parallel 的 task.tools 字段
+    # 强制指定。如果 caller 没传（向后兼容旧调用），fallback 到 DEFAULT_TOOLS
+    # 但会 warn，因为加载所有 default 多花 5-10K token / subagent。
     full_registry = create_tool_registry()
     sub_registry = ToolRegistry()
-    allowed = set(tool_names) if tool_names else set(SUBAGENT_DEFAULT_TOOLS)
+    if tool_names:
+        allowed = set(tool_names)
+    else:
+        allowed = set(SUBAGENT_DEFAULT_TOOLS)
+        logger.warning(
+            "subagent_no_tool_subset_fallback_default",
+            ticket_id=parent_session.ticket_id,
+            default_count=len(SUBAGENT_DEFAULT_TOOLS),
+            note="caller 未通过 task.tools 指定 → 全 default 加载，会多用 5-10K token",
+        )
     for tool in full_registry.list_tools():
         if tool.name in allowed:
             sub_registry.register(tool)
