@@ -36,7 +36,9 @@ async def test_parallel_dispatch_runs_concurrently(fake_session):
     with _make_subagent_patch(fake_subagent):
         result = await tool.execute(
             {"tasks": [
-                {"task": "t1"}, {"task": "t2"}, {"task": "t3"},
+                {"task": "t1", "tools": ["git_grep"]},
+                {"task": "t2", "tools": ["git_grep"]},
+                {"task": "t3", "tools": ["git_grep"]},
             ]},
             fake_session,
         )
@@ -71,9 +73,9 @@ async def test_one_failing_subagent_others_succeed(fake_session):
     with _make_subagent_patch(fake_subagent):
         result = await tool.execute(
             {"tasks": [
-                {"task": "a"},
-                {"task": "fail"},
-                {"task": "b"},
+                {"task": "a", "tools": ["git_grep"]},
+                {"task": "fail", "tools": ["git_grep"]},
+                {"task": "b", "tools": ["git_grep"]},
             ]},
             fake_session,
         )
@@ -93,7 +95,10 @@ async def test_all_subagents_fail(fake_session):
 
     with _make_subagent_patch(fake_subagent):
         result = await tool.execute(
-            {"tasks": [{"task": "a"}, {"task": "b"}]},
+            {"tasks": [
+                {"task": "a", "tools": ["git_grep"]},
+                {"task": "b", "tools": ["git_grep"]},
+            ]},
             fake_session,
         )
     assert result.success is False
@@ -114,9 +119,32 @@ async def test_tools_and_context_passed_through(fake_session):
         await tool.execute(
             {"tasks": [
                 {"task": "t1", "tools": ["git_grep"], "context": "ctx1"},
-                {"task": "t2"},
+                {"task": "t2", "tools": ["sandbox_read"]},
             ]},
             fake_session,
         )
     assert captured[0] == {"task": "t1", "tools": ["git_grep"], "context": "ctx1"}
-    assert captured[1] == {"task": "t2", "tools": [], "context": ""}
+    assert captured[1] == {"task": "t2", "tools": ["sandbox_read"], "context": ""}
+
+
+@pytest.mark.asyncio
+async def test_missing_tools_field_rejected(fake_session):
+    """招法 3: tools 是 required，没传应该报错"""
+    tool = RunSubagentsParallel()
+    result = await tool.execute(
+        {"tasks": [{"task": "t1"}]},  # 没传 tools
+        fake_session,
+    )
+    assert result.success is False
+    assert "tools" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_empty_tools_field_rejected(fake_session):
+    tool = RunSubagentsParallel()
+    result = await tool.execute(
+        {"tasks": [{"task": "t1", "tools": []}]},
+        fake_session,
+    )
+    assert result.success is False
+    assert "tools" in (result.error or "").lower()

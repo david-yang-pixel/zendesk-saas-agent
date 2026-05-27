@@ -192,7 +192,12 @@ class TestHighRiskEscalation:
         assert state.get(12345).escalated_reason == "high_risk_emotional"
 
     @pytest.mark.asyncio
-    async def test_incident_escalates(self, tmp_path) -> None:
+    async def test_incident_does_not_auto_escalate(self, tmp_path) -> None:
+        """incident hint 不再 auto-escalate —— 必须让 agent 用 SigNoz/Grafana 验证后再决定。
+
+        decider 标 incident 只是 hint，落到 silence_window 走主 agent 调查路径。
+        agent 在收集证据后可以自己 escalate 或公开回复。
+        """
         state = _make_state(tmp_path)
         await _dispatch(
             state=state,
@@ -202,7 +207,12 @@ class TestHighRiskEscalation:
             ),
             tmp_path=tmp_path,
         )
-        assert state.get(12345).escalated_reason == "high_risk_incident"
+        rec = state.get(12345)
+        # 不再直接升级
+        assert rec.escalated_reason == ""
+        # 而是落到 silence_window，等 agent 调查
+        assert rec.state == "in_silence_window"
+        assert rec.silence_window_end is not None
 
 
 # ============================================================================

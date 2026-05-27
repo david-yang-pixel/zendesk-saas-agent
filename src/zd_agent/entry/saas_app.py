@@ -915,7 +915,24 @@ async def _handle_post_verdict_dispatch(
         return
 
     # ───── Priority 3: substantial + high_risk → escalate ─────
-    if verdict_str == "substantial_issue" and verdict.high_risk_category:
+    #
+    # 修正（2026-05-27）：incident 类**不能凭客户一句话直接 escalate**。
+    # 之前 #2680 case：客户说"影响整个组织" → 直接转人工，没去 SigNoz 验证。
+    # 实际可能只是单 workspace 问题。
+    #
+    # 现在分流：
+    # - refund / emotional → 立刻 escalate（金钱 / 公关风险，不容 agent 误判）
+    # - incident          → **进 silence window 走正常 agent 路径**，让 agent
+    #                       用 SigNoz / Grafana / SQL 实际验证是不是真平台故障。
+    #                       SOUL.md / strategies/platform_issue.md 里有"必查
+    #                       基线对照 + GROUP BY 维度 + 4 个统计量"规则——agent
+    #                       查完数据若真 incident 再 escalate；若单 workspace
+    #                       则正常 reply。
+    _AUTO_ESCALATE_RISKS = {"refund", "emotional"}
+    if (
+        verdict_str == "substantial_issue"
+        and verdict.high_risk_category in _AUTO_ESCALATE_RISKS
+    ):
         last_msg_body = ""
         if customer_msgs:
             last_msg_body = (customer_msgs[-1].get("body") or "")[:200]
@@ -934,6 +951,19 @@ async def _handle_post_verdict_dispatch(
             },
         )
         return
+
+    # incident 类提示但不 escalate：log + 后续走正常 silence_window 路径
+    if (
+        verdict_str == "substantial_issue"
+        and verdict.high_risk_category == "incident"
+    ):
+        logger.info(
+            "verdict_incident_hint_not_auto_escalating",
+            ticket_id=ticket_id,
+            high_risk_reason=(verdict.high_risk_reason or "")[:120],
+            note="incident 类必须先 SigNoz/Grafana 验证，不直接转人工",
+        )
+        # 不 return，让代码流到下面 Priority 4（silence_window → agent 处理）
 
     # ───── Priority 4: substantial + safe → 入静默 ─────
     if verdict_str == "substantial_issue":

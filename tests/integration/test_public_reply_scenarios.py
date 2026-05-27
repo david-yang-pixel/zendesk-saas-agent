@@ -357,10 +357,11 @@ class TestScenarioSelfResolved:
 
 class TestScenarioHighRisk:
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("risk", ["refund", "emotional", "incident"])
+    @pytest.mark.parametrize("risk", ["refund", "emotional"])
     async def test_high_risk_escalates_directly(
         self, tmp_path, risk: str,
     ) -> None:
+        """refund / emotional → 直接升级人工（不可逆决策 / 情绪管理）"""
         state = TicketStateTracker(tmp_path / "tickets.json")
         await _run_dispatch(
             state=state,
@@ -372,6 +373,27 @@ class TestScenarioHighRisk:
         rec = state.get(5000)
         assert rec.state == "escalated_to_human"
         assert rec.escalated_reason == f"high_risk_{risk}"
+
+    @pytest.mark.asyncio
+    async def test_incident_falls_through_to_silence_window(
+        self, tmp_path,
+    ) -> None:
+        """incident hint 不再 auto-escalate —— 让主 agent 用 SigNoz/Grafana 验证后再决定。
+
+        客户说 "影响整个组织" / "全挂了" 可能只是单 workspace bug，必须先查证据
+        再决定是不是真 platform incident。
+        """
+        state = TicketStateTracker(tmp_path / "tickets.json")
+        await _run_dispatch(
+            state=state,
+            verdict=_make_verdict(
+                kind="substantial_issue", high_risk_category="incident",
+            ),
+            tmp_path=tmp_path,
+        )
+        rec = state.get(5000)
+        assert rec.state == "in_silence_window"
+        assert rec.escalated_reason == ""
 
 
 # ---------------------------------------------------------------------------
