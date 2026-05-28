@@ -12,12 +12,30 @@
 - 可同时跑 5 个工单分析会话
 
 **🟡 最低（2G，当前服务器档位）** — 默认配置已按此优化：
-- `config.yaml`: `max_concurrent_sessions: 2`, `max_tokens_per_session: 500000`, `compaction_threshold: 0.65`
+- `config.yaml`: `max_concurrent_sessions: 2`, `max_tokens_per_session: 1500000`, `compaction_threshold: 0.3`
+  - ⚠️ `max_tokens` 从 500K 提到 1.5M（gpt-5.x 支持 1M context；旧 500K 导致
+    62.5% 工单触发 Token 截断 → agent 频繁 "I couldn't verify"）。配套把
+    `compaction_threshold` 从 0.65 降到 0.3，否则压缩永远不触发。
 - `zd-agent.service`: `--memory=800m --memory-swap=1500m --cpus=0.8`
 - swap 作为 burst 兜底；2 个并发会话稳定运行
 - **务必确认 swap 已启用**（`free -h` 看 Swap 行应 ≥ 1.5G）
   - 如没 swap：`fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab`
 - 高峰期建议监控：`docker stats zd-agent` 看 MEM % 是否长期 > 90%
+
+### 1.5 关键 config.yaml 运行字段（非内存档位相关）
+
+| 字段 | 当前值 | 说明 |
+|---|---|---|
+| `llm.model` | `gpt-5.5` | 主 Agent 模型 |
+| `llm.subagent_model` | `gpt-5.4-mini` | Subagent 用便宜模型省 ~70% 成本。**必须是 proxy 真实存在的模型名**（`gpt-5.5-mini` 不存在会全 404，踩过坑）|
+| `trigger_decider.llm_model` | `gpt-5.5` | 触发判定模型（误判代价高，不省这个钱）|
+| `public_reply.enabled` | `true` | **总开关 / 应急回退**：出问题立即 flip 为 `false`，agent 全部退回只发 Internal Note（SE 手动 forward），无需改代码 |
+| `public_reply.max_ask_count` | `10` | 累计追问上限，超过转人工 |
+| `zendesk.min_ticket_id` | `2624` | **灰度边界**：只处理 ID ≥ 此值的工单。上线稳定后改 `0` 处理全部 SaaS 工单 |
+| `zendesk.search_query` | `status:new tags:saas` | 处理范围 |
+
+> 改 `config.yaml` 后直接 `systemctl restart zd-agent` 即生效（配置挂载为只读 volume，无需 rebuild 镜像）。
+> 应急回退 public reply：改 `enabled: false` → restart，最快止血。
 
 ### 2. Clone repo on server
 
@@ -144,8 +162,14 @@ sudo -u zd-agent TELEPORT_HOME=/opt/zd-agent/.tsh tsh login --headless --proxy=t
 
 ```bash
 cd /opt/zd-agent/code
-sudo docker build -f deploy/Dockerfile -t zd-agent:latest .
+sudo docker build --network host -f deploy/Dockerfile -t zd-agent:latest .
 ```
+
+> ⚠️ **必须带 `--network host`**：本服务器 Docker 配了 clash 代理（`127.0.0.1:7890`，
+> 见 `~/.docker/config.json` + `/etc/systemd/system/docker.service.d/`）。默认 bridge
+> 构建网络访问不到宿主机 `127.0.0.1`，`apt-get update` 会 `Connection refused`
+> 导致 `Unable to locate package git/curl`。`--network host` 让构建容器共享宿主网络
+> 才能走通代理。
 
 ### 12. Install & start systemd services
 
@@ -184,7 +208,8 @@ sudo journalctl -u zd-agent -f
 | Force reprocess ticket | Feishu `/reprocess 12345` |
 | Check status | Feishu `/status` |
 | Update SaaS branch | Feishu `/branch dify hotfix/1.11.2-fix3` |
-| Update agent code | `cd /opt/zd-agent/code && git pull && sudo docker build -f deploy/Dockerfile -t zd-agent:latest . && sudo systemctl restart zd-agent` |
+| Update agent code | `cd /opt/zd-agent/code && git pull && sudo docker build --network host -f deploy/Dockerfile -t zd-agent:latest . && sudo systemctl restart zd-agent` |
+| Restart only (改 config.yaml 后) | `sudo systemctl restart zd-agent`（config 挂载只读 volume，无需 rebuild）|
 | Refresh DB schema cheat sheet | `bash /opt/zd-agent/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
 
 ## Daily Backups
