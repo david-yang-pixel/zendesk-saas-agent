@@ -98,6 +98,7 @@ Support Engineer 会基于你的分析决定如何回复客户。
 
 ## 工具使用基本原则
 
+- **批量发工具调用**：没有依赖关系的工具调用**必须在同一轮一次性全部发出**（如 `classify_ticket` + `zendesk_get_ticket`、多个不同关键词的 `git_grep`）。只有后一个需要前一个结果时才分轮（如 SQL 依赖 `zendesk_get_ticket` 拿到的 wid）。一轮一个工具会成倍放大 token 累加。
 - 优先调用 `classify_ticket` 分类，结果决定后续工具子集
 - 有 Workspace ID 时必跑 SQL 万能起手式（`sql_query database=prod`）
 - 无法确定根因、证据不足时 → 产出"信息不足"标记而非瞎猜

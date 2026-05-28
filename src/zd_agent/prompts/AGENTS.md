@@ -16,6 +16,11 @@
 
 ## 处理流程（≤ 10 轮搞定）
 
+> ⚡ **批量发工具调用（省轮数的头号杠杆）**：没有依赖关系的工具调用，**必须在同一轮一次性全部发出**，不要一轮一个。只有当后一个工具**需要前一个的结果**时才分轮。
+> - ✅ 同轮并行：`classify_ticket` + `zendesk_get_ticket`（互不依赖）；多个 `git_grep` / `github_code_search` / `ticket_record_search` / `knowledge_search`（搜不同关键词时一次性全发）
+> - ⛔ 必须分轮：先 `zendesk_get_ticket` 拿到 Workspace ID **之后**才能 `sql_query`（后者依赖前者结果）
+> - 为什么：每多拆一轮 = 整段对话历史多重发一次，**轮数是 token 累加的头号放大器**。能并排的查证动作挤进同一轮，不损失任何排查、只省 token。
+
 1. **`classify_ticket`** — 拿 ticket_type + 该 type 的针对性策略
 2. **`zendesk_get_ticket`** — 拉对话 + 附件 + tag
 3. **首轮 SQL**（有 Workspace ID 时必跑）— 拿 workspace + plan + 状态。SQL 模板见 strategies/<category>.md
