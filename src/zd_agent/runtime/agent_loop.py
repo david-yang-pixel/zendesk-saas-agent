@@ -329,6 +329,16 @@ async def agent_loop(
                 stop_reason=response.finish_reason,
             )
 
+            # 透出每轮工具调用数 + 工具名 → 验证"批量发工具"指令是否生效。
+            # 一轮一个工具 = 批量没生效（轮数被拉长）；一轮多个 = 在并行。
+            logger.info(
+                "round_tool_calls",
+                ticket_id=session.ticket_id,
+                round=guardrails.current_round,
+                tool_call_count=len(response.tool_calls),
+                tool_names=[tc.name for tc in response.tool_calls],
+            )
+
             message_store.append_assistant(_assistant_message_dict(response))
 
             if not response.has_tool_calls:
