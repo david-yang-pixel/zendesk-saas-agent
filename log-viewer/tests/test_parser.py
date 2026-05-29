@@ -31,3 +31,64 @@ def test_read_events_skips_bad_lines(tmp_path):
 
 def test_read_events_empty_dir(tmp_path):
     assert P.read_events(str(tmp_path), days=1) == []
+
+
+def test_group_by_ticket():
+    events = [
+        {"event": "a", "ticket_id": 1},
+        {"event": "b", "ticket_id": 2},
+        {"event": "c", "ticket_id": 1},
+        {"event": "startup"},
+    ]
+    grouped = P.group_by_ticket(events)
+    assert set(grouped.keys()) == {1, 2}
+    assert len(grouped[1]) == 2
+
+
+def test_summarize_tickets():
+    events = [
+        {"event": "trigger_verdict", "ticket_id": 5, "verdict": "substantial_issue",
+         "timestamp": "2026-05-29T04:00:00Z"},
+        {"event": "ticket_classified", "ticket_id": 5, "ticket_type": "knowledge_base",
+         "timestamp": "2026-05-29T04:00:05Z"},
+        {"event": "agent_done", "ticket_id": 5, "rounds": 7, "total_tokens": 370297,
+         "reply_sent": True, "status": "completed", "elapsed": 150.6,
+         "timestamp": "2026-05-29T04:02:30Z"},
+    ]
+    summaries = P.summarize_tickets(P.group_by_ticket(events))
+    assert len(summaries) == 1
+    s = summaries[0]
+    assert s["ticket_id"] == 5
+    assert s["status"] == "completed"
+    assert s["verdict"] == "substantial_issue"
+    assert s["rounds"] == 7
+    assert s["total_tokens"] == 370297
+    assert s["reply_sent"] is True
+    assert s["last_time"] == "2026-05-29T04:02:30Z"
+
+
+def test_summarize_sorts_desc_by_last_time():
+    events = [
+        {"event": "agent_done", "ticket_id": 1, "timestamp": "2026-05-29T01:00:00Z"},
+        {"event": "agent_done", "ticket_id": 2, "timestamp": "2026-05-29T03:00:00Z"},
+        {"event": "agent_done", "ticket_id": 3, "timestamp": "2026-05-29T02:00:00Z"},
+    ]
+    summaries = P.summarize_tickets(P.group_by_ticket(events))
+    assert [s["ticket_id"] for s in summaries] == [2, 3, 1]
+
+
+def test_ticket_timeline_sorted_asc():
+    events = [
+        {"event": "agent_done", "ticket_id": 9, "timestamp": "2026-05-29T04:02:00Z"},
+        {"event": "trigger_verdict", "ticket_id": 9, "timestamp": "2026-05-29T04:00:00Z"},
+    ]
+    tl = P.ticket_timeline(P.group_by_ticket(events), 9)
+    assert [e["event"] for e in tl] == ["trigger_verdict", "agent_done"]
+
+
+def test_summarize_missing_fields_no_crash():
+    events = [{"event": "trigger_verdict", "ticket_id": 7, "timestamp": "2026-05-29T04:00:00Z"}]
+    summaries = P.summarize_tickets(P.group_by_ticket(events))
+    assert summaries[0]["ticket_id"] == 7
+    assert summaries[0]["status"] == ""
+    assert summaries[0]["rounds"] is None
