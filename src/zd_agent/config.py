@@ -270,6 +270,14 @@ class TeleportConfig(BaseModel):
     notify_interval_seconds: int = 3600
 
 
+class LoggingConfig(BaseModel):
+    """日志配置。stdout 始终走带色 ConsoleRenderer（不可配）；
+    jsonl_enabled 控制是否额外写 JSON 行到 log_dir/events-<date>.jsonl 供 log-viewer 读。
+    """
+    jsonl_enabled: bool = True
+    log_dir: str = "/opt/zd-agent/logs"
+
+
 class AppConfig(BaseModel):
     """应用完整配置"""
 
@@ -292,6 +300,7 @@ class AppConfig(BaseModel):
     teleport: TeleportConfig = Field(default_factory=TeleportConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 
 class EnvSettings(BaseSettings):
