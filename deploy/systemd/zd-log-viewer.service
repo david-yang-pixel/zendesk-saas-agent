@@ -1,0 +1,17 @@
+[Unit]
+Description=zd-agent log viewer (read-only jsonl web UI)
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=10
+WorkingDirectory=/opt/zd-agent/log-viewer
+Environment=ZD_LOG_DIR=/opt/zd-agent/logs
+Environment=ZD_LOG_DAYS=14
+ExecStart=/opt/zd-agent/log-viewer/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8081
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
