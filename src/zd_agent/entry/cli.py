@@ -33,9 +33,13 @@ def main(
     json_log: bool = typer.Option(False, "--json-log", help="输出 JSON 格式日志"),
 ) -> None:
     """Zendesk 工单自动处理 Agent"""
-    from zd_agent.config import EnvSettings
+    from zd_agent.config import EnvSettings, get_config
     env = EnvSettings()
-    setup_logging(json_output=json_log, log_level=env.zd_log_level)
+    cfg = get_config()
+    jsonl_dir = cfg.logging.log_dir if cfg.logging.jsonl_enabled else None
+    setup_logging(
+        json_output=json_log, log_level=env.zd_log_level, jsonl_dir=jsonl_dir,
+    )
 
 
 @app.command()

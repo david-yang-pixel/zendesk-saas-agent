@@ -39,10 +39,18 @@ def _make_jsonl_sink(log_dir: str):
     return _sink
 
 
-def setup_logging(*, json_output: bool = False, log_level: str = "INFO") -> None:
+def setup_logging(
+    *,
+    json_output: bool = False,
+    log_level: str = "INFO",
+    jsonl_dir: str | None = None,
+) -> None:
     """初始化 structlog
 
     log_level: DEBUG / INFO / WARNING / ERROR（大小写不敏感）
+    jsonl_dir: 若指定，额外将每条日志以 JSON 行追加到
+               <jsonl_dir>/events-<UTC date>.jsonl（供 log-viewer 读取）。
+               None 表示不写文件（向后兼容）。
     """
     level = _LEVEL_MAP.get(log_level.upper(), logging.INFO)
 
@@ -53,6 +61,10 @@ def setup_logging(*, json_output: bool = False, log_level: str = "INFO") -> None
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]
+
+    # jsonl 文件 sink：插在最终 renderer 之前，原样透传 event_dict
+    if jsonl_dir:
+        processors.append(_make_jsonl_sink(jsonl_dir))
 
     if json_output:
         processors.append(structlog.processors.JSONRenderer())

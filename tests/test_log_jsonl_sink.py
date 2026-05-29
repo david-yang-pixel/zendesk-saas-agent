@@ -35,3 +35,31 @@ def test_jsonl_sink_swallows_write_error(tmp_path):
     sink = _make_jsonl_sink("/nonexistent/cannot/create/here")
     out = sink(None, "info", {"event": "x", "ticket_id": 1})
     assert out == {"event": "x", "ticket_id": 1}
+
+
+import json as _json
+from datetime import datetime as _dt, timezone as _tz
+
+from zd_agent.log import setup_logging, get_logger
+
+
+def test_setup_logging_with_jsonl_writes_file(tmp_path):
+    setup_logging(json_output=False, log_level="INFO", jsonl_dir=str(tmp_path))
+    log = get_logger(module="test")
+    log.info("agent_done", ticket_id=999, rounds=5)
+    date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+    f = tmp_path / f"events-{date}.jsonl"
+    assert f.exists()
+    found = [
+        _json.loads(l) for l in f.read_text().strip().splitlines()
+        if _json.loads(l).get("ticket_id") == 999
+    ]
+    assert found and found[0]["event"] == "agent_done"
+
+
+def test_setup_logging_jsonl_dir_none_no_file(tmp_path):
+    # jsonl_dir=None → 不写文件（向后兼容）
+    setup_logging(json_output=False, log_level="INFO", jsonl_dir=None)
+    log = get_logger(module="test")
+    log.info("x", ticket_id=1)
+    assert not list(tmp_path.glob("events-*.jsonl"))
