@@ -17,6 +17,7 @@ ExecStartPre=-/usr/bin/docker rm -f zd-agent
 ExecStart=/usr/bin/docker run --rm --name zd-agent \
     --network host \
     -v /opt/zd-agent/resources:/opt/zd-agent/resources \
+    -v /opt/zd-agent/logs:/opt/zd-agent/logs \
     -v /opt/zd-agent/.env:/app/.env:ro \
     -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
     -v /opt/zd-agent/.tsh:/opt/zd-agent/.tsh \
