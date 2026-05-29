@@ -83,6 +83,18 @@ def _enforce_max_output(
     )
 
 
+# 数据查询类工具失败时，给 LLM 的错误文本加一条防臆造横幅。
+# 根因：工具失败 = 没拿到数据，但 quality bar 又逼 agent 给"具体诊断+证据"，
+# 模型会用幻觉填空（#2709：inspector 超时 → 编了个不存在的 credential error）。
+# 在工具层把"别编"硬注入到每条数据工具失败信息里，不依赖模型记得 SOUL.md。
+_DATA_QUERY_GROUP = "database_query"
+_NO_FABRICATION_BANNER = (
+    "\n\n⚠️ 数据未获取（工具失败/超时）。严禁基于猜测编造查询结果或 error 内容。"
+    "下一步：换工具/改条件重查；仍拿不到 → 标 needs_human=True 并诚实写"
+    "'未获取到数据'，不要给客户一个臆造的根因。"
+)
+
+
 class ToolRegistry:
     """工具注册中心：管理所有可用工具，提供统一的注册、查找和执行接口"""
 
@@ -129,7 +141,20 @@ class ToolRegistry:
         try:
             result = await tool.execute(args, session)
         except Exception as e:
-            return ToolResult(success=False, error=f"工具执行异常: {e}")
+            result = ToolResult(success=False, error=f"工具执行异常: {e}")
+
+        # 数据查询类工具失败 → 给 error 文本附防臆造横幅（堵 #2709 类幻觉）
+        if (
+            not result.success
+            and tool.group == _DATA_QUERY_GROUP
+            and result.error
+            and "数据未获取" not in result.error  # inspector 已自带更详细提示则不重复
+        ):
+            result = ToolResult(
+                success=result.success,
+                output=result.output,
+                error=result.error + _NO_FABRICATION_BANNER,
+            )
 
         # Enforce max_output_tokens
         return _enforce_max_output(result, tool.max_output_tokens, tool_name)

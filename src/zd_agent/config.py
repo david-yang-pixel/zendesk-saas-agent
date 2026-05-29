@@ -222,7 +222,9 @@ class InspectorConfig(BaseModel):
     """
     binary: str = "/usr/local/bin/inspector"
     config_file: str = "/opt/zd-agent/inspector-config/prod.yaml"
-    timeout_seconds: int = 30
+    # 30 → 90：section=all 查整个 tenant（跨 main+billing+TiDB）30s 不够，
+    # #2709 实测 30s 超时 → agent 拿不到数据后臆造 error。给足时间。
+    timeout_seconds: int = 90
 
 
 class PublicReplyConfig(BaseModel):

@@ -231,8 +231,9 @@ class InspectorExec(Tool):
             cmd_preview=cmd_preview,
         )
 
-        # 6. 跑子进程
-        try:
+        # 6. 跑子进程（超时自动 retry 一次 —— transient 超时很常见，
+        #    一次 retry 把"偶发慢"和"真查不到"区分开）
+        async def _run_once() -> tuple[int | None, bytes, bytes]:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -240,25 +241,60 @@ class InspectorExec(Tool):
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout_b, stderr_b = await asyncio.wait_for(
+                out_b, err_b = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout,
                 )
+                return proc.returncode, out_b, err_b
             except asyncio.TimeoutError:
                 try:
                     proc.kill()
                     await proc.wait()
                 except ProcessLookupError:
                     pass
+                raise
+
+        try:
+            try:
+                rc, stdout_b, stderr_b = await _run_once()
+            except asyncio.TimeoutError:
+                # retry 一次
                 logger.warning(
-                    "inspector_exec_timeout",
+                    "inspector_exec_timeout_retry",
                     primary_flag=primary_flag,
                     timeout_s=timeout,
                     ticket_id=session.ticket_id,
                 )
-                return ToolResult(
-                    success=False,
-                    error=f"inspector 执行超时（{timeout}s）",
-                )
+                try:
+                    rc, stdout_b, stderr_b = await _run_once()
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "inspector_exec_timeout",
+                        primary_flag=primary_flag,
+                        timeout_s=timeout,
+                        ticket_id=session.ticket_id,
+                    )
+                    # ⚠️ 两次都超时 = 没拿到任何数据。错误文本必须明确告诉
+                    # agent：别臆造结果，改用 sql_query 直查具体表，或标 needs_human。
+                    cli = _flag_to_cli(primary_flag)
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            f"⚠️ inspector 两次执行均超时（{timeout}s × 2），"
+                            f"**未获取到任何数据**。\n"
+                            f"严禁基于猜测编造查询结果 / error 内容。下一步必须二选一：\n"
+                            f"1. 改用 sql_query 直查 prod 库具体表（不要再 section=all）。"
+                            f"针对 {cli} {primary_value} 常用：\n"
+                            f"   - 知识库/文档：SELECT id,name,indexing_status,error "
+                            f"FROM documents WHERE dataset_id='...'（或先查 datasets "
+                            f"WHERE tenant_id='{primary_value}'）\n"
+                            f"   - 模型凭据：SELECT provider_name,is_valid,updated_at "
+                            f"FROM providers WHERE tenant_id='{primary_value}'\n"
+                            f"   - workflow run：SELECT ... FROM workflow_runs / "
+                            f"workflow_node_executions WHERE ...\n"
+                            f"2. 若仍查不到 → Internal Note 标 needs_human=True，"
+                            f"诚实写'inspector 超时未获取数据'，**不要**给客户编一个根因。"
+                        ),
+                    )
         except FileNotFoundError:
             return ToolResult(
                 success=False,
@@ -275,7 +311,7 @@ class InspectorExec(Tool):
 
         stdout = stdout_b.decode("utf-8", errors="replace")
         stderr = stderr_b.decode("utf-8", errors="replace")
-        rc = proc.returncode
+        # rc 来自 _run_once 返回值（上面已赋值）
 
         if rc != 0:
             # 失败：把 stderr 给 LLM 看
