@@ -92,3 +92,21 @@ def test_summarize_missing_fields_no_crash():
     assert summaries[0]["ticket_id"] == 7
     assert summaries[0]["status"] == ""
     assert summaries[0]["rounds"] is None
+
+
+import os as _os
+
+
+def test_real_sample_parses(tmp_path):
+    fixture = _os.path.join(_os.path.dirname(__file__), "fixtures", "sample.jsonl")
+    from datetime import datetime as _d, timezone as _t
+    date = _d.now(_t.utc).strftime("%Y-%m-%d")
+    (tmp_path / f"events-{date}.jsonl").write_text(open(fixture, encoding="utf-8").read())
+    events = P.read_events(str(tmp_path), days=1)
+    assert len(events) > 0
+    grouped = P.group_by_ticket(events)
+    assert len(grouped) >= 1
+    summaries = P.summarize_tickets(grouped)
+    assert all("ticket_id" in s for s in summaries)
+    # startup 行（无 ticket_id）必须被丢弃，不出现在任何工单分组里
+    assert 2709 in grouped

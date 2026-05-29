@@ -1,0 +1,8 @@
+{"module": "entry.saas_app", "port": 8080, "event": "saas_app_started", "level": "info", "timestamp": "2026-05-29T09:50:45.592667Z"}
+{"module": "entry.saas_app", "event": "poller_started", "level": "info", "timestamp": "2026-05-29T09:50:45.600000Z"}
+{"event":"trigger_verdict","ticket_id":2709,"verdict":"substantial_issue","completeness":70,"timestamp":"2026-05-29T04:00:00Z","level":"info","module":"entry.saas_app"}
+{"event":"ticket_classified","ticket_id":2709,"ticket_type":"knowledge_base","timestamp":"2026-05-29T04:00:05Z","level":"info","module":"classify"}
+{"event":"round_tool_calls","ticket_id":2709,"round":1,"tool_call_count":1,"tool_names":["sql_query"],"timestamp":"2026-05-29T04:00:30Z","level":"info"}
+{"event":"round_tool_calls","ticket_id":2709,"round":2,"tool_call_count":2,"tool_names":["git_grep","sql_query"],"timestamp":"2026-05-29T04:01:00Z","level":"info"}
+{"event":"round_tool_calls","ticket_id":2709,"round":3,"tool_call_count":2,"tool_names":["git_grep","sql_query"],"timestamp":"2026-05-29T04:01:30Z","level":"info"}
+{"event":"agent_done","ticket_id":2709,"rounds":7,"total_tokens":370297,"reply_sent":true,"status":"completed","elapsed":150.6,"timestamp":"2026-05-29T04:02:30Z","level":"info","module":"runner"}
