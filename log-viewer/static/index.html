@@ -1,1 +1,85 @@
-<!doctype html><meta charset=utf-8><title>工单日志</title><div id=app>工单日志</div>
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工单日志</title>
+<style>
+  body { font: 14px/1.5 -apple-system,system-ui,sans-serif; margin: 0; background:#f7f8fa; color:#1a1a2e; }
+  header { background:#1a1a2e; color:#fff; padding:12px 20px; font-weight:600; }
+  #app { padding:20px; max-width:1100px; margin:0 auto; }
+  table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; }
+  th,td { padding:8px 12px; text-align:left; border-bottom:1px solid #eee; }
+  th { background:#f0f1f5; font-size:12px; color:#666; }
+  tr.row { cursor:pointer; } tr.row:hover { background:#f5f7ff; }
+  .bad { color:#c0392b; font-weight:600; }
+  input { padding:6px 10px; border:1px solid #ccc; border-radius:6px; margin-bottom:12px; width:200px; }
+  .back { cursor:pointer; color:#3b5bdb; margin-bottom:12px; display:inline-block; }
+  .ev { background:#fff; border-bottom:1px solid #eee; padding:6px 12px; font-family:ui-monospace,monospace; font-size:13px; }
+  .ev .t { color:#888; } .ev.err { background:#fdecea; }
+  .ev pre { display:none; margin:6px 0 0; padding:8px; background:#2d2d3a; color:#e0e0e0; border-radius:6px; overflow:auto; }
+  .ev.open pre { display:block; }
+</style>
+</head>
+<body>
+<header>zd-agent 工单日志</header>
+<div id="app">加载中…</div>
+<script>
+const ICON = {
+  ticket_classified:"📋", trigger_verdict:"🎯", round_tool_calls:"🔧",
+  public_reply_sent:"💬", internal_reply_auto_public_sent:"💬",
+  compaction_triggered:"🗜️", agent_done:"✅",
+};
+function iconFor(ev){
+  if(/timeout|failed|error/.test(ev)) return "⚠️";
+  return ICON[ev] || "·";
+}
+function fmtTime(ts){ return ts ? ts.replace("T"," ").replace("Z","").slice(5,19) : ""; }
+
+async function showList(){
+  const app = document.getElementById("app");
+  const rows = await (await fetch("api/tickets")).json();
+  let html = `<input id=q placeholder="搜工单号…" oninput="filter()">
+    <table><thead><tr><th>工单</th><th>状态</th><th>verdict</th><th>类型</th>
+    <th>轮数</th><th>token</th><th>耗时</th><th>最后时间</th></tr></thead><tbody>`;
+  for(const s of rows){
+    const tokBad = s.total_tokens && s.total_tokens > 1000000 ? "bad" : "";
+    const stBad = s.status === "failed" ? "bad" : "";
+    const tok = s.total_tokens ? (s.total_tokens/1000).toFixed(0)+"K" : "-";
+    const el = s.elapsed ? s.elapsed.toFixed(0)+"s" : "-";
+    html += `<tr class=row data-id="${s.ticket_id}" onclick="showDetail(${s.ticket_id})">
+      <td>#${s.ticket_id}</td><td class="${stBad}">${s.status||"-"}</td>
+      <td>${s.verdict||"-"}</td><td>${s.ticket_type||"-"}</td>
+      <td>${s.rounds??"-"}</td><td class="${tokBad}">${tok}</td>
+      <td>${el}</td><td>${fmtTime(s.last_time)}</td></tr>`;
+  }
+  html += "</tbody></table>";
+  app.innerHTML = html;
+}
+function filter(){
+  const q = document.getElementById("q").value.trim();
+  document.querySelectorAll("tr.row").forEach(tr=>{
+    tr.style.display = !q || tr.dataset.id.includes(q) ? "" : "none";
+  });
+}
+async function showDetail(id){
+  const app = document.getElementById("app");
+  const tl = await (await fetch("api/tickets/"+id)).json();
+  let html = `<span class=back onclick="showList()">← 返回列表</span>
+    <h3>工单 #${id} · ${tl.length} 条事件</h3>`;
+  for(const e of tl){
+    const ev = e.event||"";
+    const err = /timeout|failed|error/.test(ev) ? "err" : "";
+    const extra = Object.entries(e).filter(([k])=>
+      !["event","timestamp","level","module","ticket_id"].includes(k))
+      .map(([k,v])=>`${k}=${typeof v==="object"?JSON.stringify(v):v}`).join("  ");
+    html += `<div class="ev ${err}" onclick="this.classList.toggle('open')">
+      <span class=t>${fmtTime(e.timestamp)}</span> ${iconFor(ev)} <b>${ev}</b> ${extra}
+      <pre>${JSON.stringify(e,null,2)}</pre></div>`;
+  }
+  app.innerHTML = html;
+}
+showList();
+</script>
+</body>
+</html>
