@@ -30,6 +30,13 @@ def ticket_detail(ticket_id: int) -> JSONResponse:
     return JSONResponse(timeline)
 
 
+@app.get("/dify-avatar.svg")
+def dify_avatar() -> FileResponse:
+    return FileResponse(
+        os.path.join(_STATIC, "dify-avatar.svg"), media_type="image/svg+xml"
+    )
+
+
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(os.path.join(_STATIC, "index.html"))
