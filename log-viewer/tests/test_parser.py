@@ -110,3 +110,14 @@ def test_real_sample_parses(tmp_path):
     assert all("ticket_id" in s for s in summaries)
     # startup 行（无 ticket_id）必须被丢弃，不出现在任何工单分组里
     assert 2709 in grouped
+
+
+def test_read_events_days_zero_reads_all_history():
+    """days<=0 读取全部历史日志（不按日期过滤）。"""
+    with tempfile.TemporaryDirectory() as d:
+        today = datetime.now(timezone.utc).date().isoformat()
+        _write(d, f"events-{today}.jsonl", [{"ticket_id": 1, "event": "x"}])
+        _write(d, "events-2000-01-01.jsonl", [{"ticket_id": 2, "event": "y"}])
+        ev = P.read_events(d, days=0)
+        ids = sorted(e["ticket_id"] for e in ev)
+        assert ids == [1, 2]

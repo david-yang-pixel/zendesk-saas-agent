@@ -212,7 +212,7 @@
         <div class="srow"><span class="lk">刷新间隔</span><span class="seg" id="segInt"></span></div>
         <div class="sgrp">关于</div>
         <div class="srow"><span class="lk">登录账号</span><span class="rk">dify.ai</span></div>
-        <div class="srow"><span class="lk">日志保留</span><span class="rk" id="metaDays">—</span></div>
+        <div class="srow"><span class="lk">日志范围</span><span class="rk" id="metaDays">—</span></div>
       </div>
       <div class="sheet-f"><button class="logout" onclick="logout()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>退出登录</button></div>
     </div>
@@ -382,7 +382,7 @@ function toggleAuto(){localStorage.setItem(LS.auto,autoOn()?'0':'1');const b=doc
 function openSettings(){document.body.classList.remove('nav-open');renderSeg();
   const t=document.getElementById('swTheme');if(t)t.classList.toggle('on',document.documentElement.getAttribute('data-theme')==='dark');
   const a=document.getElementById('swAuto');if(a)a.classList.toggle('on',autoOn());
-  fetch('api/meta').then(r=>r.json()).then(m=>{const e=document.getElementById('metaDays');if(e)e.textContent=(m.days??'—')+' 天';}).catch(()=>{});
+  fetch('api/meta').then(r=>r.json()).then(m=>{const e=document.getElementById('metaDays');if(e)e.textContent=(m.all||!m.days)?'全部':(m.days+' 天');}).catch(()=>{});
   document.getElementById('settings').classList.add('show');}
 function closeSettings(){document.getElementById('settings').classList.remove('show');}
 function logout(){if(confirm('确定退出登录？'))location.href='/oauth2/sign_out';}
