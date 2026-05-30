@@ -1678,12 +1678,19 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Files:** 无新增
 
+- [ ] **Step 0: 清理陈旧 pyc 缓存**
+
+旧的 `test_signoz.py` / `test_signoz_tools.py` 源文件已删除，但 `__pycache__` 里还留着它们的 `.pyc`。新建的 `tests/tools/test_signoz_tools.py` 与旧缓存同名，先清掉避免 pytest 收集到陈旧缓存：
+
+Run: `find tests -name "*.pyc" -path "*signoz*" -delete; find tests -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null; echo cleaned`
+Expected: `cleaned`
+
 - [ ] **Step 1: 跑全测试套件**
 
 Run: `uv run pytest tests/ -q`
 Expected: 全绿（含新增测试文件）。
 
-**注：** 现有 3 个 MCP 测试（`tests/integrations/test_signoz_mcp_subprocess.py`、`tests/integrations/test_signoz_search.py`、`tests/observability/test_signoz_mcp_tools.py`）直接测 MCP 模块本身——因本计划**保留** `signoz_mcp_tools.py` / `mcp_subprocess.py` 代码（只停注册），这些测试应继续通过。已确认无任何测试调用 `augment_registry_async` / `discover_signoz_mcp_tools`，故把 `augment_registry_async` 改 no-op 不破坏现有测试。若有意外失败，先排查是否是这层。
+**注（实读确认）：** 无任何测试调用 `augment_registry_async` / `discover_signoz_mcp_tools`（grep 0 命中），故把 `augment_registry_async` 改 no-op 不破坏现有测试。`signoz_mcp_tools.py` / `mcp_subprocess.py` 源码保留备用，但其旧测试 `.py` 已不存在（仅剩 `.pyc` 缓存，Step 0 已清）。若有意外失败先排查 import 链。
 
 - [ ] **Step 2: import 冒烟**
 
