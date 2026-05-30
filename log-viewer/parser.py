@@ -68,6 +68,13 @@ def summarize_tickets(grouped: dict[int, list[dict]]) -> list[dict]:
         classify_ev = next(
             (e for e in reversed(events) if e.get("event") == "ticket_classified"), {}
         )
+        # 触发方式：source（zendesk_webhook/silence_waker 等）优先，
+        # 退回 via（native_messaging 渠道）；按时间升序取最早一次
+        trigger = next(
+            (e.get("source") or e.get("via") for e in events
+             if e.get("source") or e.get("via")),
+            None,
+        )
         out.append({
             "ticket_id": tid,
             "status": done.get("status", ""),
@@ -77,6 +84,9 @@ def summarize_tickets(grouped: dict[int, list[dict]]) -> list[dict]:
             "total_tokens": done.get("total_tokens"),
             "elapsed": done.get("elapsed"),
             "reply_sent": done.get("reply_sent"),
+            # 模型：agent_done 新增的 model 字段（旧日志无 → None → 前端显示 —）
+            "model": done.get("model"),
+            "trigger": trigger,
             "last_time": _last_time(events),
             "event_count": len(events),
         })
