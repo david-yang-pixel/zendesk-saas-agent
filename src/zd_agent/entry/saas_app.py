@@ -1338,6 +1338,7 @@ async def _trigger_consumer(
                 completeness=verdict.completeness,
                 reason=verdict.reason[:100],
                 images_used=len(image_data_urls),
+                model=cfg.trigger_decider.llm_model,
             )
 
             now = datetime.now(timezone.utc)

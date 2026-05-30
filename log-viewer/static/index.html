@@ -245,6 +245,7 @@ function cn(map,v){return v?(map[v]||v):v;}
 function stp(s){if(!s)return `<span class="pill p-run"><span class="d"></span>处理中</span>`;if(s==="completed")return `<span class="pill p-ok"><span class="d"></span>已完成</span>`;if(s==="failed")return `<span class="pill p-bad"><span class="d"></span>失败</span>`;return `<span class="pill p-warn"><span class="d"></span>${esc(cn(STATUS_CN,s))}</span>`;}
 function vtag(v){return v?`<span class="tag" title="${esc(v)}">${esc(cn(VERDICT_CN,v))}</span>`:'<span class="faint">—</span>';}
 function ttag(v){return v?`<span class="tag" title="${esc(v)}">${esc(cn(TYPE_CN,v))}</span>`:'<span class="faint">—</span>';}
+function mtags(models,fallback){const a=Array.isArray(models)&&models.length?models:(fallback?[fallback]:[]);return a.length?a.map(m=>`<span class="toolchip">${esc(m)}</span>`).join(""):'<span class="faint">—</span>';}
 
 let CACHE=[];
 function goList(){document.body.classList.remove('nav-open');location.hash='';}
@@ -281,7 +282,7 @@ async function showList(){
       <td class="r num">${s.rounds??'<span class="faint">—</span>'}</td>
       <td class="r num tok ${hot}">${fmtTok(s.total_tokens)}</td>
       <td class="r num muted">${fmtEl(s.elapsed)}</td>
-      <td class="muted">${s.model?esc(s.model):'<span class="faint">—</span>'}</td>
+      <td>${mtags(s.models,s.model)}</td>
       <td>${s.trigger?esc(TRIGGER_CN[s.trigger]||s.trigger):'<span class="faint">—</span>'}</td>
       <td>${rep}</td><td class="mono faint">${fmtTime(s.last_time)}</td>
     </tr>`;

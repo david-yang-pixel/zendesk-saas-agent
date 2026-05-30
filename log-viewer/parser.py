@@ -57,6 +57,33 @@ def _last_time(events: list[dict]) -> str:
     return max(times) if times else ""
 
 
+# agent_done(主 agent) 排最前，再 subagent，最后 trigger_verdict(判定)；
+# 其余带 model 的事件兜底排末尾。同模型只显示一次。
+_MODEL_EVENT_ORDER = {
+    "agent_done": 0,
+    "subagent_using_cheap_model": 1,
+    "trigger_verdict": 2,
+}
+
+
+def _collect_models(events: list[dict]) -> list[str]:
+    """聚合该工单全部阶段用过的模型，去重，按阶段优先级排序。
+
+    主 agent(agent_done) → subagent → 判定(trigger_verdict) → 其它。
+    """
+    seen: dict[str, int] = {}
+    for e in events:
+        m = e.get("model")
+        if not m:
+            continue
+        m = str(m)
+        rank = _MODEL_EVENT_ORDER.get(e.get("event", ""), 9)
+        # 同一模型保留最小 rank（最靠前的阶段）
+        if m not in seen or rank < seen[m]:
+            seen[m] = rank
+    return [m for m, _ in sorted(seen.items(), key=lambda kv: (kv[1], kv[0]))]
+
+
 def summarize_tickets(grouped: dict[int, list[dict]]) -> list[dict]:
     """每工单聚合一行摘要，按 last_time 倒序。"""
     out: list[dict] = []
@@ -84,7 +111,10 @@ def summarize_tickets(grouped: dict[int, list[dict]]) -> list[dict]:
             "total_tokens": done.get("total_tokens"),
             "elapsed": done.get("elapsed"),
             "reply_sent": done.get("reply_sent"),
-            # 模型：agent_done 新增的 model 字段（旧日志无 → None → 前端显示 —）
+            # 模型：聚合该工单全阶段用过的模型并去重（主 agent / subagent /
+            # 判定）。主 agent 优先排前。旧日志无 model → 空列表 → 前端显示 —
+            "models": _collect_models(events),
+            # 兼容字段：主 agent 模型（agent_done），单值，给其它消费方用
             "model": done.get("model"),
             "trigger": trigger,
             "last_time": _last_time(events),
