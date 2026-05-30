@@ -10,11 +10,13 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
+from typing import Any
 
 from zd_agent.config import get_config
 from zd_agent.integrations.sz_cli import run_sz
 from zd_agent.log import get_logger
 from zd_agent.repos import fetch_repo, resolve_repo
+from zd_agent.tools.base import Tool, ToolResult
 
 logger = get_logger(module="tools.saas_version")
 
@@ -173,3 +175,34 @@ async def resolve_deployed_version(*, use_cache: bool = True) -> DeployedVersion
 
     _cache = (time.monotonic(), result)
     return result
+
+
+class SaasDeployedVersion(Tool):
+    name = "saas_deployed_version"
+    description = (
+        "查询 cloud.dify.ai 生产环境 dify-api 当前实际运行的版本（来自 SigNoz "
+        "实时遥测，saas-deploy 兜底）。用于判断：某 bug 是否已线上修复、某功能"
+        "是否已上线、客户报的问题对应线上哪一份源码。返回可直接喂给 git_show / "
+        "git_grep 的源码 ref。"
+    )
+    parameters = {"type": "object", "properties": {}}
+    group = "source_code"
+    concurrency_safe = True
+
+    async def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
+        dv = await resolve_deployed_version()
+        if dv is None:
+            return ToolResult(
+                output="未能确定线上版本（SigNoz 与 saas-deploy 均不可达）。"
+                       "可稍后重试，或用 list_repo_tags 看 dify 仓可用版本。"
+            )
+        ref_note = "✓ 已验证" if dv.ref_verified else "⚠️ 未在 dify 仓验证到该 ref"
+        src_note = "SigNoz 实时遥测" if dv.source == "signoz" else "saas-deploy 声明值（SigNoz 不可达，可能非实时）"
+        return ToolResult(output=(
+            f"## cloud.dify.ai 生产 dify-api 运行版本\n"
+            f"- 镜像 tag: `{dv.image_tag}`\n"
+            f"- 基线版本: {dv.base_version or '(未知)'}\n"
+            f"- 源码 ref: `{dv.git_ref}` （{ref_note}）\n"
+            f"  → 用 git_show / git_grep 查这个 ref = 线上实际在跑的代码\n"
+            f"- 数据来源: {src_note}"
+        ))

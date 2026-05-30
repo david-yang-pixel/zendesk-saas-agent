@@ -115,3 +115,36 @@ async def test_resolve_uses_cache(monkeypatch):
     await sv.resolve_deployed_version(use_cache=True)
     await sv.resolve_deployed_version(use_cache=True)
     assert calls["n"] == 1  # 第二次命中缓存
+
+
+from zd_agent.tools.saas_version import SaasDeployedVersion
+
+
+@pytest.mark.asyncio
+async def test_tool_returns_version(monkeypatch):
+    async def fake_resolve(*, use_cache=True):
+        return sv.DeployedVersion(
+            image_tag="hotfix-1.14.2-fix.4",
+            git_ref="hotfix/1.14.2-fix.4",
+            base_version="1.14.2",
+            ref_verified=True,
+            source="signoz",
+        )
+    monkeypatch.setattr(sv, "resolve_deployed_version", fake_resolve)
+
+    tool = SaasDeployedVersion()
+    result = await tool.execute({}, session=None)
+    assert result.success
+    assert "hotfix-1.14.2-fix.4" in result.output
+    assert "hotfix/1.14.2-fix.4" in result.output
+
+
+@pytest.mark.asyncio
+async def test_tool_handles_none(monkeypatch):
+    async def fake_resolve(*, use_cache=True):
+        return None
+    monkeypatch.setattr(sv, "resolve_deployed_version", fake_resolve)
+
+    tool = SaasDeployedVersion()
+    result = await tool.execute({}, session=None)
+    assert "未能确定" in result.output or result.error
