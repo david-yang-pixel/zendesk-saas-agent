@@ -65,6 +65,31 @@ def extract_base_version(tag: str) -> str:
     return m.group(1) if m else ""
 
 
+def render_deployed_version_block(dv: "DeployedVersion") -> str:
+    """把 DeployedVersion 渲染成注入 user message 的 Markdown 块。"""
+    src_line = (
+        "SigNoz 实时遥测" if dv.source == "signoz"
+        else "saas-deploy 声明值（SigNoz 不可达，可能非实时）"
+    )
+    if dv.ref_verified:
+        ref_line = (
+            f"- 对应源码 ref：`{dv.git_ref}` ✓"
+            "（git_show / git_grep 查这个 = 线上实际在跑的代码）"
+        )
+    else:
+        ref_line = (
+            f"- 对应源码 ref：`{dv.git_ref}` ⚠️ 未在 dify 仓验证到，"
+            "使用前先 list_repo_tags 核对"
+        )
+    base = f"（基线 {dv.base_version}）" if dv.base_version else ""
+    return (
+        f"## 线上部署版本（cloud.dify.ai 生产 · {src_line}）\n"
+        f"- dify-api 运行中镜像：`{dv.image_tag}`{base}\n"
+        f"{ref_line}\n"
+        f"- 需要更多细节用 saas_deployed_version 工具"
+    )
+
+
 # 进程内缓存
 _cache: tuple[float, DeployedVersion | None] | None = None
 

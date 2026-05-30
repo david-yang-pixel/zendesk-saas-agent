@@ -127,6 +127,19 @@ async def run_agent(session: AgentSession) -> None:
                 f"- 过去 30 天无历史 SaaS 工单 → 新客户，按常规流程处理"
             )
 
+    # 线上部署版本注入（cloud.dify.ai 生产 dify-api 实际运行版本）。
+    # best-effort：解析失败返回 None → 整段不注入，不影响工单处理。
+    try:
+        from zd_agent.tools.saas_version import (
+            resolve_deployed_version,
+            render_deployed_version_block,
+        )
+        _dv = await resolve_deployed_version()
+        if _dv is not None:
+            user_content_parts.append("\n\n" + render_deployed_version_block(_dv))
+    except Exception as e:
+        logger.warning("deployed_version_inject_failed", error=str(e))
+
     user_content = "".join(user_content_parts)
     if session.hint:
         # hint 显式标记为"辅助提示"——避免它把 agent 的诊断主线带歪。
