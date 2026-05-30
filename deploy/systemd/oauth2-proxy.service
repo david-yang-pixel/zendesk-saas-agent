@@ -17,6 +17,7 @@ ExecStart=/usr/local/bin/oauth2-proxy \
   --cookie-secure=true \
   --reverse-proxy=true \
   --whitelist-domain=zendesk.smlershou.top \
+  --custom-templates-dir=/opt/zd-agent/oauth2-proxy-templates \
   --upstream=static://200
 StandardOutput=journal
 StandardError=journal

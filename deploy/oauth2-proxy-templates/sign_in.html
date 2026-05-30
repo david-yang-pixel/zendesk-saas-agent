@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>zd-agent 工单日志 · 登录</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font: 15px/1.5 -apple-system, system-ui, "PingFang SC", sans-serif;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(135deg, #1a1a2e 0%, #25253f 100%);
+      color: #1a1a2e;
+    }
+    .card {
+      background: #fff;
+      width: 360px; max-width: 90vw;
+      border-radius: 14px;
+      padding: 40px 36px 32px;
+      box-shadow: 0 20px 60px rgba(0,0,0,.35);
+      text-align: center;
+    }
+    .logo {
+      width: 52px; height: 52px; margin: 0 auto 18px;
+      border-radius: 12px;
+      background: #1a1a2e;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 26px;
+    }
+    h1 { font-size: 19px; font-weight: 600; color: #1a1a2e; }
+    .sub { margin-top: 6px; font-size: 13px; color: #8a8a9a; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+      margin-top: 26px; width: 100%;
+      padding: 11px 0;
+      background: #3b5bdb; color: #fff;
+      border: none; border-radius: 9px;
+      font-size: 15px; font-weight: 500; cursor: pointer;
+      text-decoration: none;
+      transition: background .15s;
+    }
+    .btn:hover { background: #2f49b3; }
+    .g { width: 18px; height: 18px; background: #fff; border-radius: 3px;
+         display: inline-flex; align-items: center; justify-content: center;
+         font-weight: 700; color: #3b5bdb; font-size: 13px; }
+    .foot { margin-top: 22px; font-size: 12px; color: #b0b0bd; }
+    .foot b { color: #6b6b7b; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">🤖</div>
+    <h1>zd-agent 工单日志</h1>
+    <div class="sub">Dify SaaS Support Agent · 处理日志查看</div>
+
+    {{ if .SignInMessage }}<div class="sub" style="margin-top:14px">{{ .SignInMessage }}</div>{{ end }}
+
+    <form method="GET" action="{{.ProxyPrefix}}/start">
+      <input type="hidden" name="rd" value="{{.Redirect}}">
+      <button type="submit" class="btn">
+        <span class="g">G</span> 使用 Google 登录
+      </button>
+    </form>
+
+    <div class="foot">仅限 <b>@dify.ai</b> 企业邮箱</div>
+  </div>
+</body>
+</html>
