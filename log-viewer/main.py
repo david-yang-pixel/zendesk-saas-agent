@@ -46,4 +46,8 @@ def dify_avatar() -> FileResponse:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(os.path.join(_STATIC, "index.html"))
+    # 不缓存 index.html：UI 更新后浏览器立即拿到新页面，避免"还是旧版"。
+    return FileResponse(
+        os.path.join(_STATIC, "index.html"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
