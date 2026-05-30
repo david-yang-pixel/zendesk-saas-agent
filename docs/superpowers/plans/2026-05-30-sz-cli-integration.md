@@ -19,17 +19,19 @@
 | `src/zd_agent/integrations/sz_cli.py` | `run_sz()` subprocess 封装（共享） | Create |
 | `src/zd_agent/tools/saas_version.py` | tag→ref 转换 + `resolve_deployed_version()` + `SaasDeployedVersion` 工具 | Create |
 | `src/zd_agent/tools/signoz_tools.py` | `signoz_errors`/`_traceback`/`_services`/`_query` 四工具 | Create |
-| `src/zd_agent/runtime/prompt/section.py` | `PromptContext` 加 `deployed_version` 字段 | Modify |
-| `src/zd_agent/runtime/prompt/defaults.py` | 注册 `deployed_version` 动态段 | Modify |
-| `src/zd_agent/runtime/runner.py` | `run_tool_loop` 接线 resolve + 传 kwarg | Modify |
+| `src/zd_agent/runtime/runner.py` | `agent_loop` 手工拼 user message 处注入版本块 | Modify |
 | `src/zd_agent/tools/registry.py` | 注册新工具 + 停 MCP spawn | Modify |
 | `src/zd_agent/tools/subagent_parallel.py` | 示例工具名 signoz_* 更新 | Modify |
 | `src/zd_agent/prompts/*.md` | 旧 MCP 工具名 → sz 工具名 + 用法重写 | Modify |
-| `tests/tools/test_saas_version.py` | 版本模块单测 | Create |
+| `tests/tools/test_saas_version.py` | 版本模块单测（含 tag→ref、resolve、工具）| Create |
+| `tests/tools/test_version_injection.py` | 版本注入文本块渲染单测 | Create |
 | `tests/tools/test_signoz_tools.py` | 日志工具单测 | Create |
+| `tests/tools/test_registry_signoz.py` | registry 注册/停 MCP 单测 | Create |
 | `tests/integrations/test_sz_cli.py` | run_sz 单测 | Create |
 | `tests/test_sz_json_flag.py` | sz `--json` 解析冒烟 | Create |
 | `tests/prompts/test_no_stale_signoz_names.py` | prompt 无残留旧工具名 | Create |
+
+**注：** 版本注入走 runner.py 手工拼 user message 的现有路径（仿 customer_profile），**不**改 prompt builder 框架（`section.py`/`defaults.py`）——实读 runner.py 确认 `build_dynamic_user_context` 未被调用。
 
 ---
 
@@ -812,15 +814,136 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 6: 动态 prompt 段（版本自动注入）
+## Task 6: 版本自动注入到 user message
 
 **Files:**
-- Modify: `src/zd_agent/runtime/prompt/section.py`（`PromptContext` 加字段）
-- Modify: `src/zd_agent/runtime/prompt/defaults.py`（注册段）
-- Modify: `src/zd_agent/runtime/runner.py`（接线 resolve + 传 kwarg）
-- Test: `tests/prompts/test_deployed_version_section.py`
+- Modify: `src/zd_agent/runtime/runner.py`（在 `agent_loop` 手工拼接 user message 处加版本段）
+- Test: `tests/tools/test_version_injection.py`
 
-**注意：** `AgentSession` 已有 `customer_version`（客户自报版本），与此**不同**，勿复用。版本段必须走动态段（版本会变，进静态段破坏 prefix cache）。
+**关键事实（实读 runner.py 确认）：** runner.py 的 `agent_loop()` **不调用** `build_dynamic_user_context`——它在第 102-148 行**手工**把 ticket-specific 上下文（日期、customer_profile、hint）拼进 `user_content_parts` 列表，再 append 成首条 user message。`build_static_system_prompt()` 只生成静态 system prompt。所以版本注入要**仿照 customer_profile 的手工拼法**加进 `user_content_parts`，不去碰 prompt builder 框架。这样天然满足「版本进 user message 不进 system prompt → 不破坏 prefix cache」。
+
+**注意：** `AgentSession` 已有 `customer_version`（客户自报版本），与「线上部署版本」**不同**，勿复用。
+
+- [ ] **Step 1: 写失败测试（渲染纯函数）**
+
+注入文本由一个纯函数 `render_deployed_version_block(dv)` 生成，便于测试。`tests/tools/test_version_injection.py`：
+
+```python
+"""线上版本注入文本块渲染测试。"""
+from zd_agent.tools.saas_version import DeployedVersion, render_deployed_version_block
+
+
+def test_block_verified():
+    dv = DeployedVersion(
+        image_tag="hotfix-1.14.2-fix.4",
+        git_ref="hotfix/1.14.2-fix.4",
+        base_version="1.14.2",
+        ref_verified=True,
+        source="signoz",
+    )
+    out = render_deployed_version_block(dv)
+    assert "线上部署版本" in out
+    assert "hotfix-1.14.2-fix.4" in out
+    assert "hotfix/1.14.2-fix.4" in out
+    assert "✓" in out
+
+
+def test_block_unverified():
+    dv = DeployedVersion(
+        image_tag="hotfix-1.14.2-fix.9",
+        git_ref="hotfix-1.14.2-fix.9",
+        base_version="1.14.2",
+        ref_verified=False,
+        source="signoz",
+    )
+    out = render_deployed_version_block(dv)
+    assert "⚠️" in out or "未验证" in out
+
+
+def test_block_fallback_source():
+    dv = DeployedVersion(
+        image_tag="hotfix-1.14.2-fix.3",
+        git_ref="hotfix/1.14.2-fix.3",
+        base_version="1.14.2",
+        ref_verified=True,
+        source="saas-deploy-fallback",
+    )
+    out = render_deployed_version_block(dv)
+    assert "saas-deploy" in out
+```
+
+- [ ] **Step 2: 运行确认失败**
+
+Run: `uv run pytest tests/tools/test_version_injection.py -v`
+Expected: FAIL（`ImportError: render_deployed_version_block`）
+
+- [ ] **Step 3: 在 saas_version.py 加渲染函数**
+
+在 `saas_version.py` 追加（紧接 `image_tag_to_git_ref` / `extract_base_version` 之后；此函数纯同步、无副作用，工具与 runner 共用）：
+
+```python
+def render_deployed_version_block(dv: "DeployedVersion") -> str:
+    """把 DeployedVersion 渲染成注入 user message 的 Markdown 块。"""
+    src_line = (
+        "SigNoz 实时遥测" if dv.source == "signoz"
+        else "saas-deploy 声明值（SigNoz 不可达，可能非实时）"
+    )
+    if dv.ref_verified:
+        ref_line = (
+            f"- 对应源码 ref：`{dv.git_ref}` ✓"
+            "（git_show / git_grep 查这个 = 线上实际在跑的代码）"
+        )
+    else:
+        ref_line = (
+            f"- 对应源码 ref：`{dv.git_ref}` ⚠️ 未在 dify 仓验证到，"
+            "使用前先 list_repo_tags 核对"
+        )
+    base = f"（基线 {dv.base_version}）" if dv.base_version else ""
+    return (
+        f"## 线上部署版本（cloud.dify.ai 生产 · {src_line}）\n"
+        f"- dify-api 运行中镜像：`{dv.image_tag}`{base}\n"
+        f"{ref_line}\n"
+        f"- 需要更多细节用 saas_deployed_version 工具"
+    )
+```
+
+- [ ] **Step 4: 运行确认通过**
+
+Run: `uv run pytest tests/tools/test_version_injection.py -v`
+Expected: PASS
+
+- [ ] **Step 5: runner.py 接线（仿 customer_profile 手工拼法）**
+
+在 `agent_loop()` 的 `user_content = "".join(user_content_parts)` 之前（即第 130 行前、customer_profile 注入之后），加版本注入：
+
+```python
+    # 线上部署版本注入（cloud.dify.ai 生产 dify-api 实际运行版本）。
+    # best-effort：解析失败返回 None → 整段不注入，不影响工单处理。
+    try:
+        from zd_agent.tools.saas_version import (
+            resolve_deployed_version,
+            render_deployed_version_block,
+        )
+        _dv = await resolve_deployed_version()
+        if _dv is not None:
+            user_content_parts.append("\n\n" + render_deployed_version_block(_dv))
+    except Exception as e:
+        logger.warning("deployed_version_inject_failed", error=str(e))
+```
+
+- [ ] **Step 6: import 冒烟 + 全 tools 测试**
+
+Run: `uv run python -c "import zd_agent.runtime.runner" && uv run pytest tests/tools/test_version_injection.py tests/tools/test_saas_version.py -v`
+Expected: 无 import error + PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/zd_agent/tools/saas_version.py src/zd_agent/runtime/runner.py tests/tools/test_version_injection.py
+git commit -m "feat(version): inject deployed version into ticket user message
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
 
 - [ ] **Step 1: 写失败测试**
 
@@ -1558,7 +1681,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: 跑全测试套件**
 
 Run: `uv run pytest tests/ -q`
-Expected: 全绿（含新增 5 个测试文件）
+Expected: 全绿（含新增测试文件）。
+
+**注：** 现有 3 个 MCP 测试（`tests/integrations/test_signoz_mcp_subprocess.py`、`tests/integrations/test_signoz_search.py`、`tests/observability/test_signoz_mcp_tools.py`）直接测 MCP 模块本身——因本计划**保留** `signoz_mcp_tools.py` / `mcp_subprocess.py` 代码（只停注册），这些测试应继续通过。已确认无任何测试调用 `augment_registry_async` / `discover_signoz_mcp_tools`，故把 `augment_registry_async` 改 no-op 不破坏现有测试。若有意外失败，先排查是否是这层。
 
 - [ ] **Step 2: import 冒烟**
 
