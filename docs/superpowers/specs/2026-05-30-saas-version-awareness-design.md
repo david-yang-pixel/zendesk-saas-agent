@@ -54,8 +54,17 @@ dify-api-oltp  (空)        langgenius/dify-api  hotfix-1.14.2-fix.4  hotfix-1.1
 | 主数据源 | **SigNoz**（运行时真相）；saas-deploy 仅作兜底 |
 | 消费方式 | **两者都要**：① 每单自动注入简短版本基线 ② 提供深挖工具 |
 | 服务范围 | **只 dify-api**（`dify-api-oltp` deployment）|
-| SigNoz 客户端代码 | **新建 `integrations/signoz_http.py`**（agent 自包含，不依赖外部 sz 脚本）|
-| SigNoz URL | `signoz.dify.dev`（复用现有 config，零改动）|
+| SigNoz 查询实现 | **vendored `sz` CLI + subprocess shell-out**（把 sz 纳入仓库、打进容器镜像，agent 调它）|
+| SigNoz URL | `signoz.dify.dev`（sz 默认值 = 现有 config，零改动）|
+
+### SigNoz 实例 URL 实测对比（2026-05-30）
+
+| 实例 | 来源 | 查 dify-api-oltp image tag |
+|---|---|---|
+| `https://signoz.dify.dev` | 服务器 config + sz 默认 | ✅ `hotfix-1.14.2-fix.4` |
+| `https://dify.us2.signoz.cloud` | 本地 Cursor MCP 配置 | ❌ 0 行（key 不匹配该实例数据）|
+
+定稿用 `signoz.dify.dev`。
 
 ## 架构
 
@@ -63,7 +72,7 @@ dify-api-oltp  (空)        langgenius/dify-api  hotfix-1.14.2-fix.4  hotfix-1.1
    ┌─────────────────────────────────────────────────┐
    │  saas_version.py（新）                            │
    │  async resolve_deployed_version(use_cache=True)   │
-   │   主: signoz_http.query() → dify-api-oltp 的       │
+   │   主: subprocess 调 vendored sz → dify-api-oltp 的 │
    │       container.image.tag / service.version       │
    │   兜底: saas-deploy kustomization newTag           │
    │   → DeployedVersion(image_tag, git_ref,           │
@@ -76,15 +85,30 @@ dify-api-oltp  (空)        langgenius/dify-api  hotfix-1.14.2-fix.4  hotfix-1.1
    (每单自动注入)        (agent 主动深挖)
 ```
 
-### 组件 1：`integrations/signoz_http.py`（新）
+### 组件 0：vendored `sz` CLI（纳入仓库 + 打进镜像）
 
-最小 v4 query_range 客户端，职责单一：把一段 ClickHouse SQL 打到 SigNoz 拿回行。
+- 把本地 `~/Documents/工作/saas工单常见问题/signoz-cli/sz` 复制进仓库：**`scripts/sz`**（可执行，零依赖纯 Python3 stdlib）
+- 连同 `signoz-cli/README.md` 一起 vendored 到 `scripts/`（保留用法文档）
+- `Dockerfile` runtime 阶段加一行 `COPY scripts/sz /app/scripts/sz`（容器已有 python3.12，无需额外依赖）
+- sz 内置默认 `SIGNOZ_URL=https://signoz.dify.dev` + fallback read key，容器内零配置可跑；若容器有 `SIGNOZ_API_KEY` env 则自动覆盖
+- **改动注意**：sz 第 40 行硬编码了一个明文 read key。vendored 进公开/私有仓库时保留（已是只读 key，且仓库私有），但在 spec/PR 注明这是已知的只读凭据
 
-- `async def query(sql: str, *, hours: float = 3.0) -> list[dict]`
-- 内部：构造 body、带 curl UA、`SIGNOZ-API-KEY`、`{start_ns}` 替换、解析 `data.result[0].list[].data`
-- 配置来源：`cfg.signoz.url or env.signoz_url`、`cfg.signoz.api_key or env.signoz_api_key`（与 `signoz_mcp_tools.py` 读法一致）
-- URL/key 缺失 → 抛 `SignozHttpError`（上层捕获后降级，不中断工单）
-- **实现方式定稿**：照搬 `sz` 验证过的 `urllib` 同步逻辑，外面用 `asyncio.to_thread` 包成 async（零新依赖、不阻塞事件循环、复用已验证代码）。不引入对项目其它 http 栈的假设。
+### 组件 1：subprocess 调用层（`saas_version.py` 内部函数，不单独建文件）
+
+职责单一：用 subprocess 跑 vendored sz，拿回 dify-api 版本行。
+
+- `async def _query_signoz_via_sz() -> dict | None`
+- 实现：`asyncio.create_subprocess_exec(sys.executable, "/app/scripts/sz", "query", "<SQL>", "--hours", "3", "-q")`，解析 sz 的对齐文本输出（或给 sz 加 `--json` 走 JSON——见下"sz 改动"）
+- sz 路径来自常量（容器内 `/app/scripts/sz`；本地开发用仓库相对路径），可被 env `ZD_SZ_PATH` 覆盖
+- 超时 30s；非零退出 / 解析失败 → 返回 None（上层降级，不中断工单）
+
+#### sz 需要的小改动（vendored 后）
+
+实测发现 sz 的 `--json` 在 `query` 子命令下报 `unrecognized arguments`（README 写了但全局 flag 没贯通到子命令的输出路径）。两个选项：
+- **(A) 解析对齐文本**：sz query 默认输出是对齐表格，行可解析（首行 meta 到 stderr，`-q` 可静音）。零改 sz。
+- **(B) 修 sz 让 `--json` 在 query 生效**：更稳健，agent 拿结构化 JSON。改动小（emit 已支持 json，只是 arg 传递问题）。
+
+定稿取 **(B)**：vendored 时顺手修好 `--json`，让 subprocess 层拿 JSON，避免文本解析脆弱。这是 vendored 副本，改它不影响你本地原版。
 
 ### 组件 2：`tools/saas_version.py`（新，核心模块）
 
@@ -104,7 +128,7 @@ async def resolve_deployed_version(*, use_cache: bool = True) -> DeployedVersion
 解析流程：
 
 1. 命中进程内缓存（5 min TTL）→ 直接返回
-2. **主路径 SigNoz**：`signoz_http.query()` 跑下面 SQL，取 `image_tag`
+2. **主路径 SigNoz**：`_query_signoz_via_sz()` 跑下面 SQL（透传给 sz query），取 `image_tag`
    ```sql
    SELECT DISTINCT
      resources_string['container.image.tag']  AS image_tag,
@@ -170,23 +194,26 @@ async def resolve_deployed_version(*, use_cache: bool = True) -> DeployedVersion
 
 - `saas_version.py` 单测：
   - tag→ref 转换各 case（`hotfix-x-fix.n` / 纯 tag / 异常输入）
-  - SigNoz 路径：mock `signoz_http.query` 返回 → 解析正确
-  - 降级路径：SigNoz 抛异常 → 回退 saas-deploy → `source` 正确
+  - SigNoz 路径：mock `_query_signoz_via_sz`（patch subprocess 或注入假 sz）返回 → 解析正确
+  - 降级路径：SigNoz 返回 None → 回退 saas-deploy → `source` 正确
   - None 路径：两源都失败 → 返回 None
-  - 缓存：第二次调用不打 SigNoz
-- `signoz_http.py` 单测：body 构造正确、curl UA 存在、响应解析、URL/key 缺失抛错
+  - 缓存：第二次调用不再起 subprocess
+- sz `--json` 修复后的子命令冒烟测试（query 子命令带 `--json` 不再报错）
 - 注入段单测：有版本 / 无版本（None）/ ref 未验证 三种渲染
 - 工具单测：mock 成功 / None / 异常
 
 ## 配置 / 部署
 
+- vendored `sz` 到 `scripts/sz`；`Dockerfile` runtime 阶段 `COPY scripts/sz /app/scripts/sz`
 - 复用现有 `signoz` config（url + api_key）与 `repos`（saas-deploy 已在列，别名 `deploy`）
-- 无新增 env、无新增依赖
-- 内置常量（一处改）：curl UA 字符串、kustomization 路径、目标 deployment 名 `dify-api-oltp`、缓存 TTL、SQL 模板
+- 无新增 Python 依赖（sz 纯 stdlib；容器已有 python3.12 + git）
+- 内置常量（一处改）：sz 路径（`/app/scripts/sz`，env `ZD_SZ_PATH` 可覆盖）、kustomization 路径、目标 deployment 名 `dify-api-oltp`、缓存 TTL、SQL 模板
+- **部署步骤**（落地时）：vendored sz → 改 Dockerfile → 重新 build+push 镜像 → 服务器 pull+重启（复用现有一键部署）。sz 不打进镜像则容器内无此文件、工具直接降级
 
 ## 非目标（YAGNI）
 
 - 不支持除 dify-api 外的其它服务（web / worker）——多数工单是后端 bug，api tag 即关键答案
 - 不集成 git_commit（生产为空，无意义）
 - 不做「声明版本 vs 运行版本」对比面板——SigNoz 主 + saas-deploy 兜底已足够，对比逻辑会过度复杂化
-- 不改 `signoz-mcp-server`（已知对 EE 不兼容，本任务用 http 直连绕过；MCP 工具是否保留是独立问题）
+- 不改 `signoz-mcp-server`（已知对 EE 不兼容，本任务用 vendored sz 绕过；MCP 工具是否保留是独立问题）
+- 不把 sz 做成 agent 的通用日志查询工具（本任务只用它查版本；sz 的 errors/traceback 等能力是否暴露给 agent 是独立决策）
