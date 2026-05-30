@@ -66,12 +66,12 @@ SigNoz 是单租户多环境共用，不加过滤会把 prod / staging 日志混
 
 **先 count(*) group by k8s.deployment.name + severity** 看错误分布，**再**钻具体日志。
 
-直接 list 几百条肉眼看：容易漏模式 + 浪费 token。signoz_search_logs limit 50 一把抓不到全貌，应该先用 signoz_aggregate_logs 看分布。
+直接 list 几百条肉眼看：容易漏模式 + 浪费 token。`signoz_errors` limit 50 一把抓不到全貌，应该先用 `signoz_query` 跑 `count(*) ... GROUP BY resources_string['k8s.deployment.name'], severity_text` 看分布。
 
 ### 6. 找不到结果时的 fallback
 
 第一次查 0 行 → **不要立即下"无异常"结论**：
-1. 先用 signoz_get_field_values group by `service.name` 列出当前环境所有活跃服务名
+1. 先用 `signoz_services` 列出当前环境所有活跃 service / k8s deployment
 2. 对照客户描述匹配（service.name 可能拼写有差异）
 3. 实在找不到才说"未在 SigNoz 看到对应服务的日志"
 

@@ -53,8 +53,8 @@ class RunSubagentsParallel(Tool):
                                 "subagent 加载工具时会 register 这里指定的，"
                                 "每个 tool schema ~150-800 tokens，多传一个就贵一份。"
                                 "示例 task='搜 dify-billing 代码' → tools=['git_grep']。"
-                                "task='查 SigNoz 错误' → tools=['signoz_search_logs', "
-                                "'signoz_aggregate_logs']。**别图省事传 10 个**。"
+                                "task='查 SigNoz 错误' → tools=['signoz_errors', "
+                                "'signoz_traceback']。**别图省事传 10 个**。"
                             ),
                             "minItems": 1,
                             "maxItems": 5,
@@ -94,7 +94,7 @@ class RunSubagentsParallel(Tool):
                     error=(
                         f"task[{i}] missing required 'tools' field. "
                         "Specify 1-3 tools you actually need (e.g. ['git_grep'] for "
-                        "源码搜，['signoz_search_logs'] for 日志). Don't dump the "
+                        "源码搜，['signoz_errors'] for 日志). Don't dump the "
                         "full toolset — each tool schema is 150-800 tokens."
                     ),
                 )

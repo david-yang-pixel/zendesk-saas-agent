@@ -303,7 +303,7 @@ LIMIT 20;
    - A. 源码（按上表）
    - B. GitHub Issues/PRs（搜慢相关 PR：parallel iteration、SSE、streaming、provider timeout）
    - C. 历史工单（ticket_record_search 用同义词扩展："slow" / "latency" / "timeout" / "卡" / "慢" / "耗时"）
-   - D. SigNoz worker 日志（若涉及异步执行）。**workflow 异步任务实际跑在 `k8s.deployment.name = dify-app-worker`，不是 `dify-api-oltp`**；查询规则详见 `strategies/platform_issue.md` 的 SigNoz 章节（service.name prod/staging 命名差异、必加 deployment.environment 过滤、聚合先于搜索）
+   - D. SigNoz worker 日志（若涉及异步执行）。**workflow 异步任务实际跑在 `k8s.deployment.name = dify-app-worker`，不是 `dify-api-oltp`**：用 `signoz_errors --deployment dify-app-worker`；查询规则详见 `strategies/platform_issue.md` 的 SigNoz 章节（deployment 名区分、默认 production、聚合先于搜索）
 6. **参考本地知识库** `saas版知识库/03-workflow.md`
 
 ---
