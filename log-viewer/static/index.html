@@ -6,309 +6,192 @@
 <title>zd-agent 工单日志</title>
 <style>
   :root{
-    --bg:#f6f7f9; --panel:#ffffff;
-    --ink:#0f172a; --ink-2:#334155; --muted:#64748b; --faint:#94a3b8;
-    --line:#e8ebf0; --line-2:#eef1f5;
-    --accent:#4f46e5; --accent-weak:#eef0fe; --accent-ink:#4338ca;
-    --ok:#059669; --ok-weak:#e7f6ef; --ok-ink:#047857;
-    --bad:#e11d48; --bad-weak:#fdecef; --bad-ink:#be123c;
-    --warn:#d97706; --warn-weak:#fdf3e3; --warn-ink:#b45309;
-    --slate:#475569; --slate-weak:#eef1f5;
-    --r-sm:8px; --r:11px; --r-lg:16px;
-    --sh-1:0 1px 2px rgba(15,23,42,.04),0 1px 3px rgba(15,23,42,.06);
-    --sh-2:0 4px 12px rgba(15,23,42,.06),0 2px 6px rgba(15,23,42,.04);
-    --sh-pop:0 16px 40px rgba(15,23,42,.12);
+    --bg:#ffffff;
+    --ink:#191919;          /* near-black text */
+    --ink-2:#454545;
+    --muted:#6b6b6b;
+    --faint:#9b9b9b;
+    --line:#ededed;         /* hairline */
+    --line-2:#f4f4f4;       /* faint hairline */
+    --hover:#fafafa;
+    --accent:#191919;       /* accent = ink, 极简：强调靠粗细不靠颜色 */
+    --ok:#1a7f4b;
+    --bad:#c0362c;
+    --warn:#9a6a00;
+    --tok-hot:#c0362c;
+    --r:6px; --r-lg:10px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  html{-webkit-text-size-adjust:100%}
   body{
-    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
     background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased;
-    font-feature-settings:"tnum" 0;
   }
-  .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+  .num{font-variant-numeric:tabular-nums}
   .mono{font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
-  svg{display:block;flex:none}
-  .layout{display:flex;min-height:100vh}
+  svg{display:block;flex:none;stroke:currentColor}
+  a{color:inherit}
 
-  /* ---------- sidebar ---------- */
-  .sidebar{
-    width:240px;flex:0 0 240px;position:sticky;top:0;height:100vh;
-    background:#0f1222;color:#cdd2e0;display:flex;flex-direction:column;
-    padding:20px 14px;gap:2px;border-right:1px solid #1c2036;
-  }
-  .brand{display:flex;align-items:center;gap:11px;padding:8px 8px 18px}
-  .brand .mark{
-    width:36px;height:36px;border-radius:10px;flex:none;
-    background:linear-gradient(135deg,#6366f1,#4f46e5);
-    display:flex;align-items:center;justify-content:center;
-    box-shadow:0 6px 16px rgba(79,70,229,.45);color:#fff;
-  }
-  .brand .tt b{display:block;color:#fff;font-size:15px;font-weight:700;letter-spacing:.2px}
-  .brand .tt span{font-size:11.5px;color:#7c84a0}
-  .nav{display:flex;flex-direction:column;gap:2px;margin-top:4px}
-  .nav .lbl{font-size:11px;color:#626a86;text-transform:uppercase;letter-spacing:.08em;padding:10px 10px 6px;font-weight:600}
-  .nav button{
-    display:flex;align-items:center;gap:11px;width:100%;text-align:left;
-    padding:9px 11px;border:0;background:transparent;color:#aab1c6;
-    border-radius:var(--r-sm);font-size:13.5px;cursor:pointer;
-    transition:background .18s,color .18s;font-family:inherit;
-  }
-  .nav button svg{stroke:currentColor}
-  .nav button:hover{background:rgba(255,255,255,.05);color:#fff}
-  .nav button.active{background:rgba(99,102,241,.16);color:#fff;font-weight:500}
-  .nav button.active svg{stroke:#a5b4fc}
-  .side-foot{margin-top:auto;padding:12px 10px;border-top:1px solid #1c2036;color:#626a86;font-size:11px;line-height:1.7}
-  .side-foot b{color:#8b93ad;font-weight:600}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px}
 
-  /* ---------- main ---------- */
-  .main{flex:1;min-width:0;display:flex;flex-direction:column}
-  .topbar{
-    position:sticky;top:0;z-index:20;background:rgba(246,247,249,.85);
-    backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);
-    border-bottom:1px solid var(--line);padding:16px 32px;
-    display:flex;align-items:center;gap:16px;
-  }
-  .topbar h1{font-size:18px;font-weight:700;letter-spacing:-.01em}
-  .topbar .crumb{color:var(--faint);font-weight:400;font-size:14px}
+  /* ---- top nav ---- */
+  .nav{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(255,255,255,.9);
+       backdrop-filter:saturate(180%) blur(8px);-webkit-backdrop-filter:saturate(180%) blur(8px);z-index:30}
+  .nav .row{display:flex;align-items:center;gap:12px;height:56px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:650;font-size:15px;letter-spacing:-.01em}
+  .brand .mk{width:24px;height:24px;border-radius:6px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center}
+  .brand .sub{color:var(--faint);font-weight:400;font-size:13px}
   .grow{flex:1}
-  .search{
-    display:flex;align-items:center;gap:8px;height:38px;width:260px;
-    background:var(--panel);border:1px solid var(--line);border-radius:10px;
-    padding:0 12px;box-shadow:var(--sh-1);transition:border-color .18s,box-shadow .18s;
-  }
-  .search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-weak)}
+  .ghost{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border-radius:var(--r);
+         border:0;background:transparent;color:var(--muted);font-size:13px;cursor:pointer;font-family:inherit;transition:background .15s,color .15s}
+  .ghost:hover{background:var(--hover);color:var(--ink)}
+
+  /* ---- page head ---- */
+  .head{padding:40px 0 22px}
+  .head h1{font-size:26px;font-weight:680;letter-spacing:-.02em}
+  .head .crumb{color:var(--faint);font-weight:400}
+  .head p{color:var(--muted);font-size:13.5px;margin-top:5px}
+
+  /* ---- stat strip (no cards, just inline numbers) ---- */
+  .stats{display:flex;gap:40px;padding:4px 0 26px;flex-wrap:wrap}
+  .stat .v{font-size:24px;font-weight:680;letter-spacing:-.02em;line-height:1.1}
+  .stat .v.ok{color:var(--ok)} .stat .v.bad{color:var(--bad)}
+  .stat .k{font-size:12.5px;color:var(--muted);margin-top:2px}
+
+  /* ---- toolbar ---- */
+  .toolbar{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .search{display:flex;align-items:center;gap:8px;height:36px;flex:1;max-width:320px;
+          border:1px solid var(--line);border-radius:var(--r);padding:0 11px;transition:border-color .15s}
+  .search:focus-within{border-color:#cfcfcf}
   .search svg{stroke:var(--faint)}
-  .search input{border:0;outline:0;flex:1;background:transparent;font-size:13.5px;color:var(--ink);font-family:inherit}
-  .btn{
-    display:inline-flex;align-items:center;gap:7px;height:38px;padding:0 14px;
-    border:1px solid var(--line);background:var(--panel);border-radius:10px;
-    font-size:13px;font-weight:500;color:var(--ink-2);cursor:pointer;
-    box-shadow:var(--sh-1);transition:border-color .18s,color .18s,background .18s;font-family:inherit;
-  }
-  .btn:hover{border-color:#cbd2dc;color:var(--ink)}
-  .btn svg{stroke:currentColor}
-  .btn.ghost{box-shadow:none;border-color:transparent;background:transparent;padding:0 10px}
-  .btn.ghost:hover{background:var(--line-2)}
+  .search input{border:0;outline:0;flex:1;font-size:13.5px;background:transparent;color:var(--ink);font-family:inherit}
 
-  .content{padding:24px 32px 48px;max-width:1320px;width:100%}
+  /* ---- list (rows, not heavy table) ---- */
+  .list{border-top:1px solid var(--line)}
+  .lh{display:grid;grid-template-columns:84px 96px 1fr 130px 64px 70px 64px 44px 96px;gap:14px;
+      padding:10px 8px;font-size:11.5px;color:var(--faint);font-weight:500;border-bottom:1px solid var(--line);
+      text-transform:uppercase;letter-spacing:.04em}
+  .lh .r,.row .r{text-align:right}
+  .row{display:grid;grid-template-columns:84px 96px 1fr 130px 64px 70px 64px 44px 96px;gap:14px;
+       padding:14px 8px;border-bottom:1px solid var(--line-2);align-items:center;cursor:pointer;
+       transition:background .12s;border-radius:8px}
+  .row:hover{background:var(--hover)}
+  .tid{font-weight:650}.tid .h{color:var(--faint);font-weight:500}
+  .muted{color:var(--muted)}.faint{color:var(--faint)}
 
-  /* ---------- KPI ---------- */
-  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
-  .kpi{
-    background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);
-    padding:18px 18px 16px;box-shadow:var(--sh-1);position:relative;overflow:hidden;
-  }
-  .kpi .ic{
-    width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:14px;
-  }
-  .kpi.k-all .ic{background:var(--accent-weak)} .kpi.k-all .ic svg{stroke:var(--accent)}
-  .kpi.k-ok .ic{background:var(--ok-weak)} .kpi.k-ok .ic svg{stroke:var(--ok)}
-  .kpi.k-bad .ic{background:var(--bad-weak)} .kpi.k-bad .ic svg{stroke:var(--bad)}
-  .kpi.k-rd .ic{background:var(--warn-weak)} .kpi.k-rd .ic svg{stroke:var(--warn)}
-  .kpi .label{font-size:12.5px;color:var(--muted);font-weight:500}
-  .kpi .val{font-size:28px;font-weight:750;letter-spacing:-.02em;margin-top:3px;line-height:1.1}
-  .kpi .val.c-ok{color:var(--ok-ink)} .kpi .val.c-bad{color:var(--bad-ink)} .kpi .val.c-ac{color:var(--accent-ink)}
+  /* status: dot + text, minimal */
+  .st{display:inline-flex;align-items:center;gap:7px;font-size:13px;font-weight:500;white-space:nowrap}
+  .st .d{width:7px;height:7px;border-radius:50%;flex:none}
+  .st.ok .d{background:var(--ok)} .st.ok{color:var(--ink-2)}
+  .st.bad .d{background:var(--bad)} .st.bad{color:var(--bad)}
+  .st.run .d{background:#c9c9c9} .st.run{color:var(--muted)}
+  .st.warn .d{background:var(--warn)} .st.warn{color:var(--warn)}
 
-  /* ---------- card / table ---------- */
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-1);overflow:hidden}
-  .card-h{display:flex;align-items:center;gap:10px;padding:16px 20px;border-bottom:1px solid var(--line-2)}
-  .card-h .t{font-size:14px;font-weight:650}
-  .card-h .count{font-size:12px;color:var(--muted);background:var(--slate-weak);border-radius:20px;padding:2px 9px;font-weight:600}
-  .tw{overflow-x:auto}
-  table{width:100%;border-collapse:collapse;min-width:840px}
-  thead th{
-    background:#fbfcfd;font-size:11.5px;font-weight:600;color:var(--muted);
-    text-align:left;padding:11px 16px;border-bottom:1px solid var(--line-2);
-    letter-spacing:.02em;white-space:nowrap;position:sticky;top:0;
-  }
-  thead th.r,tbody td.r{text-align:right}
-  tbody td{padding:13px 16px;border-bottom:1px solid var(--line-2);font-size:13.5px;vertical-align:middle;white-space:nowrap}
-  tbody tr{cursor:pointer;transition:background .14s}
-  tbody tr:hover{background:#f8faff}
-  tbody tr:last-child td{border-bottom:0}
-  .tid{font-weight:700;color:var(--ink)}
-  .tid .hash{color:var(--faint);font-weight:600}
-  .muted{color:var(--muted)} .faint{color:var(--faint)}
-
-  /* pills & tags */
-  .pill{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:7px;font-size:12px;font-weight:600;white-space:nowrap}
-  .pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-  .p-ok{background:var(--ok-weak);color:var(--ok-ink)}
-  .p-bad{background:var(--bad-weak);color:var(--bad-ink)}
-  .p-warn{background:var(--warn-weak);color:var(--warn-ink)}
-  .p-run{background:var(--slate-weak);color:var(--slate)}
-  .p-ac{background:var(--accent-weak);color:var(--accent-ink)}
-  .tag{display:inline-block;height:23px;line-height:23px;padding:0 9px;border-radius:6px;font-size:12px;background:var(--slate-weak);color:var(--slate);font-weight:500}
-  .tok.hot{color:var(--bad-ink);font-weight:700}
-  .ck{display:inline-flex;align-items:center}.ck svg{stroke:var(--ok)} .ck.no svg{stroke:var(--faint)}
+  .vt{font-size:13px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ty{font-size:12.5px;color:var(--muted);border:1px solid var(--line);border-radius:5px;padding:1px 7px;white-space:nowrap}
+  .tok.hot{color:var(--tok-hot);font-weight:650}
+  .ck svg{stroke:var(--ok)} .ck.no svg{stroke:var(--faint)}
 
   /* skeleton */
-  .sk{background:linear-gradient(90deg,#eef1f5 25%,#f5f7fa 37%,#eef1f5 63%);
-      background-size:400% 100%;animation:sh 1.3s ease infinite;border-radius:6px}
+  .sk{background:linear-gradient(90deg,#f0f0f0 25%,#f7f7f7 37%,#f0f0f0 63%);background-size:400% 100%;
+      animation:sh 1.3s ease infinite;border-radius:5px}
   @keyframes sh{0%{background-position:100% 0}100%{background-position:-100% 0}}
-  .sk-row td{padding:14px 16px}
 
-  /* empty */
-  .empty{padding:64px 20px;text-align:center;color:var(--muted)}
-  .empty svg{stroke:var(--faint);margin:0 auto 14px}
+  .empty{padding:72px 20px;text-align:center;color:var(--muted)}
+  .empty svg{stroke:#cfcfcf;margin:0 auto 12px}
   .empty .t{font-weight:600;color:var(--ink-2);font-size:15px}
-  .empty .s{font-size:13px;margin-top:5px;color:var(--muted)}
+  .empty .s{font-size:13px;color:var(--muted);margin-top:4px}
 
-  /* ---------- detail ---------- */
-  .back{display:inline-flex;align-items:center;gap:6px;color:var(--accent);cursor:pointer;font-size:13.5px;font-weight:500;margin-bottom:18px;user-select:none}
-  .back svg{stroke:currentColor} .back:hover{color:var(--accent-ink)}
-  .dhead{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:22px 24px;box-shadow:var(--sh-1);margin-bottom:22px}
-  .dhead .r1{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
-  .dhead h2{font-size:21px;font-weight:750;letter-spacing:-.01em}
-  .chips{display:flex;gap:0;flex-wrap:wrap;border-top:1px solid var(--line-2);margin:0 -24px -2px;padding:0}
-  .chip{flex:1;min-width:120px;padding:14px 24px;border-right:1px solid var(--line-2)}
-  .chip:last-child{border-right:0}
-  .chip .k{font-size:11.5px;color:var(--muted);font-weight:500}
-  .chip .v{font-size:18px;font-weight:700;margin-top:3px;letter-spacing:-.01em}
+  /* ---- detail ---- */
+  .back{display:inline-flex;align-items:center;gap:5px;color:var(--muted);cursor:pointer;font-size:13px;
+        margin:6px 0 22px;user-select:none;transition:color .15s}
+  .back:hover{color:var(--ink)}
+  .dh h2{font-size:24px;font-weight:680;letter-spacing:-.02em;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .dh .meta{display:flex;gap:34px;flex-wrap:wrap;margin:18px 0 30px;padding-bottom:24px;border-bottom:1px solid var(--line)}
+  .dh .m .v{font-size:17px;font-weight:650;letter-spacing:-.01em}
+  .dh .m .k{font-size:12px;color:var(--muted);margin-top:1px}
 
-  .timeline{position:relative}
-  .ev{position:relative;display:flex;gap:0}
-  .ev .rail{position:relative;width:44px;flex:none;display:flex;justify-content:center}
-  .ev .rail::before{content:"";position:absolute;top:32px;bottom:-4px;width:2px;background:var(--line);left:50%;transform:translateX(-50%)}
-  .ev:last-child .rail::before{display:none}
-  .ev .node{
-    width:32px;height:32px;border-radius:50%;background:var(--panel);
-    border:2px solid var(--line);display:flex;align-items:center;justify-content:center;
-    margin-top:8px;z-index:1;
-  }
-  .ev .node svg{stroke:var(--muted);width:15px;height:15px}
-  .ev.err .node{border-color:var(--bad);background:var(--bad-weak)} .ev.err .node svg{stroke:var(--bad)}
-  .ev.ok .node{border-color:var(--ok);background:var(--ok-weak)} .ev.ok .node svg{stroke:var(--ok)}
-  .ev.reply .node{border-color:var(--accent);background:var(--accent-weak)} .ev.reply .node svg{stroke:var(--accent)}
-  .ev .body{
-    flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);
-    border-radius:var(--r);padding:12px 15px;margin:4px 0 14px 8px;
-    box-shadow:var(--sh-1);cursor:pointer;transition:border-color .14s,box-shadow .14s;
-  }
-  .ev .body:hover{border-color:#d3dae4;box-shadow:var(--sh-2)}
-  .ev.err .body{border-color:#f6cdd5;background:#fffbfb}
+  /* timeline — minimal, left rule */
+  .tl{position:relative;margin-left:6px;padding-left:26px;border-left:1px solid var(--line)}
+  .ev{position:relative;padding:0 0 26px}
+  .ev:last-child{padding-bottom:4px}
+  .ev .node{position:absolute;left:-33px;top:1px;width:14px;height:14px;border-radius:50%;
+            background:#fff;border:2px solid #d6d6d6}
+  .ev.err .node{border-color:var(--bad)} .ev.ok .node{border-color:var(--ok)} .ev.reply .node{border-color:var(--ink)}
   .ev .l1{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
-  .ev .name{font-weight:650;font-size:13.5px}
-  .ev.err .name{color:var(--bad-ink)}
-  .ev .t{font-size:11.5px;color:var(--faint);font-family:ui-monospace,monospace;margin-left:auto}
-  .ev .fields{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px}
+  .ev .name{font-weight:600;font-size:14px}
+  .ev.err .name{color:var(--bad)}
+  .ev .t{font-size:12px;color:var(--faint);font-family:ui-monospace,monospace}
+  .ev .fields{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12.5px}
   .ev .kv{color:var(--ink-2);font-family:ui-monospace,monospace}
-  .ev .kv b{color:var(--muted);font-weight:600}
-  .toolchip{display:inline-flex;align-items:center;height:21px;padding:0 8px;border-radius:6px;background:var(--accent-weak);color:var(--accent-ink);font-size:11.5px;font-weight:600;font-family:ui-monospace,monospace;margin-right:5px}
-  .ev pre{display:none;margin-top:11px;padding:13px;background:#0f1222;color:#cdd6f4;border-radius:9px;font-size:12px;line-height:1.65;overflow:auto;max-height:360px;font-family:ui-monospace,monospace}
+  .ev .kv b{color:var(--faint);font-weight:500}
+  .toolchip{display:inline-block;border:1px solid var(--line);border-radius:5px;padding:0 7px;
+            font-size:11.5px;color:var(--ink-2);font-family:ui-monospace,monospace;margin-right:5px}
+  .ev .exp{font-size:12px;color:var(--faint);margin-top:8px;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px}
+  .ev .exp:hover{color:var(--muted)}
+  .ev pre{display:none;margin-top:9px;padding:13px 15px;background:#fafafa;border:1px solid var(--line);
+          color:#333;border-radius:8px;font-size:12px;line-height:1.65;overflow:auto;max-height:340px;
+          font-family:ui-monospace,monospace}
   .ev.open pre{display:block}
-  .ev .exp{font-size:11.5px;color:var(--faint);margin-top:8px;display:inline-flex;align-items:center;gap:4px;user-select:none}
 
-  @media(max-width:820px){
-    .sidebar{display:none}
-    .topbar{padding:14px 18px} .content{padding:18px}
-    .kpis{grid-template-columns:repeat(2,1fr)}
-    .search{width:170px}
+  @media(max-width:760px){
+    .wrap{padding:0 16px}
+    .lh{display:none}
+    .row{grid-template-columns:1fr auto;gap:6px 10px;padding:14px 6px}
+    .row>*:nth-child(n+4){display:none}
+    .stats{gap:24px}
   }
   @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
 </head>
 <body>
-<div class="layout">
-  <aside class="sidebar">
+  <nav class="nav"><div class="wrap"><div class="row">
     <div class="brand">
-      <div class="mark">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" y1="16" x2="8" y2="16"/><line x1="16" y1="16" x2="16" y2="16"/></svg>
-      </div>
-      <div class="tt"><b>zd-agent</b><span>工单处理日志</span></div>
+      <span class="mk"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/></svg></span>
+      zd-agent <span class="sub" id="crumb">工单日志</span>
     </div>
-    <nav class="nav">
-      <div class="lbl">监控</div>
-      <button class="active" onclick="location.hash=''">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
-        工单列表
-      </button>
-      <button onclick="showList()">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-        刷新数据
-      </button>
-    </nav>
-    <div class="side-foot">Dify SaaS Support Agent<br><b>processing logs</b> · 实时</div>
-  </aside>
+    <div class="grow"></div>
+    <button class="ghost" onclick="showList()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      刷新
+    </button>
+  </div></div></nav>
 
-  <div class="main">
-    <header class="topbar">
-      <h1>工单日志 <span class="crumb" id="crumb"></span></h1>
-      <div class="grow"></div>
-      <label class="search">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="q" placeholder="搜工单号…" oninput="filter()" disabled>
-      </label>
-      <button class="btn" onclick="showList()">
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-        刷新
-      </button>
-    </header>
-    <main class="content" id="app"></main>
-  </div>
-</div>
+  <main class="wrap" id="app"></main>
 
 <script>
-// ---- inline SVG icons (Lucide paths) ----
-const I = {
-  layers:'<polyline points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>',
-  check:'<path d="M20 6 9 17l-5-5"/>',
-  x:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
-  repeat:'<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
-  tag:'<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
-  target:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
-  tool:'<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
-  msg:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
-  archive:'<polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/>',
-  checkc:'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
-  alert:'<path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
-  clock:'<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
-  play:'<polygon points="5 3 19 12 5 21 5 3"/>',
-  dot:'<circle cx="12" cy="12" r="4"/>',
-  box:'<path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>',
-  note:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
-  inbox:'<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
-  chevron:'<polyline points="9 18 15 12 9 6"/>',
-};
-function svg(name,sz,sw){return `<svg width="${sz||16}" height="${sz||16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw||2}" stroke-linecap="round" stroke-linejoin="round">${I[name]||I.dot}</svg>`;}
+function ic(p,sz,sw){return `<svg width="${sz||16}" height="${sz||16}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw||2}" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;}
+const SEARCH=ic('<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',15);
+const CHECK=ic('<path d="M20 6 9 17l-5-5"/>',15);
+const XMARK=ic('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',14);
+const CHEV=ic('<polyline points="15 18 9 12 15 6"/>',14);
+const INBOX=ic('<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',38,1.5);
 
-const EV_ICON = {
-  ticket_classified:"tag", trigger_verdict:"target", round_tool_calls:"tool",
-  public_reply_sent:"msg", public_reply_send_start:"msg", internal_reply_auto_public_sent:"msg",
-  compaction_triggered:"archive", agent_done:"checkc", agent_start:"play",
-  ack_note_sent:"note", sandbox_created:"box", trigger_enter_silence:"clock",
-};
-const isErr  = ev=>/timeout|failed|error|escalat/i.test(ev);
-const isDone = ev=>ev==="agent_done";
-const isReply= ev=>/reply/.test(ev);
-function evIcon(ev){ if(isErr(ev))return svg("alert",15); return svg(EV_ICON[ev]||"dot",15); }
-
+const isErr=ev=>/timeout|failed|error|escalat/i.test(ev);
+const isDone=ev=>ev==="agent_done";
+const isReply=ev=>/reply/.test(ev);
 function fmtTime(ts){ if(!ts)return""; return ts.replace("T"," ").replace("Z","").slice(5,19); }
-function fmtTok(n){ return (n||n===0)? (n>=1000?(n/1000).toFixed(0)+"K":String(n)) : "—"; }
+function fmtTok(n){ return (n||n===0)?(n>=1000?(n/1000).toFixed(0)+"K":String(n)):"—"; }
 function fmtEl(s){ if(s==null)return"—"; return s>=60?(s/60).toFixed(1)+"m":s.toFixed(0)+"s"; }
 function esc(s){ return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
-function statusPill(s){
-  if(!s) return `<span class="pill p-run"><span class="dot"></span>处理中</span>`;
-  if(s==="completed") return `<span class="pill p-ok"><span class="dot"></span>completed</span>`;
-  if(s==="failed") return `<span class="pill p-bad"><span class="dot"></span>failed</span>`;
-  return `<span class="pill p-warn"><span class="dot"></span>${esc(s)}</span>`;
+function statusEl(s){
+  if(!s) return `<span class="st run"><span class="d"></span>处理中</span>`;
+  if(s==="completed") return `<span class="st ok"><span class="d"></span>已完成</span>`;
+  if(s==="failed") return `<span class="st bad"><span class="d"></span>失败</span>`;
+  return `<span class="st warn"><span class="d"></span>${esc(s)}</span>`;
 }
-function verdictTag(v){ return v?`<span class="tag">${esc(v)}</span>`:'<span class="faint">—</span>'; }
 
 let CACHE=[];
 
 async function showList(){
-  if(location.hash) { location.hash=""; return; }
-  document.getElementById("crumb").textContent="";
+  if(location.hash){ location.hash=""; return; }
+  document.getElementById("crumb").textContent="工单日志";
   const app=document.getElementById("app");
-  app.innerHTML = skeleton();
+  app.innerHTML=skeleton();
   let rows;
   try{ rows=await (await fetch("api/tickets")).json(); }
-  catch(e){ app.innerHTML=emptyBox("加载失败",String(e)); return; }
+  catch(e){ app.innerHTML=`<div class="head"><h1>工单日志</h1></div>`+empty("加载失败",String(e)); return; }
   CACHE=rows;
-  document.getElementById("q").disabled=false;
 
   const total=rows.length,
         done=rows.filter(r=>r.status==="completed").length,
@@ -316,89 +199,89 @@ async function showList(){
         wr=rows.filter(r=>r.rounds!=null),
         avg=wr.length?Math.round(wr.reduce((a,r)=>a+r.rounds,0)/wr.length):"—";
 
-  let h=`<div class="kpis">
-    ${kpi("k-all","layers","总工单",total,"")}
-    ${kpi("k-ok","checkc","已完成",done,"c-ok")}
-    ${kpi("k-bad","x","失败",failed,failed?"c-bad":"")}
-    ${kpi("k-rd","repeat","平均轮数",avg,"c-ac")}
+  let h=`<div class="head">
+    <h1>工单日志</h1>
+    <p>Dify SaaS Support Agent 的工单处理记录</p>
   </div>
-  <div class="card">
-    <div class="card-h"><span class="t">处理记录</span><span class="count">${total}</span></div>
-    <div class="tw"><table>
-      <thead><tr>
-        <th>工单</th><th>状态</th><th>verdict</th><th>类型</th>
-        <th class="r">轮数</th><th class="r">token</th><th class="r">耗时</th>
-        <th>回复</th><th>最后时间</th>
-      </tr></thead><tbody id="tb">`;
-  if(!total){ h+=`<tr><td colspan="9">${emptyBox("暂无日志","agent 处理工单后自动出现")}</td></tr>`; }
+  <div class="stats">
+    <div class="stat"><div class="v num">${total}</div><div class="k">总工单</div></div>
+    <div class="stat"><div class="v ok num">${done}</div><div class="k">已完成</div></div>
+    <div class="stat"><div class="v ${failed?'bad':''} num">${failed}</div><div class="k">失败</div></div>
+    <div class="stat"><div class="v num">${avg}</div><div class="k">平均轮数</div></div>
+  </div>
+  <div class="toolbar">
+    <label class="search">${SEARCH}<input id="q" placeholder="搜工单号…" oninput="filter()"></label>
+  </div>
+  <div class="list">
+    <div class="lh">
+      <span>工单</span><span>状态</span><span>verdict</span><span>类型</span>
+      <span class="r">轮数</span><span class="r">token</span><span class="r">耗时</span>
+      <span class="r">回复</span><span class="r">时间</span>
+    </div><div id="tb">`;
+  if(!total) h+=empty("暂无日志","agent 处理工单后自动出现");
   for(const s of rows){
     const hot=s.total_tokens&&s.total_tokens>1000000?"hot":"";
-    const rep=s.reply_sent===true
-      ?`<span class="ck">${svg("check",16)}</span>`
-      :`<span class="ck no">${svg("x",15)}</span>`;
-    h+=`<tr data-id="${s.ticket_id}" onclick="go(${s.ticket_id})">
-      <td class="tid"><span class="hash">#</span>${s.ticket_id}</td>
-      <td>${statusPill(s.status)}</td>
-      <td>${verdictTag(s.verdict)}</td>
-      <td>${s.ticket_type?`<span class="tag">${esc(s.ticket_type)}</span>`:'<span class="faint">—</span>'}</td>
-      <td class="r num">${s.rounds??'<span class="faint">—</span>'}</td>
-      <td class="r num tok ${hot}">${fmtTok(s.total_tokens)}</td>
-      <td class="r num">${fmtEl(s.elapsed)}</td>
-      <td>${rep}</td>
-      <td class="mono faint">${fmtTime(s.last_time)}</td>
-    </tr>`;
+    const rep=s.reply_sent===true?`<span class="ck">${CHECK}</span>`:`<span class="ck no">${XMARK}</span>`;
+    h+=`<div class="row" data-id="${s.ticket_id}" onclick="go(${s.ticket_id})">
+      <span class="tid"><span class="h">#</span>${s.ticket_id}</span>
+      <span>${statusEl(s.status)}</span>
+      <span class="vt">${s.verdict?esc(s.verdict):'<span class="faint">—</span>'}</span>
+      <span>${s.ticket_type?`<span class="ty">${esc(s.ticket_type)}</span>`:'<span class="faint">—</span>'}</span>
+      <span class="r num">${s.rounds??'<span class="faint">—</span>'}</span>
+      <span class="r num tok ${hot}">${fmtTok(s.total_tokens)}</span>
+      <span class="r num muted">${fmtEl(s.elapsed)}</span>
+      <span class="r">${rep}</span>
+      <span class="r mono faint" style="font-size:12px">${fmtTime(s.last_time)}</span>
+    </div>`;
   }
-  h+=`</tbody></table></div></div>`;
+  h+=`</div></div>`;
   app.innerHTML=h;
 }
-function kpi(cls,ic,label,val,vc){
-  return `<div class="kpi ${cls}"><div class="ic">${svg(ic,19)}</div>
-    <div class="label">${label}</div><div class="val ${vc||''} num">${val}</div></div>`;
-}
+
 function skeleton(){
-  let rows="";
-  for(let i=0;i<6;i++) rows+=`<tr class="sk-row"><td colspan="9"><div class="sk" style="height:18px"></div></td></tr>`;
-  return `<div class="kpis">${[0,0,0,0].map(()=>`<div class="kpi"><div class="sk" style="height:38px;width:38px;border-radius:10px;margin-bottom:14px"></div><div class="sk" style="height:12px;width:48px;margin-bottom:8px"></div><div class="sk" style="height:26px;width:60px"></div></div>`).join("")}</div>
-    <div class="card"><div class="card-h"><div class="sk" style="height:16px;width:90px"></div></div><div class="tw"><table><tbody>${rows}</tbody></table></div></div>`;
+  let r="";
+  for(let i=0;i<7;i++) r+=`<div class="row"><div class="sk" style="height:16px;width:100%;grid-column:1/-1"></div></div>`;
+  return `<div class="head"><div class="sk" style="height:30px;width:160px"></div></div>
+    <div class="stats">${[0,0,0,0].map(()=>`<div class="stat"><div class="sk" style="height:24px;width:40px;margin-bottom:6px"></div><div class="sk" style="height:12px;width:50px"></div></div>`).join("")}</div>
+    <div class="toolbar"><div class="sk" style="height:36px;width:320px;border-radius:6px"></div></div>
+    <div class="list"><div id="tb">${r}</div></div>`;
 }
-function emptyBox(t,s){
-  return `<div class="empty">${svg("inbox",40,1.5)}<div class="t">${esc(t)}</div><div class="s">${esc(s||"")}</div></div>`;
-}
+function empty(t,s){ return `<div class="empty">${INBOX}<div class="t">${esc(t)}</div><div class="s">${esc(s||"")}</div></div>`; }
 
 function filter(){
   const q=document.getElementById("q").value.trim();
-  document.querySelectorAll("#tb tr").forEach(tr=>{
-    const id=tr.getAttribute("data-id")||"";
-    tr.style.display=!q||id.includes(q)?"":"none";
+  document.querySelectorAll("#tb .row").forEach(el=>{
+    const id=el.getAttribute("data-id")||"";
+    el.style.display=!q||id.includes(q)?"":"none";
   });
 }
 function go(id){ location.hash="t/"+id; }
 
 async function showDetail(id){
-  document.getElementById("crumb").textContent="/ #"+id;
-  document.getElementById("q").disabled=true;
+  document.getElementById("crumb").textContent="工单日志 / #"+id;
   const app=document.getElementById("app");
-  app.innerHTML=`<div class="back" onclick="location.hash=''">${svg("chevron",15)}<span style="transform:rotate(180deg);display:inline-block">${svg("chevron",15)}</span></div>`;
-  app.innerHTML=`<div class="sk" style="height:120px;border-radius:16px;margin-bottom:22px"></div>`+
-    [0,0,0,0].map(()=>`<div class="sk" style="height:56px;border-radius:11px;margin-bottom:14px;margin-left:52px"></div>`).join("");
+  app.innerHTML=`<div class="back" onclick="location.hash=''">${CHEV}返回</div>
+    <div class="sk" style="height:90px;border-radius:10px;margin-bottom:24px"></div>
+    <div class="sk" style="height:200px;border-radius:10px;margin-left:30px"></div>`;
   let tl;
   try{ tl=await (await fetch("api/tickets/"+id)).json(); }
-  catch(e){ app.innerHTML=emptyBox("加载失败",String(e)); return; }
+  catch(e){ app.innerHTML=empty("加载失败",String(e)); return; }
   const sum=CACHE.find(r=>r.ticket_id===id)||{};
 
-  let h=`<div class="back" onclick="location.hash=''">${svg("chevron",16)}<span>返回列表</span></div>
-    <div class="dhead">
-      <div class="r1"><h2><span class="faint" style="font-weight:600">#</span>${id}</h2>${statusPill(sum.status)}${verdictTag(sum.verdict)}</div>
-      <div class="chips">
-        <div class="chip"><div class="k">事件</div><div class="v num">${tl.length}</div></div>
-        <div class="chip"><div class="k">轮数</div><div class="v num">${sum.rounds??'—'}</div></div>
-        <div class="chip"><div class="k">Token</div><div class="v num">${fmtTok(sum.total_tokens)}</div></div>
-        <div class="chip"><div class="k">耗时</div><div class="v num">${fmtEl(sum.elapsed)}</div></div>
-        <div class="chip"><div class="k">类型</div><div class="v" style="font-size:14px">${sum.ticket_type||'—'}</div></div>
+  let h=`<div class="back" onclick="location.hash=''">${CHEV}返回</div>
+    <div class="dh">
+      <h2><span class="faint" style="font-weight:600">#</span>${id} ${statusEl(sum.status)}</h2>
+      <div class="meta">
+        <div class="m"><div class="v num">${tl.length}</div><div class="k">事件</div></div>
+        <div class="m"><div class="v num">${sum.rounds??'—'}</div><div class="k">轮数</div></div>
+        <div class="m"><div class="v num">${fmtTok(sum.total_tokens)}</div><div class="k">Token</div></div>
+        <div class="m"><div class="v num">${fmtEl(sum.elapsed)}</div><div class="k">耗时</div></div>
+        <div class="m"><div class="v" style="font-size:14px">${sum.verdict||'—'}</div><div class="k">verdict</div></div>
+        <div class="m"><div class="v" style="font-size:14px">${sum.ticket_type||'—'}</div><div class="k">类型</div></div>
       </div>
     </div>
-    <div class="timeline">`;
-  if(!tl.length) h+=emptyBox("无事件","");
+    <div class="tl">`;
+  if(!tl.length) h+=empty("无事件","");
   for(const e of tl){
     const ev=e.event||"";
     const cls=isErr(ev)?"err":isDone(ev)?"ok":isReply(ev)?"reply":"";
@@ -409,18 +292,17 @@ async function showDetail(id){
         fields+=`<span class="kv"><b>tools</b> `+v.map(t=>`<span class="toolchip">${esc(t)}</span>`).join("")+`</span>`;
       }else{
         let val=typeof v==="object"?JSON.stringify(v):String(v);
-        if(val.length>70) val=val.slice(0,70)+"…";
+        if(val.length>72) val=val.slice(0,72)+"…";
         fields+=`<span class="kv"><b>${esc(k)}</b> ${esc(val)}</span>`;
       }
     }
     h+=`<div class="ev ${cls}">
-      <div class="rail"><div class="node">${evIcon(ev)}</div></div>
-      <div class="body" onclick="this.classList.toggle('open')">
-        <div class="l1"><span class="name">${esc(ev)}</span><span class="t">${fmtTime(e.timestamp)}</span></div>
-        ${fields?`<div class="fields">${fields}</div>`:""}
-        <div class="exp">${svg("chevron",12)} 展开原始 JSON</div>
-        <pre>${esc(JSON.stringify(e,null,2))}</pre>
-      </div></div>`;
+      <span class="node"></span>
+      <div class="l1"><span class="name">${esc(ev)}</span><span class="t">${fmtTime(e.timestamp)}</span></div>
+      ${fields?`<div class="fields">${fields}</div>`:""}
+      <span class="exp" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='block'?'none':'block'">${CHEV} 原始 JSON</span>
+      <pre>${esc(JSON.stringify(e,null,2))}</pre>
+    </div>`;
   }
   h+=`</div>`;
   app.innerHTML=h;
