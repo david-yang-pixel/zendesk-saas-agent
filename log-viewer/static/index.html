@@ -3,83 +3,298 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>工单日志</title>
+<title>zd-agent 工单日志</title>
 <style>
-  body { font: 14px/1.5 -apple-system,system-ui,sans-serif; margin: 0; background:#f7f8fa; color:#1a1a2e; }
-  header { background:#1a1a2e; color:#fff; padding:12px 20px; font-weight:600; }
-  #app { padding:20px; max-width:1100px; margin:0 auto; }
-  table { width:100%; border-collapse:collapse; background:#fff; border-radius:8px; overflow:hidden; }
-  th,td { padding:8px 12px; text-align:left; border-bottom:1px solid #eee; }
-  th { background:#f0f1f5; font-size:12px; color:#666; }
-  tr.row { cursor:pointer; } tr.row:hover { background:#f5f7ff; }
-  .bad { color:#c0392b; font-weight:600; }
-  input { padding:6px 10px; border:1px solid #ccc; border-radius:6px; margin-bottom:12px; width:200px; }
-  .back { cursor:pointer; color:#3b5bdb; margin-bottom:12px; display:inline-block; }
-  .ev { background:#fff; border-bottom:1px solid #eee; padding:6px 12px; font-family:ui-monospace,monospace; font-size:13px; }
-  .ev .t { color:#888; } .ev.err { background:#fdecea; }
-  .ev pre { display:none; margin:6px 0 0; padding:8px; background:#2d2d3a; color:#e0e0e0; border-radius:6px; overflow:auto; }
-  .ev.open pre { display:block; }
+  :root{
+    --ink:#1a1a2e; --ink2:#3a3a52; --sub:#8a8a9a; --line:#e8eaf0;
+    --bg:#f4f6fa; --card:#fff; --blue:#3b5bdb; --blue-soft:#eef2fe;
+    --green:#16a34a; --green-soft:#e7f6ec; --red:#dc3545; --red-soft:#fdecee;
+    --amber:#d68910; --amber-soft:#fcf3e3; --slate:#64748b; --slate-soft:#eef1f5;
+    --shadow:0 1px 3px rgba(16,24,40,.06),0 1px 2px rgba(16,24,40,.04);
+    --shadow-lg:0 12px 32px rgba(16,24,40,.10);
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Segoe UI",system-ui,sans-serif;
+       background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
+  .layout{display:flex;min-height:100vh}
+
+  /* sidebar */
+  .sidebar{width:236px;flex:0 0 236px;background:linear-gradient(180deg,#1a1a2e,#23233c);
+           color:#fff;padding:22px 16px;display:flex;flex-direction:column;gap:6px;position:sticky;top:0;height:100vh}
+  .brand{display:flex;align-items:center;gap:11px;padding:6px 8px 16px}
+  .brand .logo{width:34px;height:34px;border-radius:10px;background:var(--blue);
+               display:flex;align-items:center;justify-content:center;font-size:18px;box-shadow:0 4px 12px rgba(59,91,219,.4)}
+  .brand b{font-size:16px;font-weight:700;letter-spacing:.2px}
+  .brand small{display:block;font-size:11px;color:#9a9ab0;font-weight:400}
+  .nav{display:flex;flex-direction:column;gap:3px;margin-top:6px}
+  .nav a{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:9px;
+         color:#b9b9cc;font-size:13.5px;text-decoration:none;cursor:pointer;transition:.15s}
+  .nav a:hover{background:rgba(255,255,255,.06);color:#fff}
+  .nav a.active{background:rgba(255,255,255,.10);color:#fff;font-weight:500}
+  .side-foot{margin-top:auto;font-size:11px;color:#71718a;padding:8px;line-height:1.6}
+
+  /* main */
+  .main{flex:1;min-width:0;padding:26px 32px 40px;max-width:1240px}
+  .topbar{display:flex;align-items:center;gap:16px;margin-bottom:22px}
+  .topbar h1{font-size:21px;font-weight:700}
+  .topbar .grow{flex:1}
+  .search{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);
+          border-radius:10px;padding:0 12px;height:40px;width:240px;box-shadow:var(--shadow);transition:.15s}
+  .search:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-soft)}
+  .search input{border:0;outline:0;flex:1;font-size:14px;background:transparent;color:var(--ink)}
+  .search span{color:var(--sub);font-size:15px}
+  .btn-refresh{height:40px;padding:0 14px;border:1px solid var(--line);background:var(--card);border-radius:10px;
+               cursor:pointer;font-size:13px;color:var(--ink2);box-shadow:var(--shadow);transition:.15s}
+  .btn-refresh:hover{border-color:var(--blue);color:var(--blue)}
+
+  /* KPI cards */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+  .kpi{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow)}
+  .kpi .label{font-size:12px;color:var(--sub);font-weight:500}
+  .kpi .val{font-size:26px;font-weight:700;margin-top:6px;letter-spacing:-.5px}
+  .kpi .val.green{color:var(--green)} .kpi .val.red{color:var(--red)} .kpi .val.blue{color:var(--blue)}
+
+  /* table card */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+  table{width:100%;border-collapse:collapse}
+  thead th{background:#f8f9fc;font-size:11.5px;font-weight:600;color:var(--slate);text-transform:none;
+           text-align:left;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;letter-spacing:.3px}
+  tbody td{padding:13px 16px;border-bottom:1px solid #f1f3f7;font-size:13.5px;vertical-align:middle}
+  tbody tr{cursor:pointer;transition:background .12s}
+  tbody tr:hover{background:#f7f9ff}
+  tbody tr:last-child td{border-bottom:0}
+  .tid{font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums}
+  .mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-variant-numeric:tabular-nums}
+  .muted{color:var(--sub)}
+
+  /* pills */
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600;white-space:nowrap}
+  .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9}
+  .pill.green{background:var(--green-soft);color:#15803d}
+  .pill.red{background:var(--red-soft);color:#c0392b}
+  .pill.amber{background:var(--amber-soft);color:#b45309}
+  .pill.slate{background:var(--slate-soft);color:var(--slate)}
+  .pill.blue{background:var(--blue-soft);color:var(--blue)}
+  .tag{display:inline-block;padding:2px 9px;border-radius:7px;font-size:12px;background:var(--slate-soft);color:var(--slate);font-weight:500}
+  .tok.hot{color:var(--red);font-weight:700}
+  .check{color:var(--green);font-weight:700} .nocheck{color:var(--sub)}
+
+  .empty{padding:60px;text-align:center;color:var(--sub)}
+  .loading{padding:60px;text-align:center;color:var(--sub)}
+
+  /* detail */
+  .back{display:inline-flex;align-items:center;gap:6px;color:var(--blue);cursor:pointer;font-size:13.5px;
+        font-weight:500;margin-bottom:16px;user-select:none}
+  .back:hover{text-decoration:underline}
+  .dhead{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px 22px;
+         box-shadow:var(--shadow);margin-bottom:18px}
+  .dhead .row1{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .dhead h2{font-size:20px;font-weight:700}
+  .chips{display:flex;gap:20px;flex-wrap:wrap}
+  .chip{display:flex;flex-direction:column;gap:2px}
+  .chip .k{font-size:11px;color:var(--sub)} .chip .v{font-size:15px;font-weight:600}
+
+  /* timeline */
+  .timeline{position:relative;padding-left:8px}
+  .ev{position:relative;display:flex;gap:14px;padding:0 0 4px 0}
+  .ev .rail{position:relative;width:30px;flex:0 0 30px;display:flex;justify-content:center}
+  .ev .rail::before{content:"";position:absolute;top:26px;bottom:-6px;width:2px;background:var(--line)}
+  .ev:last-child .rail::before{display:none}
+  .ev .dot{width:30px;height:30px;border-radius:50%;background:var(--card);border:2px solid var(--line);
+           display:flex;align-items:center;justify-content:center;font-size:14px;z-index:1}
+  .ev.err .dot{border-color:var(--red);background:var(--red-soft)}
+  .ev.done .dot{border-color:var(--green);background:var(--green-soft)}
+  .ev.reply .dot{border-color:var(--blue);background:var(--blue-soft)}
+  .ev .body{flex:1;min-width:0;background:var(--card);border:1px solid var(--line);border-radius:11px;
+            padding:11px 14px;margin-bottom:12px;box-shadow:var(--shadow);cursor:pointer;transition:.12s}
+  .ev .body:hover{border-color:#d4d9e6}
+  .ev.err .body{border-color:#f3c9cd;background:#fffafa}
+  .ev .line1{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .ev .t{font-size:12px;color:var(--sub);font-family:ui-monospace,monospace;flex:0 0 auto}
+  .ev .name{font-weight:600;font-size:13.5px}
+  .ev.err .name{color:var(--red)}
+  .ev .fields{margin-top:6px;font-size:12.5px;color:var(--ink2);font-family:ui-monospace,monospace;
+              word-break:break-word;line-height:1.7}
+  .ev .fields .kv{display:inline-block;margin-right:12px}
+  .ev .fields .kv b{color:var(--slate);font-weight:600}
+  .toolchip{display:inline-block;background:var(--blue-soft);color:var(--blue);border-radius:6px;
+            padding:1px 7px;margin:0 3px 2px 0;font-size:11.5px;font-weight:600;font-family:ui-monospace,monospace}
+  .ev pre{display:none;margin-top:10px;padding:12px;background:#1e1e2e;color:#cdd6f4;border-radius:8px;
+          font-size:12px;line-height:1.6;overflow:auto;max-height:340px}
+  .ev.open pre{display:block}
+
+  @media(max-width:760px){
+    .sidebar{display:none}
+    .main{padding:18px}
+    .kpis{grid-template-columns:repeat(2,1fr)}
+  }
 </style>
 </head>
 <body>
-<header>zd-agent 工单日志</header>
-<div id="app">加载中…</div>
+<div class="layout">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">🤖</div>
+      <div><b>zd-agent</b><small>工单日志</small></div>
+    </div>
+    <nav class="nav">
+      <a class="active">📋 &nbsp;工单列表</a>
+      <a onclick="location.reload()">🔄 &nbsp;刷新数据</a>
+    </nav>
+    <div class="side-foot">Dify SaaS Support Agent<br>处理日志 · 实时</div>
+  </aside>
+
+  <main class="main" id="app">
+    <div class="loading">加载中…</div>
+  </main>
+</div>
+
 <script>
 const ICON = {
   ticket_classified:"📋", trigger_verdict:"🎯", round_tool_calls:"🔧",
-  public_reply_sent:"💬", internal_reply_auto_public_sent:"💬",
-  compaction_triggered:"🗜️", agent_done:"✅",
+  public_reply_sent:"💬", public_reply_send_start:"💬",
+  internal_reply_auto_public_sent:"💬", compaction_triggered:"🗜️",
+  ack_note_sent:"📝", sandbox_created:"📦", agent_start:"▶️", agent_done:"✅",
+  trigger_enter_silence:"⏳",
 };
-function iconFor(ev){
-  if(/timeout|failed|error/.test(ev)) return "⚠️";
-  return ICON[ev] || "·";
+const isErr = ev => /timeout|failed|error|escalat/i.test(ev);
+const isDone = ev => ev==="agent_done";
+const isReply = ev => /reply|public_reply/.test(ev);
+function iconFor(ev){ if(isErr(ev))return"⚠️"; return ICON[ev]||"·"; }
+function fmtTime(ts){ if(!ts)return""; return ts.replace("T"," ").replace("Z","").slice(5,19); }
+function fmtTok(n){ return n ? (n/1000).toFixed(0)+"K" : "—"; }
+function fmtEl(s){ if(s==null)return"—"; return s>=60 ? (s/60).toFixed(1)+"m" : s.toFixed(0)+"s"; }
+
+function statusPill(s){
+  if(!s) return '<span class="pill slate">处理中</span>';
+  if(s==="completed") return '<span class="pill green">completed</span>';
+  if(s==="failed") return '<span class="pill red">failed</span>';
+  return `<span class="pill amber">${s}</span>`;
 }
-function fmtTime(ts){ return ts ? ts.replace("T"," ").replace("Z","").slice(5,19) : ""; }
+function verdictTag(v){ return v ? `<span class="tag">${v}</span>` : '<span class="muted">—</span>'; }
+
+let CACHE = [];
 
 async function showList(){
   const app = document.getElementById("app");
-  const rows = await (await fetch("api/tickets")).json();
-  let html = `<input id=q placeholder="搜工单号…" oninput="filter()">
-    <table><thead><tr><th>工单</th><th>状态</th><th>verdict</th><th>类型</th>
-    <th>轮数</th><th>token</th><th>耗时</th><th>最后时间</th></tr></thead><tbody>`;
+  let rows;
+  try { rows = await (await fetch("api/tickets")).json(); }
+  catch(e){ app.innerHTML = '<div class="empty">加载失败：'+e+'</div>'; return; }
+  CACHE = rows;
+
+  const total = rows.length;
+  const done = rows.filter(r=>r.status==="completed").length;
+  const failed = rows.filter(r=>r.status==="failed").length;
+  const withRounds = rows.filter(r=>r.rounds!=null);
+  const avgR = withRounds.length ? Math.round(withRounds.reduce((a,r)=>a+r.rounds,0)/withRounds.length) : "—";
+
+  let h = `
+    <div class="topbar">
+      <h1>工单处理日志</h1>
+      <div class="grow"></div>
+      <div class="search"><span>🔍</span><input id="q" placeholder="搜工单号…" oninput="filter()"></div>
+      <button class="btn-refresh" onclick="showList()">刷新</button>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="label">总工单</div><div class="val">${total}</div></div>
+      <div class="kpi"><div class="label">已完成</div><div class="val green">${done}</div></div>
+      <div class="kpi"><div class="label">失败</div><div class="val ${failed?'red':''}">${failed}</div></div>
+      <div class="kpi"><div class="label">平均轮数</div><div class="val blue">${avgR}</div></div>
+    </div>
+    <div class="card"><table>
+      <thead><tr>
+        <th>工单</th><th>状态</th><th>verdict</th><th>类型</th>
+        <th>轮数</th><th>token</th><th>耗时</th><th>已回复</th><th>最后时间</th>
+      </tr></thead><tbody id="tb">`;
+
+  if(!total){ h += `<tr><td colspan="9"><div class="empty">暂无日志数据（agent 处理工单后自动出现）</div></td></tr>`; }
   for(const s of rows){
-    const tokBad = s.total_tokens && s.total_tokens > 1000000 ? "bad" : "";
-    const stBad = s.status === "failed" ? "bad" : "";
-    const tok = s.total_tokens ? (s.total_tokens/1000).toFixed(0)+"K" : "-";
-    const el = s.elapsed ? s.elapsed.toFixed(0)+"s" : "-";
-    html += `<tr class=row data-id="${s.ticket_id}" onclick="showDetail(${s.ticket_id})">
-      <td>#${s.ticket_id}</td><td class="${stBad}">${s.status||"-"}</td>
-      <td>${s.verdict||"-"}</td><td>${s.ticket_type||"-"}</td>
-      <td>${s.rounds??"-"}</td><td class="${tokBad}">${tok}</td>
-      <td>${el}</td><td>${fmtTime(s.last_time)}</td></tr>`;
+    const tokHot = s.total_tokens && s.total_tokens>1000000 ? "hot":"";
+    const reply = s.reply_sent===true ? '<span class="check">✓</span>'
+                : s.reply_sent===false ? '<span class="nocheck">—</span>' : '<span class="muted">—</span>';
+    h += `<tr data-id="${s.ticket_id}" onclick="showDetail(${s.ticket_id})">
+      <td class="tid">#${s.ticket_id}</td>
+      <td>${statusPill(s.status)}</td>
+      <td>${verdictTag(s.verdict)}</td>
+      <td>${s.ticket_type?`<span class="tag">${s.ticket_type}</span>`:'<span class="muted">—</span>'}</td>
+      <td class="mono">${s.rounds??'<span class="muted">—</span>'}</td>
+      <td class="mono tok ${tokHot}">${fmtTok(s.total_tokens)}</td>
+      <td class="mono">${fmtEl(s.elapsed)}</td>
+      <td>${reply}</td>
+      <td class="mono muted">${fmtTime(s.last_time)}</td>
+    </tr>`;
   }
-  html += "</tbody></table>";
-  app.innerHTML = html;
+  h += `</tbody></table></div>`;
+  app.innerHTML = h;
 }
+
 function filter(){
   const q = document.getElementById("q").value.trim();
-  document.querySelectorAll("tr.row").forEach(tr=>{
-    tr.style.display = !q || tr.dataset.id.includes(q) ? "" : "none";
+  document.querySelectorAll("#tb tr").forEach(tr=>{
+    const id = tr.getAttribute("data-id")||"";
+    tr.style.display = !q || id.includes(q) ? "" : "none";
   });
 }
+
+// hash 路由：#t/<id> 直达详情，浏览器前进/后退 + 刷新可用
+async function route(){
+  const m = location.hash.match(/^#t\/(\d+)/);
+  if(m){ if(!CACHE.length){ try{CACHE=await(await fetch("api/tickets")).json();}catch(e){} } showDetail(parseInt(m[1],10)); }
+  else showList();
+}
+window.addEventListener("hashchange", route);
+
 async function showDetail(id){
+  if(location.hash !== "#t/"+id) location.hash = "t/"+id;
   const app = document.getElementById("app");
-  const tl = await (await fetch("api/tickets/"+id)).json();
-  let html = `<span class=back onclick="showList()">← 返回列表</span>
-    <h3>工单 #${id} · ${tl.length} 条事件</h3>`;
+  app.innerHTML = '<div class="loading">加载中…</div>';
+  let tl;
+  try { tl = await (await fetch("api/tickets/"+id)).json(); }
+  catch(e){ app.innerHTML = '<div class="empty">加载失败：'+e+'</div>'; return; }
+
+  const sum = CACHE.find(r=>r.ticket_id===id) || {};
+  let h = `<div class="back" onclick="showList()">← 返回列表</div>
+    <div class="dhead">
+      <div class="row1"><h2>工单 #${id}</h2>${statusPill(sum.status)}${verdictTag(sum.verdict)}</div>
+      <div class="chips">
+        <div class="chip"><span class="k">事件</span><span class="v">${tl.length}</span></div>
+        <div class="chip"><span class="k">轮数</span><span class="v">${sum.rounds??'—'}</span></div>
+        <div class="chip"><span class="k">Token</span><span class="v">${fmtTok(sum.total_tokens)}</span></div>
+        <div class="chip"><span class="k">耗时</span><span class="v">${fmtEl(sum.elapsed)}</span></div>
+        <div class="chip"><span class="k">类型</span><span class="v">${sum.ticket_type||'—'}</span></div>
+      </div>
+    </div>
+    <div class="timeline">`;
+
+  if(!tl.length){ h += `<div class="empty">无事件</div>`; }
   for(const e of tl){
     const ev = e.event||"";
-    const err = /timeout|failed|error/.test(ev) ? "err" : "";
-    const extra = Object.entries(e).filter(([k])=>
-      !["event","timestamp","level","module","ticket_id"].includes(k))
-      .map(([k,v])=>`${k}=${typeof v==="object"?JSON.stringify(v):v}`).join("  ");
-    html += `<div class="ev ${err}" onclick="this.classList.toggle('open')">
-      <span class=t>${fmtTime(e.timestamp)}</span> ${iconFor(ev)} <b>${ev}</b> ${extra}
-      <pre>${JSON.stringify(e,null,2)}</pre></div>`;
+    const cls = isErr(ev)?"err":isDone(ev)?"done":isReply(ev)?"reply":"";
+    // render key fields (skip noise), tool_names as chips
+    let fields = "";
+    for(const [k,v] of Object.entries(e)){
+      if(["event","timestamp","level","module","ticket_id"].includes(k)) continue;
+      if(k==="tool_names" && Array.isArray(v)){
+        fields += `<span class="kv"><b>tools</b> `+v.map(t=>`<span class="toolchip">${t}</span>`).join("")+`</span>`;
+      } else {
+        const val = typeof v==="object" ? JSON.stringify(v) : String(v);
+        fields += `<span class="kv"><b>${k}</b> ${val.length>80?val.slice(0,80)+"…":val}</span>`;
+      }
+    }
+    h += `<div class="ev ${cls}">
+      <div class="rail"><div class="dot">${iconFor(ev)}</div></div>
+      <div class="body" onclick="this.classList.toggle('open')">
+        <div class="line1"><span class="t">${fmtTime(e.timestamp)}</span><span class="name">${ev}</span></div>
+        ${fields?`<div class="fields">${fields}</div>`:""}
+        <pre>${JSON.stringify(e,null,2).replace(/</g,"&lt;")}</pre>
+      </div>
+    </div>`;
   }
-  app.innerHTML = html;
+  h += `</div>`;
+  app.innerHTML = h;
 }
-showList();
+
+route();
 </script>
 </body>
 </html>
