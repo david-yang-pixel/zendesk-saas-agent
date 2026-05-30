@@ -220,8 +220,8 @@ const EV={ticket_classified:"tag",trigger_verdict:"target",round_tool_calls:"too
 const isErr=e=>/timeout|failed|error|escalat/i.test(e), isDone=e=>e==="agent_done", isReply=e=>/reply/.test(e);
 function evIcon(e){return isErr(e)?ic(I.alert,10):ic(I[EV[e]||"dot"],10);}
 function fmtTime(t){return t?t.replace("T"," ").replace("Z","").slice(5,19):"";}
-function fmtTok(n){return (n||n===0)?(n>=1000?(n/1000).toFixed(0)+"K":""+n):"—";}
-function fmtEl(s){return s==null?"—":(s>=60?(s/60).toFixed(1)+"m":s.toFixed(0)+"s");}
+function fmtTok(n){if(n==null||n==="")return"—";const v=typeof n==="number"?n:parseFloat(String(n).replace(/[^\d.]/g,""));if(!isFinite(v))return String(n);return v>=1000?(v/1000).toFixed(0)+"K":""+v;}
+function fmtEl(s){if(s==null||s==="")return"—";const v=typeof s==="number"?s:parseFloat(String(s).replace(/[^\d.]/g,""));if(!isFinite(v))return String(s);return v>=60?(v/60).toFixed(1)+"m":v.toFixed(0)+"s";}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
 function st(s){if(!s)return `<span class="pill p-run"><span class="d"></span>处理中</span>`;if(s==="completed")return `<span class="pill p-ok"><span class="d"></span>completed</span>`;if(s==="failed")return `<span class="pill p-bad"><span class="d"></span>failed</span>`;return `<span class="pill p-warn"><span class="d"></span>${esc(s)}</span>`;}
 function vtag(v){return v?`<span class="tag">${esc(v)}</span>`:'<span class="faint">—</span>';}
