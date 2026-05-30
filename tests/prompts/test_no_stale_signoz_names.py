@@ -15,7 +15,7 @@ STALE = [
 
 SCAN = [
     ROOT / "src/zd_agent/prompts",
-    ROOT / "src/zd_agent/subagent_parallel.py",
+    ROOT / "src/zd_agent/tools/subagent_parallel.py",
 ]
 
 
