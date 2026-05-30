@@ -208,8 +208,14 @@ function fmtTime(t){return t?t.replace("T"," ").replace("Z","").slice(5,19):"";}
 function fmtTok(n){if(n==null||n==="")return"—";const v=typeof n==="number"?n:parseFloat(String(n).replace(/[^\d.]/g,""));if(!isFinite(v))return String(n);return v>=1000?(v/1000).toFixed(0)+"K":""+v;}
 function fmtEl(s){if(s==null||s==="")return"—";const v=typeof s==="number"?s:parseFloat(String(s).replace(/[^\d.]/g,""));if(!isFinite(v))return String(s);return v>=60?(v/60).toFixed(1)+"m":v.toFixed(0)+"s";}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
-function stp(s){if(!s)return `<span class="pill p-run"><span class="d"></span>处理中</span>`;if(s==="completed")return `<span class="pill p-ok"><span class="d"></span>completed</span>`;if(s==="failed")return `<span class="pill p-bad"><span class="d"></span>failed</span>`;return `<span class="pill p-warn"><span class="d"></span>${esc(s)}</span>`;}
-function vtag(v){return v?`<span class="tag">${esc(v)}</span>`:'<span class="faint">—</span>';}
+// 枚举中英映射（与 agent 源码一致）
+const VERDICT_CN={no_message:"无消息",greeting:"打招呼",insufficient_info:"信息不足",substantial_issue:"实质问题",request_human:"请求人工",self_resolved:"已自行解决"};
+const TYPE_CN={platform_issue:"平台故障",knowledge_base:"知识库",workflow:"工作流",api:"API",permissions:"权限",product_usage:"产品用法",billing:"计费",refund:"退款",insufficient_info:"信息不足",mention:"@提及",general:"通用"};
+const STATUS_CN={completed:"已完成",failed:"失败",processing:"处理中",processed:"已处理"};
+function cn(map,v){return v?(map[v]||v):v;}
+function stp(s){if(!s)return `<span class="pill p-run"><span class="d"></span>处理中</span>`;if(s==="completed")return `<span class="pill p-ok"><span class="d"></span>已完成</span>`;if(s==="failed")return `<span class="pill p-bad"><span class="d"></span>失败</span>`;return `<span class="pill p-warn"><span class="d"></span>${esc(cn(STATUS_CN,s))}</span>`;}
+function vtag(v){return v?`<span class="tag" title="${esc(v)}">${esc(cn(VERDICT_CN,v))}</span>`:'<span class="faint">—</span>';}
+function ttag(v){return v?`<span class="tag" title="${esc(v)}">${esc(cn(TYPE_CN,v))}</span>`:'<span class="faint">—</span>';}
 
 let CACHE=[];
 function goList(){document.body.classList.remove('nav-open');location.hash='';}
@@ -242,7 +248,7 @@ async function showList(){
     h+=`<tr data-id="${s.ticket_id}" onclick="go(${s.ticket_id})">
       <td class="tid"><span class="h">#</span>${s.ticket_id}</td>
       <td>${stp(s.status)}</td><td>${vtag(s.verdict)}</td>
-      <td>${s.ticket_type?`<span class="tag">${esc(s.ticket_type)}</span>`:'<span class="faint">—</span>'}</td>
+      <td>${ttag(s.ticket_type)}</td>
       <td class="r num">${s.rounds??'<span class="faint">—</span>'}</td>
       <td class="r num tok ${hot}">${fmtTok(s.total_tokens)}</td>
       <td class="r num muted">${fmtEl(s.elapsed)}</td>
@@ -271,7 +277,7 @@ async function showDetail(id){
       <div class="m"><div class="k">轮数</div><div class="v num">${sum.rounds??'—'}</div></div>
       <div class="m"><div class="k">Token</div><div class="v num">${fmtTok(sum.total_tokens)}</div></div>
       <div class="m"><div class="k">耗时</div><div class="v num">${fmtEl(sum.elapsed)}</div></div>
-      <div class="m"><div class="k">类型</div><div class="v" style="font-size:15px">${sum.ticket_type||'—'}</div></div>
+      <div class="m"><div class="k">类型</div><div class="v" style="font-size:15px" title="${esc(sum.ticket_type||'')}">${sum.ticket_type?cn(TYPE_CN,sum.ticket_type):'—'}</div></div>
     </div></div><div class="tl">`;
   if(!tl.length)h+=empty('无事件','');
   for(const e of tl){
