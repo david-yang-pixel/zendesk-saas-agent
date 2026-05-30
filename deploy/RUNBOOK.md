@@ -281,3 +281,96 @@ sudo docker stats --no-stream zd-agent
 ```
 
 If near the 1500m limit: raise the `--memory` in `zd-agent.service` (after upgrading instance memory).
+
+---
+
+## 工单日志 Web 界面（log-viewer）
+
+按工单查看 agent 处理日志，`https://zendesk.smlershou.top/logs/`，Google 登录保护（仅 `@dify.ai`）。
+
+### 架构（三个独立组件）
+
+```
+浏览器 ─Google登录─> nginx /logs/ ─auth_request─> oauth2-proxy(:4180)
+                                       │ 已登录(@dify.ai)
+                                       ▼
+                       log-viewer FastAPI(:8081) ─读─> /opt/zd-agent/logs/events-*.jsonl
+                                                              ▲
+                       zd-agent 容器 ─structlog jsonl sink──┘
+```
+
+- **jsonl 落盘**：agent `log.py` 在 stdout(ConsoleRenderer)外额外写 JSON 到
+  `/opt/zd-agent/logs/events-<UTC日期>.jsonl`（`config.yaml` 的 `logging.jsonl_enabled` 控制；
+  容器挂载 `-v /opt/zd-agent/logs:/opt/zd-agent/logs`，已在 `zd-agent.service`）。
+- **log-viewer**（`zd-log-viewer.service`，宿主 venv uvicorn :8081）：只读 jsonl，纯只读无认证逻辑。
+- **oauth2-proxy**（`oauth2-proxy.service` :4180）：Google OAuth + `--email-domain=dify.ai`。
+  密钥在 `/opt/zd-agent/oauth2-proxy.env`（chmod 600，**不进 git**）。
+
+### ⚠️⚠️ nginx 最大的坑（务必先读）
+
+本机有**两套** nginx 配置树，实际生效的是**宝塔(BT Panel)**，不是 `/etc/nginx`：
+
+- 运行中的 nginx：`/usr/sbin/nginx -c /www/server/nginx/conf/nginx.conf`，
+  include `/www/server/panel/vhost/nginx/*.conf` → 真正生效的 vhost 是
+  **`/www/server/panel/vhost/nginx/zendesk.smlershou.top.conf`**（证书也在 `/www/server/panel/vhost/cert/`）。
+- `/etc/nginx/`（sites-enabled/conf.d）是**另一套、不被运行 nginx 使用**的影子配置。
+  `nginx -T`（不带 -c）默认读 `/etc/nginx/nginx.conf` → 显示影子配置，**看着对其实没生效**
+  （曾因此 /logs/ 裸奔 200，改 /etc/nginx 完全无效，排查了一整轮）。
+- **判断哪套生效**：`ss -tlnp | grep :443` 找 pid → `tr '\0' ' ' < /proc/<pid>/cmdline` 看 `-c`。
+- **改配置只改宝塔 vhost**；测试 `nginx -t -c /www/server/nginx/conf/nginx.conf`；
+  reload `systemctl reload nginx`（systemd 管的就是这个进程）。
+- **改完务必验证**：`curl -s -o /dev/null -w "%{http_code}" https://zendesk.smlershou.top/logs/`
+  必须返回 **302**（未登录跳 Google）；若返 **200** = auth 没生效 = 还在裸奔含 PII，立刻排查。
+- ⚠️ 宝塔 UI 里操作过该站点可能覆盖手加的 location，UI 操作后要复查 vhost。
+
+vhost 里需要的三个 location（合并进宝塔 vhost）：`location /oauth2/`、`location = /oauth2/auth`、
+`location /logs/`（含 `auth_request /oauth2/auth;` + `error_page 401 = /oauth2/sign_in;`）。
+完整内容见 git `deploy/nginx/zd-agent.conf`（仅作参考，证书路径需改成宝塔的）。
+
+### 一次性安装
+
+```bash
+# 1. log-viewer venv（⚠️ pip 装依赖要去掉 clash 代理，否则百度镜像失败）
+cp -r /opt/zd-agent/code/log-viewer /opt/zd-agent/log-viewer
+cd /opt/zd-agent/log-viewer && python3 -m venv .venv
+env -u https_proxy -u http_proxy -u HTTPS_PROXY -u HTTP_PROXY .venv/bin/pip install fastapi uvicorn
+
+# 2. oauth2-proxy 二进制（用 clash 代理拉 github）
+cd /tmp && curl -fsSL -x http://127.0.0.1:7890 -o o2p.tar.gz \
+  https://github.com/oauth2-proxy/oauth2-proxy/releases/download/v7.6.0/oauth2-proxy-v7.6.0.linux-amd64.tar.gz
+tar xzf o2p.tar.gz && cp oauth2-proxy-*/oauth2-proxy /usr/local/bin/ && chmod +x /usr/local/bin/oauth2-proxy
+
+# 3. 密钥 env（Client ID/Secret 来自 Google Cloud Console）
+umask 077
+cat > /opt/zd-agent/oauth2-proxy.env <<EOF
+OAUTH2_PROXY_CLIENT_ID=<client id>.apps.googleusercontent.com
+OAUTH2_PROXY_CLIENT_SECRET=<client secret>
+OAUTH2_PROXY_COOKIE_SECRET=$(python3 -c 'import secrets,base64;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())')
+EOF
+chmod 600 /opt/zd-agent/oauth2-proxy.env
+
+# 4. systemd
+cp /opt/zd-agent/code/deploy/systemd/zd-log-viewer.service /etc/systemd/system/
+cp /opt/zd-agent/code/deploy/systemd/oauth2-proxy.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now zd-log-viewer oauth2-proxy
+
+# 5. nginx：把上面三个 location 合并进宝塔 vhost（不是 /etc/nginx！），然后：
+nginx -t -c /www/server/nginx/conf/nginx.conf && systemctl reload nginx
+curl -s -o /dev/null -w "%{http_code}\n" https://zendesk.smlershou.top/logs/   # 必须 302
+```
+
+### Google OAuth client 创建
+
+1. Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID → **Web application**
+2. Authorized redirect URIs 填精确值：`https://zendesk.smlershou.top/oauth2/callback`
+3. Client ID + Secret 填入 `/opt/zd-agent/oauth2-proxy.env`
+4. ⚠️ client secret 若曾在截图/聊天暴露，用完应在 Google Console 轮换。
+
+### 常用操作
+
+| What | How |
+|------|-----|
+| 更新 log-viewer 代码 | `cd /opt/zd-agent/code && git pull && cp -r log-viewer/* /opt/zd-agent/log-viewer/ && systemctl restart zd-log-viewer` |
+| 改 oauth2-proxy 密钥 | 编辑 `/opt/zd-agent/oauth2-proxy.env` → `systemctl restart oauth2-proxy` |
+| 改 nginx 后验证 | `curl -s -o /dev/null -w "%{http_code}" https://zendesk.smlershou.top/logs/` 应为 `302` |
+| 看 oauth2-proxy 日志 | `journalctl -u oauth2-proxy -f` |
