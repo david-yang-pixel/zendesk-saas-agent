@@ -320,7 +320,10 @@ If near the 1500m limit: raise the `--memory` in `zd-agent.service` (after upgra
 - **改配置只改宝塔 vhost**；测试 `nginx -t -c /www/server/nginx/conf/nginx.conf`；
   reload `systemctl reload nginx`（systemd 管的就是这个进程）。
 - **改完务必验证**：`curl -s -o /dev/null -w "%{http_code}" https://zendesk.smlershou.top/logs/`
-  必须返回 **302**（未登录跳 Google）；若返 **200** = auth 没生效 = 还在裸奔含 PII，立刻排查。
+  **检查 body 内容**：未登录访问应得 oauth2 登录页（含 "sign in"），**绝不能含 `ticket_id`**。
+  注意：状态码 **200 或 302 都正常**（`error_page 401 = /oauth2/sign_in` 用 `=` 时返 200+登录页）。
+  判定泄露看**内容有没有 ticket 数据**，不是看状态码。命令：
+  `curl -s https://zendesk.smlershou.top/logs/api/tickets | grep -c ticket_id` → 必须 `0`。
 - ⚠️ 宝塔 UI 里操作过该站点可能覆盖手加的 location，UI 操作后要复查 vhost。
 
 vhost 里需要的三个 location（合并进宝塔 vhost）：`location /oauth2/`、`location = /oauth2/auth`、
@@ -356,7 +359,9 @@ systemctl daemon-reload && systemctl enable --now zd-log-viewer oauth2-proxy
 
 # 5. nginx：把上面三个 location 合并进宝塔 vhost（不是 /etc/nginx！），然后：
 nginx -t -c /www/server/nginx/conf/nginx.conf && systemctl reload nginx
-curl -s -o /dev/null -w "%{http_code}\n" https://zendesk.smlershou.top/logs/   # 必须 302
+# 验证：看 body 内容，不要只看状态码！未登录访问应返回 oauth2 登录页（含 sign in），
+# 绝不能含 ticket_id（那才是泄露）。状态码 200 或 302 都正常（error_page = 用 200+登录页）：
+curl -s https://zendesk.smlershou.top/logs/api/tickets | grep -c ticket_id   # 必须 0（无泄露）
 ```
 
 ### Google OAuth client 创建
