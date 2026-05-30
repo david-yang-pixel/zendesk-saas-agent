@@ -112,12 +112,16 @@ def test_real_sample_parses(tmp_path):
     assert 2709 in grouped
 
 
-def test_read_events_days_zero_reads_all_history():
-    """days<=0 读取全部历史日志（不按日期过滤）。"""
-    with tempfile.TemporaryDirectory() as d:
-        today = datetime.now(timezone.utc).date().isoformat()
-        _write(d, f"events-{today}.jsonl", [{"ticket_id": 1, "event": "x"}])
-        _write(d, "events-2000-01-01.jsonl", [{"ticket_id": 2, "event": "y"}])
-        ev = P.read_events(d, days=0)
-        ids = sorted(e["ticket_id"] for e in ev)
-        assert ids == [1, 2]
+def test_read_events_days_zero_reads_all_history(tmp_path):
+    """days<=0 读取全部历史日志（不按日期过滤）；老文件不被截断。"""
+    # 今天的文件
+    _write_jsonl(tmp_path, [{"ticket_id": 1, "event": "x"}])
+    # 一个很久以前的文件（14 天窗口会丢，全部历史应保留）
+    (tmp_path / "events-2000-01-01.jsonl").write_text(
+        json.dumps({"ticket_id": 2, "event": "y"}) + "\n"
+    )
+    ids_all = sorted(e["ticket_id"] for e in P.read_events(str(tmp_path), days=0))
+    assert ids_all == [1, 2]
+    # 对照：14 天窗口只读到今天的
+    ids_win = sorted(e["ticket_id"] for e in P.read_events(str(tmp_path), days=14))
+    assert ids_win == [1]
