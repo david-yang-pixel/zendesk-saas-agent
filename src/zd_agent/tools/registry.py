@@ -51,6 +51,13 @@ from zd_agent.tools.zendesk import (
 )
 from zd_agent.tools.zendesk_public_reply import ZendeskPublicReply
 from zd_agent.tools.zd_kb_cli import ZdKbCliExec
+from zd_agent.tools.saas_version import SaasDeployedVersion
+from zd_agent.tools.signoz_tools import (
+    SignozErrors,
+    SignozTraceback,
+    SignozServices,
+    SignozQuery,
+)
 
 
 def create_tool_registry() -> ToolRegistry:
@@ -88,6 +95,9 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(GithubSearchPrs())
     registry.register(GithubGetPr())
     registry.register(GithubCodeSearch())
+
+    # 线上版本感知（SigNoz 实时遥测 + saas-deploy 兜底）
+    registry.register(SaasDeployedVersion())
 
     # 环境工具组
     registry.register(RunScript())
@@ -133,27 +143,21 @@ def create_tool_registry() -> ToolRegistry:
         registry.register(GrafanaGetDashboard())
         registry.register(GrafanaQueryPrometheus())
 
-    # SigNoz 工具走 MCP subprocess（详见 tools/signoz_mcp_tools.py 的 docstring）
-    # 异步注册——由 runner.py 在 dispatch 之前 await 进来。这里不挂手写 v3 client。
+    # SigNoz 日志查询工具组（经 sz CLI，替换已失效的 SigNoz MCP）
+    registry.register(SignozErrors())
+    registry.register(SignozTraceback())
+    registry.register(SignozServices())
+    registry.register(SignozQuery())
 
     return registry
 
 
 async def augment_registry_async(registry: "ToolRegistry") -> None:
-    """Async-only 工具组的注册（spawn MCP subprocess + tools/list）。
+    """[已停用] 原用于异步注册 SigNoz MCP 工具。
 
-    runner.py 在 ``create_tool_registry()`` 之后 ``await`` 这个函数，把
-    SigNoz MCP 暴露的 ~20 个工具加到 registry。MCP subprocess 是 module-level
-    singleton，多次 dispatch 复用同一进程。
+    SigNoz MCP（signoz-mcp-server）对 SigNoz EE v0.121 后端不兼容（启动即
+    closed stdout），生产从未成功加载。已改用 vendored sz CLI（见 signoz_tools.py
+    + saas_version.py），SigNoz 工具改为同步注册。本函数保留为 no-op 以兼容
+    runner.py 的调用点；signoz_mcp_tools.py 代码保留备用，不删。
     """
-    from zd_agent.tools.signoz_mcp_tools import discover_signoz_mcp_tools
-
-    for tool in await discover_signoz_mcp_tools():
-        try:
-            registry.register(tool)
-        except Exception as e:
-            from zd_agent.log import get_logger
-            get_logger(module="tools.registry").warning(
-                "signoz_mcp_register_failed",
-                name=getattr(tool, "name", "?"), error=str(e),
-            )
+    return None
