@@ -189,6 +189,7 @@ async def run_agent(session: AgentSession) -> None:
             elapsed=f"{guardrails.elapsed_seconds:.1f}s",
             reply_sent=session.reply_sent,
             archived=session.archived,
+            model=cfg.llm.model,
         )
 
         # 自动归档保底：如果 LLM 没有调用 archive_ticket，runner 层补充写入 meta.json

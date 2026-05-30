@@ -239,6 +239,7 @@ function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">
 // 枚举中英映射（与 agent 源码一致）
 const VERDICT_CN={no_message:"无消息",greeting:"打招呼",insufficient_info:"信息不足",substantial_issue:"实质问题",request_human:"请求人工",self_resolved:"已自行解决"};
 const TYPE_CN={platform_issue:"平台故障",knowledge_base:"知识库",workflow:"工作流",api:"API",permissions:"权限",product_usage:"产品用法",billing:"计费",refund:"退款",insufficient_info:"信息不足",mention:"@提及",general:"通用"};
+const TRIGGER_CN={zendesk_webhook:"客户消息",silence_waker:"静默唤醒",native_messaging:"消息渠道",mention:"@提及",mention_poller:"@提及",web:"网页",api:"API"};
 const STATUS_CN={completed:"已完成",failed:"失败",processing:"处理中",processed:"已处理"};
 function cn(map,v){return v?(map[v]||v):v;}
 function stp(s){if(!s)return `<span class="pill p-run"><span class="d"></span>处理中</span>`;if(s==="completed")return `<span class="pill p-ok"><span class="d"></span>已完成</span>`;if(s==="failed")return `<span class="pill p-bad"><span class="d"></span>失败</span>`;return `<span class="pill p-warn"><span class="d"></span>${esc(cn(STATUS_CN,s))}</span>`;}
@@ -267,9 +268,9 @@ async function showList(){
   <div class="card"><div class="card-h"><span class="t">处理记录</span><span class="n">${total}</span></div>
     <div class="tw"><table><thead><tr>
       <th>工单</th><th>状态</th><th>判定</th><th>类型</th>
-      <th class="r">轮数</th><th class="r">token</th><th class="r">耗时</th><th>回复</th><th>最后时间</th>
+      <th class="r">轮数</th><th class="r">token</th><th class="r">耗时</th><th>模型</th><th>触发</th><th>回复</th><th>最后时间</th>
     </tr></thead><tbody id="tb">`;
-  if(!total)h+=`<tr><td colspan="9">${empty('暂无日志','agent 处理工单后自动出现')}</td></tr>`;
+  if(!total)h+=`<tr><td colspan="11">${empty('暂无日志','agent 处理工单后自动出现')}</td></tr>`;
   for(const s of rows){
     const hot=s.total_tokens&&parseFloat(String(s.total_tokens).replace(/[^\d.]/g,""))>1000000?"hot":"";
     const rep=s.reply_sent===true?`<span class="ck">${ic(I.check,17)}</span>`:`<span class="ck no">${ic(I.x,16)}</span>`;
@@ -280,13 +281,15 @@ async function showList(){
       <td class="r num">${s.rounds??'<span class="faint">—</span>'}</td>
       <td class="r num tok ${hot}">${fmtTok(s.total_tokens)}</td>
       <td class="r num muted">${fmtEl(s.elapsed)}</td>
+      <td class="muted">${s.model?esc(s.model):'<span class="faint">—</span>'}</td>
+      <td>${s.trigger?esc(TRIGGER_CN[s.trigger]||s.trigger):'<span class="faint">—</span>'}</td>
       <td>${rep}</td><td class="mono faint">${fmtTime(s.last_time)}</td>
     </tr>`;
   }
   h+=`</tbody></table></div></div>`; app.innerHTML=h;
 }
 function kpi(c,i,l,v){return `<div class="kpi ${c}"><div class="top"><span class="lab">${l}</span><span class="ic">${ic(I[i],20)}</span></div><div class="val num">${v}</div></div>`;}
-function skeleton(){let r="";for(let i=0;i<6;i++)r+=`<tr><td colspan="9"><div class="sk" style="height:20px"></div></td></tr>`;
+function skeleton(){let r="";for(let i=0;i<6;i++)r+=`<tr><td colspan="11"><div class="sk" style="height:20px"></div></td></tr>`;
   return `<div class="kpis">${[0,0,0,0].map(()=>`<div class="kpi"><div class="top"><div class="sk" style="height:13px;width:50px"></div><div class="sk" style="width:40px;height:40px;border-radius:10px"></div></div><div class="sk" style="height:30px;width:66px;margin-top:14px"></div></div>`).join("")}</div><div class="card"><div class="card-h"><div class="sk" style="height:16px;width:90px"></div></div><div class="tw"><table><tbody>${r}</tbody></table></div></div>`;}
 function empty(t,s){return `<div class="empty">${ic(I.inbox,42,1.5)}<div class="t">${esc(t)}</div><div class="s">${esc(s||"")}</div></div>`;}
 function filter(){const q=document.getElementById('q').value.trim();document.querySelectorAll('#tb tr').forEach(tr=>{const id=tr.getAttribute('data-id')||"";tr.style.display=!q||id.includes(q)?"":"none";});}
