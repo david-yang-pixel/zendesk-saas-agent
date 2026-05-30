@@ -73,7 +73,7 @@
   .btn-pri:hover{background:var(--blue-700)}
   .body{padding:28px 32px 56px;max-width:1320px}
 
-  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:26px}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:18px;margin-bottom:26px}
   .kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-xs);transition:box-shadow .18s,transform .18s}
   .kpi:hover{box-shadow:var(--sh-md);transform:translateY(-2px)}
   .kpi .top{display:flex;align-items:center;justify-content:space-between}
@@ -85,8 +85,9 @@
   .kpi.b .ic{background:var(--ok-weak)} .kpi.b .ic svg{stroke:var(--ok)}
   .kpi.c .ic{background:var(--bad-weak)} .kpi.c .ic svg{stroke:var(--bad)}
   .kpi.d .ic{background:var(--blue-50)} .kpi.d .ic svg{stroke:var(--blue-600)}
+  .kpi.e .ic{background:#fff4e5} .kpi.e .ic svg{stroke:#c2770b}
   .kpi .val{font-size:30px;font-weight:720;letter-spacing:-.02em;margin-top:14px;line-height:1}
-  .kpi.b .val{color:var(--ok)} .kpi.c .val{color:var(--bad)} .kpi.d .val{color:var(--blue-600)}
+  .kpi.b .val{color:var(--ok)} .kpi.c .val{color:var(--bad)} .kpi.d .val{color:var(--blue-600)} .kpi.e .val{color:#c2770b}
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-xs);overflow:hidden}
   .card-h{display:flex;align-items:center;gap:10px;padding:18px 22px;border-bottom:1px solid var(--line-2)}
@@ -197,6 +198,7 @@ const I={
   check2:'<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
   xcirc:'<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>',
   loop:'<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>',
+  coins:'<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="M16.71 13.88l.7.71-2.82 2.82"/>',
   check:'<path d="M20 6 9 17l-5-5"/>', x:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   chev:'<polyline points="15 18 9 12 15 6"/>',
   tag:'<path d="M20.59 13.41 13.42 20.58a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/>',
@@ -259,12 +261,14 @@ async function showList(){
   document.getElementById('navCount').textContent=rows.length;
   const total=rows.length,done=rows.filter(r=>r.status==="completed").length,
     failed=rows.filter(r=>r.status==="failed").length,
-    wr=rows.filter(r=>r.rounds!=null),avg=wr.length?Math.round(wr.reduce((a,r)=>a+r.rounds,0)/wr.length):"—";
+    wr=rows.filter(r=>r.rounds!=null),avg=wr.length?Math.round(wr.reduce((a,r)=>a+r.rounds,0)/wr.length):"—",
+    sumTok=rows.reduce((a,r)=>a+(parseFloat(String(r.total_tokens??0).replace(/[^\d.]/g,""))||0),0);
   let h=`<div class="kpis">
     ${kpi('a','layers','总工单',total)}
     ${kpi('b','check2','已完成',done)}
     ${kpi('c','xcirc','失败',failed)}
     ${kpi('d','loop','平均轮数',avg)}
+    ${kpi('e','coins','总token',fmtTok(sumTok))}
   </div>
   <div class="card"><div class="card-h"><span class="t">处理记录</span><span class="n">${total}</span></div>
     <div class="tw"><table><thead><tr>
@@ -291,7 +295,7 @@ async function showList(){
 }
 function kpi(c,i,l,v){return `<div class="kpi ${c}"><div class="top"><span class="lab">${l}</span><span class="ic">${ic(I[i],20)}</span></div><div class="val num">${v}</div></div>`;}
 function skeleton(){let r="";for(let i=0;i<6;i++)r+=`<tr><td colspan="11"><div class="sk" style="height:20px"></div></td></tr>`;
-  return `<div class="kpis">${[0,0,0,0].map(()=>`<div class="kpi"><div class="top"><div class="sk" style="height:13px;width:50px"></div><div class="sk" style="width:40px;height:40px;border-radius:10px"></div></div><div class="sk" style="height:30px;width:66px;margin-top:14px"></div></div>`).join("")}</div><div class="card"><div class="card-h"><div class="sk" style="height:16px;width:90px"></div></div><div class="tw"><table><tbody>${r}</tbody></table></div></div>`;}
+  return `<div class="kpis">${[0,0,0,0,0].map(()=>`<div class="kpi"><div class="top"><div class="sk" style="height:13px;width:50px"></div><div class="sk" style="width:40px;height:40px;border-radius:10px"></div></div><div class="sk" style="height:30px;width:66px;margin-top:14px"></div></div>`).join("")}</div><div class="card"><div class="card-h"><div class="sk" style="height:16px;width:90px"></div></div><div class="tw"><table><tbody>${r}</tbody></table></div></div>`;}
 function empty(t,s){return `<div class="empty">${ic(I.inbox,42,1.5)}<div class="t">${esc(t)}</div><div class="s">${esc(s||"")}</div></div>`;}
 function filter(){const q=document.getElementById('q').value.trim();document.querySelectorAll('#tb tr').forEach(tr=>{const id=tr.getAttribute('data-id')||"";tr.style.display=!q||id.includes(q)?"":"none";});}
 function go(id){location.hash="t/"+id;}
