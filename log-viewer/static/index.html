@@ -238,7 +238,7 @@ async function showList(){
   </div>
   <div class="card"><div class="card-h"><span class="t">处理记录</span><span class="n">${total}</span></div>
     <div class="tw"><table><thead><tr>
-      <th>工单</th><th>状态</th><th>verdict</th><th>类型</th>
+      <th>工单</th><th>状态</th><th>判定</th><th>类型</th>
       <th class="r">轮数</th><th class="r">token</th><th class="r">耗时</th><th>回复</th><th>最后时间</th>
     </tr></thead><tbody id="tb">`;
   if(!total)h+=`<tr><td colspan="9">${empty('暂无日志','agent 处理工单后自动出现')}</td></tr>`;
