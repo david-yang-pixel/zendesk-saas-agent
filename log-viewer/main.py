@@ -30,6 +30,12 @@ def ticket_detail(ticket_id: int) -> JSONResponse:
     return JSONResponse(timeline)
 
 
+@app.get("/api/meta")
+def meta() -> JSONResponse:
+    """前端设置面板用：只读展示日志保留天数。"""
+    return JSONResponse({"days": DAYS})
+
+
 @app.get("/dify-avatar.svg")
 def dify_avatar() -> FileResponse:
     return FileResponse(

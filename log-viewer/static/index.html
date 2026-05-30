@@ -27,6 +27,22 @@
     --sh-md:0 4px 8px -2px rgba(16,24,40,.1),0 2px 4px -2px rgba(16,24,40,.06);
     --sbw:260px;
   }
+  [data-theme="dark"]{
+    --bg:#0d1117; --panel:#161b22;
+    --ink:#e6edf3; --ink-2:#c9d1d9; --muted:#8b949e; --faint:#6e7681;
+    --line:#21262d; --line-2:#1b2027; --hover:#1c2333;
+    --blue-600:#5b82ff; --blue-700:#93b4ff; --blue-50:#172554; --blue-100:#1e3a8a;
+    --ok:#3fb950; --ok-weak:#0f2a1c; --ok-bd:#1d4d33;
+    --bad:#f85149; --bad-weak:#2c1614; --bad-bd:#5a261f;
+    --warn:#d29922; --warn-weak:#2a1f0c; --warn-bd:#5a431a;
+    --gray-weak:#21262d; --gray-tx:#c9d1d9;
+    --sh-xs:0 1px 2px rgba(0,0,0,.4);
+    --sh-sm:0 1px 3px rgba(0,0,0,.5);
+    --sh-md:0 4px 12px rgba(0,0,0,.55);
+  }
+  [data-theme="dark"] .kpi.e .ic{background:#3a2a0e}
+  [data-theme="dark"] .kpi.e .ic svg{stroke:#f0b85a}
+  [data-theme="dark"] .kpi.e .val{color:#f0b85a}
   *{box-sizing:border-box;margin:0;padding:0}
   body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",Inter,system-ui,sans-serif;
        background:var(--bg);color:var(--ink);-webkit-font-smoothing:antialiased}
@@ -175,10 +191,32 @@
       <a class="on" onclick="goList()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>工单列表<span class="badge" id="navCount">—</span></a>
     </nav>
     <div class="foot">
-      <div class="who"><span class="av">D</span><span class="nm">dify.ai<small>已登录</small></span></div>
+      <div class="who"><span class="av">D</span><span class="nm">dify.ai<small>已登录</small></span>
+        <span class="fact">
+          <button class="fbtn" title="设置" onclick="openSettings()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+          <button class="fbtn" title="退出登录" onclick="logout()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>
+        </span>
+      </div>
     </div>
   </aside>
   <div class="scrim" onclick="document.body.classList.remove('nav-open')"></div>
+
+  <div class="modal" id="settings" onclick="if(event.target===this)closeSettings()">
+    <div class="sheet">
+      <div class="sheet-h"><b>设置</b><button class="sheet-x" onclick="closeSettings()" aria-label="关闭">✕</button></div>
+      <div class="sheet-b">
+        <div class="sgrp">外观</div>
+        <div class="srow"><span class="lk">深色模式</span><button class="sw" id="swTheme" onclick="toggleTheme()" aria-label="深色模式"></button></div>
+        <div class="sgrp">数据</div>
+        <div class="srow"><span class="lk">自动刷新</span><button class="sw" id="swAuto" onclick="toggleAuto()" aria-label="自动刷新"></button></div>
+        <div class="srow"><span class="lk">刷新间隔</span><span class="seg" id="segInt"></span></div>
+        <div class="sgrp">关于</div>
+        <div class="srow"><span class="lk">登录账号</span><span class="rk">dify.ai</span></div>
+        <div class="srow"><span class="lk">日志保留</span><span class="rk" id="metaDays">—</span></div>
+      </div>
+      <div class="sheet-f"><button class="logout" onclick="logout()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>退出登录</button></div>
+    </div>
+  </div>
 
   <div class="main">
     <header class="topbar">
@@ -252,10 +290,10 @@ function mtags(models,fallback){const a=Array.isArray(models)&&models.length?mod
 let CACHE=[];
 function goList(){document.body.classList.remove('nav-open');location.hash='';}
 
-async function showList(){
+async function showList(silent){
   if(location.hash){location.hash='';return;}
   document.getElementById('crumb').textContent='';
-  const app=document.getElementById('app'); app.innerHTML=skeleton();
+  const app=document.getElementById('app'); if(!silent)app.innerHTML=skeleton();
   let rows; try{rows=await(await fetch('api/tickets')).json();}catch(e){app.innerHTML=empty('加载失败',String(e));return;}
   CACHE=rows; document.getElementById('q').disabled=false;
   document.getElementById('navCount').textContent=rows.length;
@@ -330,6 +368,28 @@ async function showDetail(id){
   }
   h+=`</div>`; app.innerHTML=h;
 }
+// ───── 设置：深色模式 + 自动刷新 + 退出登录 ─────
+const LS={theme:'zdv_theme',auto:'zdv_auto',int:'zdv_int'};
+let autoTimer=null;
+function applyTheme(t){document.documentElement.setAttribute('data-theme',t);const b=document.getElementById('swTheme');if(b)b.classList.toggle('on',t==='dark');}
+function toggleTheme(){const cur=document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';localStorage.setItem(LS.theme,cur);applyTheme(cur);}
+function curInt(){return parseInt(localStorage.getItem(LS.int)||'30',10);}
+function autoOn(){return localStorage.getItem(LS.auto)==='1';}
+function renderSeg(){const sel=curInt();const el=document.getElementById('segInt');if(el)el.innerHTML=[15,30,60].map(s=>`<button class="${s===sel?'on':''}" onclick="setInt(${s})">${s}s</button>`).join('');}
+function setInt(s){localStorage.setItem(LS.int,s);renderSeg();startAuto();}
+function startAuto(){if(autoTimer){clearInterval(autoTimer);autoTimer=null;}if(autoOn())autoTimer=setInterval(()=>{if(!location.hash)showList(true);},curInt()*1000);}
+function toggleAuto(){localStorage.setItem(LS.auto,autoOn()?'0':'1');const b=document.getElementById('swAuto');if(b)b.classList.toggle('on',autoOn());startAuto();}
+function openSettings(){document.body.classList.remove('nav-open');renderSeg();
+  const t=document.getElementById('swTheme');if(t)t.classList.toggle('on',document.documentElement.getAttribute('data-theme')==='dark');
+  const a=document.getElementById('swAuto');if(a)a.classList.toggle('on',autoOn());
+  fetch('api/meta').then(r=>r.json()).then(m=>{const e=document.getElementById('metaDays');if(e)e.textContent=(m.days??'—')+' 天';}).catch(()=>{});
+  document.getElementById('settings').classList.add('show');}
+function closeSettings(){document.getElementById('settings').classList.remove('show');}
+function logout(){if(confirm('确定退出登录？'))location.href='/oauth2/sign_out';}
+applyTheme(localStorage.getItem(LS.theme)||'light');
+startAuto();
+window.addEventListener('keydown',e=>{if(e.key==='Escape')closeSettings();});
+
 async function route(){const m=location.hash.match(/^#t\/(\d+)/);if(m){if(!CACHE.length){try{CACHE=await(await fetch('api/tickets')).json();}catch(e){}}showDetail(parseInt(m[1],10));}else showList();}
 window.addEventListener('hashchange',route);route();
 </script>
