@@ -377,5 +377,5 @@ curl -s https://zendesk.smlershou.top/logs/api/tickets | grep -c ticket_id   # �
 |------|-----|
 | 更新 log-viewer 代码 | `cd /opt/zd-agent/code && git pull && cp -r log-viewer/* /opt/zd-agent/log-viewer/ && systemctl restart zd-log-viewer` |
 | 改 oauth2-proxy 密钥 | 编辑 `/opt/zd-agent/oauth2-proxy.env` → `systemctl restart oauth2-proxy` |
-| 改 nginx 后验证 | `curl -s -o /dev/null -w "%{http_code}" https://zendesk.smlershou.top/logs/` 应为 `302` |
+| 改 nginx 后验证 | `curl -s https://zendesk.smlershou.top/logs/api/tickets` 输出**不含 ticket_id**（含=泄露），应是 oauth2 登录页 |
 | 看 oauth2-proxy 日志 | `journalctl -u oauth2-proxy -f` |
