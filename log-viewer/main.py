@@ -9,7 +9,8 @@ from fastapi.responses import FileResponse, JSONResponse
 import parser as P
 
 LOG_DIR = os.environ.get("ZD_LOG_DIR", "/opt/zd-agent/logs")
-DAYS = int(os.environ.get("ZD_LOG_DAYS", "14"))
+# 0 = 读取全部历史日志（磁盘上的 jsonl 始终不删）。可用 ZD_LOG_DAYS 覆盖成 N 天窗口。
+DAYS = int(os.environ.get("ZD_LOG_DAYS", "0"))
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
 
 app = FastAPI(title="zd-agent log viewer")
@@ -32,8 +33,8 @@ def ticket_detail(ticket_id: int) -> JSONResponse:
 
 @app.get("/api/meta")
 def meta() -> JSONResponse:
-    """前端设置面板用：只读展示日志保留天数。"""
-    return JSONResponse({"days": DAYS})
+    """前端设置面板用：只读展示日志读取范围。days=0 表示全部历史。"""
+    return JSONResponse({"days": DAYS, "all": DAYS <= 0})
 
 
 @app.get("/dify-avatar.svg")

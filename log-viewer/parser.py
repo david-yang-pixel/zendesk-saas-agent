@@ -8,10 +8,16 @@ from datetime import datetime, timedelta, timezone
 
 
 def read_events(log_dir: str, days: int = 7) -> list[dict]:
-    """读最近 days 天的 events-*.jsonl，逐行 json.loads，坏行跳过。"""
+    """读 events-*.jsonl，逐行 json.loads，坏行跳过。
+
+    days <= 0 表示读取**全部历史**（不按日期过滤）；磁盘上的 jsonl
+    始终不删，这里只是控制网页往回读多少天。
+    """
     if not os.path.isdir(log_dir):
         return []
-    cutoff = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
+    cutoff = None
+    if days > 0:
+        cutoff = datetime.now(timezone.utc).date() - timedelta(days=days - 1)
     events: list[dict] = []
     for path in sorted(glob.glob(os.path.join(log_dir, "events-*.jsonl"))):
         base = os.path.basename(path)
@@ -20,7 +26,7 @@ def read_events(log_dir: str, days: int = 7) -> list[dict]:
             fdate = datetime.strptime(datestr, "%Y-%m-%d").date()
         except ValueError:
             continue
-        if fdate < cutoff:
+        if cutoff is not None and fdate < cutoff:
             continue
         try:
             with open(path, encoding="utf-8") as f:
