@@ -127,6 +127,16 @@
   .ev{position:relative;padding-bottom:20px} .ev:last-child{padding-bottom:2px}
   .ev .node{position:absolute;left:-40px;top:9px;width:20px;height:20px;border-radius:50%;background:var(--panel);border:2px solid var(--line);display:flex;align-items:center;justify-content:center}
   .ev .node svg{width:11px;height:11px;stroke:var(--muted)}
+  /* 噪音事件：紧凑灰色小行 */
+  .ev.noise{padding-bottom:8px}
+  .ev.noise .node{width:12px;height:12px;left:-36px;top:5px;border-color:var(--line-2);background:#fafbfc}
+  .ev.noise .node svg{width:7px;height:7px;stroke:var(--faint)}
+  .ev.noise .bd{background:transparent;border:0;box-shadow:none;padding:3px 0 3px 4px}
+  .ev.noise .bd:hover{background:transparent;box-shadow:none}
+  .ev.noise .name{font-weight:400;font-size:12.5px;color:var(--faint)}
+  .ev.noise .t{font-size:11px}
+  .ev.noise .fields{margin-top:2px;color:var(--faint);font-size:11.5px} .ev.noise .kv b{color:var(--faint)}
+  .ev.noise .exp{display:none}
   .ev.err .node{border-color:var(--bad);background:var(--bad-weak)} .ev.err .node svg{stroke:var(--bad)}
   .ev.ok .node{border-color:var(--ok);background:var(--ok-weak)} .ev.ok .node svg{stroke:var(--ok)}
   .ev.reply .node{border-color:var(--blue-600);background:var(--blue-50)} .ev.reply .node svg{stroke:var(--blue-600)}
@@ -202,7 +212,25 @@ const I={
   dot:'<circle cx="12" cy="12" r="5"/>', inbox:'<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
 };
 const EV={ticket_classified:"tag",trigger_verdict:"target",round_tool_calls:"tool",public_reply_sent:"msg",public_reply_send_start:"msg",internal_reply_auto_public_sent:"msg",compaction_triggered:"arch",agent_done:"done",agent_start:"play",ack_note_sent:"note",sandbox_created:"box",trigger_enter_silence:"clock"};
+// 事件名中英映射（关键 + 常见噪音）
+const EVENT_CN={
+  trigger_verdict:"触发判定", ticket_classified:"工单分类", round_tool_calls:"工具调用",
+  public_reply_sent:"已发公开回复", public_reply_send_start:"开始发公开回复",
+  internal_reply_auto_public_sent:"内部回复转公开", compaction_triggered:"上下文压缩",
+  agent_done:"处理完成", agent_start:"开始处理", ack_note_sent:"已发确认备注",
+  sandbox_created:"创建沙箱", trigger_enter_silence:"进入静默窗口",
+  trigger_fetch_messages_ok:"拉取消息", zendesk_messaging_webhook_skip_non_user:"跳过非客户消息",
+  trigger_dispatch_direct:"直接派发", silence_expired_dispatch:"静默到期派发",
+  session_dispatched:"会话已派发", session_finished:"会话结束",
+  trigger_skip_duplicate_comment:"跳过重复评论", trigger_skip_post_agent_cooldown_direct:"冷却期跳过",
+};
+function evName(e){return EVENT_CN[e]||e;}
 const isErr=e=>/timeout|failed|error|escalat/i.test(e), isDone=e=>e==="agent_done", isReply=e=>/reply/.test(e);
+// 噪音事件：webhook 跳过 / 拉消息 / 派发心跳 等内部 routine，淡化显示
+const NOISE=new Set(["zendesk_messaging_webhook_skip_non_user","trigger_fetch_messages_ok","trigger_skip_duplicate_comment","trigger_skip_post_agent_cooldown_direct","session_dispatched","trigger_dispatch_direct","silence_expired_dispatch"]);
+function isNoise(e){return NOISE.has(e);}
+// 时间线上不值得展示的字段（UUID/内部 id），收进原始 JSON 即可
+const HIDE_FIELDS=new Set(["event","timestamp","level","module","ticket_id","event_id","msg_id","comment_id","session_id","actor_type"]);
 function evIcon(e){return isErr(e)?ic(I.alert,11):ic(I[EV[e]||"dot"],11);}
 function fmtTime(t){return t?t.replace("T"," ").replace("Z","").slice(5,19):"";}
 function fmtTok(n){if(n==null||n==="")return"—";const v=typeof n==="number"?n:parseFloat(String(n).replace(/[^\d.]/g,""));if(!isFinite(v))return String(n);return v>=1000?(v/1000).toFixed(0)+"K":""+v;}
@@ -281,13 +309,15 @@ async function showDetail(id){
     </div></div><div class="tl">`;
   if(!tl.length)h+=empty('无事件','');
   for(const e of tl){
-    const ev=e.event||"",cls=isErr(ev)?"err":isDone(ev)?"ok":isReply(ev)?"reply":"";
-    let f="";for(const[k,v] of Object.entries(e)){if(["event","timestamp","level","module","ticket_id"].includes(k))continue;
+    const ev=e.event||"";
+    const noise=isNoise(ev);
+    const cls=isErr(ev)?"err":isDone(ev)?"ok":isReply(ev)?"reply":(noise?"noise":"");
+    let f="";for(const[k,v] of Object.entries(e)){if(HIDE_FIELDS.has(k))continue;
       if(k==="tool_names"&&Array.isArray(v))f+=`<span class="kv"><b>tools</b> `+v.map(t=>`<span class="toolchip">${esc(t)}</span>`).join("")+`</span>`;
       else{let val=typeof v==="object"?JSON.stringify(v):String(v);if(val.length>72)val=val.slice(0,72)+"…";f+=`<span class="kv"><b>${esc(k)}</b> ${esc(val)}</span>`;}}
     h+=`<div class="ev ${cls}"><span class="node">${evIcon(ev)}</span><div class="bd" onclick="this.classList.toggle('open')">
-      <div class="l1"><span class="name">${esc(ev)}</span><span class="t">${fmtTime(e.timestamp)}</span></div>
-      ${f?`<div class="fields">${f}</div>`:""}<div class="exp">${ic(I.chev,12)} 原始 JSON</div>
+      <div class="l1"><span class="name" title="${esc(ev)}">${esc(evName(ev))}</span><span class="t">${fmtTime(e.timestamp)}</span></div>
+      ${f?`<div class="fields">${f}</div>`:""}${noise?"":`<div class="exp">${ic(I.chev,12)} 原始 JSON</div>`}
       <pre>${esc(JSON.stringify(e,null,2))}</pre></div></div>`;
   }
   h+=`</div>`; app.innerHTML=h;
