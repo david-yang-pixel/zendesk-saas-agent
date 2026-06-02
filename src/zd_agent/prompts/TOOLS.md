@@ -27,11 +27,13 @@
 - `grafana_get_dashboard`：按 UID 取面板详情
 - `grafana_query_prometheus`：PromQL 范围查询（`query` / `start` / `end` / `step`）
 
-### SigNoz
-- `signoz_list_services`：列可查询的 service 名
-- `signoz_search_logs`：按 `service_name` + `severity`（ERROR/WARN/INFO）+ 可选 `query`
-- `signoz_search_traces`：按 `service_name` 查链路
-- `signoz_get_field_keys` / `signoz_get_field_values`：发现可用过滤字段
+### SigNoz（经 sz CLI；旧 MCP 已停用）
+- `signoz_errors`：查 ERROR/FATAL 日志，可按 `tenant` / `grep`(body 子串) / `deployment` / `env`(默认 production) / `hours` / `limit` 过滤
+- `signoz_traceback`：拉完整 Python stacktrace（按 `id` / `tenant` / `grep`）。要看堆栈用这个，不要用 signoz_errors
+- `signoz_services`：列当前活跃 service / k8s deployment（查不到日志时核对 deployment 名）
+- `signoz_query`：兜底，跑任意 ClickHouse SELECT（表 `signoz_logs.distributed_logs_v2`，resource 用 `resources_string['k8s.deployment.name']`，时间用 `{start_ns}`/`{end_ns}`）
+
+> 版本感知：`saas_deployed_version` 查 cloud.dify.ai 生产 dify-api 当前运行版本 + 对应源码 ref。
 
 ## 知识匹配工具组
 

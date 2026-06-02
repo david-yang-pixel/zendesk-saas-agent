@@ -20,7 +20,7 @@
 
 每多一个 tool 多 150-800 tokens schema。例子：
 - task='搜 dify-billing 代码' → `tools=['git_grep']`
-- task='查 SigNoz 错误' → `tools=['signoz_search_logs', 'signoz_aggregate_logs']`
+- task='查 SigNoz 错误' → `tools=['signoz_errors', 'signoz_traceback']`
 - task='看 GitHub PR' → `tools=['github_search_prs', 'github_get_pr']`
 
 **❌ 不要传 10 个 tools** — 每个 subagent 应该只做一件事。

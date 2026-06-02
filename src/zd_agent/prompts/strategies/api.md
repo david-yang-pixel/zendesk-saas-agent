@@ -38,7 +38,7 @@ github_code_search query="<feature 名 + 错误关键词>" scope="langgenius/dif
 4. 并行派发 subagent：
    - A. 源码（按上面分类选）
    - B. GitHub Issues/PRs（搜 endpoint 名 + 错误码）
-   - C. SigNoz 请求日志（5xx 才需要）
+   - C. SigNoz 请求日志（5xx 才需要，用 `signoz_errors --deployment dify-api-oltp`）
 
 ## 常见根因
 - 鉴权头格式错误 / API key 过期

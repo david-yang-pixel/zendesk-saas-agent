@@ -27,7 +27,7 @@
 4. **直接调 tool 查根因**（**默认不派 subagent**）：
    - 源码：`git_grep` / `github_code_search`
    - 数据：`inspector_exec` / `sql_query`
-   - 日志：`signoz_search_logs` / `signoz_aggregate_logs`
+   - 日志：`signoz_errors` / `signoz_traceback`（堆栈）/ `signoz_query`（raw SQL）
    - 历史：`ticket_record_search` / `zd_kb_cli_exec`
 5. **只在以下情况派 subagent**（用 `run_subagents_parallel`）：
    - 需要并行查 ≥2 完全不相关角度
