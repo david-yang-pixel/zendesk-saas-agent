@@ -55,7 +55,7 @@ logger = get_logger(module="tools.zendesk_public_reply")
 # 找人吧"心理暗示，观察到 #2634 客户上来一句"你好"看到 footer 立刻喊人工。
 #
 # 新措辞策略：
-# 1. 先正向邀请客户提供问题（"share your question and I'll dig in"）→
+# 1. 先明示消息由 Dify AI 发送，再正向邀请客户提供问题 →
 #    心理上客户先看到 agent 主动接活，对 agent 有信心
 # 2. "doesn't resolve" 条件仍保留 escape hatch（合规要求 + trigger_decider
 #    fast-path 依赖 'human' 关键词检测）
@@ -65,7 +65,8 @@ logger = get_logger(module="tools.zendesk_public_reply")
 # ---------------------------------------------------------------------------
 _FOOTER_STANDARD = (
     "\n\n---\n"
-    "🤖 Dify SaaS Agent here — share your question and I'll dig in to find an answer.\n"
+    "🤖 This message is sent by Dify AI (Dify SaaS Agent). "
+    "Please tell me your question, and I'll help find an answer.\n"
     'If that doesn\'t resolve it, reply with "human" and a support engineer will take it from here.'
 )
 

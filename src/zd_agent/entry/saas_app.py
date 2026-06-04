@@ -9,6 +9,7 @@ from aiohttp import web
 
 from zd_agent.config import get_config
 from zd_agent.entry.mention_poller import run_mention_poller
+from zd_agent.entry.human_takeover import is_human_assignee
 from zd_agent.entry.silence_waker import run_silence_waker
 from zd_agent.entry.waiting_poller import run_waiting_poller
 from zd_agent.entry.teleport_auth_web import (
@@ -283,12 +284,15 @@ _AGENT_REPLY_MARKER = "Dify SaaS Agent"
 
 
 async def _detect_human_takeover(
-    *, ticket_id: int, ticket_info: dict, agent_user_id: int,
+    *,
+    ticket_id: int,
+    ticket_info: dict,
+    agent_user_id: int,
 ) -> tuple[bool, str]:
-    """检测此工单是否已有"非 agent 人工 SE"接手 → 若是，应停止 agent 处理。
+    """检测此工单是否已有受托人/人工 SE 接手 → 若是，应停止 agent 处理。
 
     检测三种情况：
-    1. ``assignee_id`` 是非零的其他人（不是 agent_user_id）→ 真人 SE 被 assign
+    1. ``assignee_id`` 非空（Zendesk 已有受托人）
     2. 最后一条 public comment 的 author **不是** agent_user_id → 其他 SE 发的
     3. 最后一条 public comment author **是** agent_user_id 但 body **不含**
        agent footer 标记 → yonggang 在 Zendesk UI 手动发的（不是 agent 自动）
@@ -298,17 +302,17 @@ async def _detect_human_takeover(
 
     检测失败（fetch 拉不到 comments 等）→ 返回 (False, "") 保守放过。
     """
-    if not agent_user_id:
-        # 没配 agent_user_id → 无法区分，保守放过
-        return False, ""
-
     # Case 1: assignee 检查
     assignee_id = ticket_info.get("assignee_id")
-    try:
-        if assignee_id and int(assignee_id) != int(agent_user_id):
-            return True, f"assignee={assignee_id}（非 agent_uid={agent_user_id}）"
-    except (TypeError, ValueError):
-        pass  # 字段异常忽略
+    if is_human_assignee(
+        assignee_id,
+        agent_user_id=agent_user_id,
+    ):
+        return True, f"assignee={assignee_id}（工单已有受托人）"
+
+    if not agent_user_id:
+        # 没配 agent_user_id → 无法区分评论作者，保守放过评论检测
+        return False, ""
 
     # Case 2/3: 看最后一条 public comment
     try:
@@ -668,18 +672,17 @@ async def _set_escalated_to_human(
     agent_last_reply: str = "",
     extra_log: dict | None = None,
 ) -> None:
-    """把工单标记为 escalated_to_human + 触发 3 个对外动作。
+    """把工单标记为 escalated_to_human + 触发升级副作用。
 
     state 写入是**强制**的（哪怕副作用全失败也保证 state 正确），3 个副作用是
     **best-effort**（任一失败不影响其它，全部记 log）：
 
-    1. 发 public handoff 模板 E 给客户（让客户知道有人接手）
+    1. 发 public handoff 模板 E 给客户（仅 agent 主动升级场景）
     2. 飞书推送 ticket_escalate 卡片给 SE
     3. Zendesk 工单加 tag ``escalated-to-human``
 
-    所有副作用都受 ``cfg.public_reply.enabled`` 总开关门控：
-    - kill switch OFF → 仅写 state + 飞书 + tag（不发客户公开回复）
-    - kill switch ON  → 全部 3 个副作用都发
+    public handoff 受 ``cfg.public_reply.enabled`` 总开关门控，且已有人工/受托人
+    接手（reason=human_takeover_detected）时不再给客户发自动回复。
     """
     from zd_agent.trigger.decision_log import log_decision
     from zd_agent.trigger.state_store import TicketState
@@ -734,32 +737,39 @@ async def _set_escalated_to_human(
         )
 
     # ───── 2. 发 handoff 模板给客户（kill switch 受控，best-effort）─────
-    try:
-        from zd_agent.prompts.public_reply.templates import handoff_template
-        from zd_agent.tools.zendesk_public_reply import send_public_reply
-
-        form = _form_data_from_msgs(customer_msgs or [])
-        customer_name = (form.get("name", "") or "").strip()
-        handoff_body = handoff_template(customer_name=customer_name)
-
-        success, msg = await send_public_reply(
-            ticket_id=ticket_id, body=handoff_body, reply_type="handoff",
+    if reason == "human_takeover_detected":
+        logger.info(
+            "escalated_handoff_reply_skipped_human_takeover",
+            ticket_id=ticket_id,
+            reason=reason,
         )
-        if success:
-            logger.info(
-                "escalated_handoff_reply_sent",
-                ticket_id=ticket_id, reason=reason,
+    else:
+        try:
+            from zd_agent.prompts.public_reply.templates import handoff_template
+            from zd_agent.tools.zendesk_public_reply import send_public_reply
+
+            form = _form_data_from_msgs(customer_msgs or [])
+            customer_name = (form.get("name", "") or "").strip()
+            handoff_body = handoff_template(customer_name=customer_name)
+
+            success, msg = await send_public_reply(
+                ticket_id=ticket_id, body=handoff_body, reply_type="handoff",
             )
-        else:
+            if success:
+                logger.info(
+                    "escalated_handoff_reply_sent",
+                    ticket_id=ticket_id, reason=reason,
+                )
+            else:
+                logger.warning(
+                    "escalated_handoff_reply_failed",
+                    ticket_id=ticket_id, error=msg[:200],
+                )
+        except Exception as e:
             logger.warning(
-                "escalated_handoff_reply_failed",
-                ticket_id=ticket_id, error=msg[:200],
+                "escalated_handoff_reply_exception",
+                ticket_id=ticket_id, error=str(e)[:200], exc_info=True,
             )
-    except Exception as e:
-        logger.warning(
-            "escalated_handoff_reply_exception",
-            ticket_id=ticket_id, error=str(e)[:200], exc_info=True,
-        )
 
     # ───── 3. 飞书推送 ticket_escalate 卡片（best-effort）─────
     try:

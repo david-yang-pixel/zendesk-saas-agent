@@ -13,7 +13,7 @@ Loop per ticket in (in_silence_window | waiting_for_issue)
 1. Re-fetch ticket + conversation_log
 2. Status / assignee guard:
    - ticket.status NOT IN {new, open}            → human/auto closed it, skip
-   - assignee_id is set AND != my_uid            → human took over, mark
+   - assignee_id is set                         → human/owner took over, mark
                                                    ``human_handled``-equivalent
                                                    (we use ``abandoned`` as a
                                                    terminal state for now to
@@ -32,6 +32,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from zd_agent.config import get_config
+from zd_agent.entry.human_takeover import is_human_assignee
 from zd_agent.log import get_logger
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -107,8 +108,11 @@ async def _process_one(
             state.set(ticket_id, rec)
         return
 
-    # Guard 2: assigned to a human (anyone other than us) → don't intervene
-    if assignee_id and my_uid and int(assignee_id) != int(my_uid):
+    # Guard 2: already has an assignee → don't intervene.
+    if is_human_assignee(
+        assignee_id,
+        agent_user_id=my_uid,
+    ):
         if rec.state != "abandoned":
             logger.info(
                 "waiting_poller_human_assignee",

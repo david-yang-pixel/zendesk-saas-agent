@@ -9,6 +9,9 @@ from fastapi.responses import FileResponse, JSONResponse
 import parser as P
 
 LOG_DIR = os.environ.get("ZD_LOG_DIR", "/opt/zd-agent/logs")
+RECORDS_DIR = os.environ.get(
+    "ZD_RECORDS_DIR", "/opt/zd-agent/resources/zendesk-cli/工单记录"
+)
 # 0 = 读取全部历史日志（磁盘上的 jsonl 始终不删）。可用 ZD_LOG_DAYS 覆盖成 N 天窗口。
 DAYS = int(os.environ.get("ZD_LOG_DAYS", "0"))
 _STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -29,6 +32,15 @@ def ticket_detail(ticket_id: int) -> JSONResponse:
     if not timeline:
         raise HTTPException(status_code=404, detail="ticket not found")
     return JSONResponse(timeline)
+
+
+@app.get("/api/tickets/{ticket_id}/review")
+def ticket_review(ticket_id: int) -> JSONResponse:
+    events = P.read_events(LOG_DIR, days=DAYS)
+    timeline = P.ticket_timeline(P.group_by_ticket(events), ticket_id)
+    if not timeline:
+        raise HTTPException(status_code=404, detail="ticket not found")
+    return JSONResponse(P.build_ticket_review(timeline, RECORDS_DIR, ticket_id))
 
 
 @app.get("/api/meta")

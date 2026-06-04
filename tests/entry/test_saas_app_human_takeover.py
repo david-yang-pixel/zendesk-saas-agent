@@ -5,9 +5,9 @@
 2. 最后 public comment author 是别的 SE (非 agent 非客户) → detected
 3. author=agent_uid 但 body 不含 'Dify SaaS Agent' footer → yonggang 手动发 → detected
 4. ✅ 不该误判：author=agent_uid 且 body 含 footer → 是 agent 自己发的 → NOT detected
-5. ✅ 不该误判：assignee=agent_uid → NOT detected
-6. ✅ 不该误判：没 public comment → NOT detected
-7. ✅ fetch 失败保守放过 → NOT detected
+5. assignee=agent_uid 也视为已有受托人 → detected
+6. ✅ 不该误判：没受托人且没 public comment → NOT detected
+7. ✅ fetch 失败且没受托人时保守放过 → NOT detected
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import pytest
 from zd_agent.entry.saas_app import _detect_human_takeover
 
 AGENT_UID = 45433304089364
+AI_AGENT_UID = 46493567999892
 OTHER_SE_UID = 99999999
 CUSTOMER_UID = 12345678
 
@@ -48,7 +49,7 @@ def _ticket(assignee_id: int | None = None,
 class TestDetected:
     @pytest.mark.asyncio
     async def test_assignee_is_other_se(self) -> None:
-        """assignee 是非 agent 的真人 → 触发"""
+        """assignee 非空 → 视为已有受托人，触发"""
         with patch("zd.client.ZendeskClient") as _ZD:
             detected, reason = await _detect_human_takeover(
                 ticket_id=1234,
@@ -134,18 +135,26 @@ class TestNotDetected:
         assert reason == ""
 
     @pytest.mark.asyncio
-    async def test_assignee_is_agent_uid(self) -> None:
-        """assignee 就是 agent_uid → 不触发"""
-        with patch(
-            "zd.client.ZendeskClient",
-            return_value=_make_client({"comments": []}),
-        ):
-            detected, _ = await _detect_human_takeover(
-                ticket_id=1234,
-                ticket_info=_ticket(assignee_id=AGENT_UID),
-                agent_user_id=AGENT_UID,
-            )
-        assert detected is False
+    async def test_assignee_is_agent_uid_still_takeover(self) -> None:
+        """只看是否已有受托人：assignee=agent_uid 也触发让位。"""
+        detected, reason = await _detect_human_takeover(
+            ticket_id=1234,
+            ticket_info=_ticket(assignee_id=AGENT_UID),
+            agent_user_id=AGENT_UID,
+        )
+        assert detected is True
+        assert str(AGENT_UID) in reason
+
+    @pytest.mark.asyncio
+    async def test_ai_agent_assignee_still_takeover(self) -> None:
+        """只看是否已有受托人：AI Agent assignee 也触发让位。"""
+        detected, reason = await _detect_human_takeover(
+            ticket_id=1234,
+            ticket_info=_ticket(assignee_id=AI_AGENT_UID),
+            agent_user_id=AGENT_UID,
+        )
+        assert detected is True
+        assert str(AI_AGENT_UID) in reason
 
     @pytest.mark.asyncio
     async def test_no_public_comment_yet(self) -> None:
@@ -201,11 +210,12 @@ class TestNotDetected:
         assert detected is False
 
     @pytest.mark.asyncio
-    async def test_no_agent_uid_config_passthrough(self) -> None:
-        """没配 agent_user_id → 无法区分，保守放过"""
-        detected, _ = await _detect_human_takeover(
+    async def test_assignee_does_not_need_agent_uid_config(self) -> None:
+        """assignee 判断只依赖是否有受托人，不依赖 agent_user_id。"""
+        detected, reason = await _detect_human_takeover(
             ticket_id=1234,
             ticket_info=_ticket(assignee_id=OTHER_SE_UID),
             agent_user_id=0,
         )
-        assert detected is False
+        assert detected is True
+        assert str(OTHER_SE_UID) in reason

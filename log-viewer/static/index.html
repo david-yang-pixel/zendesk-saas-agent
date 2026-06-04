@@ -175,6 +175,31 @@
   .dh .m{flex:1;padding:16px 26px;border-right:1px solid var(--line-2)} .dh .m:last-child{border-right:0}
   .dh .m .k{font-size:12px;color:var(--muted)} .dh .m .v{font-size:20px;font-weight:700;margin-top:3px;letter-spacing:-.01em}
 
+  .review{display:grid;gap:18px;margin-bottom:26px}
+  .review-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-xs);overflow:hidden}
+  .review-card .rh{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line-2)}
+  .review-card .rh b{font-size:15px;font-weight:680}
+  .review-card .rh span{font-size:12px;color:var(--faint)}
+  .review-card .rb{padding:18px 20px}
+  .archive-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .archive-sec{border:1px solid var(--line-2);border-radius:var(--r);padding:14px;background:var(--hover);min-width:0}
+  .archive-sec.wide{grid-column:1/-1}
+  .archive-sec .st{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .archive-sec .st b{font-size:13px;color:var(--ink-2)}
+  .archive-sec .st .tag{height:20px;line-height:18px;font-size:11px;padding:0 7px;background:var(--panel)}
+  .archive-sec .txt{white-space:pre-wrap;color:var(--ink-2);font-size:13px;line-height:1.7;overflow-wrap:anywhere}
+  .evidence{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .evi{border:1px solid var(--line-2);border-radius:var(--r);padding:14px;background:var(--panel);min-width:0}
+  .evi h3{font-size:13px;color:var(--ink-2);font-weight:680;margin-bottom:9px}
+  .evi .line{display:flex;gap:8px;margin-top:5px;color:var(--ink-2);font-size:13px}
+  .evi .line b{color:var(--muted);font-weight:600;min-width:58px}
+  .evi .reason{margin-top:8px;color:var(--ink-2);font-size:13px;line-height:1.65;white-space:pre-wrap}
+  .mini-list{display:grid;gap:8px}
+  .mini{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:8px 10px;border-radius:7px;background:var(--hover);font-size:13px;color:var(--ink-2)}
+  .timeline-head{display:flex;align-items:center;justify-content:space-between;margin:8px 0 16px}
+  .timeline-head h2{font-size:16px;font-weight:680}
+  .timeline-head span{font-size:12px;color:var(--faint)}
+
   .tl{position:relative;margin-left:9px;padding-left:30px;border-left:2px solid var(--line)}
   .ev{position:relative;padding-bottom:20px} .ev:last-child{padding-bottom:2px}
   .ev .node{position:absolute;left:-40px;top:9px;width:20px;height:20px;border-radius:50%;background:var(--panel);border:2px solid var(--line);display:flex;align-items:center;justify-content:center}
@@ -211,6 +236,9 @@
     .main{margin-left:0} .burger{display:inline-flex}
     body.nav-open .scrim{display:block;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:39}
     .kpis{grid-template-columns:repeat(2,1fr)} .body{padding:18px} .topbar{padding:0 16px} .search{width:150px}
+    .archive-grid,.evidence{grid-template-columns:1fr}
+    .dh .grid{display:grid;grid-template-columns:repeat(2,1fr)}
+    .dh .m{border-right:0;border-bottom:1px solid var(--line-2)}
   }
   @media(prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
 </style>
@@ -315,7 +343,7 @@ function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">
 const VERDICT_CN={no_message:"无消息",greeting:"打招呼",insufficient_info:"信息不足",substantial_issue:"实质问题",request_human:"请求人工",self_resolved:"已自行解决"};
 const TYPE_CN={platform_issue:"平台故障",knowledge_base:"知识库",workflow:"工作流",api:"API",permissions:"权限",product_usage:"产品用法",billing:"计费",refund:"退款",insufficient_info:"信息不足",mention:"@提及",general:"通用"};
 const TRIGGER_CN={zendesk_webhook:"客户消息",silence_waker:"静默唤醒",native_messaging:"消息渠道",mention:"@提及",mention_poller:"@提及",web:"网页",api:"API"};
-const STATUS_CN={completed:"已完成",failed:"失败",processing:"处理中",processed:"已处理"};
+const STATUS_CN={completed:"已完成",failed:"失败",processing:"处理中",processed:"已处理",skipped:"已跳过"};
 function cn(map,v){return v?(map[v]||v):v;}
 function stp(s){if(!s)return `<span class="pill p-run"><span class="d"></span>处理中</span>`;if(s==="completed")return `<span class="pill p-ok"><span class="d"></span>已完成</span>`;if(s==="failed")return `<span class="pill p-bad"><span class="d"></span>失败</span>`;return `<span class="pill p-warn"><span class="d"></span>${esc(cn(STATUS_CN,s))}</span>`;}
 function vtag(v){return v?`<span class="tag" title="${esc(v)}">${esc(cn(VERDICT_CN,v))}</span>`:'<span class="faint">—</span>';}
@@ -373,12 +401,51 @@ function empty(t,s){return `<div class="empty">${ic(I.inbox,42,1.5)}<div class="
 function filter(){const q=document.getElementById('q').value.trim();document.querySelectorAll('#tb tr').forEach(tr=>{const id=tr.getAttribute('data-id')||"";tr.style.display=!q||id.includes(q)?"":"none";});}
 function go(id){location.hash="t/"+id;}
 
+const ARCHIVE_LABELS={internal_analysis:"内部分析",solution:"解决方案 / 建议",customer_reply_draft:"客户回复草稿",follow_up:"跟进记录",other:"其他章节"};
+const ARCHIVE_ORDER=["internal_analysis","solution","customer_reply_draft","follow_up","other"];
+function txt(s){return esc(s||"").trim();}
+function secLabel(s){return ARCHIVE_LABELS[s.category]||ARCHIVE_LABELS.other;}
+function archiveSections(archive){
+  if(!archive||!archive.available)return `<div class="empty" style="padding:34px 20px">${ic(I.inbox,32,1.5)}<div class="t">暂无归档</div><div class="s">没有找到该工单的 Markdown 复盘文件</div></div>`;
+  const sections=archive.sections||[];
+  if(!sections.length)return `<div class="empty" style="padding:34px 20px">${ic(I.inbox,32,1.5)}<div class="t">归档为空</div><div class="s">${esc(archive.filename||"")}</div></div>`;
+  const sorted=[...sections].sort((a,b)=>{
+    const ai=ARCHIVE_ORDER.indexOf(a.category),bi=ARCHIVE_ORDER.indexOf(b.category);
+    return (ai<0?99:ai)-(bi<0?99:bi);
+  });
+  return `<div class="archive-grid">`+sorted.map(s=>{
+    const wide=s.category==="customer_reply_draft"||s.category==="follow_up"||String(s.content||"").length>360;
+    return `<section class="archive-sec ${wide?'wide':''}">
+      <div class="st"><b>${esc(s.title||secLabel(s))}</b><span class="tag">${esc(secLabel(s))}</span></div>
+      <div class="txt">${txt(s.content)||'<span class="faint">空章节</span>'}</div>
+    </section>`;
+  }).join("")+`</div>`;
+}
+function line(label,value){return `<div class="line"><b>${esc(label)}</b><span>${value==null||value===""?'<span class="faint">—</span>':esc(value)}</span></div>`;}
+function evidence(review){
+  const h=(review&&review.highlights)||{},v=h.trigger_verdict||{},c=h.classification||{},done=h.completion||{};
+  const tools=h.tool_rounds||[],replies=h.reply_events||[];
+  const toolHtml=tools.length?`<div class="mini-list">`+tools.map(r=>`<div class="mini"><span class="mono">#${esc(r.round??'—')}</span><span class="faint">${fmtTime(r.timestamp)}</span>${(r.tool_names||[]).map(t=>`<span class="toolchip">${esc(t)}</span>`).join("")}<span class="faint">${esc(r.tool_call_count??0)} 次调用</span></div>`).join("")+`</div>`:`<span class="faint">—</span>`;
+  const replyHtml=replies.length?`<div class="mini-list">`+replies.map(r=>`<div class="mini"><span>${esc(evName(r.event||"reply"))}</span><span class="faint">${fmtTime(r.timestamp)}</span>${r.comment_id?`<span class="mono">comment ${esc(r.comment_id)}</span>`:""}</div>`).join("")+`</div>`:`<span class="faint">—</span>`;
+  return `<div class="evidence">
+    <section class="evi"><h3>触发判定</h3>${line("判定",cn(VERDICT_CN,v.verdict)||v.verdict)}${line("完整度",v.completeness)}${v.reason?`<div class="reason">${txt(v.reason)}</div>`:""}</section>
+    <section class="evi"><h3>分类理由</h3>${line("类型",cn(TYPE_CN,c.ticket_type)||c.ticket_type)}${c.reason?`<div class="reason">${txt(c.reason)}</div>`:""}</section>
+    <section class="evi"><h3>工具调用轮次</h3>${toolHtml}</section>
+    <section class="evi"><h3>回复与完成</h3>${replyHtml}${line("状态",cn(STATUS_CN,done.status)||done.status)}${line("轮数",done.rounds)}${line("Token",fmtTok(done.total_tokens))}${line("耗时",fmtEl(done.elapsed))}${line("已回复",done.reply_sent===true?"是":done.reply_sent===false?"否":"")}</section>
+  </div>`;
+}
+
 async function showDetail(id){
   document.getElementById('crumb').textContent="/ #"+id; document.getElementById('q').disabled=true;
   const app=document.getElementById('app');
   app.innerHTML=`<div class="sk" style="height:118px;border-radius:12px;margin-bottom:24px"></div>`+[0,0,0,0].map(()=>`<div class="sk" style="height:58px;border-radius:12px;margin:0 0 20px 38px"></div>`).join("");
-  let tl;try{tl=await(await fetch('api/tickets/'+id)).json();}catch(e){app.innerHTML=empty('加载失败',String(e));return;}
-  const sum=CACHE.find(r=>r.ticket_id===id)||{};
+  let tl,review;try{
+    const [tr,rr]=await Promise.all([fetch('api/tickets/'+id),fetch('api/tickets/'+id+'/review')]);
+    if(!tr.ok)throw new Error(await tr.text());
+    if(!rr.ok)throw new Error(await rr.text());
+    tl=await tr.json();review=await rr.json();
+  }catch(e){app.innerHTML=empty('加载失败',String(e));return;}
+  const sum=(review&&review.summary)||CACHE.find(r=>r.ticket_id===id)||{};
   let h=`<div class="back" onclick="location.hash=''">${ic(I.chev,17)}返回列表</div>
     <div class="dh"><div class="r1"><h2><span class="faint" style="font-weight:600">#</span>${id}</h2>${stp(sum.status)}${vtag(sum.verdict)}</div>
     <div class="grid">
@@ -387,7 +454,13 @@ async function showDetail(id){
       <div class="m"><div class="k">Token</div><div class="v num">${fmtTok(sum.total_tokens)}</div></div>
       <div class="m"><div class="k">耗时</div><div class="v num">${fmtEl(sum.elapsed)}</div></div>
       <div class="m"><div class="k">类型</div><div class="v" style="font-size:15px" title="${esc(sum.ticket_type||'')}">${sum.ticket_type?cn(TYPE_CN,sum.ticket_type):'—'}</div></div>
-    </div></div><div class="tl">`;
+    </div></div>
+    <div class="review">
+      <section class="review-card"><div class="rh"><b>复盘摘要</b><span>${review.archive&&review.archive.available?esc(review.archive.filename||"已加载归档"):"未找到归档"}</span></div><div class="rb">${archiveSections(review.archive)}</div></section>
+      <section class="review-card"><div class="rh"><b>关键证据</b><span>来自 JSONL 事件链</span></div><div class="rb">${evidence(review)}</div></section>
+    </div>
+    <div class="timeline-head"><h2>完整时间线</h2><span>点击事件展开原始 JSON</span></div>
+    <div class="tl">`;
   if(!tl.length)h+=empty('无事件','');
   for(const e of tl){
     const ev=e.event||"";

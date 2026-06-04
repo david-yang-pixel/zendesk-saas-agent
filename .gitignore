@@ -23,3 +23,6 @@ log-viewer/uv.lock
 
 # local preview launch config
 .claude/
+
+# Dify 化设计文档（本地参考，不进 git）
+dify-design/

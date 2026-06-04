@@ -174,8 +174,8 @@ async def test_human_assignee_marks_abandoned(state, queue):
 
 
 @pytest.mark.asyncio
-async def test_my_assignee_does_not_mark_abandoned(state, queue):
-    """assignee 是 yonggang(45433304089364) → 继续正常处理。"""
+async def test_my_assignee_marks_abandoned(state, queue):
+    """只看是否有受托人：assignee 是 yonggang 也让位。"""
     state.set("1", TicketState(
         state="waiting_for_issue", first_seen=_now(),
         last_customer_comment_id="C1",
@@ -187,7 +187,27 @@ async def test_my_assignee_does_not_mark_abandoned(state, queue):
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,
                         abandoned_hours=24, greeting_alert_minutes=30)
-    assert state.get("1").state == "waiting_for_issue"
+    assert state.get("1").state == "abandoned"
+
+
+@pytest.mark.asyncio
+async def test_automation_assignee_marks_abandoned(state, queue):
+    """只看是否有受托人：AI Agent assignee 也让位。"""
+    state.set("1", TicketState(
+        state="waiting_for_issue", first_seen=_now(),
+        last_customer_comment_id="C1",
+    ))
+    msgs = [{"id": "C1", "body": "x"}]
+
+    async def fake_fetch(_tid):
+        return msgs, _ticket(assignee_id=46493567999892)
+
+    with patch("zd_agent.entry.saas_app._fetch_customer_messages",
+               side_effect=fake_fetch):
+        await scan_once(state=state, trigger_queue=queue,
+                        abandoned_hours=24, greeting_alert_minutes=30)
+
+    assert state.get("1").state == "abandoned"
 
 
 @pytest.mark.asyncio

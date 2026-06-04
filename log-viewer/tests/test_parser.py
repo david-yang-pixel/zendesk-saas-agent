@@ -94,6 +94,27 @@ def test_summarize_missing_fields_no_crash():
     assert summaries[0]["rounds"] is None
 
 
+def test_summarize_skip_only_ticket_marked_skipped():
+    events = [
+        {
+            "event": "zendesk_messaging_webhook_skip_non_user",
+            "ticket_id": 2756,
+            "actor_type": "system",
+            "timestamp": "2026-06-02T05:37:35Z",
+        },
+        {
+            "event": "zendesk_messaging_webhook_skip_non_user",
+            "ticket_id": 2756,
+            "actor_type": "agent",
+            "timestamp": "2026-06-02T05:38:02Z",
+        },
+    ]
+
+    summaries = P.summarize_tickets(P.group_by_ticket(events))
+
+    assert summaries[0]["status"] == "skipped"
+
+
 import os as _os
 
 
@@ -125,3 +146,137 @@ def test_read_events_days_zero_reads_all_history(tmp_path):
     # 对照：14 天窗口只读到今天的
     ids_win = sorted(e["ticket_id"] for e in P.read_events(str(tmp_path), days=14))
     assert ids_win == [1]
+
+
+def test_parse_archive_markdown_frontmatter_and_sections():
+    md = """---
+ticket_id: 2774
+status: solved
+assignee: dify.ai
+---
+
+# 工单 #2774
+
+## 内部分析
+
+用户反馈工作流运行失败，需要确认报错链路。
+
+## 解决方案 / 建议
+
+建议客户重新授权并重试。
+
+## 客户回复草稿（Internal Note）
+
+您好，我们已经定位到授权失效。
+
+## 跟进 2026-06-03
+
+客户补充了截图。
+"""
+
+    parsed = P.parse_archive_markdown(md)
+
+    assert parsed["frontmatter"] == {
+        "ticket_id": "2774",
+        "status": "solved",
+        "assignee": "dify.ai",
+    }
+    assert parsed["available"] is True
+    assert parsed["sections"][0]["title"] == "工单 #2774"
+    assert parsed["sections"][1]["category"] == "internal_analysis"
+    assert parsed["sections"][2]["category"] == "solution"
+    assert parsed["sections"][3]["category"] == "customer_reply_draft"
+    assert parsed["sections"][4]["category"] == "follow_up"
+
+
+def test_parse_archive_markdown_english_and_incremental_titles():
+    md = """## Internal Analysis
+Need verify billing state.
+
+## 新增分析
+客户第二次补充了 invoice id。
+
+## 新增建议
+同步给 billing team。
+
+## 客户回复草稿
+We are checking this with the billing team.
+"""
+
+    parsed = P.parse_archive_markdown(md)
+
+    categories = [s["category"] for s in parsed["sections"]]
+    assert categories == [
+        "internal_analysis",
+        "internal_analysis",
+        "solution",
+        "customer_reply_draft",
+    ]
+
+
+def test_read_ticket_archive_missing_file(tmp_path):
+    archive = P.read_ticket_archive(str(tmp_path), 123)
+
+    assert archive["available"] is False
+    assert archive["frontmatter"] == {}
+    assert archive["sections"] == []
+
+
+def test_build_ticket_review_returns_summary_archive_and_highlights(tmp_path):
+    rows = [
+        {
+            "event": "trigger_verdict",
+            "ticket_id": 42,
+            "verdict": "substantial_issue",
+            "reason": "客户提供了明确报错。",
+            "timestamp": "2026-05-29T04:00:00Z",
+        },
+        {
+            "event": "ticket_classified",
+            "ticket_id": 42,
+            "ticket_type": "api",
+            "reason": "涉及 API 调用失败。",
+            "timestamp": "2026-05-29T04:00:05Z",
+        },
+        {
+            "event": "round_tool_calls",
+            "ticket_id": 42,
+            "round": 1,
+            "tool_call_count": 2,
+            "tool_names": ["zendesk_search", "kb_search"],
+            "timestamp": "2026-05-29T04:00:30Z",
+        },
+        {
+            "event": "public_reply_sent",
+            "ticket_id": 42,
+            "comment_id": 777,
+            "timestamp": "2026-05-29T04:01:00Z",
+        },
+        {
+            "event": "agent_done",
+            "ticket_id": 42,
+            "rounds": 3,
+            "total_tokens": 12000,
+            "elapsed": 95.4,
+            "reply_sent": True,
+            "status": "completed",
+            "timestamp": "2026-05-29T04:02:00Z",
+        },
+    ]
+    (tmp_path / "42.md").write_text(
+        "---\nstatus: solved\n---\n\n## 内部分析\n\n已定位到 API 参数问题。\n",
+        encoding="utf-8",
+    )
+
+    review = P.build_ticket_review(rows, str(tmp_path), 42)
+
+    assert review["summary"]["ticket_id"] == 42
+    assert review["summary"]["status"] == "completed"
+    assert review["summary"]["ticket_type"] == "api"
+    assert review["archive"]["available"] is True
+    assert review["archive"]["sections"][0]["category"] == "internal_analysis"
+    assert review["highlights"]["trigger_verdict"]["reason"] == "客户提供了明确报错。"
+    assert review["highlights"]["classification"]["reason"] == "涉及 API 调用失败。"
+    assert review["highlights"]["tool_rounds"][0]["tool_names"] == ["zendesk_search", "kb_search"]
+    assert review["highlights"]["reply_events"][0]["event"] == "public_reply_sent"
+    assert review["highlights"]["completion"]["rounds"] == 3

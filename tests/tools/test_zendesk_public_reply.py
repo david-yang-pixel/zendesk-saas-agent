@@ -33,14 +33,15 @@ class TestFooterAppend:
         out = _append_footer("Hello world", "ask")
         # 身份标识必须有（合规）
         assert "Dify SaaS Agent" in out
-        # 先正向邀请客户提供问题（在 'human' 之前出现）
-        assert "share your question" in out
+        # 面向客户说明由 Dify AI 发送，同时保留内部 marker
+        assert "This message is sent by Dify AI" in out
+        assert "tell me your question" in out
         # 仍保留 'human' 关键词（trigger_decider fast-path 检测要靠它）
         assert '"human"' in out
         # "support engineer" 替代之前的 "teammate"
         assert "support engineer" in out
         # 视觉顺序：正向邀请必须在 escape hatch 之前
-        assert out.find("share your question") < out.find('"human"')
+        assert out.find("tell me your question") < out.find('"human"')
         assert out.endswith(_FOOTER_STANDARD.rstrip())
 
     def test_append_solution_uses_same_standard_footer(self) -> None:

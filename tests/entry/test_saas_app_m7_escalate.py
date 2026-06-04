@@ -211,6 +211,33 @@ class TestHandoffReply:
         assert "Hi  " not in body
 
     @pytest.mark.asyncio
+    async def test_human_takeover_detected_does_not_send_handoff(
+        self, tmp_path,
+    ) -> None:
+        """已有受托人/人工接手时，只让位，不再给客户发 handoff。"""
+        state = _make_state(tmp_path)
+        mock_send = AsyncMock(return_value=(True, "ok"))
+        with (
+            patch(
+                "zd_agent.tools.zendesk_public_reply.send_public_reply",
+                mock_send,
+            ),
+            patch("zd.client.ZendeskClient", return_value=MagicMock()),
+            patch(
+                "zd_agent.config.get_config",
+                return_value=_make_cfg(public_reply_enabled=True),
+            ),
+        ):
+            await _call_escalate(
+                state=state,
+                tmp_path=tmp_path,
+                reason="human_takeover_detected",
+            )
+
+        assert state.get(9999).state == "escalated_to_human"
+        mock_send.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_handoff_send_exception_isolated(self, tmp_path) -> None:
         """send_public_reply 抛 exception → 飞书 + tag 仍然执行 + state 写入"""
         state = _make_state(tmp_path)

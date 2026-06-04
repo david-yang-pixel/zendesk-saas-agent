@@ -24,7 +24,7 @@ Zendesk's *platform* messaging webhook —— a fixed schema for the
 
 Filtering rules
 ---------------
-- Only `actor.type == "user"` is forwarded — SE replies / answer-bot / system
+- Only end-user messages are forwarded — SE replies / answer-bot / system
   messages should not re-trigger the agent.
 - Dedup uses the top-level event `id` (delivery-unique).
 - `ticket_id` is read from `detail.id`; falls back to parsing `subject`
@@ -46,6 +46,8 @@ from aiohttp import web
 from zd_agent.log import get_logger
 
 logger = get_logger(module="entry.zendesk_messaging_webhook")
+
+_CUSTOMER_ACTOR_TYPES = {"user", "end_user", "end-user"}
 
 
 def verify_messaging_signature(
@@ -118,11 +120,9 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     msg_id = event.get("event", {}).get("message", {}).get("id") or ""
     ticket_id = _extract_ticket_id(event)
 
-    # Filter: only customer (end-user) messages re-trigger the agent.
-    # Zendesk's actor.type values include "user" (end-user), "agent" (SE),
-    # "system" / "zd:answerBot" etc. Anything that isn't a "user" message
-    # is ack'd 200 and dropped.
-    if actor_type != "user":
+    # Filter: only customer messages re-trigger the agent. Zendesk has emitted
+    # both "user" and "end_user" for customer actors in Messaging payloads.
+    if actor_type not in _CUSTOMER_ACTOR_TYPES:
         logger.info(
             "zendesk_messaging_webhook_skip_non_user",
             event_id=event_id, actor_type=actor_type,
