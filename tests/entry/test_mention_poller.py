@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from zd_agent.entry.mention_poller import scan_once
+from zd_agent.entry.mention_poller import _SEARCH_LOOKBACK_SECONDS, scan_once
 from zd_agent.mention.tracker import MentionTracker
 
 
@@ -135,6 +135,31 @@ async def test_scan_once_advances_cursor_on_success(queue, tracker):
         )
     assert n == 0
     assert new > old + 500  # advanced significantly
+
+
+@pytest.mark.asyncio
+async def test_scan_once_searches_with_overlap_window(queue, tracker):
+    """Zendesk search index can lag, so mention polling must overlap windows."""
+    fake_search = MagicMock(return_value={"results": []})
+    fake_client = MagicMock(search_tickets=fake_search)
+
+    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+         patch("zd.client.ZendeskClient", return_value=fake_client):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg_mock.return_value = cfg
+
+        old = 1_780_591_900
+        await scan_once(
+            trigger_queue=queue, tracker=tracker, last_poll_unix=old,
+        )
+
+    query = fake_search.call_args.args[0]
+    expected_since = time.strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+        time.gmtime(old - _SEARCH_LOOKBACK_SECONDS),
+    )
+    assert f"updated>{expected_since}" in query
 
 
 @pytest.mark.asyncio

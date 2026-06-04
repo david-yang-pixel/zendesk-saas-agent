@@ -28,6 +28,10 @@ from zd_agent.mention.tracker import MentionTracker
 
 logger = get_logger(module="entry.mention_poller")
 
+# Zendesk search has eventual-consistency lag. Keep a generous overlap and let
+# MentionTracker's comment-id idempotency prevent duplicate dispatch.
+_SEARCH_LOOKBACK_SECONDS = 30 * 60
+
 
 def _now_unix() -> float:
     return time.time()
@@ -51,9 +55,13 @@ async def scan_once(
         logger.warning("mention_poller_no_trigger_configured")
         return 0, last_poll_unix
 
-    since_dt = datetime.fromtimestamp(last_poll_unix, tz=timezone.utc)
+    since_dt = datetime.fromtimestamp(
+        max(0, last_poll_unix - _SEARCH_LOOKBACK_SECONDS),
+        tz=timezone.utc,
+    )
     since_iso = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Update poll cursor BEFORE the API call to avoid missing same-second events
+    # Advance cursor on successful scans. The search query still overlaps
+    # previous windows to tolerate Zendesk search-index delay.
     new_cursor = _now_unix()
 
     query = f"status:open status:new updated>{since_iso}"

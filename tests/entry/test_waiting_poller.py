@@ -191,8 +191,8 @@ async def test_my_assignee_marks_abandoned(state, queue):
 
 
 @pytest.mark.asyncio
-async def test_automation_assignee_marks_abandoned(state, queue):
-    """只看是否有受托人：AI Agent assignee 也让位。"""
+async def test_automation_assignee_does_not_mark_abandoned(state, queue):
+    """AI Agent / SaaS 自动身份不算人工受托人，继续追踪。"""
     state.set("1", TicketState(
         state="waiting_for_issue", first_seen=_now(),
         last_customer_comment_id="C1",
@@ -202,12 +202,21 @@ async def test_automation_assignee_marks_abandoned(state, queue):
     async def fake_fetch(_tid):
         return msgs, _ticket(assignee_id=46493567999892)
 
+    from zd_agent.config import AppConfig, ZendeskConfig
+
+    cfg = AppConfig()
+    cfg.zendesk = ZendeskConfig(
+        agent_user_id=45433304089364,
+        non_human_assignee_ids=[46493567999892],
+    )
+
     with patch("zd_agent.entry.saas_app._fetch_customer_messages",
-               side_effect=fake_fetch):
+               side_effect=fake_fetch), \
+         patch("zd_agent.entry.waiting_poller.get_config", return_value=cfg):
         await scan_once(state=state, trigger_queue=queue,
                         abandoned_hours=24, greeting_alert_minutes=30)
 
-    assert state.get("1").state == "abandoned"
+    assert state.get("1").state == "waiting_for_issue"
 
 
 @pytest.mark.asyncio

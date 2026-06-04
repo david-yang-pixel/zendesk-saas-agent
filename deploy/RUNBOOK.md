@@ -336,7 +336,7 @@ vhost 里需要的三个 location（合并进宝塔 vhost）：`location /oauth2
 # 1. log-viewer venv（⚠️ pip 装依赖要去掉 clash 代理，否则百度镜像失败）
 cp -r /opt/zd-agent/code/log-viewer /opt/zd-agent/log-viewer
 cd /opt/zd-agent/log-viewer && python3 -m venv .venv
-env -u https_proxy -u http_proxy -u HTTPS_PROXY -u HTTP_PROXY .venv/bin/pip install fastapi uvicorn
+env -u https_proxy -u http_proxy -u HTTPS_PROXY -u HTTP_PROXY .venv/bin/pip install fastapi uvicorn ruamel.yaml
 
 # 2. oauth2-proxy 二进制（用 clash 代理拉 github）
 cd /tmp && curl -fsSL -x http://127.0.0.1:7890 -o o2p.tar.gz \
@@ -375,7 +375,7 @@ curl -s https://zendesk.smlershou.top/logs/api/tickets | grep -c ticket_id   # �
 
 | What | How |
 |------|-----|
-| 更新 log-viewer 代码 | `cd /opt/zd-agent/code && git pull && cp -r log-viewer/* /opt/zd-agent/log-viewer/ && systemctl restart zd-log-viewer` |
+| 更新 log-viewer 代码 | `cd /opt/zd-agent/code && git pull && cp -r log-viewer/* /opt/zd-agent/log-viewer/ && cd /opt/zd-agent/log-viewer && env -u https_proxy -u http_proxy -u HTTPS_PROXY -u HTTP_PROXY .venv/bin/pip install 'ruamel.yaml>=0.18' && systemctl restart zd-log-viewer` |
 | 改 oauth2-proxy 密钥 | 编辑 `/opt/zd-agent/oauth2-proxy.env` → `systemctl restart oauth2-proxy` |
 | 改 nginx 后验证 | `curl -s https://zendesk.smlershou.top/logs/api/tickets` 输出**不含 ticket_id**（含=泄露），应是 oauth2 登录页 |
 | 看 oauth2-proxy 日志 | `journalctl -u oauth2-proxy -f` |

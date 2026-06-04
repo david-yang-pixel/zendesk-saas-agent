@@ -67,8 +67,9 @@ class ZendeskConfig(BaseModel):
     mention_trigger: str = "@saas-bot"
     mention_poll_interval_seconds: int = 60
     # 我（agent）在 Zendesk 上的 user_id；用于区分评论作者是否为自动回复作者。
-    # 工单是否被接手只看 assignee_id 是否非空。
     agent_user_id: int = 0
+    # Zendesk Messaging / 队列自动化身份，不算人工受托人。
+    non_human_assignee_ids: list[int] = Field(default_factory=list)
     # 新分支上线时的灰度边界：trigger_consumer 顶部 skip 一切 ticket_id < min_ticket_id
     # 的工单。0 = 不过滤（处理全部 SaaS 工单）。设 2624 = 只处理 ID ≥ 2624 的新工单，
     # 历史工单不受新逻辑影响（避免上线初期把已有 in-flight 工单搞乱）。

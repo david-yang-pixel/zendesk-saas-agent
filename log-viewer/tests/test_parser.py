@@ -115,6 +115,37 @@ def test_summarize_skip_only_ticket_marked_skipped():
     assert summaries[0]["status"] == "skipped"
 
 
+def test_summarize_escalated_ticket_marked_terminal():
+    events = [
+        {
+            "event": "trigger_human_takeover_detected",
+            "ticket_id": 2804,
+            "reason": "assignee=46493567999892",
+            "timestamp": "2026-06-04T12:12:55Z",
+        },
+        {
+            "event": "trigger_escalated_to_human",
+            "ticket_id": 2804,
+            "reason": "human_takeover_detected",
+            "source": "messaging_webhook",
+            "timestamp": "2026-06-04T12:12:56Z",
+        },
+        {
+            "event": "trigger_skip_escalated",
+            "ticket_id": 2804,
+            "escalated_reason": "human_takeover_detected",
+            "source": "messaging_webhook",
+            "timestamp": "2026-06-04T12:24:47Z",
+        },
+    ]
+
+    summaries = P.summarize_tickets(P.group_by_ticket(events))
+
+    assert summaries[0]["status"] == "escalated_to_human"
+    assert summaries[0]["verdict"] == "human_takeover"
+    assert summaries[0]["reply_sent"] is False
+
+
 import os as _os
 
 

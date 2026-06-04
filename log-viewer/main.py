@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
+import admin as A
 import parser as P
 
 LOG_DIR = os.environ.get("ZD_LOG_DIR", "/opt/zd-agent/logs")
@@ -47,6 +48,42 @@ def ticket_review(ticket_id: int) -> JSONResponse:
 def meta() -> JSONResponse:
     """前端设置面板用：只读展示日志读取范围。days=0 表示全部历史。"""
     return JSONResponse({"days": DAYS, "all": DAYS <= 0})
+
+
+@app.get("/api/admin/status")
+def admin_status() -> JSONResponse:
+    return JSONResponse(A.status())
+
+
+@app.get("/api/admin/config")
+def admin_config() -> JSONResponse:
+    return JSONResponse(A.read_config())
+
+
+@app.put("/api/admin/config")
+async def admin_update_config(request: Request) -> JSONResponse:
+    payload = await request.json()
+    return JSONResponse(A.update_config(payload, request))
+
+
+@app.post("/api/admin/control/pause")
+def admin_pause(request: Request) -> JSONResponse:
+    return JSONResponse(A.write_control(True, request))
+
+
+@app.post("/api/admin/control/resume")
+def admin_resume(request: Request) -> JSONResponse:
+    return JSONResponse(A.write_control(False, request))
+
+
+@app.post("/api/admin/service/restart")
+def admin_restart(request: Request) -> JSONResponse:
+    return JSONResponse(A.restart(request))
+
+
+@app.get("/api/admin/audit")
+def admin_audit() -> JSONResponse:
+    return JSONResponse(A.read_audit())
 
 
 @app.get("/dify-avatar.svg")

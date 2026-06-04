@@ -13,7 +13,7 @@ Loop per ticket in (in_silence_window | waiting_for_issue)
 1. Re-fetch ticket + conversation_log
 2. Status / assignee guard:
    - ticket.status NOT IN {new, open}            → human/auto closed it, skip
-   - assignee_id is set                         → human/owner took over, mark
+   - assignee_id is real human assignee         → human/owner took over, mark
                                                    ``human_handled``-equivalent
                                                    (we use ``abandoned`` as a
                                                    terminal state for now to
@@ -108,10 +108,11 @@ async def _process_one(
             state.set(ticket_id, rec)
         return
 
-    # Guard 2: already has an assignee → don't intervene.
+    # Guard 2: already has a real human assignee → don't intervene.
     if is_human_assignee(
         assignee_id,
         agent_user_id=my_uid,
+        non_human_assignee_ids=cfg_zd.non_human_assignee_ids,
     ):
         if rec.state != "abandoned":
             logger.info(

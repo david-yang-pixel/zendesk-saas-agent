@@ -160,6 +160,31 @@
   .tag{display:inline-block;height:24px;line-height:22px;padding:0 9px;border:1px solid var(--line);border-radius:6px;font-size:12px;color:var(--ink-2);font-weight:500;background:var(--panel)}
   .tok.hot{color:var(--bad);font-weight:700}
   .ck svg{stroke:var(--ok)} .ck.no svg{stroke:var(--faint)}
+  .admin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+  .admin-grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .admin-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh-xs);padding:20px}
+  .admin-panel h2{font-size:16px;font-weight:700;margin-bottom:14px}
+  .admin-panel h3{font-size:14px;font-weight:700;margin-bottom:10px;color:var(--ink-2)}
+  .admin-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+  .btn-danger{background:var(--bad);border-color:var(--bad);color:#fff}
+  .btn-danger:hover{background:#9f1f17}
+  .btn-ok{background:var(--ok);border-color:var(--ok);color:#fff}
+  .btn-ok:hover{background:#05603a}
+  .form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+  .field{display:flex;flex-direction:column;gap:6px}
+  .field label{font-size:12px;color:var(--muted);font-weight:650}
+  .field input,.field select{height:38px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel);color:var(--ink);font:14px/1.4 inherit;padding:0 11px;outline:none}
+  .field input:focus,.field select:focus{border-color:var(--blue-600);box-shadow:0 0 0 4px var(--blue-50)}
+  .status-list{display:grid;gap:10px}
+  .status-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line-2)}
+  .status-row:last-child{border-bottom:0}
+  .status-row b{font-size:13px;color:var(--ink-2)}
+  .status-row span{font-size:13px;color:var(--muted);text-align:right}
+  .audit-list{display:grid;gap:10px}
+  .audit-item{border:1px solid var(--line-2);border-radius:var(--r);padding:12px;background:var(--hover)}
+  .audit-item .top{display:flex;justify-content:space-between;gap:12px;font-weight:700;color:var(--ink-2)}
+  .audit-item .sub{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;color:var(--muted);font-size:12px}
+  .notice{border:1px solid var(--warn-bd);background:var(--warn-weak);color:var(--warn);padding:10px 12px;border-radius:var(--r);font-size:13px;font-weight:600;margin-bottom:14px}
 
   .sk{background:linear-gradient(90deg,#eef0f4 25%,#f6f7fa 37%,#eef0f4 63%);background-size:400% 100%;animation:sh 1.3s ease infinite;border-radius:6px}
   @keyframes sh{0%{background-position:100% 0}100%{background-position:-100% 0}}
@@ -228,7 +253,7 @@
   .ev .exp{font-size:12px;color:var(--faint);margin-top:9px;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:4px}
   .ev .exp:hover{color:var(--blue-600)}
   .ev pre{display:none;margin-top:11px;padding:14px;background:#0c111d;color:#cdd6f4;border-radius:var(--r);font-size:12px;line-height:1.65;overflow:auto;max-height:360px;font-family:ui-monospace,monospace}
-  .ev.open pre{display:block}
+  .ev .bd.open pre{display:block}
 
   .burger{display:none} .scrim{display:none}
   @media(max-width:880px){
@@ -251,7 +276,12 @@
     </div>
     <div class="grp">监控</div>
     <nav>
-      <a class="on" onclick="goList()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>工单列表<span class="badge" id="navCount">—</span></a>
+      <a id="nav-overview" onclick="goAdmin('overview')"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>概览</a>
+      <a id="nav-tickets" class="on" onclick="goList()"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>工单监控<span class="badge" id="navCount">—</span></a>
+      <a id="nav-control" onclick="goAdmin('control')"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>Agent 控制</a>
+      <a id="nav-config" onclick="goAdmin('config')"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>模型配置</a>
+      <a id="nav-health" onclick="goAdmin('health')"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>健康检查</a>
+      <a id="nav-audit" onclick="goAdmin('audit')"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>审计日志</a>
     </nav>
     <div class="foot">
       <div class="who"><span class="av">D</span><span class="nm">dify.ai<small>已登录</small></span>
@@ -284,7 +314,7 @@
   <div class="main">
     <header class="topbar">
       <button class="btn burger" onclick="document.body.classList.toggle('nav-open')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
-      <h1>工单日志 <span class="crumb" id="crumb"></span></h1>
+      <h1><span id="pageTitle">工单日志</span> <span class="crumb" id="crumb"></span></h1>
       <div class="grow"></div>
       <label class="search"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input id="q" placeholder="搜工单号…" oninput="filter()" disabled></label>
       <button class="btn btn-pri" onclick="showList()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>刷新</button>
@@ -334,8 +364,20 @@ const NOISE=new Set(["zendesk_messaging_webhook_skip_non_user","trigger_fetch_me
 function isNoise(e){return NOISE.has(e);}
 // 时间线上不值得展示的字段（UUID/内部 id），收进原始 JSON 即可
 const HIDE_FIELDS=new Set(["event","timestamp","level","module","ticket_id","event_id","msg_id","comment_id","session_id","actor_type"]);
+const DISPLAY_TIME_ZONE="Asia/Shanghai";
 function evIcon(e){return isErr(e)?ic(I.alert,11):ic(I[EV[e]||"dot"],11);}
-function fmtTime(t){return t?t.replace("T"," ").replace("Z","").slice(5,19):"";}
+function fmtTime(t){
+  if(!t)return"";
+  const raw=String(t);
+  const normalized=raw.replace(/\.(\d{3})\d+(?=Z|[+-]\d\d:?\d\d$)/,".$1");
+  const d=new Date(normalized);
+  if(Number.isNaN(d.getTime()))return raw.replace("T"," ").replace("Z","").slice(5,19);
+  const parts=new Intl.DateTimeFormat("zh-CN",{
+    timeZone:DISPLAY_TIME_ZONE,month:"2-digit",day:"2-digit",
+    hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false
+  }).formatToParts(d).reduce((a,p)=>{a[p.type]=p.value;return a;},{});
+  return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
 function fmtTok(n){if(n==null||n==="")return"—";const v=typeof n==="number"?n:parseFloat(String(n).replace(/[^\d.]/g,""));if(!isFinite(v))return String(n);return v>=1000?(v/1000).toFixed(0)+"K":""+v;}
 function fmtEl(s){if(s==null||s==="")return"—";const v=typeof s==="number"?s:parseFloat(String(s).replace(/[^\d.]/g,""));if(!isFinite(v))return String(s);return v>=60?(v/60).toFixed(1)+"m":v.toFixed(0)+"s";}
 function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
@@ -343,7 +385,7 @@ function esc(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">
 const VERDICT_CN={no_message:"无消息",greeting:"打招呼",insufficient_info:"信息不足",substantial_issue:"实质问题",request_human:"请求人工",self_resolved:"已自行解决"};
 const TYPE_CN={platform_issue:"平台故障",knowledge_base:"知识库",workflow:"工作流",api:"API",permissions:"权限",product_usage:"产品用法",billing:"计费",refund:"退款",insufficient_info:"信息不足",mention:"@提及",general:"通用"};
 const TRIGGER_CN={zendesk_webhook:"客户消息",silence_waker:"静默唤醒",native_messaging:"消息渠道",mention:"@提及",mention_poller:"@提及",web:"网页",api:"API"};
-const STATUS_CN={completed:"已完成",failed:"失败",processing:"处理中",processed:"已处理",skipped:"已跳过"};
+const STATUS_CN={completed:"已完成",failed:"失败",processing:"处理中",processed:"已处理",skipped:"已跳过",escalated_to_human:"已转人工"};
 function cn(map,v){return v?(map[v]||v):v;}
 function stp(s){if(!s)return `<span class="pill p-run"><span class="d"></span>处理中</span>`;if(s==="completed")return `<span class="pill p-ok"><span class="d"></span>已完成</span>`;if(s==="failed")return `<span class="pill p-bad"><span class="d"></span>失败</span>`;return `<span class="pill p-warn"><span class="d"></span>${esc(cn(STATUS_CN,s))}</span>`;}
 function vtag(v){return v?`<span class="tag" title="${esc(v)}">${esc(cn(VERDICT_CN,v))}</span>`:'<span class="faint">—</span>';}
@@ -351,11 +393,21 @@ function ttag(v){return v?`<span class="tag" title="${esc(v)}">${esc(cn(TYPE_CN,
 function mtags(models,fallback){const a=Array.isArray(models)&&models.length?models:(fallback?[fallback]:[]);return a.length?a.map(m=>`<span class="toolchip">${esc(m)}</span>`).join(""):'<span class="faint">—</span>';}
 
 let CACHE=[];
+function setActiveNav(id){
+  document.querySelectorAll('.sb nav a').forEach(a=>a.classList.remove('on'));
+  const el=document.getElementById('nav-'+id);if(el)el.classList.add('on');
+}
+function setTitle(title,crumb){
+  const t=document.getElementById('pageTitle');if(t)t.textContent=title;
+  document.getElementById('crumb').textContent=crumb||'';
+}
 function goList(){document.body.classList.remove('nav-open');location.hash='';}
+function goAdmin(section){document.body.classList.remove('nav-open');location.hash='admin/'+section;}
 
 async function showList(silent){
   if(location.hash){location.hash='';return;}
-  document.getElementById('crumb').textContent='';
+  setActiveNav('tickets');
+  setTitle('工单监控','');
   const app=document.getElementById('app'); if(!silent)app.innerHTML=skeleton();
   let rows; try{rows=await(await fetch('api/tickets')).json();}catch(e){app.innerHTML=empty('加载失败',String(e));return;}
   CACHE=rows; document.getElementById('q').disabled=false;
@@ -374,7 +426,7 @@ async function showList(silent){
   <div class="card"><div class="card-h"><span class="t">处理记录</span><span class="n">${total}</span></div>
     <div class="tw"><table><thead><tr>
       <th>工单</th><th>状态</th><th>判定</th><th>类型</th>
-      <th class="r">轮数</th><th class="r">token</th><th class="r">耗时</th><th>模型</th><th>触发</th><th>回复</th><th>最后时间</th>
+      <th class="r">轮数</th><th class="r">token</th><th class="r">耗时</th><th>模型</th><th>触发</th><th>回复</th><th>最后时间(北京时间)</th>
     </tr></thead><tbody id="tb">`;
   if(!total)h+=`<tr><td colspan="11">${empty('暂无日志','agent 处理工单后自动出现')}</td></tr>`;
   for(const s of rows){
@@ -436,7 +488,8 @@ function evidence(review){
 }
 
 async function showDetail(id){
-  document.getElementById('crumb').textContent="/ #"+id; document.getElementById('q').disabled=true;
+  setActiveNav('tickets');
+  setTitle('工单监控',"/ #"+id); document.getElementById('q').disabled=true;
   const app=document.getElementById('app');
   app.innerHTML=`<div class="sk" style="height:118px;border-radius:12px;margin-bottom:24px"></div>`+[0,0,0,0].map(()=>`<div class="sk" style="height:58px;border-radius:12px;margin:0 0 20px 38px"></div>`).join("");
   let tl,review;try{
@@ -459,7 +512,7 @@ async function showDetail(id){
       <section class="review-card"><div class="rh"><b>复盘摘要</b><span>${review.archive&&review.archive.available?esc(review.archive.filename||"已加载归档"):"未找到归档"}</span></div><div class="rb">${archiveSections(review.archive)}</div></section>
       <section class="review-card"><div class="rh"><b>关键证据</b><span>来自 JSONL 事件链</span></div><div class="rb">${evidence(review)}</div></section>
     </div>
-    <div class="timeline-head"><h2>完整时间线</h2><span>点击事件展开原始 JSON</span></div>
+    <div class="timeline-head"><h2>完整时间线</h2><span>北京时间 · 点击事件展开原始 JSON</span></div>
     <div class="tl">`;
   if(!tl.length)h+=empty('无事件','');
   for(const e of tl){
@@ -475,6 +528,143 @@ async function showDetail(id){
       <pre>${esc(JSON.stringify(e,null,2))}</pre></div></div>`;
   }
   h+=`</div>`; app.innerHTML=h;
+}
+
+async function api(path,opt){
+  const r=await fetch(path,opt||{});
+  if(!r.ok)throw new Error(await r.text());
+  return await r.json();
+}
+function svcPill(s){
+  const active=(s&&s.active)||'unknown';
+  if(active==='active')return `<span class="pill p-ok"><span class="d"></span>active</span>`;
+  return `<span class="pill p-bad"><span class="d"></span>${esc(active)}</span>`;
+}
+function pausedPill(c){
+  return c&&c.paused?`<span class="pill p-warn"><span class="d"></span>已暂停</span>`:`<span class="pill p-ok"><span class="d"></span>运行中</span>`;
+}
+function adminShell(title,body){return `<div class="back" onclick="goList()">${ic(I.chev,17)}返回工单监控</div><div class="review-card"><div class="rh"><b>${esc(title)}</b><span>zd-agent 管理后台</span></div><div class="rb">${body}</div></div>`;}
+async function showAdmin(section){
+  const names={overview:'概览',control:'Agent 控制',config:'模型配置',health:'健康检查',audit:'审计日志'};
+  setActiveNav(section);
+  setTitle(names[section]||'概览','');
+  const q=document.getElementById('q');if(q)q.disabled=true;
+  const app=document.getElementById('app');
+  app.innerHTML=`<div class="sk" style="height:160px;border-radius:12px"></div>`;
+  try{
+    if(section==='control')return renderControl(await api('api/admin/status'));
+    if(section==='config')return renderConfig(await api('api/admin/config'));
+    if(section==='health')return renderHealth(await api('api/admin/status'));
+    if(section==='audit')return renderAudit(await api('api/admin/audit'));
+    return renderOverview(await api('api/admin/status'),await api('api/tickets'));
+  }catch(e){app.innerHTML=empty('加载失败',String(e));}
+}
+function renderOverview(status,rows){
+  const app=document.getElementById('app');
+  const total=rows.length,processing=rows.filter(r=>r.status==='processing').length,
+    failed=rows.filter(r=>r.status==='failed').length,escalated=rows.filter(r=>r.status==='escalated_to_human').length;
+  const recent=rows.filter(r=>r.status==='failed'||r.status==='processing'||r.status==='escalated_to_human').slice(0,6);
+  const body=`${status.restart_required?'<div class="notice">配置已保存，等待重启 zd-agent 生效</div>':''}
+    <div class="kpis">
+      ${kpi('a','layers','总工单',total)}
+      ${kpi('b','check2','运行状态',(status.control&&status.control.paused)?'暂停':'运行')}
+      ${kpi('c','xcirc','失败',failed)}
+      ${kpi('d','loop','处理中',processing)}
+      ${kpi('e','coins','转人工',escalated)}
+    </div>
+    <div class="admin-grid">
+      <section class="admin-panel"><h2>服务状态</h2><div class="status-list">
+        <div class="status-row"><b>zd-agent</b>${svcPill(status.services&&status.services.agent)}</div>
+        <div class="status-row"><b>zd-log-viewer</b>${svcPill(status.services&&status.services.log_viewer)}</div>
+        <div class="status-row"><b>自动处理</b>${pausedPill(status.control)}</div>
+      </div></section>
+      <section class="admin-panel"><h2>最近需要关注</h2>${recent.length?`<div class="status-list">`+recent.map(r=>`<div class="status-row"><b>#${r.ticket_id}</b><span>${esc(cn(STATUS_CN,r.status)||r.status)} · ${fmtTime(r.last_time)}</span></div>`).join('')+`</div>`:'<div class="faint">暂无失败、处理中或转人工记录</div>'}</section>
+    </div>`;
+  app.innerHTML=body;
+}
+function renderControl(status){
+  const app=document.getElementById('app');
+  const c=status.control||{};
+  const body=`${status.restart_required?'<div class="notice">配置已保存，点击重启后才会生效</div>':''}
+    <div class="admin-grid">
+      <section class="admin-panel"><h2>自动处理</h2><div class="status-list">
+        <div class="status-row"><b>当前状态</b>${pausedPill(c)}</div>
+        <div class="status-row"><b>更新时间</b><span>${c.updated_at?fmtTime(c.updated_at):'—'}</span></div>
+        <div class="status-row"><b>操作人</b><span>${esc(c.updated_by||'—')}</span></div>
+      </div><div class="admin-actions">
+        <button class="btn btn-danger" onclick="adminPause()">暂停自动处理</button>
+        <button class="btn btn-ok" onclick="adminResume()">恢复自动处理</button>
+      </div></section>
+      <section class="admin-panel"><h2>服务控制</h2><div class="status-list">
+        <div class="status-row"><b>zd-agent</b>${svcPill(status.services&&status.services.agent)}</div>
+        <div class="status-row"><b>配置状态</b><span>${status.restart_required?'待重启':'已生效或无需重启'}</span></div>
+      </div><div class="admin-actions"><button class="btn btn-pri" onclick="adminRestart()">重启 zd-agent</button></div></section>
+    </div>`;
+  app.innerHTML=adminShell('Agent 控制',body);
+}
+function renderConfig(cfg){
+  const app=document.getElementById('app');
+  const llm=cfg.llm||{},tr=cfg.trigger_decider||{},keys=cfg.api_keys||{};
+  const body=`${cfg.restart_required?'<div class="notice">配置已保存，等待重启 zd-agent 生效</div>':''}
+    <form id="adminConfigForm" onsubmit="saveAdminConfig(event)">
+      <div class="form-grid">
+        <div class="field"><label>Provider</label><select name="provider"><option value="openai" ${llm.provider==='openai'?'selected':''}>openai</option><option value="anthropic" ${llm.provider==='anthropic'?'selected':''}>anthropic</option></select></div>
+        <div class="field"><label>主 Agent 模型</label><input name="model" value="${esc(llm.model||'')}"></div>
+        <div class="field"><label>Subagent 模型</label><input name="subagent_model" value="${esc(llm.subagent_model||'')}"></div>
+        <div class="field"><label>触发判定模型</label><input name="trigger_model" value="${esc(tr.llm_model||'')}"></div>
+        <div class="field"><label>Base URL</label><input name="base_url" value="${esc(llm.base_url||'')}"></div>
+        <div class="field"><label>OpenAI API key · ${esc((keys.openai&&keys.openai.masked)||'未配置')}</label><input type="password" name="openai_key" placeholder="留空不修改"></div>
+        <div class="field"><label>Anthropic API key · ${esc((keys.anthropic&&keys.anthropic.masked)||'未配置')}</label><input type="password" name="anthropic_key" placeholder="留空不修改"></div>
+      </div>
+      <div class="admin-actions"><button class="btn btn-pri" type="submit">保存配置</button><button class="btn" type="button" onclick="showAdmin('config')">重载</button></div>
+    </form>`;
+  app.innerHTML=adminShell('模型配置',body);
+}
+function renderHealth(status){
+  const app=document.getElementById('app');
+  const p=status.paths||{};
+  const body=`<div class="admin-grid">
+    <section class="admin-panel"><h2>服务</h2><div class="status-list">
+      <div class="status-row"><b>zd-agent</b>${svcPill(status.services&&status.services.agent)}</div>
+      <div class="status-row"><b>zd-log-viewer</b>${svcPill(status.services&&status.services.log_viewer)}</div>
+      <div class="status-row"><b>配置待重启</b><span>${status.restart_required?'是':'否'}</span></div>
+    </div></section>
+    <section class="admin-panel"><h2>文件</h2><div class="status-list">
+      <div class="status-row"><b>config.yaml</b><span>${p.config_mtime?fmtTime(p.config_mtime):'—'}</span></div>
+      <div class="status-row"><b>.env</b><span>${p.env_mtime?fmtTime(p.env_mtime):'—'}</span></div>
+      <div class="status-row"><b>日志目录</b><span>${esc(p.log_dir||'—')}</span></div>
+      <div class="status-row"><b>控制文件</b><span>${esc(p.control_path||'—')}</span></div>
+    </div></section>
+  </div>`;
+  app.innerHTML=adminShell('健康检查',body);
+}
+function renderAudit(data){
+  const app=document.getElementById('app');
+  const items=(data&&data.items)||[];
+  const body=items.length?`<div class="audit-list">`+items.map(it=>`<div class="audit-item">
+    <div class="top"><span>${esc(it.action||'')}</span><span>${fmtTime(it.timestamp)}</span></div>
+    <div class="sub"><span>${esc(it.actor_email||'unknown')}</span><span>${esc(it.actor_ip||'unknown')}</span><span>${esc(it.result||'')}</span></div>
+  </div>`).join('')+`</div>`:`<div class="empty" style="padding:34px 20px">${ic(I.note,32,1.5)}<div class="t">暂无审计记录</div></div>`;
+  app.innerHTML=adminShell('审计日志',body);
+}
+async function adminPause(){
+  if(!confirm('暂停后，新进 Zendesk 消息不会进入 agent 处理，已运行任务会继续收尾。确认暂停？'))return;
+  await api('api/admin/control/pause',{method:'POST'});showAdmin('control');
+}
+async function adminResume(){
+  if(!confirm('恢复后，agent 会继续处理新的 Zendesk 消息。确认恢复？'))return;
+  await api('api/admin/control/resume',{method:'POST'});showAdmin('control');
+}
+async function adminRestart(){
+  if(!confirm('重启 zd-agent 会让新配置生效，正在运行的会话会按服务退出流程收尾。确认重启？'))return;
+  await api('api/admin/service/restart',{method:'POST'});showAdmin('control');
+}
+async function saveAdminConfig(e){
+  e.preventDefault();
+  const f=e.currentTarget,fd=new FormData(f);
+  const payload={llm:{provider:fd.get('provider'),model:fd.get('model'),subagent_model:fd.get('subagent_model'),base_url:fd.get('base_url')},trigger_decider:{llm_model:fd.get('trigger_model')},api_keys:{openai:fd.get('openai_key')||'',anthropic:fd.get('anthropic_key')||''}};
+  await api('api/admin/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  showAdmin('config');
 }
 // ───── 设置：深色模式 + 自动刷新 + 退出登录 ─────
 const LS={theme:'zdv_theme',auto:'zdv_auto',int:'zdv_int'};
@@ -498,7 +688,13 @@ applyTheme(localStorage.getItem(LS.theme)||'light');
 startAuto();
 window.addEventListener('keydown',e=>{if(e.key==='Escape')closeSettings();});
 
-async function route(){const m=location.hash.match(/^#t\/(\d+)/);if(m){if(!CACHE.length){try{CACHE=await(await fetch('api/tickets')).json();}catch(e){}}showDetail(parseInt(m[1],10));}else showList();}
+async function route(){
+  const am=location.hash.match(/^#admin\/([a-z-]+)/);
+  if(am)return showAdmin(am[1]);
+  const m=location.hash.match(/^#t\/(\d+)/);
+  if(m){if(!CACHE.length){try{CACHE=await(await fetch('api/tickets')).json();}catch(e){}}showDetail(parseInt(m[1],10));}
+  else showList();
+}
 window.addEventListener('hashchange',route);route();
 </script>
 </body>

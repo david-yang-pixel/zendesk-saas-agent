@@ -82,6 +82,53 @@ _HUMAN_FAST_PATH_KEYWORDS: frozenset[str] = frozenset({
 })
 
 
+_ACCOUNT_EMAIL_KEYWORDS = (
+    "email address",
+    "e-mail address",
+    "mail address",
+    "account email",
+    "メールアドレス",
+    "メール",
+    "邮箱",
+    "郵箱",
+    "电子邮件",
+    "電子郵件",
+)
+_ACCOUNT_CHANGE_KEYWORDS = (
+    "change",
+    "update",
+    "modify",
+    "replace",
+    "変更",
+    "更新",
+    "改",
+    "修改",
+    "更换",
+    "變更",
+)
+_FAILURE_SIGNAL_KEYWORDS = (
+    "error",
+    "getting an error",
+    "can't",
+    "cannot",
+    "can not",
+    "unable",
+    "failed",
+    "not able",
+    "doesn't work",
+    "does not work",
+    "エラー",
+    "できない",
+    "出来ない",
+    "失敗",
+    "報錯",
+    "报错",
+    "无法",
+    "不能",
+    "失败",
+)
+
+
 _PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在 Zendesk 工单上发了以下消息（按时间升序）：
 
 <客户消息>
@@ -151,6 +198,23 @@ def _detect_request_human_fast(messages: list[str]) -> bool:
         return False
     last = messages[-1].strip().strip(".!?,。！？，").lower()
     return last in _HUMAN_FAST_PATH_KEYWORDS
+
+
+def _should_upgrade_account_email_issue(messages: list[str]) -> bool:
+    """Detect concrete account-email change failures that are actionable.
+
+    The LLM prompt intentionally asks for exact error text when available, but
+    account/email-change failures are already specific enough to begin
+    investigation. Re-asking a generic "what is happening?" message makes the
+    agent look like it ignored the customer.
+    """
+    if not messages:
+        return False
+    text = "\n".join(messages[-3:]).lower()
+    has_email = any(keyword in text for keyword in _ACCOUNT_EMAIL_KEYWORDS)
+    has_change = any(keyword in text for keyword in _ACCOUNT_CHANGE_KEYWORDS)
+    has_failure = any(keyword in text for keyword in _FAILURE_SIGNAL_KEYWORDS)
+    return has_email and has_change and has_failure
 
 
 async def _call_llm(
@@ -293,6 +357,18 @@ async def classify_messages(
             logger.warning("pre_check_unknown_high_risk", raw=high_risk_raw)
 
     reason = str(parsed.get("reason", ""))
+    if verdict == "insufficient_info" and _should_upgrade_account_email_issue(recent):
+        logger.info(
+            "verdict_override_account_email_issue",
+            previous_verdict=verdict,
+            previous_completeness=completeness,
+        )
+        verdict = "substantial_issue"
+        completeness = max(completeness, 65)
+        reason = (
+            "客户已说明账号邮箱变更失败/报错，具备明确功能和失败现象，可开始排查；"
+            "缺少错误文本可在处理中补问。"
+        )
 
     return PreCheckVerdict(
         verdict=verdict,  # type: ignore[arg-type]

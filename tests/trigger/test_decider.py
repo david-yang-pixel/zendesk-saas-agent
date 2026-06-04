@@ -58,6 +58,29 @@ async def test_classify_insufficient():
 
 
 @pytest.mark.asyncio
+async def test_account_email_change_error_upgrades_to_substantial_issue():
+    llm_resp = (
+        '{"verdict": "insufficient_info", "completeness": 55, '
+        '"reason": "missing exact error text"}'
+    )
+    with patch(
+        "zd_agent.trigger.decider._call_llm", AsyncMock(return_value=llm_resp),
+    ):
+        v = await classify_messages(
+            messages=[
+                "I want to change my email address, but I'm getting an error "
+                "message even though I'm following the correct procedure, so "
+                "I can't change it."
+            ],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "substantial_issue"
+    assert v.completeness == 65
+    assert "账号邮箱变更失败" in v.reason
+
+
+@pytest.mark.asyncio
 async def test_empty_messages_returns_no_message():
     """空 messages + 无截图 → no_message verdict（2026-05-13 M2 引入的新行为）"""
     v = await classify_messages(messages=[], model="gpt-5.4-mini", api_key="x")

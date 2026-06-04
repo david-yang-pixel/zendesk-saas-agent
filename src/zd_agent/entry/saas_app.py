@@ -292,7 +292,7 @@ async def _detect_human_takeover(
     """检测此工单是否已有受托人/人工 SE 接手 → 若是，应停止 agent 处理。
 
     检测三种情况：
-    1. ``assignee_id`` 非空（Zendesk 已有受托人）
+    1. ``assignee_id`` 是真实人工受托人（不含 SaaS 组 / 自动化身份）
     2. 最后一条 public comment 的 author **不是** agent_user_id → 其他 SE 发的
     3. 最后一条 public comment author **是** agent_user_id 但 body **不含**
        agent footer 标记 → yonggang 在 Zendesk UI 手动发的（不是 agent 自动）
@@ -307,6 +307,7 @@ async def _detect_human_takeover(
     if is_human_assignee(
         assignee_id,
         agent_user_id=agent_user_id,
+        non_human_assignee_ids=get_config().zendesk.non_human_assignee_ids,
     ):
         return True, f"assignee={assignee_id}（工单已有受托人）"
 
@@ -1132,6 +1133,21 @@ async def _trigger_consumer(
                     log_path=log_path, ticket_id=ticket_id,
                     verdict="below_min_ticket_id", action="skip",
                     extra={"source": source, "min_ticket_id": min_tid},
+                )
+                continue
+
+            # 0b. 全局暂停：只阻止新任务进入 agent，不取消已在运行的 session。
+            from zd_agent.entry.control import is_paused
+            if is_paused(cfg):
+                logger.info(
+                    "trigger_skip_paused",
+                    ticket_id=ticket_id,
+                    source=source,
+                )
+                log_decision(
+                    log_path=log_path, ticket_id=ticket_id,
+                    verdict="paused", action="skip",
+                    extra={"source": source},
                 )
                 continue
 

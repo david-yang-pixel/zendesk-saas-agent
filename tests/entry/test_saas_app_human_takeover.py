@@ -5,9 +5,10 @@
 2. 最后 public comment author 是别的 SE (非 agent 非客户) → detected
 3. author=agent_uid 但 body 不含 'Dify SaaS Agent' footer → yonggang 手动发 → detected
 4. ✅ 不该误判：author=agent_uid 且 body 含 footer → 是 agent 自己发的 → NOT detected
-5. assignee=agent_uid 也视为已有受托人 → detected
-6. ✅ 不该误判：没受托人且没 public comment → NOT detected
-7. ✅ fetch 失败且没受托人时保守放过 → NOT detected
+5. assignee=agent_uid 也视为已有真实受托人 → detected
+6. ✅ 不该误判：AI Agent / SaaS 自动身份 → NOT detected
+7. ✅ 不该误判：没受托人且没 public comment → NOT detected
+8. ✅ fetch 失败且没受托人时保守放过 → NOT detected
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from zd_agent.entry.saas_app import _detect_human_takeover
+from zd_agent.config import AppConfig, ZendeskConfig
 
 AGENT_UID = 45433304089364
 AI_AGENT_UID = 46493567999892
@@ -147,14 +149,20 @@ class TestNotDetected:
 
     @pytest.mark.asyncio
     async def test_ai_agent_assignee_still_takeover(self) -> None:
-        """只看是否已有受托人：AI Agent assignee 也触发让位。"""
-        detected, reason = await _detect_human_takeover(
-            ticket_id=1234,
-            ticket_info=_ticket(assignee_id=AI_AGENT_UID),
-            agent_user_id=AGENT_UID,
-        )
-        assert detected is True
-        assert str(AI_AGENT_UID) in reason
+        """AI Agent / SaaS 自动身份不算人工受托人。"""
+        cfg = AppConfig()
+        cfg.zendesk = ZendeskConfig(non_human_assignee_ids=[AI_AGENT_UID])
+        with patch("zd_agent.entry.saas_app.get_config", return_value=cfg), patch(
+            "zd.client.ZendeskClient",
+            return_value=_make_client({"comments": []}),
+        ):
+            detected, reason = await _detect_human_takeover(
+                ticket_id=1234,
+                ticket_info=_ticket(assignee_id=AI_AGENT_UID),
+                agent_user_id=AGENT_UID,
+            )
+        assert detected is False
+        assert reason == ""
 
     @pytest.mark.asyncio
     async def test_no_public_comment_yet(self) -> None:

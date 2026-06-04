@@ -38,6 +38,9 @@ zendesk:
   mention_poll_interval_seconds: 60
   # yonggang@dify.ai 的 zendesk user_id；自动公开回复也用它作为作者标记
   agent_user_id: 45433304089364
+  # Zendesk Messaging / 队列自动化身份，不算人工受托人。
+  non_human_assignee_ids:
+    - 46493567999892
   # 灰度上线：feat/auto-public-reply 分支首次部署只处理 ID ≥ 2624 的工单。
   # 0 = 不过滤；上线稳定后改 0 处理全部 SaaS 工单。
   min_ticket_id: 2624
@@ -63,7 +66,7 @@ trigger_decider:
   # gpt-5.4-mini → gpt-5.5：verdict 误分类会让 dispatch 走错路径
   # （substantial 误判成 greeting 等），mini 省的钱不抵后续 agent 跑歪的代价
   llm_model: gpt-5.5
-  silence_minutes_default: 3
+  silence_minutes_default: 1
   silence_extend_to_minutes: 5
   rapid_burst_window_seconds: 30
   rapid_burst_threshold: 2

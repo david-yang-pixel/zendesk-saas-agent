@@ -21,6 +21,7 @@ ExecStart=/usr/local/bin/oauth2-proxy \
   --redirect-url=https://zendesk.smlershou.top/oauth2/callback \
   --cookie-secure=true \
   --reverse-proxy=true \
+  --set-xauthrequest=true \
   --whitelist-domain=zendesk.smlershou.top \
   --custom-templates-dir=/opt/zd-agent/oauth2-proxy-templates \
   --upstream=static://200

@@ -21,7 +21,7 @@ zendesk:
   mention_trigger: "@saas-bot"
 trigger_decider:
   llm_model: gpt-5.4-mini
-  silence_minutes_default: 3
+  silence_minutes_default: 1
   silence_extend_to_minutes: 5
   rapid_burst_window_seconds: 30
 postgres:
@@ -99,7 +99,7 @@ def test_config_loads_resources_section(saas_env, saas_config_file):
 def test_config_loads_trigger_decider_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.trigger_decider.llm_model == "gpt-5.4-mini"
-    assert cfg.trigger_decider.silence_minutes_default == 3
+    assert cfg.trigger_decider.silence_minutes_default == 1
     assert cfg.trigger_decider.silence_extend_to_minutes == 5
     assert cfg.trigger_decider.rapid_burst_window_seconds == 30
 

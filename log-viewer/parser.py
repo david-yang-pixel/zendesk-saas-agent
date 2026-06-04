@@ -101,6 +101,23 @@ def summarize_tickets(grouped: dict[int, list[dict]]) -> list[dict]:
     out: list[dict] = []
     for tid, events in grouped.items():
         done = next((e for e in reversed(events) if e.get("event") == "agent_done"), {})
+        escalated_ev = next(
+            (
+                e for e in reversed(events)
+                if e.get("event") in {
+                    "trigger_escalated_to_human",
+                    "trigger_skip_escalated",
+                }
+            ),
+            {},
+        )
+        takeover_ev = next(
+            (
+                e for e in reversed(events)
+                if e.get("event") == "trigger_human_takeover_detected"
+            ),
+            {},
+        )
         verdict_ev = next(
             (e for e in reversed(events) if e.get("event") == "trigger_verdict"), {}
         )
@@ -115,19 +132,27 @@ def summarize_tickets(grouped: dict[int, list[dict]]) -> list[dict]:
             None,
         )
         status = done.get("status", "")
+        if not status and escalated_ev:
+            status = "escalated_to_human"
         if not status and events and all(
             e.get("event") in _SKIP_ONLY_EVENTS for e in events
         ):
             status = "skipped"
+        verdict = verdict_ev.get("verdict", "")
+        if not verdict and (escalated_ev or takeover_ev):
+            verdict = "human_takeover"
+        reply_sent = done.get("reply_sent")
+        if reply_sent is None and escalated_ev:
+            reply_sent = False
         out.append({
             "ticket_id": tid,
             "status": status,
-            "verdict": verdict_ev.get("verdict", ""),
+            "verdict": verdict,
             "ticket_type": classify_ev.get("ticket_type", ""),
             "rounds": done.get("rounds"),
             "total_tokens": done.get("total_tokens"),
             "elapsed": done.get("elapsed"),
-            "reply_sent": done.get("reply_sent"),
+            "reply_sent": reply_sent,
             # 模型：聚合该工单全阶段用过的模型并去重（主 agent / subagent /
             # 判定）。主 agent 优先排前。旧日志无 model → 空列表 → 前端显示 —
             "models": _collect_models(events),
