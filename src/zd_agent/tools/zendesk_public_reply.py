@@ -343,7 +343,7 @@ class ZendeskPublicReply(Tool):
         ):
             from zd_agent.config import EnvSettings
             from zd_agent.runtime.pre_send_check import pre_send_check_or_abort
-            from zd_agent.entry.saas_app import _fetch_customer_messages
+            from zd_agent.services.ticket_messages import _fetch_customer_messages
 
             async def _fetch():
                 msgs, _ticket = await _fetch_customer_messages(ticket_id)

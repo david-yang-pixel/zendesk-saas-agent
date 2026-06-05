@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from zd_agent.entry.mention_poller import _SEARCH_LOOKBACK_SECONDS, scan_once
+from zd_agent.services.mention_poller import _SEARCH_LOOKBACK_SECONDS, scan_once
 from zd_agent.mention.tracker import MentionTracker
 
 
@@ -47,7 +47,7 @@ async def test_scan_once_dispatches_mention(queue, tracker):
         get_ticket_comments=fake_comments,
     )
 
-    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
         cfg.zendesk.mention_trigger = "@yonggang"
@@ -80,7 +80,7 @@ async def test_scan_once_skips_processed(queue, tracker):
         search_tickets=fake_search, get_ticket_comments=fake_comments,
     )
 
-    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
         cfg.zendesk.mention_trigger = "@yonggang"
@@ -105,7 +105,7 @@ async def test_scan_once_skips_public_comments(queue, tracker):
         search_tickets=fake_search, get_ticket_comments=fake_comments,
     )
 
-    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
         cfg.zendesk.mention_trigger = "@yonggang"
@@ -123,7 +123,7 @@ async def test_scan_once_advances_cursor_on_success(queue, tracker):
     fake_search = MagicMock(return_value={"results": []})
     fake_client = MagicMock(search_tickets=fake_search)
 
-    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
         cfg.zendesk.mention_trigger = "@yonggang"
@@ -143,7 +143,7 @@ async def test_scan_once_searches_with_overlap_window(queue, tracker):
     fake_search = MagicMock(return_value={"results": []})
     fake_client = MagicMock(search_tickets=fake_search)
 
-    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
         cfg.zendesk.mention_trigger = "@yonggang"
@@ -168,7 +168,7 @@ async def test_scan_once_keeps_cursor_on_search_failure(queue, tracker):
     fake_search = MagicMock(side_effect=RuntimeError("api 500"))
     fake_client = MagicMock(search_tickets=fake_search)
 
-    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
         cfg.zendesk.mention_trigger = "@yonggang"
@@ -196,7 +196,7 @@ async def test_scan_once_handles_per_ticket_comment_failure(queue, tracker):
     fake_client = MagicMock(
         search_tickets=fake_search, get_ticket_comments=fake_comments,
     )
-    with patch("zd_agent.entry.mention_poller.get_config") as cfg_mock, \
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
         cfg.zendesk.mention_trigger = "@yonggang"

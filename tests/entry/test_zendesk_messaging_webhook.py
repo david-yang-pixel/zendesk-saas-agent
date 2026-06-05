@@ -7,10 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from zd_agent.entry.zendesk_messaging_webhook import (
+from zd_agent.services.zendesk_messaging_webhook import (
     handle_zendesk_messaging_webhook,
 )
-from zd_agent.entry.webhook_dedup import WebhookDedup
+from zd_agent.services.app_context import trigger_queue
+from zd_agent.services.webhook_dedup import WebhookDedup
 
 
 class FakeRequest:
@@ -58,6 +59,6 @@ async def test_messaging_webhook_enqueues_end_user_actor(tmp_path):
     response = await handle_zendesk_messaging_webhook(request)
 
     assert response.status == 200
-    queued = request.app["trigger_queue"].get_nowait()
+    queued = trigger_queue(request.app).get_nowait()
     assert queued["source"] == "messaging_webhook"
     assert queued["ticket_id"] == "2757"

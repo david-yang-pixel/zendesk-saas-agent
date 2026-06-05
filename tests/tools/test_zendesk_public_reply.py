@@ -342,7 +342,7 @@ class TestPreSendCheckIntegration:
             "zd_agent.runtime.pre_send_check.pre_send_check_or_abort",
             side_effect=_abort_check,
         ), patch(
-            "zd_agent.entry.saas_app._fetch_customer_messages",
+            "zd_agent.services.ticket_messages._fetch_customer_messages",
             new_callable=lambda: (lambda tid: ([], {})),
         ):
             r = await tool.execute(

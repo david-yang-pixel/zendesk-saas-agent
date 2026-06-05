@@ -1,4 +1,4 @@
-"""Tests for _detect_human_takeover (Case 3 gap: SE 中途插队).
+"""Tests for human takeover detection (Case 3 gap: SE 中途插队).
 
 3 个 takeover 检测路径 + 不该误判的情况：
 1. assignee 是非 agent 的真人 SE → detected
@@ -16,8 +16,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from zd_agent.entry.saas_app import _detect_human_takeover
 from zd_agent.config import AppConfig, ZendeskConfig
+from zd_agent.services.human_takeover import detect_human_takeover
 
 AGENT_UID = 45433304089364
 AI_AGENT_UID = 46493567999892
@@ -53,7 +53,7 @@ class TestDetected:
     async def test_assignee_is_other_se(self) -> None:
         """assignee 非空 → 视为已有受托人，触发"""
         with patch("zd.client.ZendeskClient") as _ZD:
-            detected, reason = await _detect_human_takeover(
+            detected, reason = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(assignee_id=OTHER_SE_UID),
                 agent_user_id=AGENT_UID,
@@ -73,7 +73,7 @@ class TestDetected:
         with patch(
             "zd.client.ZendeskClient", return_value=_make_client(comments),
         ):
-            detected, reason = await _detect_human_takeover(
+            detected, reason = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(),
                 agent_user_id=AGENT_UID,
@@ -96,7 +96,7 @@ class TestDetected:
         with patch(
             "zd.client.ZendeskClient", return_value=_make_client(comments),
         ):
-            detected, reason = await _detect_human_takeover(
+            detected, reason = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(),
                 agent_user_id=AGENT_UID,
@@ -128,7 +128,7 @@ class TestNotDetected:
         with patch(
             "zd.client.ZendeskClient", return_value=_make_client(comments),
         ):
-            detected, reason = await _detect_human_takeover(
+            detected, reason = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(),
                 agent_user_id=AGENT_UID,
@@ -139,7 +139,7 @@ class TestNotDetected:
     @pytest.mark.asyncio
     async def test_assignee_is_agent_uid_still_takeover(self) -> None:
         """只看是否已有受托人：assignee=agent_uid 也触发让位。"""
-        detected, reason = await _detect_human_takeover(
+        detected, reason = await detect_human_takeover(
             ticket_id=1234,
             ticket_info=_ticket(assignee_id=AGENT_UID),
             agent_user_id=AGENT_UID,
@@ -152,11 +152,11 @@ class TestNotDetected:
         """AI Agent / SaaS 自动身份不算人工受托人。"""
         cfg = AppConfig()
         cfg.zendesk = ZendeskConfig(non_human_assignee_ids=[AI_AGENT_UID])
-        with patch("zd_agent.entry.saas_app.get_config", return_value=cfg), patch(
+        with patch("zd_agent.services.human_takeover.get_config", return_value=cfg), patch(
             "zd.client.ZendeskClient",
             return_value=_make_client({"comments": []}),
         ):
-            detected, reason = await _detect_human_takeover(
+            detected, reason = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(assignee_id=AI_AGENT_UID),
                 agent_user_id=AGENT_UID,
@@ -175,7 +175,7 @@ class TestNotDetected:
         with patch(
             "zd.client.ZendeskClient", return_value=_make_client(comments),
         ):
-            detected, _ = await _detect_human_takeover(
+            detected, _ = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(),
                 agent_user_id=AGENT_UID,
@@ -196,7 +196,7 @@ class TestNotDetected:
         with patch(
             "zd.client.ZendeskClient", return_value=_make_client(comments),
         ):
-            detected, _ = await _detect_human_takeover(
+            detected, _ = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(),
                 agent_user_id=AGENT_UID,
@@ -210,7 +210,7 @@ class TestNotDetected:
             "zd.client.ZendeskClient",
             return_value=_make_client(raise_on_fetch=True),
         ):
-            detected, _ = await _detect_human_takeover(
+            detected, _ = await detect_human_takeover(
                 ticket_id=1234,
                 ticket_info=_ticket(),
                 agent_user_id=AGENT_UID,
@@ -220,7 +220,7 @@ class TestNotDetected:
     @pytest.mark.asyncio
     async def test_assignee_does_not_need_agent_uid_config(self) -> None:
         """assignee 判断只依赖是否有受托人，不依赖 agent_user_id。"""
-        detected, reason = await _detect_human_takeover(
+        detected, reason = await detect_human_takeover(
             ticket_id=1234,
             ticket_info=_ticket(assignee_id=OTHER_SE_UID),
             agent_user_id=0,

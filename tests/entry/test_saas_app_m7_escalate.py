@@ -1,6 +1,6 @@
 """Tests for M7 escalate side effects + 4-entry trigger skip.
 
-M7 在 _set_escalated_to_human 加了 3 个对外动作（best-effort，互相隔离）：
+M7 在 set_escalated_to_human_action 加了 3 个对外动作（best-effort，互相隔离）：
 1. 发 public handoff 模板 E 给客户（kill switch 受 send_public_reply 内部门控）
 2. 飞书推送 ticket_escalate 卡片（cfg.feishu.webhook_url 空时跳过）
 3. Zendesk 工单加 tag escalated-to-human（best-effort）
@@ -27,7 +27,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zd_agent.config import AppConfig, FeishuConfig, PublicReplyConfig, ZendeskConfig
-from zd_agent.entry.saas_app import _set_escalated_to_human, _trigger_consumer
+from zd_agent.services.trigger_actions import set_escalated_to_human_action
+from zd_agent.services.trigger_consumer import run_saas_trigger_consumer
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -70,7 +71,7 @@ async def _call_escalate(
 ) -> None:
     log_path = Path(tmp_path) / "trigger.jsonl"
     now = _now()
-    await _set_escalated_to_human(
+    await set_escalated_to_human_action(
         ticket_id=ticket_id,
         reason=reason,
         existing=None,
@@ -130,7 +131,7 @@ class TestStateAlwaysWritten:
         """kill switch off → send_public_reply 自然失败但 state 必须写入"""
         state = _make_state(tmp_path)
         with patch(
-            "zd_agent.entry.saas_app.get_config",
+            "zd_agent.tools.zendesk_public_reply.get_config",
             return_value=_make_cfg(public_reply_enabled=False),
         ):
             await _call_escalate(state=state, tmp_path=tmp_path)
@@ -450,7 +451,9 @@ class TestTriggerSkipEscalated:
         async def _run_once():
             try:
                 await asyncio.wait_for(
-                    _trigger_consumer(queue, manager, state),
+                    run_saas_trigger_consumer(
+                        queue, manager, state, cfg=_make_cfg(),
+                    ),
                     timeout=0.3,
                 )
             except asyncio.TimeoutError:
@@ -501,7 +504,9 @@ class TestTriggerSkipEscalated:
         ):
             try:
                 await asyncio.wait_for(
-                    _trigger_consumer(queue, manager, state),
+                    run_saas_trigger_consumer(
+                        queue, manager, state, cfg=_make_cfg(),
+                    ),
                     timeout=0.3,
                 )
             except asyncio.TimeoutError:
@@ -536,17 +541,15 @@ class TestTriggerSkipEscalated:
             "ticket_id": 9999, "source": "mention", "hint": "look at this",
         })
 
-        with patch(
-            "zd_agent.entry.saas_app.get_config",
-            return_value=_make_cfg(),
-        ):
-            try:
-                await asyncio.wait_for(
-                    _trigger_consumer(queue, manager, state),
-                    timeout=0.3,
-                )
-            except asyncio.TimeoutError:
-                pass
+        try:
+            await asyncio.wait_for(
+                run_saas_trigger_consumer(
+                    queue, manager, state, cfg=_make_cfg(),
+                ),
+                timeout=0.3,
+            )
+        except asyncio.TimeoutError:
+            pass
 
         # mention → 直接 dispatch
         manager.dispatch.assert_called_once()
@@ -564,16 +567,14 @@ class TestTriggerSkipEscalated:
             "ticket_id": 9999, "source": "mention", "hint": "look",
         })
 
-        with patch(
-            "zd_agent.entry.saas_app.get_config",
-            return_value=_make_cfg(),
-        ):
-            try:
-                await asyncio.wait_for(
-                    _trigger_consumer(queue, manager, state),
-                    timeout=0.3,
-                )
-            except asyncio.TimeoutError:
-                pass
+        try:
+            await asyncio.wait_for(
+                run_saas_trigger_consumer(
+                    queue, manager, state, cfg=_make_cfg(),
+                ),
+                timeout=0.3,
+            )
+        except asyncio.TimeoutError:
+            pass
 
         manager.dispatch.assert_called_once()

@@ -1,11 +1,11 @@
 """Tests verifying the M8 metrics are wired into the right call sites.
 
 Wiring map:
-- ``_set_escalated_to_human(reason="customer_requested")`` → emit_customer_requested_human
-- ``_set_escalated_to_human(reason="high_risk_*")``        → NOT emitted (agent-initiated)
-- ``_set_escalated_to_human(reason="max_asks_reached")``   → NOT emitted (agent-initiated)
+- ``set_escalated_to_human_action(reason="customer_requested")`` → emit_customer_requested_human
+- ``set_escalated_to_human_action(reason="high_risk_*")``        → NOT emitted (agent-initiated)
+- ``set_escalated_to_human_action(reason="max_asks_reached")``   → NOT emitted (agent-initiated)
 - ``send_public_reply()`` 成功 → emit_agent_public_reply_sent
-- ``_trigger_consumer`` 见 state==processed + 新 cid → emit_customer_reopen
+- ``run_saas_trigger_consumer`` 见 state==processed + 新 cid → emit_customer_reopen
 - ``waiting_poller`` 首次进 abandoned → emit_abandoned
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zd_agent.config import AppConfig, FeishuConfig, PublicReplyConfig, ZendeskConfig
-from zd_agent.entry.saas_app import _set_escalated_to_human
+from zd_agent.services.trigger_actions import set_escalated_to_human_action
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -42,7 +42,7 @@ async def _call_escalate(
 ) -> None:
     log_path = Path(tmp_path) / "trigger.jsonl"
     now = _now()
-    await _set_escalated_to_human(
+    await set_escalated_to_human_action(
         ticket_id=ticket_id, reason=reason,
         existing=existing, state=state, log_path=log_path,
         source="zendesk_webhook", now=now,
@@ -227,7 +227,7 @@ class TestAbandonedWiring:
         """waiting_poller 把 state 从 waiting_for_issue 转到 abandoned → emit"""
         import asyncio
 
-        from zd_agent.entry.waiting_poller import _process_one
+        from zd_agent.services.waiting_poller import _process_one
 
         state = TicketStateTracker(tmp_path / "tickets.json")
         # first_seen 25 小时前 → 触发 abandoned
@@ -245,21 +245,21 @@ class TestAbandonedWiring:
         # Mock ticket fetcher to return in-scope ticket
         with (
             patch(
-                "zd_agent.entry.saas_app._fetch_customer_messages",
+                "zd_agent.services.ticket_messages._fetch_customer_messages",
                 AsyncMock(return_value=(
                     [],
                     {"id": 9999, "status": "new", "tags": [], "assignee_id": None},
                 )),
             ),
             patch(
-                "zd_agent.entry.waiting_poller._alert_feishu",
+                "zd_agent.services.waiting_poller._alert_feishu",
                 AsyncMock(),
             ),
             patch(
                 "zd_agent.observability.metrics.emit_abandoned",
             ) as mock_emit,
             patch(
-                "zd_agent.entry.waiting_poller.get_config",
+                "zd_agent.services.waiting_poller.get_config",
                 return_value=_make_cfg(),
             ),
         ):
@@ -285,7 +285,7 @@ class TestAbandonedWiring:
         """state 已经是 abandoned → 不再 emit（防重复扫描刷指标）"""
         import asyncio
 
-        from zd_agent.entry.waiting_poller import _process_one
+        from zd_agent.services.waiting_poller import _process_one
 
         state = TicketStateTracker(tmp_path / "tickets.json")
         old_first_seen = _now() - timedelta(hours=25)
@@ -299,21 +299,21 @@ class TestAbandonedWiring:
 
         with (
             patch(
-                "zd_agent.entry.saas_app._fetch_customer_messages",
+                "zd_agent.services.ticket_messages._fetch_customer_messages",
                 AsyncMock(return_value=(
                     [],
                     {"id": 9999, "status": "new", "tags": [], "assignee_id": None},
                 )),
             ),
             patch(
-                "zd_agent.entry.waiting_poller._alert_feishu",
+                "zd_agent.services.waiting_poller._alert_feishu",
                 AsyncMock(),
             ),
             patch(
                 "zd_agent.observability.metrics.emit_abandoned",
             ) as mock_emit,
             patch(
-                "zd_agent.entry.waiting_poller.get_config",
+                "zd_agent.services.waiting_poller.get_config",
                 return_value=_make_cfg(),
             ),
         ):

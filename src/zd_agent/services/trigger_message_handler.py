@@ -1,0 +1,156 @@
+"""Single-message orchestration for the trigger consumer."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from zd_agent.log import get_logger
+from zd_agent.services.customer_activity import handle_customer_activity_gate
+from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
+from zd_agent.services.human_takeover_dispatch import handle_human_takeover_dispatch
+from zd_agent.services.silence_expiry import handle_silence_expired_ask
+from zd_agent.services.trigger_gates import handle_trigger_entry_gate
+from zd_agent.services.verdict_classification import classify_ticket_messages
+
+logger = get_logger(module="services.trigger_message_handler")
+
+FetchMessagesFn = Callable[[int], Awaitable[tuple[list[dict], dict | None]]]
+SilenceExpiredAskFn = Callable[..., Awaitable[Any]]
+PostVerdictDispatchFn = Callable[..., Awaitable[Any]]
+EscalateFn = Callable[..., Awaitable[Any]]
+ClassifyTicketMessagesFn = Callable[..., Awaitable[Any]]
+DetectHumanTakeoverFn = Callable[..., Awaitable[tuple[bool, str]]]
+
+
+@dataclass(frozen=True)
+class TriggerMessageResult:
+    handled: bool
+    action: str
+    ticket_id: int
+    source: str
+
+
+async def handle_trigger_message(
+    *,
+    msg: dict,
+    manager: Any,
+    state: Any,
+    cfg: Any,
+    env: Any,
+    log_path: Path,
+    silence_expired_ask_fn: SilenceExpiredAskFn | None = None,
+    fetch_customer_messages_fn: FetchMessagesFn | None = None,
+    post_verdict_dispatch_fn: PostVerdictDispatchFn | None = None,
+    escalate_fn: EscalateFn | None = None,
+    classify_ticket_messages_fn: ClassifyTicketMessagesFn | None = None,
+    detect_human_takeover_fn: DetectHumanTakeoverFn | None = None,
+) -> TriggerMessageResult:
+    """Handle one trigger queue message and return the terminal action."""
+    from zd_agent.services import ticket_messages
+    from zd_agent.trigger import decision_log
+    from zd_agent.trigger.nudge import nudge_message
+
+    ticket_id = int(msg["ticket_id"])
+    source = msg.get("source", "unknown")
+
+    entry_gate = handle_trigger_entry_gate(
+        ticket_id=ticket_id,
+        source=source,
+        state=state,
+        log_path=log_path,
+        cfg=cfg,
+    )
+    if entry_gate.handled:
+        return TriggerMessageResult(True, entry_gate.action, ticket_id, source)
+
+    direct_dispatch = await handle_direct_dispatch_source(
+        ticket_id=ticket_id,
+        msg=msg,
+        manager=manager,
+        state=state,
+        log_path=log_path,
+        cfg=cfg,
+    )
+    if direct_dispatch.handled:
+        return TriggerMessageResult(True, "direct_dispatch", ticket_id, source)
+
+    if source == "silence_expired_ask":
+        silence_expired_ask_fn = silence_expired_ask_fn or handle_silence_expired_ask
+        await silence_expired_ask_fn(
+            ticket_id=ticket_id,
+            state=state,
+            log_path=log_path,
+            nudge_message_fn=nudge_message,
+        )
+        return TriggerMessageResult(True, "silence_expired_ask", ticket_id, source)
+
+    fetch_customer_messages_fn = (
+        fetch_customer_messages_fn or ticket_messages._fetch_customer_messages
+    )
+    customer_msgs, ticket_info = await fetch_customer_messages_fn(ticket_id)
+    if ticket_info is None:
+        return TriggerMessageResult(True, "fetch_failed", ticket_id, source)
+
+    if not customer_msgs:
+        logger.info("trigger_skip_no_customer_msg", ticket_id=ticket_id)
+        decision_log.log_decision(
+            log_path=log_path,
+            ticket_id=ticket_id,
+            verdict="no_customer_message",
+            action="skip",
+        )
+        return TriggerMessageResult(True, "no_customer_message", ticket_id, source)
+
+    if escalate_fn is None:
+        raise RuntimeError("escalate_fn is required for trigger message handling")
+    takeover_dispatch = await handle_human_takeover_dispatch(
+        ticket_id=ticket_id,
+        ticket_info=ticket_info,
+        customer_msgs=customer_msgs,
+        state=state,
+        log_path=log_path,
+        source=source,
+        agent_user_id=cfg.zendesk.agent_user_id,
+        detect_human_takeover_fn=detect_human_takeover_fn,
+        escalate_fn=escalate_fn,
+    )
+    if takeover_dispatch.handled:
+        return TriggerMessageResult(True, "human_takeover", ticket_id, source)
+
+    customer_activity = handle_customer_activity_gate(
+        ticket_id=ticket_id,
+        customer_msgs=customer_msgs,
+        state=state,
+        log_path=log_path,
+        source=source,
+        cooldown_seconds=cfg.trigger_decider.post_agent_cooldown_seconds,
+    )
+    if customer_activity.handled:
+        return TriggerMessageResult(True, customer_activity.action, ticket_id, source)
+
+    classify_ticket_messages_fn = classify_ticket_messages_fn or classify_ticket_messages
+    classification = await classify_ticket_messages_fn(
+        ticket_id=ticket_id,
+        customer_msgs=customer_msgs,
+        model=cfg.trigger_decider.llm_model,
+        api_key=env.openai_api_key,
+    )
+
+    if post_verdict_dispatch_fn is None:
+        raise RuntimeError("post_verdict_dispatch_fn is required")
+    await post_verdict_dispatch_fn(
+        ticket_id=ticket_id,
+        verdict=classification.verdict,
+        customer_msgs=customer_msgs,
+        ticket_info=ticket_info,
+        latest_cid=customer_activity.latest_cid,
+        latest_ts=customer_activity.latest_ts,
+        existing=customer_activity.existing,
+        state=state,
+        log_path=log_path,
+        source=source,
+        now=customer_activity.now,
+        cfg=cfg,
+    )
+    return TriggerMessageResult(True, "verdict_dispatched", ticket_id, source)

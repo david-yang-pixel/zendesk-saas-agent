@@ -138,7 +138,7 @@ async def _inject_images(session: AgentSession, message_store: MessageStore) -> 
         return
 
     # Lazy import to avoid circular saas_app ↔ runtime
-    from zd_agent.entry.saas_app import _download_image_data_url
+    from zd_agent.services.ticket_messages import _download_image_data_url
 
     # 并发下载，跳过失败的（不阻断 dispatch）
     results = await asyncio.gather(

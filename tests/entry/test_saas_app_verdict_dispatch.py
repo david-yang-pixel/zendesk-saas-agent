@@ -1,4 +1,4 @@
-"""Tests for _handle_post_verdict_dispatch (M4 main logic).
+"""Tests for post-verdict dispatch action (M4 main logic).
 
 Verdict 分发覆盖：
 1. request_human                           → escalated_to_human (customer_requested)
@@ -13,12 +13,12 @@ Verdict 分发覆盖：
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig
-from zd_agent.entry.saas_app import _handle_post_verdict_dispatch
+from zd_agent.services.trigger_actions import post_verdict_dispatch_action
 from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -71,8 +71,8 @@ async def _dispatch(
 ) -> None:
     """共用 helper：调用 dispatch 并补默认参数。
 
-    自动 patch ``_send_ask_template`` 返回 ``send_ask_returns``（默认 True），
-    避免 M6 实施后 ask_template 依赖 kill switch / Zendesk client 真发送。
+    注入 ``send_ask_fn`` 返回 ``send_ask_returns``（默认 True），避免 M6
+    实施后 ask_template 依赖 kill switch / Zendesk client 真发送。
     要测试发送失败路径时显式传 ``send_ask_returns=False``。
     """
     from pathlib import Path
@@ -82,25 +82,22 @@ async def _dispatch(
         if tmp_path is not None
         else Path("/tmp/trigger_test.jsonl")
     )
-    with patch(
-        "zd_agent.entry.saas_app._send_ask_template",
-        new_callable=AsyncMock,
-        return_value=send_ask_returns,
-    ):
-        await _handle_post_verdict_dispatch(
-            ticket_id=ticket_id,
-            verdict=verdict,
-            customer_msgs=[],
-            ticket_info={"id": ticket_id},
-            latest_cid="cid-1",
-            latest_ts=now,
-            existing=existing,
-            state=state,
-            log_path=log_path,
-            source=source,
-            now=now,
-            cfg=cfg or _make_cfg(),
-        )
+    mock_send = AsyncMock(return_value=send_ask_returns)
+    await post_verdict_dispatch_action(
+        ticket_id=ticket_id,
+        verdict=verdict,
+        customer_msgs=[],
+        ticket_info={"id": ticket_id},
+        latest_cid="cid-1",
+        latest_ts=now,
+        existing=existing,
+        state=state,
+        log_path=log_path,
+        source=source,
+        now=now,
+        cfg=cfg or _make_cfg(),
+        send_ask_fn=mock_send,
+    )
 
 
 # ============================================================================
@@ -335,26 +332,23 @@ class TestAskPath:
 
     @pytest.mark.asyncio
     async def test_send_ask_template_called_with_correct_args(self, tmp_path) -> None:
-        """_send_ask_template 被传入正确的参数"""
+        """send_ask_fn 被传入正确的参数"""
         state = _make_state(tmp_path)
         from pathlib import Path
         now = _now()
         log_path = Path(tmp_path) / "trigger.jsonl"
-        with patch(
-            "zd_agent.entry.saas_app._send_ask_template",
-            new_callable=AsyncMock,
-            return_value=True,
-        ) as mock_send:
-            await _handle_post_verdict_dispatch(
-                ticket_id=12345,
-                verdict=_make_verdict(kind="greeting"),
-                customer_msgs=[],
-                ticket_info={"id": 12345},
-                latest_cid="cid-1", latest_ts=now,
-                existing=None, state=state, log_path=log_path,
-                source="zendesk_webhook", now=now,
-                cfg=_make_cfg(),
-            )
+        mock_send = AsyncMock(return_value=True)
+        await post_verdict_dispatch_action(
+            ticket_id=12345,
+            verdict=_make_verdict(kind="greeting"),
+            customer_msgs=[],
+            ticket_info={"id": 12345},
+            latest_cid="cid-1", latest_ts=now,
+            existing=None, state=state, log_path=log_path,
+            source="zendesk_webhook", now=now,
+            cfg=_make_cfg(),
+            send_ask_fn=mock_send,
+        )
         mock_send.assert_called_once()
         kwargs = mock_send.call_args.kwargs
         assert kwargs["ticket_id"] == 12345

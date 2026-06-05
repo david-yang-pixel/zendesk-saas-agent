@@ -2,7 +2,7 @@
 password + OTP, returns success/error.
 
 Used by:
-- entry/teleport_auth_web.py — interactive web form (manual login)
+- services/teleport_auth_web.py — interactive web form (manual login)
 - scripts/auth-watchdog.py    — automatic renewal using stored TOTP secret
 
 The login flow has several gotchas worth keeping in one place:

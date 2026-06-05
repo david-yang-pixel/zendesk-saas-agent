@@ -2,7 +2,7 @@ import base64
 import hashlib
 import hmac
 
-from zd_agent.entry.zendesk_webhook import verify_zendesk_signature
+from zd_agent.services.zendesk_webhook import verify_zendesk_signature
 
 
 def _sign(secret: str, ts: str, body: bytes) -> str:

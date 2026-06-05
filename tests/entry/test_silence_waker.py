@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from zd_agent.entry.silence_waker import run_silence_waker, scan_once
+from zd_agent.services.silence_waker import run_silence_waker, scan_once
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -135,7 +135,7 @@ async def test_run_silence_waker_loop_handles_exception(tmp_path, monkeypatch):
         call_count["n"] += 1
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("zd_agent.entry.silence_waker.scan_once", fake_scan_once)
+    monkeypatch.setattr("zd_agent.services.silence_waker.scan_once", fake_scan_once)
 
     task = asyncio.create_task(
         run_silence_waker(

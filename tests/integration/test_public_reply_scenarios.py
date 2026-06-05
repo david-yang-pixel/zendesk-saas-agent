@@ -41,7 +41,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zd_agent.config import AppConfig, FeishuConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
-from zd_agent.entry.saas_app import _handle_post_verdict_dispatch
+from zd_agent.services.trigger_actions import post_verdict_dispatch_action
 from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -103,9 +103,6 @@ async def _run_dispatch(
 
     with (
         patch(
-            "zd_agent.entry.saas_app._send_ask_template", mock_send,
-        ),
-        patch(
             "zd_agent.tools.zendesk_public_reply.send_public_reply",
             mock_send_pr,
         ),
@@ -114,7 +111,7 @@ async def _run_dispatch(
             "zd_agent.config.get_config", return_value=cfg,
         ),
     ):
-        await _handle_post_verdict_dispatch(
+        await post_verdict_dispatch_action(
             ticket_id=ticket_id,
             verdict=verdict,
             customer_msgs=customer_msgs,
@@ -127,6 +124,7 @@ async def _run_dispatch(
             source=source,
             now=now,
             cfg=cfg,
+            send_ask_fn=mock_send,
         )
     return mock_send
 
@@ -148,7 +146,7 @@ class TestScenarioSilent:
         assert rec.state == "waiting_for_issue"
         assert rec.ask_count == 1
         assert rec.last_verdict == "no_message"
-        # _send_ask_template 被以 no_message + ask_count=0 调用
+        # send_ask_fn 被以 no_message + ask_count=0 调用
         mock_send.assert_called_once()
         kwargs = mock_send.call_args.kwargs
         assert kwargs["verdict_kind"] == "no_message"
@@ -279,9 +277,6 @@ class TestScenarioRequestHuman:
 
         with (
             patch(
-                "zd_agent.entry.saas_app._send_ask_template", mock_send_ask,
-            ),
-            patch(
                 "zd_agent.tools.zendesk_public_reply.send_public_reply",
                 mock_send_pr,
             ),
@@ -294,7 +289,7 @@ class TestScenarioRequestHuman:
                 return_value=_make_cfg(public_reply_enabled=True),
             ),
         ):
-            await _handle_post_verdict_dispatch(
+            await post_verdict_dispatch_action(
                 ticket_id=5000,
                 verdict=_make_verdict(
                     kind="request_human", completeness=100,
@@ -308,6 +303,7 @@ class TestScenarioRequestHuman:
                 source="zendesk_webhook",
                 now=_now(),
                 cfg=_make_cfg(public_reply_enabled=True),
+                send_ask_fn=mock_send_ask,
             )
 
         # state 升级

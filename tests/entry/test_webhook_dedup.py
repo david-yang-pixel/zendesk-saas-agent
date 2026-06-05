@@ -1,4 +1,4 @@
-from zd_agent.entry.webhook_dedup import WebhookDedup
+from zd_agent.services.webhook_dedup import WebhookDedup
 
 
 def test_seen_returns_false_for_new_key(tmp_path):
