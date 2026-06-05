@@ -52,20 +52,20 @@ mkdir resources
 # From your local Mac
 rsync -av --progress \
     "/Users/yangyonggang/Documents/工作/saas工单常见问题/zendesk-cli/工单记录/" \
-    root@180.76.243.249:/opt/zd-agent/resources/zendesk-cli/工单记录/
+    root@<SERVER_IP>:/opt/zd-agent/resources/zendesk-cli/工单记录/
 
 rsync -av --progress \
     "/Users/yangyonggang/Documents/工作/saas工单常见问题/saas版知识库/" \
-    root@180.76.243.249:/opt/zd-agent/resources/saas版知识库/
+    root@<SERVER_IP>:/opt/zd-agent/resources/saas版知识库/
 
 # Initialize the directory skeleton (creates .state, etc.)
-ssh root@180.76.243.249 "/opt/zd-agent/code/scripts/init-resources.sh /opt/zd-agent/resources"
+ssh root@<SERVER_IP> "/opt/zd-agent/code/scripts/init-resources.sh /opt/zd-agent/resources"
 ```
 
 ### 4. Clone the 5 SaaS source repos
 
 ```bash
-ssh root@180.76.243.249
+ssh root@<SERVER_IP>
 cd /opt/zd-agent/resources/saas源代码
 for repo in dify dify-billing dify-marketplace-backend dify-marketplace-frontend saas-deploy; do
     git clone git@github.com:langgenius/$repo.git
@@ -81,9 +81,9 @@ chmod 600 /opt/zd-agent/.env
 ```
 
 Required variables (see `.env.example` for full list):
-- ZENDESK_SUBDOMAIN / ZENDESK_EMAIL (yonggang@dify.ai，即运维人本人) / ZENDESK_API_TOKEN / ZENDESK_WEBHOOK_SECRET
+- ZENDESK_SUBDOMAIN / ZENDESK_EMAIL（agent 使用的 Zendesk 账号）/ ZENDESK_API_TOKEN / ZENDESK_WEBHOOK_SECRET
 - OPENAI_API_KEY
-- FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
+- FEISHU_WEBHOOK_URL / FEISHU_WEBHOOK_SECRET（可选加签）
 - GRAFANA_API_KEY / SIGNOZ_API_KEY
 - GITHUB_TOKEN
 - TELEPORT_USER
@@ -93,15 +93,15 @@ Required variables (see `.env.example` for full list):
 
 ### 6. Configure Zendesk webhook + Trigger
 
-本项目复用运维人本人的 Zendesk 账号（`yonggang@dify.ai`），不需要单独注册 bot 账号。
+本项目可以复用运维人的 Zendesk Agent 账号，也可以使用单独的 bot / service account。
 注意：agent 以你本人身份调 API，所有 Internal Note 落款都是你本人。
 
 1. 用**管理员账号**登录 Zendesk，生成 API token：Admin Center → Apps → APIs → Zendesk API tokens → Add
    - Token 与谁生成无关，最终身份取决于 `.env` 里 `ZENDESK_EMAIL`
-2. 确认 `yonggang@dify.ai` 账号的 **Role = Agent**（End user 不能写 Internal Note）
+2. 确认 `ZENDESK_EMAIL` 对应账号的 **Role = Agent**（End user 不能写 Internal Note）
 3. Create webhook:
    - Admin Center → Apps and integrations → Webhooks → Create webhook
-   - Endpoint: `https://zd-agent.smlershou.top/webhook/zendesk`
+   - Endpoint: `https://<AGENT_DOMAIN>/webhook/zendesk`
    - Method: POST, Authentication: Signed Secret (copy secret → ZENDESK_WEBHOOK_SECRET)
 4. Create trigger:
    - Conditions: Ticket Status = New AND Tags contain "saas" AND Ticket is (Created OR Updated)
@@ -119,18 +119,19 @@ Required variables (see `.env.example` for full list):
      }
      ```
 
-### 7. Configure Feishu bot
+### 7. Configure Feishu incoming webhook
 
-1. Feishu Open Platform → Create custom app → enable "Bot" capability
-2. Set event subscription URL: `https://zd-agent.smlershou.top/webhook/feishu`
-3. Subscribe events: `im.message.receive_v1`
-4. Add bot to your team chat
-5. Copy App ID / Secret / Verify Token / Encrypt Key → .env
+当前实现只使用飞书群自定义机器人 Incoming Webhook 做单向通知，不注册 `/webhook/feishu`，也不处理飞书指令。
+
+1. 在飞书群 → 群设置 → 群机器人 → 添加自定义机器人
+2. 复制 webhook URL → `.env` 的 `FEISHU_WEBHOOK_URL`
+3. 如启用“加签”，复制签名密钥 → `.env` 的 `FEISHU_WEBHOOK_SECRET`
+4. 重启 `zd-agent`
 
 ### 8. DNS
 
 Add A record at your DNS provider:
-- `zd-agent.smlershou.top` → `180.76.243.249`
+- `<AGENT_DOMAIN>` → `<SERVER_IP>`
 - Wait for propagation (typically < 5 min)
 
 ### 9. Nginx + Let's Encrypt
@@ -140,7 +141,7 @@ sudo cp /opt/zd-agent/code/deploy/nginx/zd-agent.conf /etc/nginx/sites-available
 sudo ln -s /etc/nginx/sites-available/zd-agent.conf /etc/nginx/sites-enabled/
 
 # Get cert
-sudo certbot certonly --webroot -w /var/www/html -d zd-agent.smlershou.top
+sudo certbot certonly --webroot -w /var/www/html -d <AGENT_DOMAIN>
 
 # Reload
 sudo nginx -t && sudo systemctl reload nginx
@@ -149,12 +150,12 @@ sudo nginx -t && sudo systemctl reload nginx
 ### 10. Install Teleport CLI + Machine ID (or use headless login)
 
 ```bash
-curl https://teleport.dify.dev/scripts/install.sh | bash
+curl https://<TELEPORT_PROXY>/scripts/install.sh | bash
 ```
 
 First-time manual login (sets up TELEPORT_HOME):
 ```bash
-sudo -u zd-agent TELEPORT_HOME=/opt/zd-agent/.tsh tsh login --headless --proxy=teleport.dify.dev --user=$TELEPORT_USER
+sudo -u zd-agent TELEPORT_HOME=/opt/zd-agent/.tsh tsh login --headless --proxy=<TELEPORT_PROXY> --user=$TELEPORT_USER
 # Click the printed URL on your phone to approve
 ```
 
@@ -202,12 +203,10 @@ sudo journalctl -u zd-agent -f
 |------|-----|
 | Restart agent | `sudo systemctl restart zd-agent` |
 | View live logs | `sudo docker logs -f zd-agent` (or `journalctl -u zd-agent -f`) |
-| Manual Teleport renew | Feishu `/relogin` or `sudo systemctl restart tsh-auth-watchdog` |
-| Pause processing | Feishu `/pause` (doesn't restart process, just suspends polling) |
-| Resume | Feishu `/resume` |
-| Force reprocess ticket | Feishu `/reprocess 12345` |
-| Check status | Feishu `/status` |
-| Update SaaS branch | Feishu `/branch dify hotfix/1.11.2-fix3` |
+| Manual Teleport renew | `sudo systemctl restart tsh-auth-watchdog` |
+| Pause processing | 管理后台 `/logs/` → Agent 控制 → Pause，或写 `/opt/zd-agent/resources/.state/control.json` |
+| Resume | 管理后台 `/logs/` → Agent 控制 → Resume |
+| Check status | 管理后台 `/logs/`，或 `curl http://127.0.0.1:8080/healthz` |
 | Update agent code | `cd /opt/zd-agent/code && git pull && sudo docker build --network host -f deploy/Dockerfile -t zd-agent:latest . && sudo systemctl restart zd-agent` |
 | Restart only (改 config.yaml 后) | `sudo systemctl restart zd-agent`（config 挂载只读 volume，无需 rebuild）|
 | Refresh DB schema cheat sheet | `bash /opt/zd-agent/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
@@ -223,10 +222,10 @@ The backup cron should copy `.state/` + `工单记录/` daily. Add to root's cro
 ## Health Check
 
 ```bash
-curl -I https://zd-agent.smlershou.top/healthz
+curl -I https://<AGENT_DOMAIN>/healthz
 # Expected: HTTP/2 200
 
-curl -X POST https://zd-agent.smlershou.top/webhook/zendesk
+curl -X POST https://<AGENT_DOMAIN>/webhook/zendesk
 # Expected: 401 (no signature) — proves the endpoint is reachable and the verify path is active
 
 sudo docker ps | grep zd-agent
@@ -256,7 +255,7 @@ sudo journalctl -u tsh-auth-watchdog -n 50
 
 Manually trigger renew:
 ```bash
-sudo -u zd-agent TELEPORT_HOME=/opt/zd-agent/.tsh tsh login --headless --proxy=teleport.dify.dev --user=$TELEPORT_USER
+sudo -u zd-agent TELEPORT_HOME=/opt/zd-agent/.tsh tsh login --headless --proxy=<TELEPORT_PROXY> --user=$TELEPORT_USER
 ```
 
 ### Webhook 401 for legit requests
@@ -286,7 +285,7 @@ If near the 1500m limit: raise the `--memory` in `zd-agent.service` (after upgra
 
 ## 工单日志 Web 界面（log-viewer）
 
-按工单查看 agent 处理日志，`https://zendesk.smlershou.top/logs/`，Google 登录保护（仅 `@dify.ai`）。
+按工单查看 agent 处理日志，`https://<AGENT_DOMAIN>/logs/`，Google 登录保护（按你的 OAuth 配置限制域）。
 
 ### 架构（三个独立组件）
 
@@ -312,18 +311,18 @@ If near the 1500m limit: raise the `--memory` in `zd-agent.service` (after upgra
 
 - 运行中的 nginx：`/usr/sbin/nginx -c /www/server/nginx/conf/nginx.conf`，
   include `/www/server/panel/vhost/nginx/*.conf` → 真正生效的 vhost 是
-  **`/www/server/panel/vhost/nginx/zendesk.smlershou.top.conf`**（证书也在 `/www/server/panel/vhost/cert/`）。
+  **`/www/server/panel/vhost/nginx/<AGENT_DOMAIN>.conf`**（证书也在 `/www/server/panel/vhost/cert/`）。
 - `/etc/nginx/`（sites-enabled/conf.d）是**另一套、不被运行 nginx 使用**的影子配置。
   `nginx -T`（不带 -c）默认读 `/etc/nginx/nginx.conf` → 显示影子配置，**看着对其实没生效**
   （曾因此 /logs/ 裸奔 200，改 /etc/nginx 完全无效，排查了一整轮）。
 - **判断哪套生效**：`ss -tlnp | grep :443` 找 pid → `tr '\0' ' ' < /proc/<pid>/cmdline` 看 `-c`。
 - **改配置只改宝塔 vhost**；测试 `nginx -t -c /www/server/nginx/conf/nginx.conf`；
   reload `systemctl reload nginx`（systemd 管的就是这个进程）。
-- **改完务必验证**：`curl -s -o /dev/null -w "%{http_code}" https://zendesk.smlershou.top/logs/`
+- **改完务必验证**：`curl -s -o /dev/null -w "%{http_code}" https://<AGENT_DOMAIN>/logs/`
   **检查 body 内容**：未登录访问应得 oauth2 登录页（含 "sign in"），**绝不能含 `ticket_id`**。
   注意：状态码 **200 或 302 都正常**（`error_page 401 = /oauth2/sign_in` 用 `=` 时返 200+登录页）。
   判定泄露看**内容有没有 ticket 数据**，不是看状态码。命令：
-  `curl -s https://zendesk.smlershou.top/logs/api/tickets | grep -c ticket_id` → 必须 `0`。
+  `curl -s https://<AGENT_DOMAIN>/logs/api/tickets | grep -c ticket_id` → 必须 `0`。
 - ⚠️ 宝塔 UI 里操作过该站点可能覆盖手加的 location，UI 操作后要复查 vhost。
 
 vhost 里需要的三个 location（合并进宝塔 vhost）：`location /oauth2/`、`location = /oauth2/auth`、
@@ -361,13 +360,13 @@ systemctl daemon-reload && systemctl enable --now zd-log-viewer oauth2-proxy
 nginx -t -c /www/server/nginx/conf/nginx.conf && systemctl reload nginx
 # 验证：看 body 内容，不要只看状态码！未登录访问应返回 oauth2 登录页（含 sign in），
 # 绝不能含 ticket_id（那才是泄露）。状态码 200 或 302 都正常（error_page = 用 200+登录页）：
-curl -s https://zendesk.smlershou.top/logs/api/tickets | grep -c ticket_id   # 必须 0（无泄露）
+curl -s https://<AGENT_DOMAIN>/logs/api/tickets | grep -c ticket_id   # 必须 0（无泄露）
 ```
 
 ### Google OAuth client 创建
 
 1. Google Cloud Console → APIs & Services → Credentials → Create OAuth client ID → **Web application**
-2. Authorized redirect URIs 填精确值：`https://zendesk.smlershou.top/oauth2/callback`
+2. Authorized redirect URIs 填精确值：`https://<AGENT_DOMAIN>/oauth2/callback`
 3. Client ID + Secret 填入 `/opt/zd-agent/oauth2-proxy.env`
 4. ⚠️ client secret 若曾在截图/聊天暴露，用完应在 Google Console 轮换。
 
@@ -377,5 +376,5 @@ curl -s https://zendesk.smlershou.top/logs/api/tickets | grep -c ticket_id   # �
 |------|-----|
 | 更新 log-viewer 代码 | `cd /opt/zd-agent/code && git pull && cp -r log-viewer/* /opt/zd-agent/log-viewer/ && cd /opt/zd-agent/log-viewer && env -u https_proxy -u http_proxy -u HTTPS_PROXY -u HTTP_PROXY .venv/bin/pip install 'ruamel.yaml>=0.18' && systemctl restart zd-log-viewer` |
 | 改 oauth2-proxy 密钥 | 编辑 `/opt/zd-agent/oauth2-proxy.env` → `systemctl restart oauth2-proxy` |
-| 改 nginx 后验证 | `curl -s https://zendesk.smlershou.top/logs/api/tickets` 输出**不含 ticket_id**（含=泄露），应是 oauth2 登录页 |
+| 改 nginx 后验证 | `curl -s https://<AGENT_DOMAIN>/logs/api/tickets` 输出**不含 ticket_id**（含=泄露），应是 oauth2 登录页 |
 | 看 oauth2-proxy 日志 | `journalctl -u oauth2-proxy -f` |

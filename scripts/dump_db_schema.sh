@@ -10,7 +10,7 @@
 #   /opt/zd-agent/resources/saas版知识库/database_schema.md  (loaded into agent
 #   system prompt; falls back to "no schema" if missing)
 #
-# Run on:  the production server (180.76.243.249).
+# Run on:  the production server.
 # Cadence: weekly via cron, or on-demand after schema migrations.
 set -euo pipefail
 

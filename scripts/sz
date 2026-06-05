@@ -6,8 +6,8 @@ Bypasses the broken signoz-mcp-server <-> SigNoz EE compatibility by talking
 directly to SigNoz v4 query_range API with raw ClickHouse SQL.
 
 Config (env vars; both have sensible defaults for Dify SaaS):
-    SIGNOZ_URL       default https://signoz.dify.dev
-    SIGNOZ_API_KEY   default <hardcoded fallback>
+    SIGNOZ_URL       default https://signoz.example.com
+    SIGNOZ_API_KEY   required
 
 Subcommands:
     errors      — search ERROR logs by tenant_id / body substring / service
@@ -36,16 +36,15 @@ from datetime import datetime, timezone
 
 # ---- config -----------------------------------------------------------------
 
-DEFAULT_URL = "https://signoz.dify.dev"
-DEFAULT_KEY = "5GaVxJ4BLWf1LlMI/bUoLfsi8Z8htBpy6PGtvfOG+Zc="  # Dify SaaS read key
+DEFAULT_URL = "https://signoz.example.com"
 LOGS_TABLE = "signoz_logs.distributed_logs_v2"
 
 
 def cfg():
-    return (
-        os.environ.get("SIGNOZ_URL", DEFAULT_URL).rstrip("/"),
-        os.environ.get("SIGNOZ_API_KEY", DEFAULT_KEY),
-    )
+    key = os.environ.get("SIGNOZ_API_KEY", "").strip()
+    if not key:
+        die("SIGNOZ_API_KEY env is required")
+    return (os.environ.get("SIGNOZ_URL", DEFAULT_URL).rstrip("/"), key)
 
 
 # ---- HTTP --------------------------------------------------------------------
@@ -71,7 +70,7 @@ def post_query(sql: str, start_ms: int, end_ms: int, panel_type: str = "list") -
         headers={
             "Content-Type": "application/json",
             "SIGNOZ-API-KEY": key,
-            # Cloudflare in front of signoz.dify.dev rejects Python-urllib's
+            # Some deployments may reject Python-urllib's
             # default UA with HTTP 403 code 1010. Curl works because of its UA.
             "User-Agent": "sz-cli/1.0 (curl-compatible)",
             "Accept": "application/json",

@@ -1,5 +1,5 @@
 [Unit]
-Description=oauth2-proxy for zd-agent log viewer (Google login, @dify.ai only)
+Description=oauth2-proxy for zd-agent log viewer (Google login)
 After=network-online.target
 
 [Service]
@@ -13,16 +13,16 @@ EnvironmentFile=/opt/zd-agent/oauth2-proxy.env
 # NO_PROXY 排除本地，避免回调/healthcheck 等本机流量也被代理。
 Environment=HTTPS_PROXY=http://127.0.0.1:7890
 Environment=HTTP_PROXY=http://127.0.0.1:7890
-Environment=NO_PROXY=localhost,127.0.0.1,zendesk.smlershou.top
+Environment=NO_PROXY=localhost,127.0.0.1,agent.example.com
 ExecStart=/usr/local/bin/oauth2-proxy \
   --provider=google \
-  --email-domain=dify.ai \
+  --email-domain=example.com \
   --http-address=127.0.0.1:4180 \
-  --redirect-url=https://zendesk.smlershou.top/oauth2/callback \
+  --redirect-url=https://agent.example.com/oauth2/callback \
   --cookie-secure=true \
   --reverse-proxy=true \
   --set-xauthrequest=true \
-  --whitelist-domain=zendesk.smlershou.top \
+  --whitelist-domain=agent.example.com \
   --custom-templates-dir=/opt/zd-agent/oauth2-proxy-templates \
   --upstream=static://200
 StandardOutput=journal

@@ -18,7 +18,7 @@ declare -A PORTS=(
 LOG_FILE=/var/log/proxy-health.log
 # 让出 watchdog/path-unit 的 grace 期：cert 在 GRACE 秒内被续期过则跳过本轮探测
 # （path-unit 自己会 restart proxies；proxy-health 不要插一脚加剧 crashloop）
-CERT_FILE=/opt/zd-agent/.tsh/keys/teleport.dify.dev/yangyonggang.crt
+CERT_FILE=${TELEPORT_CERT_FILE:-/opt/zd-agent/.tsh/keys/teleport.example.com/agent-user.crt}
 GRACE_SECONDS=60
 
 log() {

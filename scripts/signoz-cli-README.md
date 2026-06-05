@@ -34,11 +34,11 @@
 
 ## 配置
 
-环境变量（都有默认值，可在 shell 里覆盖）：
+环境变量：
 
 ```bash
-export SIGNOZ_URL="https://signoz.dify.dev"      # 默认
-export SIGNOZ_API_KEY="<your-key>"               # 默认走脚本内置的 Dify SaaS 读 key
+export SIGNOZ_URL="https://signoz.example.com"
+export SIGNOZ_API_KEY="<your-key>"               # 必填，不要写入 git
 ```
 
 ## Agent 调用提示
