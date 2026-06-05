@@ -5,10 +5,13 @@ from typing import Any, TYPE_CHECKING
 
 from zd_agent.config import get_config
 from zd_agent.integrations.feishu.client import FeishuClient
+from zd_agent.log import get_logger
 from zd_agent.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:
     from zd_agent.session.agent_session import AgentSession
+
+logger = get_logger(module="tools.feishu")
 
 
 class FeishuPush(Tool):
@@ -65,6 +68,11 @@ class FeishuPush(Tool):
         )
         card_type = args["card_type"]
         content = args.get("content", "")
+        logger.info(
+            "feishu_push_start",
+            ticket_id=session.ticket_id,
+            card_type=card_type,
+        )
         try:
             if card_type == "ticket_done":
                 await client.send_ticket_done(
@@ -89,5 +97,16 @@ class FeishuPush(Tool):
                     success=False, error=f"unknown card_type: {card_type}",
                 )
         except Exception as e:
+            logger.warning(
+                "feishu_push_failed",
+                ticket_id=session.ticket_id,
+                card_type=card_type,
+                error=str(e),
+            )
             return ToolResult(success=False, error=f"Feishu push failed: {e}")
+        logger.info(
+            "feishu_push_pushed",
+            ticket_id=session.ticket_id,
+            card_type=card_type,
+        )
         return ToolResult(output=f"pushed ({card_type})")

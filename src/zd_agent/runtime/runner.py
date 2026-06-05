@@ -13,6 +13,7 @@ from zd_agent.runtime.archive_meta import build_archive_meta
 from zd_agent.runtime.guardrails import Guardrails
 from zd_agent.runtime.llm_client import LLMClient
 from zd_agent.runtime.prompt_loader import build_system_prompt
+from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
 from zd_agent.runtime.tool_loop import run_tool_loop
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.session.sandbox import create_sandbox
@@ -207,6 +208,9 @@ async def run_agent(session: AgentSession) -> None:
 
         # 自动归档保底：如果 LLM 没有调用 archive_ticket，runner 层补充写入 meta.json
         _ensure_archive(session, guardrails)
+
+        if session.status == SessionStatus.COMPLETED and session.reply_sent:
+            await notify_ticket_done_best_effort(session)
 
         # sandbox 清理策略
         should_clean = (

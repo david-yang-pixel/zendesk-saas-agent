@@ -144,7 +144,7 @@ async def test_completeness_clamped_to_0_100():
 
 
 @pytest.mark.asyncio
-async def test_only_last_5_messages_sent_to_llm():
+async def test_all_customer_messages_sent_to_llm():
     many = [f"msg {i}" for i in range(10)]
     captured_content = []
 
@@ -158,10 +158,9 @@ async def test_only_last_5_messages_sent_to_llm():
     # 文本调用，user_content 应该是 str
     text = captured_content[0]
     assert isinstance(text, str)
-    # only msg 5..9 should be in the prompt
-    for i in range(5, 10):
+    # 全部客户消息都应进入判定上下文，不能只看最近 5 条。
+    for i in range(10):
         assert f"msg {i}" in text
-    assert "msg 4" not in text
 
 
 @pytest.mark.asyncio

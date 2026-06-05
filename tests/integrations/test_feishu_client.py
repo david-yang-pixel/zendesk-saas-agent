@@ -135,6 +135,24 @@ async def test_send_card_raises_on_non_zero_code():
 
 
 @pytest.mark.asyncio
+async def test_send_card_retries_feishu_rate_limit_code_11232():
+    client = FeishuClient(
+        webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test",
+        retry_delays=(0, 0),
+    )
+    mock_http = MagicMock()
+    mock_http.post = AsyncMock(side_effect=[
+        _mock_response(200, {"code": 11232, "msg": "frequency limited"}),
+        _mock_response(200, {"code": 0, "msg": "success"}),
+    ])
+
+    with patch("httpx.AsyncClient", return_value=_AsyncClientCtx(mock_http)):
+        await client.send_alert(title="T", message="M")
+
+    assert mock_http.post.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_send_card_raises_on_missing_webhook_url():
     client = FeishuClient(webhook_url="")
     with pytest.raises(RuntimeError, match="webhook_url"):

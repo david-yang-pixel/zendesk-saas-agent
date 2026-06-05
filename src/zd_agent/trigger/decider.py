@@ -129,13 +129,13 @@ _FAILURE_SIGNAL_KEYWORDS = (
 )
 
 
-_PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在 Zendesk 工单上发了以下消息（按时间升序）：
+_PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在 Zendesk 工单上发了以下完整消息上下文（按时间升序）：
 
 <客户消息>
 {messages}
 </客户消息>
 {image_hint}
-判断客户消息属于以下哪一种 verdict（六选一）：
+请基于全部上下文判断当前工单属于以下哪一种 verdict（六选一）：
 
 1. **"no_message"**：没有任何文字消息（仅在客户消息列表为空 + 没有截图时返回，理论上你看到此 prompt 不太会命中）
 2. **"greeting"**：纯打招呼/寒暄（"hi" / "hello" / "在吗" / "any update?" / 表情符等）
@@ -259,13 +259,13 @@ async def classify_messages(
     api_key: str,
     image_data_urls: list[str] | None = None,
 ) -> PreCheckVerdict:
-    """Classify the most recent customer messages via LLM (with fast-path).
+    """Classify the full customer-message context via LLM (with fast-path).
 
     Fast-path（不走 LLM）：
       - messages 空 + image_data_urls 空 → ``no_message``
       - 最近一条消息精确匹配 human keyword → ``request_human``
 
-    LLM path：发最近 5 条消息（+ 可选截图）给模型分类，拿到
+    LLM path：发全部客户消息上下文（+ 可选截图）给模型分类，拿到
     verdict / completeness / high_risk_category / reason。
 
     所有错误路径 fallback 到 ``insufficient_info`` + completeness=50。
@@ -291,7 +291,7 @@ async def classify_messages(
         )
 
     # 主路径：LLM 分类
-    recent = messages[-5:] if messages else []
+    recent = messages if messages else []
     joined = "\n---\n".join(recent) if recent else "(无文字消息)"
     image_hint = (
         f"\n\n客户还附了 {len(image_data_urls)} 张截图（已附在下方，请你看图判断）。\n"
