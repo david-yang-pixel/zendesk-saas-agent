@@ -4,7 +4,7 @@ push them to ``trigger_queue`` for direct AgentSession dispatch.
 Why this exists
 ---------------
 SaaS messaging tickets typically don't fire a Zendesk Tickets-webhook event
-when a human agent adds an Internal Note that mentions ``@yonggang``. Even
+when a human agent adds an Internal Note that mentions ``@saas-agent``. Even
 when the webhook does fire, ``run_saas_trigger_consumer``'s existing ``customer_msgs``
 diff path skips it because internal notes are *not* end-user events.
 

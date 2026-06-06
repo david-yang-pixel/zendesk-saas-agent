@@ -14,18 +14,13 @@
 
 ## 数据查询工具组
 
-### `sql_query` — 生产库只读查询（核心）
+### `sql_query` — 生产库只读查询（核心，经 DB Gateway）
 - `database`: `prod`（langgenius）/ `billing`（billing 库）/ `plugin`（dify_plugin_daemon）
 - 只允许 SELECT；INSERT / UPDATE / DELETE 等会被工具层拒绝
 - 有 Workspace ID 时**必跑万能起手式**（参考 `prompts/sql/SQL_TEMPLATES.md`）
-- Teleport 认证过期时会自动挂起工单，无需你处理
+- DB Gateway 负责 Teleport / DB proxy / 续期；认证过期时会自动挂起工单，无需你处理
 
-## 平台监控工具组（条件加载：配置了 API key 才可用）
-
-### Grafana
-- `grafana_list_dashboards`：搜 dashboard 关键词（如 "request success rate"）
-- `grafana_get_dashboard`：按 UID 取面板详情
-- `grafana_query_prometheus`：PromQL 范围查询（`query` / `start` / `end` / `step`）
+## 平台日志工具组
 
 ### SigNoz（经 sz CLI；旧 MCP 已停用）
 - `signoz_errors`：查 ERROR/FATAL 日志，可按 `tenant` / `grep`(body 子串) / `deployment` / `env`(默认 production) / `hours` / `limit` 过滤
@@ -102,7 +97,7 @@ Step 1: zendesk_get_ticket
   ↓
 Step 4: classify_ticket → 决定激活哪些工具组
   ↓
-├─ platform_issue → grafana_* + signoz_* + sql_query
+├─ platform_issue → signoz_* + sql_query
 ├─ knowledge_base → sql_query + ticket_record_*
 ├─ workflow       → sql_query + ticket_record_*
 ├─ refund         → sql_query (billing 库) + ticket_record_*
@@ -126,4 +121,4 @@ Step 22: feishu_push ticket_done
 - ❌ 在不知道 Workspace ID 的情况下跑 SQL → 先跟客户确认或读已有评论找到 ID
 - ❌ 用 `zendesk_internal_reply` 多次写半成品 → 一次写完整三段
 - ❌ 反复调 `zendesk_get_ticket` → 拉一次就够，后续用 session 里的信息
-- ❌ 自行调用 shell 跑 `tsh proxy db` 之类命令 → 运维手动管理
+- ❌ 自行调用 shell 跑 `tsh proxy db` 之类命令 → DB Gateway 统一管理

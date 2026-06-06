@@ -11,9 +11,8 @@
 | dify | `api/controllers/*` — endpoint 层 |
 | saas-deploy | `*` — 集群 / nginx / WAF / 资源限制配置 |
 
-⚡ **Subagent C/D 必派**（仅 platform_issue 类）：
-- C. Grafana：请求成功率 / Pod 状态 / 资源饱和度
-- D. SigNoz：错误日志 severity=ERROR + trace
+⚡ **日志 subagent 必派**（仅 platform_issue 类）：
+- SigNoz：错误日志 severity=ERROR + trace
 
 ---
 
@@ -95,8 +94,8 @@ SigNoz 是单租户多环境共用，不加过滤会把 prod / staging 日志混
 ## 关键步骤
 
 1. 确认客户 Workspace ID、出错时间段、具体端点/路径
-2. **并行派发 4 个 subagent**：A 源码 + B GitHub + C Grafana + D SigNoz
-   - 派 D 时**必须**把上面 SigNoz 规则的关键点写进 subagent 任务描述（特别是 service.name 的 prod/staging 差异 + k8s.deployment.name 区分 worker）
+2. **并行派发 3 个 subagent**：A 源码 + B GitHub + C SigNoz
+   - 派 SigNoz 时**必须**把上面 SigNoz 规则的关键点写进 subagent 任务描述（特别是 service.name 的 prod/staging 差异 + k8s.deployment.name 区分 worker）
 3. SQL 查 workspace_runs / 相关业务表，看故障是否单 tenant
 4. 看 SigNoz trace 里 5xx 的实际异常 stack
 5. 如是广泛故障 → 标记 incident，建议 escalate SRE

@@ -44,7 +44,7 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个专注于特定分析任务的子 Agent�
 
 # 数据/日志/Trace 类分析任务的统一 Quality Bar
 
-如果你的任务是查 SigNoz / 数据库 / Grafana 等数据源（通常 task 描述里出现
+如果你的任务是查 SigNoz / 数据库等数据源（通常 task 描述里出现
 "日志"/"trace"/"指标"/"统计"/"用量"/"分析"），下述要求自动适用，不需要 caller
 重复列出。**只有 task 明确说"只看一眼"或"快速确认"时才能跳过**：
 

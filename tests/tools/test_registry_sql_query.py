@@ -13,6 +13,7 @@ def test_sql_query_registered():
 def test_sql_query_openai_schema_includes_database_enum():
     reg = create_tool_registry()
     schema = reg.get("sql_query").to_openai_schema()
+    assert "DB Gateway MCP" in schema["function"]["description"]
     params = schema["function"]["parameters"]
     assert "database" in params["properties"]
     assert params["properties"]["database"]["enum"] == ["prod", "billing", "plugin"]

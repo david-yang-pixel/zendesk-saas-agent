@@ -34,12 +34,12 @@ def _comment(cid, body, *, public=False, author_id=999):
 
 @pytest.mark.asyncio
 async def test_scan_once_dispatches_mention(queue, tracker):
-    """评论里有 @yonggang 的 internal note → 推 trigger_queue。"""
+    """评论里有 @saas-agent 的 internal note → 推 trigger_queue。"""
     fake_search = MagicMock(return_value={"results": [_ticket(2316)]})
     fake_comments = MagicMock(return_value={
         "comments": [
             _comment("c1", "earlier note (no mention)"),
-            _comment("c2", "@yonggang 自动续订有没有可能是自动续费完用户自动取消的"),
+            _comment("c2", "@saas-agent 自动续订有没有可能是自动续费完用户自动取消的"),
         ],
     })
     fake_client = MagicMock(
@@ -50,7 +50,7 @@ async def test_scan_once_dispatches_mention(queue, tracker):
     with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
-        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg.zendesk.mention_trigger = "@saas-agent"
         cfg_mock.return_value = cfg
 
         n, new_cursor = await scan_once(
@@ -62,7 +62,7 @@ async def test_scan_once_dispatches_mention(queue, tracker):
     assert msg["source"] == "mention"
     assert msg["ticket_id"] == 2316
     assert msg["comment_id"] == "c2"
-    assert "yonggang" in msg["hint"]
+    assert "saas-agent" in msg["hint"]
     # tracker should mark this comment processed
     assert tracker.is_processed("c2")
 
@@ -74,7 +74,7 @@ async def test_scan_once_skips_processed(queue, tracker):
 
     fake_search = MagicMock(return_value={"results": [_ticket(2316)]})
     fake_comments = MagicMock(return_value={
-        "comments": [_comment("c-already", "@yonggang please look")],
+        "comments": [_comment("c-already", "@saas-agent please look")],
     })
     fake_client = MagicMock(
         search_tickets=fake_search, get_ticket_comments=fake_comments,
@@ -83,7 +83,7 @@ async def test_scan_once_skips_processed(queue, tracker):
     with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
-        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg.zendesk.mention_trigger = "@saas-agent"
         cfg_mock.return_value = cfg
 
         n, _ = await scan_once(
@@ -96,10 +96,10 @@ async def test_scan_once_skips_processed(queue, tracker):
 
 @pytest.mark.asyncio
 async def test_scan_once_skips_public_comments(queue, tracker):
-    """is_public=True 的评论即使提到 @yonggang 也不算 mention（按 detector 规则）。"""
+    """is_public=True 的评论即使提到 @saas-agent 也不算 mention（按 detector 规则）。"""
     fake_search = MagicMock(return_value={"results": [_ticket(2316)]})
     fake_comments = MagicMock(return_value={
-        "comments": [_comment("c-pub", "@yonggang here is the answer", public=True)],
+        "comments": [_comment("c-pub", "@saas-agent here is the answer", public=True)],
     })
     fake_client = MagicMock(
         search_tickets=fake_search, get_ticket_comments=fake_comments,
@@ -108,7 +108,7 @@ async def test_scan_once_skips_public_comments(queue, tracker):
     with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
-        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg.zendesk.mention_trigger = "@saas-agent"
         cfg_mock.return_value = cfg
 
         n, _ = await scan_once(
@@ -126,7 +126,7 @@ async def test_scan_once_advances_cursor_on_success(queue, tracker):
     with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
-        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg.zendesk.mention_trigger = "@saas-agent"
         cfg_mock.return_value = cfg
 
         old = time.time() - 600
@@ -146,7 +146,7 @@ async def test_scan_once_searches_with_overlap_window(queue, tracker):
     with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
-        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg.zendesk.mention_trigger = "@saas-agent"
         cfg_mock.return_value = cfg
 
         old = 1_780_591_900
@@ -171,7 +171,7 @@ async def test_scan_once_keeps_cursor_on_search_failure(queue, tracker):
     with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
-        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg.zendesk.mention_trigger = "@saas-agent"
         cfg_mock.return_value = cfg
 
         old = time.time() - 600
@@ -191,7 +191,7 @@ async def test_scan_once_handles_per_ticket_comment_failure(queue, tracker):
     # First ticket comments fail, second succeeds with mention
     fake_comments = MagicMock(side_effect=[
         RuntimeError("rate limit"),
-        {"comments": [_comment("c-good", "@yonggang please")]},
+        {"comments": [_comment("c-good", "@saas-agent please")]},
     ])
     fake_client = MagicMock(
         search_tickets=fake_search, get_ticket_comments=fake_comments,
@@ -199,7 +199,7 @@ async def test_scan_once_handles_per_ticket_comment_failure(queue, tracker):
     with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
          patch("zd.client.ZendeskClient", return_value=fake_client):
         cfg = MagicMock()
-        cfg.zendesk.mention_trigger = "@yonggang"
+        cfg.zendesk.mention_trigger = "@saas-agent"
         cfg_mock.return_value = cfg
 
         n, _ = await scan_once(

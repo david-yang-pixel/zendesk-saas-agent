@@ -31,9 +31,6 @@ postgres:
   db_prod: langgenius
   db_billing: billing
   db_plugin: dify_plugin_daemon
-grafana:
-  url: https://grafana.ops.dify.dev
-  prom_datasource_id: 1
 signoz:
   url: https://dify.us2.signoz.cloud
 feishu:
@@ -69,11 +66,13 @@ def saas_env(monkeypatch):
         "OPENAI_API_KEY": "sk-xxx",
         "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test",
         "FEISHU_WEBHOOK_SECRET": "fs_sign_xxx",
-        "GRAFANA_API_KEY": "glsa_xxx",
         "SIGNOZ_API_KEY": "sn_xxx",
         "PG_PASSWORD": "pg_xxx",
         "GITHUB_TOKEN": "gh_xxx",
         "TELEPORT_USER": "me",
+        "TELEPORT_PUBLIC_BASE_URL": "https://agent.example.com/",
+        "DB_GATEWAY_URL": "https://db-gateway.example.com/",
+        "DB_GATEWAY_API_KEY": "dbgw_xxx",
     }
     for k, v in env_vars.items():
         monkeypatch.setenv(k, v)
@@ -114,12 +113,21 @@ def test_config_loads_postgres_section(saas_env, saas_config_file):
     assert cfg.postgres.password == "pg_xxx"
 
 
-def test_config_loads_grafana_signoz_sections(saas_env, saas_config_file):
+def test_config_loads_signoz_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
-    assert cfg.grafana.url == "https://grafana.ops.dify.dev"
-    assert cfg.grafana.api_key == "glsa_xxx"
     assert cfg.signoz.url == "https://dify.us2.signoz.cloud"
     assert cfg.signoz.api_key == "sn_xxx"
+
+
+def test_config_loads_teleport_public_base_url(saas_env, saas_config_file):
+    cfg = load_config(saas_config_file)
+    assert cfg.teleport.public_base_url == "https://agent.example.com"
+
+
+def test_config_loads_db_gateway_env(saas_env, saas_config_file):
+    cfg = load_config(saas_config_file)
+    assert cfg.db_gateway.url == "https://db-gateway.example.com"
+    assert cfg.db_gateway.api_key == "dbgw_xxx"
 
 
 def test_config_loads_feishu_section(saas_env, saas_config_file):

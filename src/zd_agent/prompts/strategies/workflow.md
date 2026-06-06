@@ -271,7 +271,7 @@ LIMIT 20;
 
 ### 6. 工具返回 `SQL execution failed:` 但无 error 文本
 
-**原因**：psql 异常退出（连接断开 / OOM / 超时被 kill）。
+**原因**：底层查询进程异常退出（连接断开 / OOM / 超时被 kill）。
 
 **Retry 动作**：
 1. 先跑 `SELECT 1;` 验证连接活着

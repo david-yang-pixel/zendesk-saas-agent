@@ -20,6 +20,6 @@ def test_register_saas_routes_installs_expected_routes() -> None:
     assert "/webhook/zendesk" in route_paths
     assert "/webhook/zendesk-messaging" in route_paths
     assert "/healthz" in route_paths
-    assert "/teleport-auth" in route_paths
-    assert "/internal/teleport-auth/issue" in route_paths
+    assert "/teleport-auth" not in route_paths
+    assert "/internal/teleport-auth/issue" not in route_paths
     assert "/webhook/feishu" not in route_paths

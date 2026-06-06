@@ -876,7 +876,7 @@ class ZendeskInternalReply(Tool):
                     },
                     "needs_human_reason": {
                         "type": "string",
-                        "description": "needs_human=true 的具体原因（如：'退款金额需财务审批' / 'platform_issue 但 Grafana/SigNoz 未见错误信号'）。needs_human=false 可省略。",
+                        "description": "needs_human=true 的具体原因（如：'退款金额需财务审批' / 'platform_issue 但 SigNoz 未见错误信号'）。needs_human=false 可省略。",
                     },
                     "tags": {
                         "type": "array",

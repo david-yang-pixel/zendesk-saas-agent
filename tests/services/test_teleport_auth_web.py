@@ -20,6 +20,18 @@ def test_render_form_uses_fallback_user_label():
     assert "用户：(未配置)" in html
 
 
+def test_render_form_includes_public_server_label():
+    from zd_agent.services.teleport_auth_web import render_form
+
+    html = render_form(
+        token="tok-123",
+        user="yang",
+        public_base_url="https://agent.example.com",
+    )
+
+    assert "服务器：agent.example.com" in html
+
+
 def test_render_result_success_mentions_recovery_window():
     from zd_agent.services.teleport_auth_web import render_result
 

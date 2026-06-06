@@ -1,7 +1,7 @@
 [Unit]
 Description=Teleport auth watchdog (Feishu push on cert expiry)
-After=network-online.target zd-agent.service
-Requires=zd-agent.service
+After=network-online.target db-gateway.service
+Requires=db-gateway.service
 
 [Service]
 Type=simple
@@ -12,7 +12,7 @@ RestartSec=60
 ExecStartPre=-/usr/bin/docker rm -f tsh-auth-watchdog
 ExecStart=/usr/bin/docker run --rm --name tsh-auth-watchdog \
     --network host \
-    -v /opt/zd-agent/.env:/app/.env:ro \
+    -v /opt/db-gateway/.env:/app/.env:ro \
     -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
     -v /opt/zd-agent/.tsh:/opt/zd-agent/.tsh \
     -v /usr/local/bin/tsh:/usr/local/bin/tsh:ro \

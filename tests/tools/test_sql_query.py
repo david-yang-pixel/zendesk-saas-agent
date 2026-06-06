@@ -22,6 +22,9 @@ def sql_cfg(tmp_path, monkeypatch):
     cfg.postgres.max_rows = 1000
     cfg.resources.base_dir = str(tmp_path)
     cfg.resources.state_dir = ".state"
+    cfg.db_gateway.url = ""
+    cfg.db_gateway.api_key = ""
+    cfg.db_gateway.request_timeout_seconds = 30
 
     monkeypatch.setattr("zd_agent.tools.sql_query.get_config", lambda: cfg)
     return cfg
@@ -91,3 +94,41 @@ async def test_sql_query_writes_audit_log(fake_session, sql_cfg, tmp_path):
     content = audit_log.read_text()
     assert "SELECT id FROM tenants LIMIT 1" in content
     assert '"status": "OK"' in content
+
+
+@pytest.mark.asyncio
+async def test_sql_query_uses_db_gateway_mcp_when_configured(fake_session, sql_cfg):
+    from zd_agent.integrations.db_gateway import DbGatewayResult
+
+    sql_cfg.db_gateway.url = "https://db-gateway.example.com"
+    sql_cfg.db_gateway.api_key = "secret"
+    sql_cfg.db_gateway.mcp_enabled = True
+    sql_cfg.db_gateway.mcp_binary = "/tmp/db-gateway-mcp"
+    tool = SqlQuery()
+    gateway_result = DbGatewayResult(
+        success=True,
+        csv="id,name\n1,alice\n",
+        row_count=1,
+        elapsed_ms=42,
+        truncated=False,
+    )
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=gateway_result),
+    ) as gateway_mcp, patch(
+        "zd_agent.tools.sql_query.query_db_gateway",
+        AsyncMock(),
+    ) as gateway_http, patch(
+        "zd_agent.tools.sql_query.run_psql",
+        AsyncMock(),
+    ) as direct:
+        result = await tool.execute(
+            {"database": "prod", "sql": "SELECT id, name FROM tenants LIMIT 1"},
+            fake_session,
+        )
+
+    assert result.success is True
+    assert "alice" in result.output
+    gateway_mcp.assert_awaited_once()
+    gateway_http.assert_not_awaited()
+    direct.assert_not_awaited()

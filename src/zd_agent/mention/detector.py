@@ -31,8 +31,8 @@ def is_mention(comment: dict, trigger: str) -> bool:
 
     只处理 is_public=False（internal note）的评论，大小写不敏感。
 
-    防自触发策略（人 + agent 共用 yonggang@dify.ai 账号场景）：
-      - 不能简单按 ``author_id == self_id`` 过滤，否则人在 UI 写 @yonggang
+    防自触发策略（人 + agent 共用 agent@example.com 账号场景）：
+      - 不能简单按 ``author_id == self_id`` 过滤，否则人在 UI 写 @saas-agent
         也会被当成 agent 自己写的而忽略
       - 改用 ``via.channel`` 区分：人在 UI 写 → ``web``；agent 通过 API
         调 reply_ticket → ``api`` / ``web_service`` / ``rule``
@@ -40,7 +40,7 @@ def is_mention(comment: dict, trigger: str) -> bool:
         即使 author_id 与 agent 相同，也认定为人类操作，应触发
 
     支持两种 mention 格式：
-      - 原始文字：``@yonggang``
+      - 原始文字：``@saas-agent``
       - Zendesk API 返回的 markdown 格式：``**yonggang**``
     """
     # Zendesk Comments API 字段名是 ``public``（不是 ``is_public``）。
@@ -52,8 +52,8 @@ def is_mention(comment: dict, trigger: str) -> bool:
     if public_flag:
         return False
 
-    # 防自触发：agent 用的是 yonggang@dify.ai 本人账号，所以单靠 author_id ==
-    # self_id 会误伤"yonggang 自己在 UI 写 @yonggang"的合理触发场景。
+    # 防自触发：agent 用的是 agent@example.com 本人账号，所以单靠 author_id ==
+    # self_id 会误伤"yonggang 自己在 UI 写 @saas-agent"的合理触发场景。
     # 改用 via.channel + author_id 联合判断：
     #   - human channels (web / mobile / chat / email) → 是人在操作，触发
     #   - API channels (api / web_service / rule / system / trigger) + author_id 匹配

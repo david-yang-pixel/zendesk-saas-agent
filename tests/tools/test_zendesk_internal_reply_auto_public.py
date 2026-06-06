@@ -89,14 +89,14 @@ class TestExtract:
         assert out == "Hi, please try X."
 
     def test_real_format_followed_by_mention_footer(self) -> None:
-        """agent body 末尾的 '_You can follow up by mentioning @yonggang' 不该被吞"""
+        """agent body 末尾的 '_You can follow up by mentioning @saas-agent' 不该被吞"""
         body = (
             "💬 Suggested Reply\n\nFix is to enable provider Y.\n\n"
-            "_You can follow up by mentioning @yonggang in an internal note._\n"
+            "_You can follow up by mentioning @saas-agent in an internal note._\n"
         )
         out = _extract_suggested_reply_section(body)
         assert out == "Fix is to enable provider Y."
-        assert "@yonggang" not in out
+        assert "@saas-agent" not in out
 
 
 # ---------- _infer_reply_type ----------

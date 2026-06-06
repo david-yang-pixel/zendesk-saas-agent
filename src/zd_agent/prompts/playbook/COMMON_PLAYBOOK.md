@@ -81,7 +81,7 @@ Step 2 快速通道匹配本文。命中者跳过 Step 3-18，直接 Step 19 输
 
 **触发**："is Dify down?" / 平台级故障关键词
 **处理**：
-- 立即查 Grafana + SigNoz
+- 立即查 SigNoz
 - 如有 incident → 回复 "we are aware, investigating"
 - 如正常 → 继续走完整流程找客户侧问题
 

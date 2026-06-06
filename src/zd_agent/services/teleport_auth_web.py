@@ -14,6 +14,8 @@ on the user's device.
 from __future__ import annotations
 
 import os
+from html import escape
+from urllib.parse import urlparse
 
 from aiohttp import web
 
@@ -54,7 +56,7 @@ _FORM_HTML = """<!DOCTYPE html>
 <body>
 <div class="card">
   <h1>🔐 Teleport 证书续期</h1>
-  <p class="sub">服务器：zendesk.smlershou.top &nbsp;·&nbsp; 用户：__USER__</p>
+  <p class="sub">服务器：__SERVER__ &nbsp;·&nbsp; 用户：__USER__</p>
   <div class="warn">
     密码与 OTP 码将通过 HTTPS 发送到服务器，由本站点直接调用 <code>tsh login</code>。
     只输入一次，用完丢弃；token 5 分钟后失效。
@@ -96,8 +98,20 @@ _RESULT_HTML = """<!DOCTYPE html>
 </div></body></html>"""
 
 
-def render_form(token: str, user: str) -> str:
-    return _FORM_HTML.replace("__TOKEN__", token).replace("__USER__", user or "(未配置)")
+def _server_label(public_base_url: str) -> str:
+    if not public_base_url:
+        return "(未配置)"
+    parsed = urlparse(public_base_url)
+    return parsed.netloc or public_base_url
+
+
+def render_form(token: str, user: str, public_base_url: str = "") -> str:
+    return (
+        _FORM_HTML
+        .replace("__TOKEN__", escape(token, quote=True))
+        .replace("__USER__", escape(user or "(未配置)"))
+        .replace("__SERVER__", escape(_server_label(public_base_url)))
+    )
 
 
 def render_result(*, ok: bool, message: str, detail: str = "") -> str:
@@ -139,7 +153,7 @@ async def handle_teleport_auth_issue(request: web.Request) -> web.Response:
     """POST /internal/teleport-auth/issue — called by watchdog to mint a new token.
 
     Auth: X-Internal-Secret header must match env `INTERNAL_SHARED_SECRET`.
-    Returns: JSON {"url": "https://zendesk.smlershou.top/teleport-auth?t=<tok>"}.
+    Returns: JSON {"url": "<public-base-url>/teleport-auth?t=<tok>"}.
     """
     internal_secret = os.environ.get("INTERNAL_SHARED_SECRET", "")
     if not internal_secret:
@@ -152,8 +166,15 @@ async def handle_teleport_auth_issue(request: web.Request) -> web.Response:
 
     store: TokenStore = teleport_auth_token_store(request.app)
     tok = await store.create()
-    # Public base URL — hardcoded to zendesk.smlershou.top; could be configurable
-    url = f"https://zendesk.smlershou.top/teleport-auth?t={tok}"
+    cfg = app_config(request.app)
+    public_base_url = cfg.teleport.public_base_url.rstrip("/")
+    if not public_base_url:
+        logger.error("teleport_public_base_url_missing")
+        return web.Response(
+            status=500,
+            text="server not configured (teleport.public_base_url empty)",
+        )
+    url = f"{public_base_url}/teleport-auth?t={tok}"
     logger.info("teleport_auth_token_issued")
     return web.json_response({"url": url, "expires_in_seconds": 300})
 
@@ -173,7 +194,11 @@ async def handle_teleport_auth_get(request: web.Request) -> web.Response:
         )
     cfg = app_config(request.app)
     return web.Response(
-        text=render_form(token=token, user=cfg.teleport.user or ""),
+        text=render_form(
+            token=token,
+            user=cfg.teleport.user or "",
+            public_base_url=cfg.teleport.public_base_url,
+        ),
         content_type="text/html",
     )
 

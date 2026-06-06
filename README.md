@@ -10,7 +10,7 @@
 - **敏感场景人工兜底**：退款、情绪、账号操作、低置信度 → 走 `zendesk_internal_reply` + 飞书推送 SE/财务
 - **触发判定前置**：用便宜模型先把客户消息分类成 6 种 verdict，避免对寒暄/打招呼/已解决的工单浪费主 Agent 算力
 - **静默窗口去抖**：客户连发多条消息时先攒一攒,窗口结束再一次性处理,避免半句话就触发
-- **真实数据驱动**：通过 Teleport 只读连生产库(prod / billing / plugin)、SigNoz 日志、Grafana 监控查证据,不靠猜
+- **真实数据驱动**：通过独立 DB Gateway 调用当前运维服务器维护的 Teleport / DB proxy 只读连生产库(prod / billing / plugin)，并结合 SigNoz 日志查证据,不靠猜
 - **可灰度可回滚**：`min_ticket_id` 限缩处理范围,`public_reply.enabled` 一键回退到「只发 Internal Note」
 - **单语言输出**：自动检测客户语言,中文客户回中文,其他一律 English(不双语对照)
 
@@ -21,7 +21,7 @@
 │                          入口层 Entry (aiohttp)                      │
 │  POST /webhook/zendesk            ← 经典 ticket 事件                 │
 │  POST /webhook/zendesk-messaging  ← messaging_ticket.message_added   │
-│  GET  /healthz  /teleport-auth(认证中转页)                          │
+│  GET  /healthz                                                       │
 │                                                                       │
 │  后台任务: silence_waker / waiting_poller / mention_poller           │
 │            trigger_consumer(消费 trigger_queue)                      │
@@ -49,7 +49,7 @@
 ┌──────────────────────────────▼────────────────────────────────────────┐
 │                       会话 / 运行层 Session + Runtime                   │
 │  SessionManager → AgentSession(并发隔离)                             │
-│  AgentLoop(AsyncGenerator 事件流) 驱动 LLM ↔ 43 个工具循环           │
+│  AgentLoop(AsyncGenerator 事件流) 驱动 LLM ↔ 44 个工具循环           │
 │  ┌───────────┐ ┌───────────┐ ┌──────────────┐ ┌──────────────────┐  │
 │  │ LLMProvider│ │ Guardrails│ │ Compaction   │ │ Subagent 编排    │  │
 │  │ OpenAI/Anth│ │ 轮/Token/ │ │ 锚点+snip+   │ │ 串行优先,mini   │  │
@@ -75,8 +75,8 @@
 4. **主 Agent 循环**(`AgentLoop`):
    - `classify_ticket` 拿 11 种工单类型(platform_issue / billing / refund / workflow / api / permissions / knowledge_base / product_usage / insufficient_info / mention / general)+ 针对性策略
    - `zendesk_get_ticket` 拉对话 + 附件
-   - 有 Workspace ID → 首轮 SQL 起手式(`sql_query` / `inspector_exec`,Teleport 只读)
-   - 直接调工具查根因:`git_grep` / `github_code_search`(源码)、`signoz_search_logs`(日志)、`grafana_query_prometheus`(监控)、`ticket_record_search`(历史工单)
+   - 有 Workspace ID → 首轮 SQL 起手式(`sql_query` / `inspector_exec`,经 DB Gateway 只读)
+   - 直接调工具查根因:`git_grep` / `github_code_search`(源码)、`signoz_errors` / `signoz_traceback`(日志)、`ticket_record_search`(历史工单)
    - 复杂场景才派 `run_subagents_parallel`(默认不派,主 Agent 直接查更快)
    - Confidence 自检 → 写 reply(public 或 internal)
 5. **归档**:`archive_ticket` 写入 `工单记录/<id>.md`(首次新建,跟进追加)
@@ -84,7 +84,7 @@
 
 verdict / 高风险定义见 `src/zd_agent/trigger/decider.py`,Agent 工作流见 `src/zd_agent/prompts/AGENTS.md`。
 
-## 工具层(43 个)
+## 工具层(44 个)
 
 ```text
 Zendesk:  zendesk_get_ticket / get_attachments / search / search_articles
@@ -95,10 +95,9 @@ Zendesk:  zendesk_get_ticket / get_attachments / search / search_articles
           official_docs_search / official_docs_read   ← 官方在线文档
           zd_kb_cli_exec                              ← Help Center 文章
 历史工单:  ticket_record_search / ticket_record_read  ← grep 工单记录/*.md
-数据库:    sql_query(prod/billing/plugin,只读)
+数据库:    sql_query(prod/billing/plugin,只读,经 DB Gateway)
           inspector_exec(跨 main+billing+TiDB 自动聚合,quota/run 类首选)
-日志监控:  signoz_search_logs / signoz_search_traces / signoz_aggregate_logs (MCP 子进程)
-          grafana_query_prometheus / grafana_list_dashboards / grafana_get_dashboard
+日志监控:  signoz_errors / signoz_traceback / signoz_services / signoz_query
 源码:      git_grep / git_show / git_log / git_diff / list_repos / list_repo_tags
           github_search_prs / github_get_pr / github_code_search
           saas_branch_switch            ← 切 SaaS 仓库分支(对齐 prod commit)
@@ -109,7 +108,9 @@ Sandbox:  sandbox_list / search / read / write
 子代理:    run_subagent / run_subagents_parallel
 ```
 
-> SigNoz 工具由独立 MCP 子进程(`bin/signoz-mcp-server`)提供,启动时挂载。
+> 数据库工具经 `scripts/db_gateway_mcp.py` MCP 调用 DB Gateway HTTP API；
+> MCP 只配置 `DB_GATEWAY_URL` 和 `DB_GATEWAY_API_KEY`，不持有 Teleport / DB 凭据。
+> SigNoz 工具经 vendored `scripts/sz` CLI 查询，旧 SigNoz MCP 已停用。
 
 ## 目录结构
 
@@ -121,7 +122,7 @@ src/zd_agent/
     zendesk_webhook.py            经典 ticket webhook handler
     zendesk_messaging_webhook.py  messaging 事件 handler
     silence_waker.py / waiting_poller.py / mention_poller.py  后台轮询
-    teleport_auth_web.py          Teleport 认证中转页
+    db_gateway_app.py             DB Gateway HTTP API + Teleport 认证中转页
   trigger/
     decider.py          触发判定(6 verdict + 高风险 flag,支持 vision)
     state_store.py      工单状态机(TicketStateTracker)
@@ -194,7 +195,7 @@ uv run zd-agent --help               # 查看 CLI
 uv run pytest -q                     # 跑测试(当前 636 个)
 ```
 
-`.env` 至少需要:
+`zd-agent` 使用 `/opt/zd-agent/.env`，只放 agent 自身和 DB Gateway MCP 调用凭据：
 
 ```env
 OPENAI_API_KEY=sk-xxx
@@ -204,7 +205,21 @@ ZENDESK_API_TOKEN=your-api-token
 ZENDESK_WEBHOOK_SECRET=...           # 经典 webhook 签名
 ZENDESK_MESSAGING_WEBHOOK_SECRET=... # messaging webhook 签名
 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_BOT_CHAT_ID
-GRAFANA_API_KEY / SIGNOZ_API_KEY / GITHUB_TOKEN / TELEPORT_USER
+SIGNOZ_API_KEY / GITHUB_TOKEN
+DB_GATEWAY_URL=https://<agent-public-domain>/db-gateway
+DB_GATEWAY_API_KEY=<shared-secret>
+```
+
+`db-gateway` 使用 `/opt/db-gateway/.env`，只放数据库网关、Teleport、续期和 watchdog 凭据：
+
+```env
+DB_GATEWAY_API_KEY=<same-shared-secret>
+TELEPORT_USER=<teleport-user>
+TELEPORT_PUBLIC_BASE_URL=https://<agent-public-domain>
+INTERNAL_SHARED_SECRET=<random-secret>
+# optional auto-renew:
+TELEPORT_PASSWORD=...
+TELEPORT_TOTP_SECRET=...
 ```
 
 ### 常用 CLI
@@ -214,6 +229,7 @@ uv run zd-agent run <ticket-id>            # 处理单个工单
 uv run zd-agent run <ticket-id> --dry-run  # 只分析不发送
 uv run zd-agent batch 2624 2625 --dry-run  # 批量
 uv run zd-agent serve                       # 启动 SaaS app(webhook + 后台任务)
+uv run zd-agent db-gateway                  # 启动 DB Gateway HTTP API
 uv run zd-agent status                      # 会话状态
 uv run zd-agent tool list                   # 已注册工具
 uv run zd-agent repos status                # SaaS 仓库状态
@@ -236,7 +252,7 @@ llm:
 
 ## 部署
 
-生产部署在 BCC `180.76.243.249`,Docker + systemd。完整步骤、内存档位、Teleport 代理、健康检查见 **`deploy/RUNBOOK.md`**。
+生产部署在 `<agent-server>`，Docker + systemd。当前服务器上的 `db-gateway` 负责 Teleport、DB proxy、Teleport 续期和只读 SQL API；`zd-agent` 通过 DB Gateway MCP 调用它。完整步骤、内存档位、健康检查见 **`deploy/RUNBOOK.md`**。
 
 更新代码:
 
