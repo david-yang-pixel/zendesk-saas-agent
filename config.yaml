@@ -40,7 +40,8 @@ zendesk:
   # 部署时替换成你的 Zendesk agent 账号 ID。
   agent_user_id: 0
   # Zendesk Messaging / 队列自动化身份，不算人工受托人。
-  non_human_assignee_ids: []
+  # 46493567999892 = Zendesk Messaging "AI Agent" automation identity.
+  non_human_assignee_ids: [46493567999892]
   # 灰度上线：feat/auto-public-reply 分支首次部署只处理 ID ≥ 2624 的工单。
   # 0 = 不过滤；上线稳定后改 0 处理全部 SaaS 工单。
   min_ticket_id: 2624
