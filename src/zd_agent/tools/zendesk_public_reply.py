@@ -28,12 +28,14 @@ footer 处理都不一样。
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, TYPE_CHECKING
 
 from zd.client import ZendeskError
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
+from zd_agent.runtime.retry import compute_delay, get_retry_policy
 from zd_agent.tools.base import Tool, ToolResult
 from zd_agent.tools.zendesk import (
     _call_with_rate_limit_retry,
@@ -92,6 +94,7 @@ _FOOTER_BY_TYPE = {
 }
 
 _VALID_REPLY_TYPES = frozenset(_FOOTER_BY_TYPE)
+_AMBIGUOUS_WRITE_STATUS_CODES = {0, 500, 502, 503, 504}
 
 
 # docs.dify.ai 的源码 markdown 文件路径会带 .md 后缀（给 LLM 用的 llms.txt
@@ -124,6 +127,121 @@ def _append_footer(body: str, reply_type: str) -> str:
     if body.rstrip().endswith(footer.rstrip()):
         return body
     return body.rstrip() + footer
+
+
+def _normalize_reply_body(body: str) -> str:
+    """Normalize Zendesk comment bodies for exact duplicate checks."""
+    normalized = (body or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(normalized.split()).strip()
+
+
+async def _public_reply_body_exists(
+    client: Any,
+    *,
+    ticket_id: int,
+    body_with_footer: str,
+) -> bool:
+    """Best-effort check whether Zendesk already created this public reply.
+
+    Zendesk may create the comment but still return a transient 5xx to the
+    client. Retrying that write blindly can create duplicate customer-visible
+    comments, so ambiguous write errors must be confirmed before another send.
+    """
+    expected = _normalize_reply_body(body_with_footer)
+    try:
+        comments_resp = await _call_with_rate_limit_retry(
+            client.get_ticket_comments,
+            ticket_id,
+            1,
+            20,
+        )
+    except Exception as e:
+        logger.warning(
+            "public_reply_duplicate_check_failed",
+            ticket_id=ticket_id,
+            error=str(e)[:200],
+        )
+        return False
+
+    comments = (comments_resp or {}).get("comments") or []
+    for comment in reversed(comments):
+        if not comment.get("public"):
+            continue
+        body = (
+            comment.get("body")
+            or comment.get("plain_body")
+            or comment.get("html_body")
+            or ""
+        )
+        if _normalize_reply_body(body) == expected:
+            logger.warning(
+                "public_reply_already_present_after_error",
+                ticket_id=ticket_id,
+                comment_id=comment.get("id"),
+            )
+            return True
+    return False
+
+
+async def _send_public_reply_safely(
+    client: Any,
+    *,
+    ticket_id: int,
+    body_with_footer: str,
+    reply_type: str,
+) -> None:
+    """Send one public reply without retrying ambiguous non-idempotent writes."""
+    policy = get_retry_policy("zendesk")
+    for attempt in range(1, policy.max_attempts + 1):
+        try:
+            await asyncio.to_thread(
+                client.reply_ticket,
+                ticket_id,
+                body_with_footer,
+                True,  # public=True
+            )
+            return
+        except ZendeskError as e:
+            if e.status_code in _AMBIGUOUS_WRITE_STATUS_CODES:
+                if await _public_reply_body_exists(
+                    client,
+                    ticket_id=ticket_id,
+                    body_with_footer=body_with_footer,
+                ):
+                    return
+
+                logger.error(
+                    "public_reply_ambiguous_write_not_retried",
+                    ticket_id=ticket_id,
+                    reply_type=reply_type,
+                    status_code=e.status_code,
+                    error=str(e)[:200],
+                )
+                raise
+
+            if e.status_code != 429 or attempt >= policy.max_attempts:
+                raise
+
+            suggested_delay = (
+                max(float(e.detail), policy.base_delay_seconds)
+                if e.detail and e.detail.isdigit()
+                else None
+            )
+            delay = compute_delay(policy, attempt, suggested_delay)
+            logger.warning(
+                "retry_scheduled",
+                operation="reply_ticket_public",
+                policy=policy.name,
+                attempt=attempt,
+                max_attempts=policy.max_attempts,
+                retry_in=f"{delay:.1f}s",
+                error_type=type(e).__name__,
+                error=str(e),
+                ticket_id=ticket_id,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError("unexpected public reply retry state")
 
 
 async def send_public_reply(
@@ -181,11 +299,11 @@ async def send_public_reply(
     )
     try:
         client = _get_client()
-        await _call_with_rate_limit_retry(
-            client.reply_ticket,
-            ticket_id,
-            body_with_footer,
-            True,  # public=True
+        await _send_public_reply_safely(
+            client,
+            ticket_id=ticket_id,
+            body_with_footer=body_with_footer,
+            reply_type=reply_type,
         )
         logger.info(
             "public_reply_sent_direct",
@@ -391,11 +509,11 @@ class ZendeskPublicReply(Tool):
         )
         try:
             client = _get_client()
-            await _call_with_rate_limit_retry(
-                client.reply_ticket,
-                ticket_id,
-                body_with_footer,
-                True,  # public=True ← 关键区别
+            await _send_public_reply_safely(
+                client,
+                ticket_id=ticket_id,
+                body_with_footer=body_with_footer,
+                reply_type=reply_type,
             )
             session.reply_sent = True
             logger.info(
