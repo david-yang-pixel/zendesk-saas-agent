@@ -375,7 +375,7 @@ class TestScenarioHighRisk:
         """refund / incident hint 不再 auto-escalate —— 让主 agent 查证据后决定。
 
         - refund: agent 查 DB+政策 → public_reply 告知客户判定 → 飞书推财务实操
-        - incident: agent 用 SigNoz/Grafana 验证是不是真 platform-wide 故障
+        - incident: agent 用 SigNoz 验证是不是真 platform-wide 故障
         """
         state = TicketStateTracker(tmp_path / "tickets.json")
         await _run_dispatch(

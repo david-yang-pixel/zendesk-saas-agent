@@ -34,13 +34,14 @@ zendesk:
   subdomain: ''
   search_query: status:new tags:saas
   poll_interval_seconds: 300
-  mention_trigger: '@yonggang'
+  mention_trigger: '@saas-agent'
   mention_poll_interval_seconds: 60
-  # yonggang@dify.ai 的 zendesk user_id；自动公开回复也用它作为作者标记
-  agent_user_id: 45433304089364
+  # Agent 使用的 Zendesk user_id；自动公开回复也用它作为作者标记。
+  # 部署时替换成你的 Zendesk agent 账号 ID。
+  agent_user_id: 0
   # Zendesk Messaging / 队列自动化身份，不算人工受托人。
-  non_human_assignee_ids:
-    - 46493567999892
+  # 46493567999892 = Zendesk Messaging "AI Agent" automation identity.
+  non_human_assignee_ids: [46493567999892]
   # 灰度上线：feat/auto-public-reply 分支首次部署只处理 ID ≥ 2624 的工单。
   # 0 = 不过滤；上线稳定后改 0 处理全部 SaaS 工单。
   min_ticket_id: 2624
@@ -95,10 +96,18 @@ postgres:
   port_prod: 56061
   port_billing: 56062
   port_plugin: 56063
-grafana:
-  url: https://grafana.ops.dify.dev
-  # 实际 prometheus datasource ID — 通过 GET /api/datasources 拿
-  prom_datasource_id: 5
+db_gateway:
+  # 非空时，agent 的 sql_query 优先调用 DB Gateway MCP；为空则保留本地 psql fallback。
+  url: ''
+  # 由环境变量 DB_GATEWAY_API_KEY 注入，不要写入仓库。
+  api_key: ''
+  # true = agent 调 MCP，MCP 再转发到 DB Gateway HTTP API。
+  mcp_enabled: true
+  # 空字符串 = 自动使用仓库 scripts/db_gateway_mcp.py。
+  mcp_binary: ''
+  listen_host: 127.0.0.1
+  listen_port: 18081
+  request_timeout_seconds: 35
 signoz:
   url: https://signoz.dify.dev
 teleport:
@@ -106,6 +115,8 @@ teleport:
   # 必须显式带 :443，否则 tsh 默认走 3080 会 Connection refused。
   proxy: teleport.dify.dev:443
   user: ''
+  # Watchdog 从本机调用内部接口签发续期 URL；这里必须填公网访问地址。
+  public_base_url: https://<agent-public-domain>
   auth_home: /opt/zd-agent/.tsh
   warn_threshold_minutes: 30
   check_interval_seconds: 300

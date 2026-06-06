@@ -199,7 +199,7 @@ class TestHighRiskEscalation:
 
     @pytest.mark.asyncio
     async def test_incident_does_not_auto_escalate(self, tmp_path) -> None:
-        """incident hint 不再 auto-escalate —— 必须让 agent 用 SigNoz/Grafana 验证后再决定。
+        """incident hint 不再 auto-escalate —— 必须让 agent 用 SigNoz 验证后再决定。
 
         decider 标 incident 只是 hint，落到 silence_window 走主 agent 调查路径。
         agent 在收集证据后可以自己 escalate 或公开回复。

@@ -164,7 +164,7 @@ _PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在
 - **"emotional"**：客户情绪激动 / 投诉 / 气愤 / 失望（"this is unacceptable" / "你们产品太差了" / 多个感叹号 / 脏话）
 - **"incident"**：客户报**多 workspace / 平台级故障 / SLA 类停服**（"你们服务器是不是挂了" / "Dify down 了吗"/ "所有 workspace 都 access 不了"）。
   - ⚠️ **客户说"影响整个组织 / 我们 team 多人" 不算** —— 那只是单 workspace 内多个用户，不是 platform-wide。
-  - ⚠️ **客户说某个功能用不了 / 卡 0% / 报错** 也不算 incident（即使影响他多人）—— 这是单 workspace bug，让 agent 用 SigNoz/Grafana 实际查再决定。
+  - ⚠️ **客户说某个功能用不了 / 卡 0% / 报错** 也不算 incident（即使影响他多人）—— 这是单 workspace bug，让 agent 用 SigNoz 实际查再决定。
   - **真 incident 的关键词**：dify.ai / SaaS / 平台 / status page / 多个客户都报 / 全部组织等**跨 tenant** 信号。
 - 都不属于 → 填 `null`（**不要瞎贴 high_risk，宁可漏判**）
 

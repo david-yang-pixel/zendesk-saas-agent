@@ -44,12 +44,13 @@ logger = get_logger(module="scripts.auth-watchdog")
 _LAST_PUSH_TS: dict[str, float] = {}
 
 
-async def _issue_auth_url(internal_secret: str) -> str | None:
+async def _issue_auth_url(internal_secret: str, cfg) -> str | None:
     """Call main app to mint a one-time token; return the public URL."""
     try:
+        port = getattr(cfg.db_gateway, "listen_port", 18080)
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                "http://127.0.0.1:8080/internal/teleport-auth/issue",
+                f"http://127.0.0.1:{port}/internal/teleport-auth/issue",
                 headers={"X-Internal-Secret": internal_secret},
             )
         if resp.status_code != 200:
@@ -165,7 +166,7 @@ async def check_and_notify(cfg, env: EnvSettings, feishu, internal_secret: str) 
                     message=(
                         f"reason: {reason}\nremaining: {remaining}\n"
                         f"error: {msg[:400]}\n\n"
-                        f"请检查服务器 .env 里 TELEPORT_PASSWORD / "
+                        f"请检查 /opt/db-gateway/.env 里 TELEPORT_PASSWORD / "
                         f"TELEPORT_TOTP_SECRET 是否被改 / Teleport 集群是否可达 / "
                         f"账号是否被锁。需要的话退回手动登录页：/teleport-auth"
                     ),
@@ -183,7 +184,7 @@ async def check_and_notify(cfg, env: EnvSettings, feishu, internal_secret: str) 
 
 
 async def _push_auth_url(feishu, cfg, internal_secret: str, *, reason: str, remaining: str) -> None:
-    url = await _issue_auth_url(internal_secret)
+    url = await _issue_auth_url(internal_secret, cfg)
     if url is None:
         logger.error("auth_url_could_not_be_issued")
         await feishu.send_alert(

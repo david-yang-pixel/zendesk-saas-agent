@@ -14,7 +14,8 @@
 > | **UUID 类型未知**（客户给一串 UUID 没说是啥） | `inspector_exec id=<uuid>` | 自动跨表识别 |
 > | **账号/租户 drill-down** | `inspector_exec email=<x>` 或 `tenant_id=<x> section=billing/runs/apps/members` | 跨 main+billing 一次返回 |
 >
-> Inspector **不覆盖**的场景才走下面的 sql_query 路径：
+> Inspector **不覆盖**的场景才走下面的 `sql_query` 路径；这是 agent 查询数据库的唯一入口，
+> 底层由 DB Gateway MCP 处理 Teleport / DB proxy / 续期：
 > - 任意自定义 SQL（多表 JOIN / 聚合 / 表结构未覆盖）
 > - plugin_daemon 库（dify_plugin_daemon）
 > - 需要 percentile / time-series 等聚合分析（如 workflow 慢类工单的 latency 分位数）

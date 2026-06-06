@@ -10,9 +10,10 @@ Covers:
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from zd.client import ZendeskError
 
 from zd_agent.config import AppConfig, PublicReplyConfig
 from zd_agent.tools.zendesk_public_reply import (
@@ -252,6 +253,100 @@ class TestExecute:
         assert call_args[0][0] == 42  # ticket_id
         assert "Dify SaaS Agent" in call_args[0][1]  # body 含 footer
         assert call_args[0][2] is True  # public=True ← 关键
+
+    @pytest.mark.asyncio
+    async def test_502_after_write_is_treated_success_when_comment_exists(self) -> None:
+        """Zendesk may create the comment but return 502; do not send it again."""
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        body_with_footer = _append_footer("Hi there", "ask")
+
+        mock_client = MagicMock()
+        mock_client.reply_ticket = MagicMock(
+            side_effect=ZendeskError(502, "API 请求失败"),
+        )
+        mock_client.get_ticket_comments = MagicMock(
+            return_value={
+                "comments": [
+                    {"id": "c1", "public": True, "body": body_with_footer},
+                ],
+            },
+        )
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._get_client",
+            return_value=mock_client,
+        ):
+            r = await tool.execute(
+                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
+            )
+
+        assert r.success
+        assert sess.reply_sent is True
+        mock_client.reply_ticket.assert_called_once()
+        mock_client.get_ticket_comments.assert_called_once_with(42, 1, 20)
+
+    @pytest.mark.asyncio
+    async def test_502_without_confirmed_comment_is_not_retried(self) -> None:
+        """Ambiguous public-comment writes fail closed instead of duplicating."""
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+
+        mock_client = MagicMock()
+        mock_client.reply_ticket = MagicMock(
+            side_effect=ZendeskError(502, "API 请求失败"),
+        )
+        mock_client.get_ticket_comments = MagicMock(return_value={"comments": []})
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._get_client",
+            return_value=mock_client,
+        ):
+            r = await tool.execute(
+                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
+            )
+
+        assert not r.success
+        assert sess.reply_sent is False
+        mock_client.reply_ticket.assert_called_once()
+        mock_client.get_ticket_comments.assert_called_once_with(42, 1, 20)
+
+    @pytest.mark.asyncio
+    async def test_429_still_retries_public_reply(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+
+        mock_client = MagicMock()
+        mock_client.reply_ticket = MagicMock(
+            side_effect=[
+                ZendeskError(429, "rate limited", "1"),
+                {"ticket": {"id": 42}},
+            ],
+        )
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._get_client",
+            return_value=mock_client,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.asyncio.sleep",
+            new=AsyncMock(),
+        ):
+            r = await tool.execute(
+                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
+            )
+
+        assert r.success
+        assert sess.reply_sent is True
+        assert mock_client.reply_ticket.call_count == 2
 
 
 class TestPreSendCheckIntegration:

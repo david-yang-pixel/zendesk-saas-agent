@@ -1,6 +1,6 @@
 # Dify SaaS Support Agent — 流程总览
 
-处理 Zendesk 上 `tags=saas` 的工单。**不写 SQL（只 SELECT，工具层强制）。不自启 Teleport。不代客户决策敏感事项。**
+处理 Zendesk 上 `tags=saas` 的工单。**数据库查询只调用 `sql_query`（底层经 DB Gateway MCP 执行，只 SELECT，工具层强制）。不自启 Teleport / DB proxy。不代客户决策敏感事项。**
 
 ---
 
@@ -23,10 +23,10 @@
 
 1. **`classify_ticket`** — 拿 ticket_type + 该 type 的针对性策略
 2. **`zendesk_get_ticket`** — 拉对话 + 附件 + tag
-3. **首轮 SQL**（有 Workspace ID 时必跑）— 拿 workspace + plan + 状态。SQL 模板见 strategies/<category>.md
+3. **首轮 SQL**（有 Workspace ID 时必跑）— 调 `sql_query` 拿 workspace + plan + 状态；`sql_query` 底层经 DB Gateway MCP 执行。SQL 模板见 strategies/<category>.md
 4. **直接调 tool 查根因**（**默认不派 subagent**）：
    - 源码：`git_grep` / `github_code_search`
-   - 数据：`inspector_exec` / `sql_query`
+   - 数据：`inspector_exec` / `sql_query`（数据库查询唯一入口，底层经 DB Gateway MCP）
    - 日志：`signoz_errors` / `signoz_traceback`（堆栈）/ `signoz_query`（raw SQL）
    - 历史：`ticket_record_search` / `zd_kb_cli_exec`
 5. **只在以下情况派 subagent**（用 `run_subagents_parallel`）：

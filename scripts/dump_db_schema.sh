@@ -10,7 +10,7 @@
 #   /opt/zd-agent/resources/saas版知识库/database_schema.md  (loaded into agent
 #   system prompt; falls back to "no schema" if missing)
 #
-# Run on:  the production server.
+# Run on:  the production server (<agent-server-ip>).
 # Cadence: weekly via cron, or on-demand after schema migrations.
 set -euo pipefail
 
@@ -65,14 +65,14 @@ LEFT JOIN pks p
 ORDER BY c.table_name, c.ordinal_position;
 SQL
 
-# psql lives inside the zd-agent container (--network=host so 127.0.0.1 works).
-docker cp "$TMP/dump.sql" zd-agent:/tmp/dump.sql
+# psql lives inside the db-gateway container (--network=host so 127.0.0.1 works).
+docker cp "$TMP/dump.sql" db-gateway:/tmp/dump.sql
 
 for entry in "langgenius:56061" "billing:56062" "dify_plugin_daemon:56063"; do
   DB="${entry%%:*}"
   PORT="${entry##*:}"
   echo "introspecting $DB on $PORT ..."
-  docker exec zd-agent psql \
+  docker exec db-gateway psql \
     "host=127.0.0.1 port=$PORT user=pro_ops_teleport_read dbname=$DB sslmode=disable" \
     --csv -t -f /tmp/dump.sql > "$TMP/$DB.csv"
 done

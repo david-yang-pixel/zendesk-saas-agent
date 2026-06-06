@@ -120,7 +120,7 @@ async def handle_post_verdict_dispatch(
             high_risk_reason=(verdict.high_risk_reason or "")[:120],
             note=(
                 "refund: agent 查 DB/政策后 public_reply + 飞书推财务；"
-                "incident: agent 用 SigNoz/Grafana 验证再决定"
+                "incident: agent 用 SigNoz 验证再决定"
             ),
         )
 

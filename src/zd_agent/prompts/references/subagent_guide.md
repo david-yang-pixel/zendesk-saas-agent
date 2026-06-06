@@ -4,7 +4,7 @@
 
 **默认不派 subagent —— 主 agent 直接调 tool 更快**。
 只有以下情况才派 subagent：
-- 需要**并行查 ≥2 个完全不相关角度**（如同时查源码 + Grafana + SigNoz）
+- 需要**并行查 ≥2 个完全不相关角度**（如同时查源码 + SigNoz + GitHub）
 - 单次 tool 输出可能很大（如 SigNoz raw search），让 subagent 在独立 context 处理后返回精简结论
 - 任务复杂，需要多轮 tool 调用闭环（subagent 在自己的 message_store 闭环，不污染主 loop）
 
@@ -45,7 +45,7 @@
 | Category | 必查路径 |
 |---|---|
 | **billing / refund** | `dify-billing/app/services/billing/*` / `dify-billing/app/services/dify/provider_service.py` / `dify/api/services/billing/*` / `dify/api/services/credit_pool_service.py` / `dify/api/core/app/llm/quota.py` |
-| **platform_issue** | `dify/api/core/*` / `dify/api/services/*` / `dify/api/controllers/*` + Grafana / SigNoz |
+| **platform_issue** | `dify/api/core/*` / `dify/api/services/*` / `dify/api/controllers/*` + SigNoz |
 | **workflow** | `dify/api/core/app/workflow/*` / `dify/api/services/workflow_*` / `dify/api/models/workflow.py` |
 | **api** | `dify/api/controllers/*` / `dify/api/services/*` / **插件类（Lark/Notion/Slack/Google Drive） → `github_code_search scope="langgenius/dify-official-plugins"`**（本地没 clone）|
 | **knowledge_base** | `dify/api/services/dataset_service.py` / `document_service.py` / `dify/api/core/rag/*` |

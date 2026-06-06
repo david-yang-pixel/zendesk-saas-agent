@@ -195,10 +195,19 @@ class PostgresConfig(BaseModel):
     max_rows: int = 1000
 
 
-class GrafanaConfig(BaseModel):
+class DbGatewayConfig(BaseModel):
+    """独立 DB Gateway 服务配置。
+
+    `url` 非空时，agent 的 sql_query 会优先调用 gateway；为空则保留本地
+    psql/Teleport fallback，便于灰度迁移。
+    """
     url: str = ""
-    api_key: str = ""  # from env GRAFANA_API_KEY
-    prom_datasource_id: int = 1
+    api_key: str = ""
+    mcp_enabled: bool = True
+    mcp_binary: str = ""
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 18081
+    request_timeout_seconds: int = 35
 
 
 class SignozConfig(BaseModel):
@@ -263,6 +272,7 @@ class PublicReplyConfig(BaseModel):
 class TeleportConfig(BaseModel):
     proxy: str = ""
     user: str = ""  # from env TELEPORT_USER
+    public_base_url: str = ""
     auth_home: str = "/opt/zd-agent/.tsh"
     warn_threshold_minutes: int = 30
     check_interval_seconds: int = 300
@@ -295,7 +305,7 @@ class AppConfig(BaseModel):
     silence_waker: SilenceWakerConfig = Field(default_factory=SilenceWakerConfig)
     waiting_poller: WaitingPollerConfig = Field(default_factory=WaitingPollerConfig)
     postgres: PostgresConfig = Field(default_factory=PostgresConfig)
-    grafana: GrafanaConfig = Field(default_factory=GrafanaConfig)
+    db_gateway: DbGatewayConfig = Field(default_factory=DbGatewayConfig)
     signoz: SignozConfig = Field(default_factory=SignozConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     teleport: TeleportConfig = Field(default_factory=TeleportConfig)
@@ -331,13 +341,18 @@ class EnvSettings(BaseSettings):
     hc_client_api_key: str = ""  # 对应 hc-client 的 AGENT_INNER_API_KEY
     # SaaS-specific env vars
     pg_password: str = ""
-    grafana_api_key: str = ""
+    db_gateway_url: str = ""
+    db_gateway_api_key: str = ""
+    db_gateway_mcp_binary: str = ""
+    db_gateway_listen_host: str | None = None
+    db_gateway_listen_port: int | None = None
     signoz_api_key: str = ""
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
     zendesk_messaging_webhook_secret: str = ""
     teleport_user: str = ""
+    teleport_public_base_url: str = ""
     # 自动续期凭证：服务器持有 → watchdog 检测过期时自动 tsh login。
     # 安全模型：只读 ops account，与 .env 一同 chmod 600，仅 root 可读。
     # 任一为空 → watchdog 退回旧行为（推飞书 URL 让人工登录）。
@@ -400,9 +415,17 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     # Postgres password
     if env.pg_password:
         cfg.postgres.password = env.pg_password
-    # Grafana
-    if env.grafana_api_key:
-        cfg.grafana.api_key = env.grafana_api_key
+    # DB Gateway
+    if env.db_gateway_url:
+        cfg.db_gateway.url = env.db_gateway_url.rstrip("/")
+    if env.db_gateway_api_key:
+        cfg.db_gateway.api_key = env.db_gateway_api_key
+    if env.db_gateway_mcp_binary:
+        cfg.db_gateway.mcp_binary = env.db_gateway_mcp_binary
+    if env.db_gateway_listen_host is not None:
+        cfg.db_gateway.listen_host = env.db_gateway_listen_host
+    if env.db_gateway_listen_port is not None:
+        cfg.db_gateway.listen_port = env.db_gateway_listen_port
     # SigNoz
     if env.signoz_api_key:
         cfg.signoz.api_key = env.signoz_api_key
@@ -423,6 +446,8 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     # Teleport
     if env.teleport_user:
         cfg.teleport.user = env.teleport_user
+    if env.teleport_public_base_url:
+        cfg.teleport.public_base_url = env.teleport_public_base_url.rstrip("/")
 
     return cfg
 

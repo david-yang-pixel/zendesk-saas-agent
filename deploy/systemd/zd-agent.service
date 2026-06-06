@@ -2,7 +2,6 @@
 Description=zd-agent (Dify SaaS Zendesk Agent)
 After=docker.service network-online.target
 Requires=docker.service
-Wants=tsh-proxy-db.service
 
 [Service]
 Type=simple
@@ -12,20 +11,15 @@ RestartSec=30
 ExecStartPre=-/usr/bin/docker rm -f zd-agent
 # 资源限制：2G 服务器场景 — 800m 硬限 + swap 兜底到 1500m，cpus 0.8
 # 如服务器升级到 4G+，可把 --memory 改回 1500m 并移除 --memory-swap
-# .tsh 挂载为可写：Teleport 认证中转页需要写入新证书
-# /usr/local/bin/tsh 只读挂载：容器内调 tsh login
 ExecStart=/usr/bin/docker run --rm --name zd-agent \
     --network host \
     -v /opt/zd-agent/resources:/opt/zd-agent/resources \
     -v /opt/zd-agent/logs:/opt/zd-agent/logs \
     -v /opt/zd-agent/.env:/app/.env:ro \
     -v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \
-    -v /opt/zd-agent/.tsh:/opt/zd-agent/.tsh \
-    -v /usr/local/bin/tsh:/usr/local/bin/tsh:ro \
     -v /opt/zd-agent/bin/signoz-mcp-server:/opt/zd-agent/bin/signoz-mcp-server:ro \
     -v /usr/local/bin/inspector:/usr/local/bin/inspector:ro \
     -v /opt/zd-agent/inspector-config:/opt/zd-agent/inspector-config:ro \
-    -e HOST_TSH_UID=998 -e HOST_TSH_GID=997 \
     --memory=800m --memory-swap=1500m --cpus=0.8 \
     --log-driver=journald \
     zd-agent:latest
