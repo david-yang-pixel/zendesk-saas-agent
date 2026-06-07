@@ -24,19 +24,13 @@ trigger_decider:
   silence_minutes_default: 1
   silence_extend_to_minutes: 5
   rapid_burst_window_seconds: 30
-postgres:
-  host: localhost
-  port: 56061
-  user: pro_ops_teleport_read
-  db_prod: langgenius
-  db_billing: billing
-  db_plugin: dify_plugin_daemon
+db_gateway:
+  mcp_enabled: true
+  request_timeout_seconds: 35
 signoz:
   url: https://dify.us2.signoz.cloud
 feishu:
   daily_summary_time: "09:00"
-teleport:
-  proxy: teleport.dify.dev
 repos:
   base_dir: ""
   repositories:
@@ -67,12 +61,10 @@ def saas_env(monkeypatch):
         "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test",
         "FEISHU_WEBHOOK_SECRET": "fs_sign_xxx",
         "SIGNOZ_API_KEY": "sn_xxx",
-        "PG_PASSWORD": "pg_xxx",
         "GITHUB_TOKEN": "gh_xxx",
-        "TELEPORT_USER": "me",
-        "TELEPORT_PUBLIC_BASE_URL": "https://agent.example.com/",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
+        "DB_GATEWAY_MCP_BINARY": "/opt/db-gateway/code/scripts/db_gateway_mcp.py",
     }
     for k, v in env_vars.items():
         monkeypatch.setenv(k, v)
@@ -103,31 +95,18 @@ def test_config_loads_trigger_decider_section(saas_env, saas_config_file):
     assert cfg.trigger_decider.rapid_burst_window_seconds == 30
 
 
-def test_config_loads_postgres_section(saas_env, saas_config_file):
-    cfg = load_config(saas_config_file)
-    assert cfg.postgres.host == "localhost"
-    assert cfg.postgres.port == 56061
-    assert cfg.postgres.db_prod == "langgenius"
-    assert cfg.postgres.db_billing == "billing"
-    assert cfg.postgres.db_plugin == "dify_plugin_daemon"
-    assert cfg.postgres.password == "pg_xxx"
-
-
 def test_config_loads_signoz_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.signoz.url == "https://dify.us2.signoz.cloud"
     assert cfg.signoz.api_key == "sn_xxx"
 
 
-def test_config_loads_teleport_public_base_url(saas_env, saas_config_file):
-    cfg = load_config(saas_config_file)
-    assert cfg.teleport.public_base_url == "https://agent.example.com"
-
-
 def test_config_loads_db_gateway_env(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.db_gateway.url == "https://db-gateway.example.com"
     assert cfg.db_gateway.api_key == "dbgw_xxx"
+    assert cfg.db_gateway.mcp_binary == "/opt/db-gateway/code/scripts/db_gateway_mcp.py"
+    assert cfg.db_gateway.request_timeout_seconds == 35
 
 
 def test_config_loads_feishu_section(saas_env, saas_config_file):

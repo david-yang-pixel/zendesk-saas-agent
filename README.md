@@ -108,7 +108,7 @@ Sandbox:  sandbox_list / search / read / write
 子代理:    run_subagent / run_subagents_parallel
 ```
 
-> 数据库工具经 `scripts/db_gateway_mcp.py` MCP 调用 DB Gateway HTTP API；
+> 数据库工具通过同级项目 `../db-gateway/scripts/db_gateway_mcp.py` 调用 DB Gateway HTTP API；
 > MCP 只配置 `DB_GATEWAY_URL` 和 `DB_GATEWAY_API_KEY`，不持有 Teleport / DB 凭据。
 > SigNoz 工具经 vendored `scripts/sz` CLI 查询，旧 SigNoz MCP 已停用。
 
@@ -122,7 +122,6 @@ src/zd_agent/
     zendesk_webhook.py            经典 ticket webhook handler
     zendesk_messaging_webhook.py  messaging 事件 handler
     silence_waker.py / waiting_poller.py / mention_poller.py  后台轮询
-    db_gateway_app.py             DB Gateway HTTP API + Teleport 认证中转页
   trigger/
     decider.py          触发判定(6 verdict + 高风险 flag,支持 vision)
     state_store.py      工单状态机(TicketStateTracker)
@@ -155,6 +154,8 @@ resources/(运行时数据,base_dir=/opt/zd-agent/resources)
 
 config.yaml            主配置
 deploy/                Dockerfile / systemd / nginx / RUNBOOK.md
+
+../db-gateway/         独立小项目；负责 Teleport / DB proxy / 续期 / DB Gateway API / MCP server
 ```
 
 ## 配置要点(config.yaml)
@@ -210,17 +211,7 @@ DB_GATEWAY_URL=https://<agent-public-domain>/db-gateway
 DB_GATEWAY_API_KEY=<shared-secret>
 ```
 
-`db-gateway` 使用 `/opt/db-gateway/.env`，只放数据库网关、Teleport、续期和 watchdog 凭据：
-
-```env
-DB_GATEWAY_API_KEY=<same-shared-secret>
-TELEPORT_USER=<teleport-user>
-TELEPORT_PUBLIC_BASE_URL=https://<agent-public-domain>
-INTERNAL_SHARED_SECRET=<random-secret>
-# optional auto-renew:
-TELEPORT_PASSWORD=...
-TELEPORT_TOTP_SECRET=...
-```
+`db-gateway` 的配置、部署和 Teleport 凭据在同级项目 `../db-gateway`，不属于本仓库。
 
 ### 常用 CLI
 
@@ -229,7 +220,6 @@ uv run zd-agent run <ticket-id>            # 处理单个工单
 uv run zd-agent run <ticket-id> --dry-run  # 只分析不发送
 uv run zd-agent batch 2624 2625 --dry-run  # 批量
 uv run zd-agent serve                       # 启动 SaaS app(webhook + 后台任务)
-uv run zd-agent db-gateway                  # 启动 DB Gateway HTTP API
 uv run zd-agent status                      # 会话状态
 uv run zd-agent tool list                   # 已注册工具
 uv run zd-agent repos status                # SaaS 仓库状态
@@ -252,7 +242,7 @@ llm:
 
 ## 部署
 
-生产部署在 `<agent-server>`，Docker + systemd。当前服务器上的 `db-gateway` 负责 Teleport、DB proxy、Teleport 续期和只读 SQL API；`zd-agent` 通过 DB Gateway MCP 调用它。完整步骤、内存档位、健康检查见 **`deploy/RUNBOOK.md`**。
+生产部署在 `<agent-server>`，Docker + systemd。`zd-agent` 只运行 Zendesk agent；同级 `db-gateway` 项目负责 Teleport、DB proxy、Teleport 续期和只读 SQL API。完整步骤、内存档位、健康检查见 **`deploy/RUNBOOK.md`**。
 
 更新代码:
 

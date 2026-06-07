@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 from zd_agent.integrations.db_gateway import DbGatewayResult
@@ -13,8 +12,7 @@ _client: MCPSubprocessClient | None = None
 
 
 def _default_mcp_binary() -> str:
-    repo_script = Path(__file__).resolve().parents[3] / "scripts" / "db_gateway_mcp.py"
-    return str(repo_script)
+    return "db-gateway-mcp"
 
 
 def _make_client(cfg: Any) -> MCPSubprocessClient:

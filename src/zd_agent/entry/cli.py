@@ -165,22 +165,6 @@ def serve(
     run_saas_app(manager)
 
 
-@app.command("db-gateway")
-def db_gateway() -> None:
-    """启动独立 DB Gateway HTTP 服务（Teleport/DB proxy 留在本服务侧）"""
-    from zd_agent.services.db_gateway_app import run_db_gateway_app
-
-    cfg = get_config()
-    console.print("[bold green]Starting DB Gateway service...[/bold green]")
-    console.print(
-        f"  Listen: {cfg.db_gateway.listen_host}:{cfg.db_gateway.listen_port}"
-    )
-    console.print("  Routes: GET /healthz, GET /status, POST /query")
-    if not cfg.db_gateway.api_key:
-        console.print("[bold red]  DB_GATEWAY_API_KEY 未配置，/query 会拒绝请求[/bold red]")
-    run_db_gateway_app()
-
-
 @app.command()
 def webhook(
     host: str = typer.Option("0.0.0.0", "--host", help="监听地址"),

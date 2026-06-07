@@ -177,36 +177,13 @@ class WaitingPollerConfig(BaseModel):
     poll_new_messages: bool = True
 
 
-class PostgresConfig(BaseModel):
-    # Teleport tsh proxy db 需要每个 (db-name) 一个独立端口（--db-name 在 proxy 启动时 固定）。
-    # host + port 保留做向后兼容默认；port_prod/port_billing/port_plugin 是新的真实映射。
-    host: str = "localhost"
-    port: int = 56061
-    user: str = "pro_ops_teleport_read"
-    password: str = ""  # from env PG_PASSWORD
-    db_prod: str = "langgenius"
-    db_billing: str = "billing"
-    db_plugin: str = "dify_plugin_daemon"
-    # 每个 Teleport proxy db 绑定到一个独立 port（--db-name 固定）
-    port_prod: int = 56061
-    port_billing: int = 56062
-    port_plugin: int = 56063
-    query_timeout_seconds: int = 30
-    max_rows: int = 1000
-
-
 class DbGatewayConfig(BaseModel):
-    """独立 DB Gateway 服务配置。
+    """外部 DB Gateway 客户端配置。"""
 
-    `url` 非空时，agent 的 sql_query 会优先调用 gateway；为空则保留本地
-    psql/Teleport fallback，便于灰度迁移。
-    """
     url: str = ""
     api_key: str = ""
     mcp_enabled: bool = True
     mcp_binary: str = ""
-    listen_host: str = "127.0.0.1"
-    listen_port: int = 18081
     request_timeout_seconds: int = 35
 
 
@@ -269,18 +246,6 @@ class PublicReplyConfig(BaseModel):
     abandoned_hours: int = 24
 
 
-class TeleportConfig(BaseModel):
-    proxy: str = ""
-    user: str = ""  # from env TELEPORT_USER
-    public_base_url: str = ""
-    auth_home: str = "/opt/zd-agent/.tsh"
-    warn_threshold_minutes: int = 30
-    check_interval_seconds: int = 300
-    # 同一 reason（"not logged in" / "expiring soon"）的飞书推送之间最短间隔。
-    # 避免证书过期后每次 check loop（5min）都推一遍，扰人。
-    notify_interval_seconds: int = 3600
-
-
 class LoggingConfig(BaseModel):
     """日志配置。stdout 始终走带色 ConsoleRenderer（不可配）；
     jsonl_enabled 控制是否额外写 JSON 行到 log_dir/events-<date>.jsonl 供排查。
@@ -304,11 +269,9 @@ class AppConfig(BaseModel):
     trigger_decider: TriggerDeciderConfig = Field(default_factory=TriggerDeciderConfig)
     silence_waker: SilenceWakerConfig = Field(default_factory=SilenceWakerConfig)
     waiting_poller: WaitingPollerConfig = Field(default_factory=WaitingPollerConfig)
-    postgres: PostgresConfig = Field(default_factory=PostgresConfig)
     db_gateway: DbGatewayConfig = Field(default_factory=DbGatewayConfig)
     signoz: SignozConfig = Field(default_factory=SignozConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
-    teleport: TeleportConfig = Field(default_factory=TeleportConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
@@ -340,24 +303,14 @@ class EnvSettings(BaseSettings):
     hc_client_url: str = ""  # zendesk-hc-client API 地址（如 http://localhost:8000）
     hc_client_api_key: str = ""  # 对应 hc-client 的 AGENT_INNER_API_KEY
     # SaaS-specific env vars
-    pg_password: str = ""
     db_gateway_url: str = ""
     db_gateway_api_key: str = ""
     db_gateway_mcp_binary: str = ""
-    db_gateway_listen_host: str | None = None
-    db_gateway_listen_port: int | None = None
     signoz_api_key: str = ""
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
     zendesk_messaging_webhook_secret: str = ""
-    teleport_user: str = ""
-    teleport_public_base_url: str = ""
-    # 自动续期凭证：服务器持有 → watchdog 检测过期时自动 tsh login。
-    # 安全模型：只读 ops account，与 .env 一同 chmod 600，仅 root 可读。
-    # 任一为空 → watchdog 退回旧行为（推飞书 URL 让人工登录）。
-    teleport_password: str = ""
-    teleport_totp_secret: str = ""
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
@@ -412,9 +365,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.llm.model = env.zd_model
     if env.openai_base_url is not None:
         cfg.llm.base_url = env.openai_base_url
-    # Postgres password
-    if env.pg_password:
-        cfg.postgres.password = env.pg_password
     # DB Gateway
     if env.db_gateway_url:
         cfg.db_gateway.url = env.db_gateway_url.rstrip("/")
@@ -422,10 +372,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.db_gateway.api_key = env.db_gateway_api_key
     if env.db_gateway_mcp_binary:
         cfg.db_gateway.mcp_binary = env.db_gateway_mcp_binary
-    if env.db_gateway_listen_host is not None:
-        cfg.db_gateway.listen_host = env.db_gateway_listen_host
-    if env.db_gateway_listen_port is not None:
-        cfg.db_gateway.listen_port = env.db_gateway_listen_port
     # SigNoz
     if env.signoz_api_key:
         cfg.signoz.api_key = env.signoz_api_key
@@ -443,12 +389,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     # Messaging webhook secret (独立于 Tickets webhook secret，两套 signing 用不同 key)
     if env.zendesk_messaging_webhook_secret:
         cfg.webhook.messaging_signing_secret = env.zendesk_messaging_webhook_secret
-    # Teleport
-    if env.teleport_user:
-        cfg.teleport.user = env.teleport_user
-    if env.teleport_public_base_url:
-        cfg.teleport.public_base_url = env.teleport_public_base_url.rstrip("/")
-
     return cfg
 
 

@@ -12,7 +12,7 @@ from zd_agent.runtime.prompt_loader import load_prompt
 def _db_schema_path() -> Path:
     """运行时生成的数据库 schema cheat sheet。
 
-    由 ``scripts/dump_db_schema.sh`` 周期性 introspect prod 库写入。
+    由同级 ``db-gateway/scripts/dump_db_schema.sh`` 周期性 introspect prod 库写入。
     不存在时（开发环境）此文件可能为空。
 
     注：此函数现也被 ``tools/classify.py`` 调用（lazy load DB schema 到 tool

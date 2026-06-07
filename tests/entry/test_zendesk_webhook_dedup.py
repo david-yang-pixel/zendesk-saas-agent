@@ -20,7 +20,6 @@ from aiohttp import web
 
 from zd_agent.services.zendesk_webhook import handle_zendesk_webhook
 from zd_agent.services.app_context import install_saas_app_context, trigger_queue
-from zd_agent.services.teleport_tokens import TokenStore
 from zd_agent.services.webhook_dedup import WebhookDedup
 
 
@@ -46,7 +45,6 @@ def _build_app(tmp_path) -> web.Application:
         trigger_queue=asyncio.Queue(),
         state=MagicMock(),
         webhook_dedup=WebhookDedup(tmp_path / "dedup.json", max_size=100),
-        teleport_auth_token_store=TokenStore(),
         manager=MagicMock(),
     )
     return app

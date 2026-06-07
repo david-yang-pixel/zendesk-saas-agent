@@ -1,6 +1,9 @@
 # Deployment Runbook — zd-agent (Dify SaaS Support)
 
-当前服务器职责：运行 `zd-agent`、维护 Teleport DB proxy、执行 Teleport 证书续期、提供续期页面与只读日志界面。
+当前服务器上拆成两个同级项目：
+
+- `/opt/zd-agent/code`: 只运行 Zendesk 工单处理 agent。
+- `/opt/db-gateway/code`: 独立维护 Teleport DB proxy、Teleport 证书续期、续期页面、只读 DB Gateway API 和 MCP server。
 
 ## One-time Setup (~2 hours)
 
@@ -82,11 +85,8 @@ cp /opt/zd-agent/code/.env.example /opt/zd-agent/.env
 vim /opt/zd-agent/.env
 chmod 600 /opt/zd-agent/.env
 
-# DB Gateway env: Teleport / DB proxy / renewal / gateway API only
-mkdir -p /opt/db-gateway
-cp /opt/zd-agent/code/.env.db-gateway.example /opt/db-gateway/.env
-vim /opt/db-gateway/.env
-chmod 600 /opt/db-gateway/.env
+# DB Gateway env lives in the sibling db-gateway project.
+# See /opt/db-gateway/code/.env.example.
 ```
 
 Required variables for `/opt/zd-agent/.env` (see `.env.example`):
@@ -95,9 +95,9 @@ Required variables for `/opt/zd-agent/.env` (see `.env.example`):
 - FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
 - SIGNOZ_API_KEY
 - GITHUB_TOKEN
-- DB_GATEWAY_URL / DB_GATEWAY_API_KEY
+- DB_GATEWAY_URL / DB_GATEWAY_API_KEY / DB_GATEWAY_MCP_BINARY
 
-Required variables for `/opt/db-gateway/.env` (see `.env.db-gateway.example`):
+Required variables for `/opt/db-gateway/.env` are documented in `/opt/db-gateway/code/.env.example`:
 - DB_GATEWAY_API_KEY（must match `/opt/zd-agent/.env`）
 - TELEPORT_USER
 - TELEPORT_PUBLIC_BASE_URL
@@ -162,16 +162,22 @@ sudo certbot certonly --webroot -w /var/www/html -d <agent-public-domain>
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-### 10. Install Teleport CLI + Machine ID (or use headless login)
+### 10. Install and start DB Gateway sibling project
+
+Follow `/opt/db-gateway/code/README.md` for:
+
+- installing `tsh`
+- first-time Teleport login
+- building `db-gateway:latest`
+- installing `db-gateway.service`, `tsh-proxy-db*.service`, `tsh-auth-watchdog.service`, and `proxy-health.timer`
+- adding nginx locations `/db-gateway/` and `/teleport-auth`
+
+Quick verification:
 
 ```bash
-curl https://<teleport-proxy>/scripts/install.sh | bash
-```
-
-First-time manual login (sets up TELEPORT_HOME):
-```bash
-sudo -u zd-agent TELEPORT_HOME=/opt/zd-agent/.tsh tsh login --headless --proxy=<teleport-proxy> --user=$TELEPORT_USER
-# Click the printed URL on your phone to approve
+sudo systemctl status db-gateway tsh-proxy-db tsh-proxy-db-billing tsh-proxy-db-plugin tsh-auth-watchdog proxy-health.timer
+source /opt/db-gateway/.env
+curl -fsS -H "X-API-Key: $DB_GATEWAY_API_KEY" https://<agent-public-domain>/db-gateway/status
 ```
 
 ### 11. Build Docker image
@@ -194,22 +200,13 @@ sudo useradd --system --home /opt/zd-agent --shell /bin/false zd-agent
 sudo chown -R zd-agent:zd-agent /opt/zd-agent
 
 sudo cp /opt/zd-agent/code/deploy/systemd/*.service /etc/systemd/system/
-sudo cp /opt/zd-agent/code/deploy/systemd/*.path /etc/systemd/system/
-sudo cp /opt/zd-agent/code/deploy/systemd/*.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 
-sudo systemctl enable --now tsh-proxy-db.service \
-                            tsh-proxy-db-billing.service \
-                            tsh-proxy-db-plugin.service
-sudo systemctl enable --now db-gateway.service
-sudo systemctl enable --now tsh-auth-watchdog.service
-sudo systemctl enable --now proxy-health.timer  # 每 2min 探测 3 端口、socket 死自动 restart
 sudo systemctl enable --now zd-agent.service
 
 # Verify
-sudo systemctl status db-gateway zd-agent tsh-proxy-db tsh-auth-watchdog proxy-health.timer
-source /opt/db-gateway/.env
-curl -fsS -H "X-API-Key: $DB_GATEWAY_API_KEY" https://<agent-public-domain>/db-gateway/status
+sudo systemctl status zd-agent db-gateway
+curl -fsS https://<agent-public-domain>/healthz
 sudo journalctl -u zd-agent -f
 ```
 
@@ -220,7 +217,7 @@ sudo journalctl -u zd-agent -f
 | What | How |
 |------|-----|
 | Restart agent | `sudo systemctl restart zd-agent` |
-| Restart DB Gateway | `sudo systemctl restart db-gateway` |
+| Restart DB Gateway | `sudo systemctl restart db-gateway`（DB Gateway 项目负责） |
 | View live logs | `sudo docker logs -f zd-agent` (or `journalctl -u zd-agent -f`) |
 | Manual Teleport renew | Feishu `/relogin` or `sudo systemctl restart tsh-auth-watchdog` |
 | Pause processing | Feishu `/pause` (doesn't restart process, just suspends polling) |
@@ -230,7 +227,7 @@ sudo journalctl -u zd-agent -f
 | Update SaaS branch | Feishu `/branch dify hotfix/1.11.2-fix3` |
 | Update agent code | `cd /opt/zd-agent/code && git pull && sudo docker build --network host -f deploy/Dockerfile -t zd-agent:latest . && sudo systemctl restart zd-agent` |
 | Restart only (改 config.yaml 后) | `sudo systemctl restart zd-agent`（config 挂载只读 volume，无需 rebuild）|
-| Refresh DB schema cheat sheet | `bash /opt/zd-agent/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
+| Refresh DB schema cheat sheet | `bash /opt/db-gateway/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
 
 ## Daily Backups
 

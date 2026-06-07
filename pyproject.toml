@@ -20,8 +20,6 @@ dependencies = [
     "zendesk-cli",
     "anthropic>=0.87.0",
     "mistune>=3.2.0",
-    "pexpect>=4.9",
-    "pyotp>=2.9",  # auth-watchdog 自动 OTP 续期用
 ]
 
 [tool.uv.sources]

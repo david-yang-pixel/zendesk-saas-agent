@@ -10,7 +10,6 @@ from aiohttp import web
 
 from zd_agent.services.app_context import install_saas_app_context
 from zd_agent.services.app_lifecycle import wire_session_finished_callback
-from zd_agent.services.teleport_tokens import TokenStore
 from zd_agent.services.webhook_dedup import WebhookDedup
 from zd_agent.trigger.state_store import TicketStateTracker
 
@@ -38,8 +37,6 @@ def prepare_saas_app_runtime(
         state_dir / "processed_webhooks.json",
         max_size=10000,
     )
-    teleport_auth_token_store = TokenStore()
-
     wire_session_finished_callback(manager=manager, state=state)
     install_saas_app_context(
         app=app,
@@ -47,7 +44,6 @@ def prepare_saas_app_runtime(
         trigger_queue=trigger_queue,
         state=state,
         webhook_dedup=webhook_dedup,
-        teleport_auth_token_store=teleport_auth_token_store,
         manager=manager,
     )
 

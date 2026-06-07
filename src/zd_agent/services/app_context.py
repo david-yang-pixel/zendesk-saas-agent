@@ -9,10 +9,6 @@ CONFIG_KEY = web.AppKey("zd_agent.config", object)
 TRIGGER_QUEUE_KEY = web.AppKey("zd_agent.trigger_queue", object)
 TICKET_STATE_KEY = web.AppKey("zd_agent.ticket_state", object)
 WEBHOOK_DEDUP_KEY = web.AppKey("zd_agent.webhook_dedup", object)
-TELEPORT_AUTH_TOKEN_STORE_KEY = web.AppKey(
-    "zd_agent.teleport_auth_token_store",
-    object,
-)
 SESSION_MANAGER_KEY = web.AppKey("zd_agent.session_manager", object)
 
 SILENCE_TASK_KEY = web.AppKey("zd_agent.silence_task", object)
@@ -33,7 +29,6 @@ _LEGACY_KEYS = {
     TRIGGER_QUEUE_KEY: "trigger_queue",
     TICKET_STATE_KEY: "ticket_state",
     WEBHOOK_DEDUP_KEY: "webhook_dedup",
-    TELEPORT_AUTH_TOKEN_STORE_KEY: "teleport_auth_token_store",
     SESSION_MANAGER_KEY: "session_manager",
     SILENCE_TASK_KEY: "silence_task",
     WAITING_POLLER_TASK_KEY: "waiting_poller_task",
@@ -50,7 +45,6 @@ def install_saas_app_context(
     trigger_queue: Any,
     state: Any,
     webhook_dedup: Any,
-    teleport_auth_token_store: Any,
     manager: Any,
 ) -> None:
     """Install shared SaaS app dependencies under typed aiohttp keys."""
@@ -58,7 +52,6 @@ def install_saas_app_context(
     app[TRIGGER_QUEUE_KEY] = trigger_queue
     app[TICKET_STATE_KEY] = state
     app[WEBHOOK_DEDUP_KEY] = webhook_dedup
-    app[TELEPORT_AUTH_TOKEN_STORE_KEY] = teleport_auth_token_store
     app[SESSION_MANAGER_KEY] = manager
 
 
@@ -82,10 +75,6 @@ def ticket_state(app: web.Application) -> Any:
 
 def webhook_dedup(app: web.Application) -> Any:
     return _get(app, WEBHOOK_DEDUP_KEY)
-
-
-def teleport_auth_token_store(app: web.Application) -> Any:
-    return _get(app, TELEPORT_AUTH_TOKEN_STORE_KEY)
 
 
 def session_manager(app: web.Application) -> Any:

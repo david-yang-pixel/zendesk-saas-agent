@@ -84,44 +84,18 @@ waiting_poller:
   scan_interval_seconds: 300
   abandoned_hours: 24
   greeting_alert_minutes: 30
-postgres:
-  host: localhost
-  port: 56061
-  user: pro_ops_teleport_read
-  db_prod: langgenius
-  db_billing: billing
-  db_plugin: dify_plugin_daemon
-  query_timeout_seconds: 30
-  max_rows: 1000
-  port_prod: 56061
-  port_billing: 56062
-  port_plugin: 56063
 db_gateway:
-  # 非空时，agent 的 sql_query 优先调用 DB Gateway MCP；为空则保留本地 psql fallback。
+  # agent 只调用外部 DB Gateway；Teleport / DB proxy / 续期属于同级 db-gateway 项目。
   url: ''
   # 由环境变量 DB_GATEWAY_API_KEY 注入，不要写入仓库。
   api_key: ''
   # true = agent 调 MCP，MCP 再转发到 DB Gateway HTTP API。
   mcp_enabled: true
-  # 空字符串 = 自动使用仓库 scripts/db_gateway_mcp.py。
-  mcp_binary: ''
-  listen_host: 127.0.0.1
-  listen_port: 18081
+  # 生产建议：/opt/db-gateway/code/scripts/db_gateway_mcp.py
+  mcp_binary: db-gateway-mcp
   request_timeout_seconds: 35
 signoz:
   url: https://signoz.dify.dev
-teleport:
-  # SRE 把 Teleport 切到 443 单端口模式后，3080 不再可达。
-  # 必须显式带 :443，否则 tsh 默认走 3080 会 Connection refused。
-  proxy: teleport.dify.dev:443
-  user: ''
-  # Watchdog 从本机调用内部接口签发续期 URL；这里必须填公网访问地址。
-  public_base_url: https://<agent-public-domain>
-  auth_home: /opt/zd-agent/.tsh
-  warn_threshold_minutes: 30
-  check_interval_seconds: 300
-  # 同 reason 的飞书推送之间最短间隔（秒）。证书过期后不重复推，1h 一次。
-  notify_interval_seconds: 3600
 repos:
   base_dir: ''
   repositories:

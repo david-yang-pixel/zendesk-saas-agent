@@ -17,7 +17,6 @@ from zd_agent.services.app_context import (
     trigger_queue,
     webhook_dedup,
 )
-from zd_agent.services.teleport_tokens import TokenStore
 from zd_agent.services.webhook_dedup import WebhookDedup
 from zd_agent.trigger.state_store import TicketStateTracker
 
@@ -28,7 +27,6 @@ def test_install_saas_app_context_uses_typed_app_keys(tmp_path) -> None:
     queue: asyncio.Queue = asyncio.Queue()
     state = TicketStateTracker(tmp_path / "tickets.json")
     dedup = WebhookDedup(tmp_path / "dedup.json", max_size=10)
-    token_store = TokenStore()
     manager = MagicMock()
 
     with warnings.catch_warnings(record=True) as caught:
@@ -39,7 +37,6 @@ def test_install_saas_app_context_uses_typed_app_keys(tmp_path) -> None:
             trigger_queue=queue,
             state=state,
             webhook_dedup=dedup,
-            teleport_auth_token_store=token_store,
             manager=manager,
         )
 
