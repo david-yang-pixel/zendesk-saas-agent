@@ -283,7 +283,7 @@ class TeleportConfig(BaseModel):
 
 class LoggingConfig(BaseModel):
     """日志配置。stdout 始终走带色 ConsoleRenderer（不可配）；
-    jsonl_enabled 控制是否额外写 JSON 行到 log_dir/events-<date>.jsonl 供 log-viewer 读。
+    jsonl_enabled 控制是否额外写 JSON 行到 log_dir/events-<date>.jsonl 供排查。
     """
     jsonl_enabled: bool = True
     log_dir: str = "/opt/zd-agent/logs"

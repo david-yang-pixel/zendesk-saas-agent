@@ -49,7 +49,7 @@ def setup_logging(
 
     log_level: DEBUG / INFO / WARNING / ERROR（大小写不敏感）
     jsonl_dir: 若指定，额外将每条日志以 JSON 行追加到
-               <jsonl_dir>/events-<UTC date>.jsonl（供 log-viewer 读取）。
+               <jsonl_dir>/events-<UTC date>.jsonl（供命令行排查）。
                None 表示不写文件（向后兼容）。
     """
     level = _LEVEL_MAP.get(log_level.upper(), logging.INFO)

@@ -44,10 +44,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
-# log-viewer 是独立子项目（自带 pyproject + venv，依赖 fastapi 不在主 venv）。
-# 从主仓根跑 pytest 时不要收集它，否则 import fastapi 失败会中断整个收集。
 testpaths = ["tests"]
-norecursedirs = ["log-viewer"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zd_agent"]
