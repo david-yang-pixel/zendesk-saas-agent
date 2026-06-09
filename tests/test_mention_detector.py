@@ -19,6 +19,10 @@ class TestIsMention(unittest.TestCase):
         comment = {"is_public": False, "body": "Hey @Support-Agent please help"}
         self.assertTrue(is_mention(comment, "@support-agent"))
 
+    def test_does_not_match_longer_raw_mention_prefix(self) -> None:
+        comment = {"is_public": False, "body": "Hey @support-agent-old please help"}
+        self.assertFalse(is_mention(comment, "@support-agent"))
+
     def test_no_mention(self) -> None:
         comment = {"is_public": False, "body": "This is a regular internal note"}
         self.assertFalse(is_mention(comment, "@support-agent"))
@@ -39,6 +43,10 @@ class TestIsMention(unittest.TestCase):
     def test_detects_zendesk_markdown_mention_case_insensitive(self) -> None:
         comment = {"is_public": False, "body": "**Support-Agent** please help"}
         self.assertTrue(is_mention(comment, "@support-agent"))
+
+    def test_does_not_match_longer_markdown_mention_prefix(self) -> None:
+        comment = {"is_public": False, "body": "**support-agent-old** please help"}
+        self.assertFalse(is_mention(comment, "@support-agent"))
 
     # ---- Self-trigger guard tests (人 + agent 共用同一账号场景) ----
 

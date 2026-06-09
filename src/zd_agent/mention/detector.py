@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from zd_agent.log import get_logger
 
 logger = get_logger(module="mention.detector")
@@ -39,6 +41,11 @@ def is_any_mention(comment: dict, triggers: list[str]) -> str | None:
         if is_mention(comment, trigger):
             return trigger
     return None
+
+
+def _contains_raw_mention(body: str, trigger: str) -> bool:
+    pattern = rf"(?<![\w@.-]){re.escape(trigger)}(?![\w-])"
+    return re.search(pattern, body, flags=re.IGNORECASE) is not None
 
 
 def get_self_user_id() -> int | None:
@@ -107,9 +114,9 @@ def is_mention(comment: dict, trigger: str) -> bool:
                 )
                 return False
 
-    body = comment.get("body", "").lower()
-    if trigger.lower() in body:
+    body = str(comment.get("body", ""))
+    if _contains_raw_mention(body, trigger):
         return True
     # Zendesk 将 @mention 转为 **username** 格式
     username = trigger.lstrip("@")
-    return f"**{username.lower()}**" in body
+    return f"**{username.lower()}**" in body.lower()
