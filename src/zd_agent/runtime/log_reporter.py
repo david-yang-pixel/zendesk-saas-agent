@@ -40,7 +40,11 @@ class LogReporter:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=_TIMEOUT,
-                headers={"X-Agent-Key": self._api_key, "Content-Type": "application/json"},
+                headers={
+                    "X-Agent-Key": self._api_key,
+                    "Content-Type": "application/json",
+                    "User-Agent": "zd-agent/1.0",
+                },
             )
         return self._session
 
@@ -86,6 +90,7 @@ class LogReporter:
             "/api/agent/logs/runs",
             {
                 "ticket_id": ticket_id,
+                "source": "saas",
                 "session_id": session_id,
                 "trigger_type": trigger_type,
                 "model": model,
