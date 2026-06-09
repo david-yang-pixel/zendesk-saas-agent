@@ -63,9 +63,21 @@ class ArchiveTicket(Tool):
         self, args: dict[str, Any], session: AgentSession,
     ) -> ToolResult:
         ticket_id = args["ticket_id"]
+        if not isinstance(ticket_id, int) or isinstance(ticket_id, bool):
+            return ToolResult(success=False, error="ticket_id must be an integer")
+
         analysis = args["analysis"]
+        if not isinstance(analysis, str):
+            return ToolResult(success=False, error="analysis must be a string")
+
         solution = args["solution"]
+        if not isinstance(solution, str):
+            return ToolResult(success=False, error="solution must be a string")
+
         category = args.get("category") or session.ticket_type or ""
+        if not isinstance(category, str):
+            category = str(category)
+        reply_draft = session.reply_draft if isinstance(session.reply_draft, str) else ""
         now = _now_iso()
 
         path = _ticket_file(ticket_id)
@@ -80,7 +92,7 @@ class ArchiveTicket(Tool):
                     analysis=analysis,
                     solution=solution,
                     category=category,
-                    reply_draft=session.reply_draft or "",
+                    reply_draft=reply_draft,
                     now=now,
                 )
                 path.write_text(content, encoding="utf-8")
@@ -89,7 +101,7 @@ class ArchiveTicket(Tool):
                 followup = self._render_followup(
                     analysis=analysis,
                     solution=solution,
-                    reply_draft=session.reply_draft or "",
+                    reply_draft=reply_draft,
                     now=now,
                 )
                 # Append with a blank line separator

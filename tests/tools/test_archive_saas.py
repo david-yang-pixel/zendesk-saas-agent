@@ -121,3 +121,34 @@ async def test_followup_without_reply_no_draft_section(records_env, session):
     # There should be a 跟进 section but no "### 客户回复草稿"
     assert "## 跟进" in content
     assert "### 客户回复草稿" not in content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("args", "expected_error"),
+    [
+        (
+            {"ticket_id": "123", "analysis": "a", "solution": "s"},
+            "ticket_id must be an integer",
+        ),
+        (
+            {"ticket_id": 123, "analysis": {"text": "a"}, "solution": "s"},
+            "analysis must be a string",
+        ),
+        (
+            {"ticket_id": 123, "analysis": "a", "solution": ["s"]},
+            "solution must be a string",
+        ),
+    ],
+)
+async def test_archive_rejects_invalid_argument_types(
+    records_env, session, args, expected_error,
+):
+    tool = ArchiveTicket()
+
+    r = await tool.execute(args, session)
+
+    assert r.success is False
+    assert r.error == expected_error
+    assert not records_env.exists()
+    assert session.archived is False
