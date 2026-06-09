@@ -73,6 +73,15 @@ def _coerce_int_arg(
     return value
 
 
+def _coerce_optional_string_arg(args: dict[str, Any], name: str) -> str | ToolResult:
+    raw = args.get(name)
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return raw.strip()
+
+
 class GithubSearchPrs(Tool):
     name = "github_search_prs"
     description = "搜索 GitHub pull requests，用于确认某个问题是否已有修复 PR"
@@ -265,8 +274,12 @@ class GithubCodeSearch(Tool):
             return ToolResult(success=False, error="query 不能为空")
 
         scope = str(args.get("scope") or "langgenius").strip()
-        language = (args.get("language") or "").strip()
-        path = (args.get("path") or "").strip()
+        language = _coerce_optional_string_arg(args, "language")
+        if isinstance(language, ToolResult):
+            return language
+        path = _coerce_optional_string_arg(args, "path")
+        if isinstance(path, ToolResult):
+            return path
         limit = _coerce_int_arg(args, "limit", 10, minimum=1, maximum=30)
         if isinstance(limit, ToolResult):
             return limit

@@ -158,3 +158,20 @@ class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result.success)
         self.assertIn("limit", result.error or "")
+
+    async def test_code_search_rejects_invalid_optional_string_args(self) -> None:
+        tool = GithubCodeSearch()
+
+        bad_language = await tool.execute(
+            {"query": "foo", "language": ["python"]},
+            AgentSession(ticket_id=1),
+        )
+        bad_path = await tool.execute(
+            {"query": "foo", "path": {"prefix": "core/tools"}},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(bad_language.success)
+        self.assertEqual(bad_language.error, "language must be a string")
+        self.assertFalse(bad_path.success)
+        self.assertEqual(bad_path.error, "path must be a string")
