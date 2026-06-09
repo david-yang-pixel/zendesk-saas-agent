@@ -1,7 +1,7 @@
 """Test SaasBranchSwitch with real temp git repos."""
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -141,6 +141,28 @@ async def test_missing_repo_dir_error(fake_session, configured_repos):
     )
     assert r.success is False
     assert "not a git repo" in (r.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_rejects_adjacent_repo_path_escape(fake_session, tmp_path, monkeypatch):
+    base = tmp_path / "repos"
+    base.mkdir()
+    adjacent_repo = tmp_path / "repos2" / "escape"
+    (adjacent_repo / ".git").mkdir(parents=True)
+
+    cfg = MagicMock()
+    cfg.repos.base_dir = str(base)
+    cfg.repos.aliases = {"escape": "../repos2/escape"}
+    monkeypatch.setattr("zd_agent.tools.saas_branch.get_config", lambda: cfg)
+    run_git = AsyncMock(return_value=(0, "abcdef123456\n", ""))
+    monkeypatch.setattr("zd_agent.tools.saas_branch._run_git", run_git)
+
+    tool = SaasBranchSwitch()
+    r = await tool.execute({"repo": "escape", "branch": "main"}, fake_session)
+
+    assert r.success is False
+    assert "outside base_dir" in (r.error or "")
+    run_git.assert_not_called()
 
 
 @pytest.mark.asyncio

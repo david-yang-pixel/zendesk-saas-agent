@@ -76,11 +76,12 @@ class SaasBranchSwitch(Tool):
         try:
             repo_dir_resolved = repo_dir.resolve()
             base_dir_resolved = base_dir.resolve()
-            if not str(repo_dir_resolved).startswith(str(base_dir_resolved)):
-                return ToolResult(
-                    success=False,
-                    error=f"repo path outside base_dir: {canonical}",
-                )
+            repo_dir_resolved.relative_to(base_dir_resolved)
+        except ValueError:
+            return ToolResult(
+                success=False,
+                error=f"repo path outside base_dir: {canonical}",
+            )
         except Exception:
             return ToolResult(success=False, error="path resolution failed")
         if not repo_dir.exists() or not (repo_dir / ".git").exists():
