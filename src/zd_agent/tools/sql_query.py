@@ -20,6 +20,7 @@ _FORBIDDEN_KEYWORDS = [
     "GRANT", "REVOKE", "COPY", "EXECUTE", "CALL",
     "VACUUM", "ANALYZE", "REINDEX", "SET", "LOCK", "SHOW",
 ]
+_DOLLAR_QUOTE_START = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
 
 
 def _strip_comments_and_string_literals(sql: str) -> str:
@@ -63,6 +64,29 @@ def _strip_comments_and_string_literals(sql: str) -> str:
                 i += 1
             out.append(" '' ")
             continue
+
+        if ch == '"':
+            i += 1
+            while i < n:
+                if sql[i] == '"' and i + 1 < n and sql[i + 1] == '"':
+                    i += 2
+                    continue
+                if sql[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            out.append(' "" ')
+            continue
+
+        if ch == "$":
+            match = _DOLLAR_QUOTE_START.match(sql, i)
+            if match:
+                delimiter = match.group(0)
+                close_at = sql.find(delimiter, match.end())
+                if close_at != -1:
+                    i = close_at + len(delimiter)
+                    out.append(" $$ ")
+                    continue
 
         out.append(ch)
         i += 1

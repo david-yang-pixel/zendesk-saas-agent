@@ -112,6 +112,64 @@ async def test_sql_query_allows_forbidden_words_inside_comments(fake_session, sq
 
 
 @pytest.mark.asyncio
+async def test_sql_query_allows_forbidden_words_inside_dollar_quoted_strings(
+    fake_session,
+    sql_cfg,
+):
+    tool = SqlQuery()
+    fake_result = DbGatewayResult(
+        success=True,
+        csv="msg\nplease update your app\n",
+        row_count=1,
+        elapsed_ms=20,
+        truncated=False,
+    )
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
+        result = await tool.execute(
+            {
+                "database": "prod",
+                "sql": "SELECT $support$please update your app$support$ AS msg",
+            },
+            fake_session,
+        )
+
+    assert result.success is True
+    assert "please update your app" in result.output
+
+
+@pytest.mark.asyncio
+async def test_sql_query_allows_forbidden_words_inside_quoted_identifiers(
+    fake_session,
+    sql_cfg,
+):
+    tool = SqlQuery()
+    fake_result = DbGatewayResult(
+        success=True,
+        csv="drop\n1\n",
+        row_count=1,
+        elapsed_ms=20,
+        truncated=False,
+    )
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
+        result = await tool.execute(
+            {
+                "database": "prod",
+                "sql": 'SELECT "drop" FROM audit_logs LIMIT 1',
+            },
+            fake_session,
+        )
+
+    assert result.success is True
+    assert "Rows: 1" in result.output
+
+
+@pytest.mark.asyncio
 async def test_sql_query_rejects_unknown_database(fake_session, sql_cfg):
     tool = SqlQuery()
     result = await tool.execute(
