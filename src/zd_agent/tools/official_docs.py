@@ -137,7 +137,13 @@ class OfficialDocsSearch(Tool):
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         query = args["query"]
+        if not isinstance(query, str):
+            return ToolResult(success=False, error="query must be a string")
+
         source = args.get("source", "auto")
+        if not isinstance(source, str):
+            return ToolResult(success=False, error="source must be a string")
+
         limit = _coerce_limit(args.get("limit"))
         if isinstance(limit, ToolResult):
             return limit
@@ -179,6 +185,9 @@ class OfficialDocsRead(Tool):
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         url = args["url"]
+        if not isinstance(url, str):
+            return ToolResult(success=False, error="url must be a string")
+
         if not _is_allowed_url(url):
             return ToolResult(success=False, error="仅允许读取 Dify 官方文档站点")
 

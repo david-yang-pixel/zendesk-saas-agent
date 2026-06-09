@@ -1,8 +1,10 @@
 import unittest
+from unittest.mock import patch
 
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.official_docs import (
     OfficialDocEntry,
+    OfficialDocsRead,
     OfficialDocsSearch,
     parse_llms_index,
     search_doc_entries,
@@ -70,6 +72,52 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.success)
         self.assertIn("limit", result.error or "")
+
+    async def test_search_rejects_non_string_query(self) -> None:
+        tool = OfficialDocsSearch()
+
+        with patch(
+            "zd_agent.tools.official_docs._load_index",
+            return_value=[
+                OfficialDocEntry(
+                    title="Dify Helm Chart",
+                    url="https://enterprise-docs.dify.ai/helm.md",
+                    description="Helm 部署说明",
+                    source="official_docs_enterprise",
+                )
+            ],
+        ):
+            result = await tool.execute(
+                {"query": {"text": "helm"}},
+                AgentSession(ticket_id=1),
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "query must be a string")
+
+    async def test_search_rejects_non_string_source(self) -> None:
+        tool = OfficialDocsSearch()
+
+        result = await tool.execute(
+            {"query": "helm", "source": ["official_docs_enterprise"]},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "source must be a string")
+
+
+class OfficialDocsReadTest(unittest.IsolatedAsyncioTestCase):
+    async def test_read_rejects_non_string_url(self) -> None:
+        tool = OfficialDocsRead()
+
+        result = await tool.execute(
+            {"url": {"href": "https://docs.dify.ai/"}},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "url must be a string")
 
 
 if __name__ == "__main__":
