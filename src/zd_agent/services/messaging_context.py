@@ -7,6 +7,7 @@ from typing import Any
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
+from zd_agent.services.atomic_write import atomic_write_text
 
 logger = get_logger(module="services.messaging_context")
 
@@ -54,18 +55,15 @@ def save_messaging_context(
         return
 
     path = _context_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     contexts = _read_contexts(path)
     contexts[str(ticket_id)] = {
         "conversation_id": conversation_id,
         "app_id": app_id,
     }
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
+    atomic_write_text(
+        path,
         json.dumps(contexts, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
     )
-    tmp.replace(path)
 
 
 def get_messaging_context(ticket_id: int | str) -> dict[str, str]:

@@ -5,6 +5,8 @@ import json
 from collections import OrderedDict
 from pathlib import Path
 
+from zd_agent.services.atomic_write import atomic_write_text
+
 
 class WebhookDedup:
     """In-memory LRU of webhook event keys, persisted to JSON."""
@@ -28,13 +30,10 @@ class WebhookDedup:
                 self._seen[str(k)] = True
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text(
+        atomic_write_text(
+            self.path,
             json.dumps({"keys": list(self._seen.keys())}, ensure_ascii=False),
-            encoding="utf-8",
         )
-        tmp.replace(self.path)
 
     def seen(self, key: str) -> bool:
         return key in self._seen

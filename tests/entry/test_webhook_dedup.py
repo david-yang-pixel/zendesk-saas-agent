@@ -1,3 +1,4 @@
+from zd_agent.services import atomic_write
 from zd_agent.services.webhook_dedup import WebhookDedup
 
 
@@ -47,6 +48,30 @@ def test_corrupted_file_yields_empty(tmp_path):
     p.write_text("not json", encoding="utf-8")
     d = WebhookDedup(p)
     assert len(d) == 0
+
+
+def test_concurrent_save_interleaving_does_not_crash(tmp_path, monkeypatch):
+    path = tmp_path / "d.json"
+    first = WebhookDedup(path)
+    second = WebhookDedup(path)
+
+    original_replace = atomic_write.os.replace
+    interleaved = False
+
+    def replace_with_interleaved_save(src, dst):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            second.add("second")
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(atomic_write.os, "replace", replace_with_interleaved_save)
+
+    first.add("first")
+
+    assert interleaved is True
+    assert path.exists()
+    assert not path.with_suffix(path.suffix + ".tmp").exists()
 
 
 def test_len(tmp_path):

@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from zd_agent.services.atomic_write import atomic_write_text
+
 
 VALID_STATES = {
     "waiting_for_issue",    # LLM judged greeting/insufficient, waiting for customer
@@ -105,14 +107,11 @@ class TicketStateTracker:
             self._data = {}
 
     def _save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         serialized = {k: v.to_dict() for k, v in self._data.items()}
-        tmp.write_text(
+        atomic_write_text(
+            self.path,
             json.dumps(serialized, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
-        tmp.replace(self.path)
 
     def get(self, ticket_id: str | int) -> Optional[TicketState]:
         return self._data.get(str(ticket_id))
