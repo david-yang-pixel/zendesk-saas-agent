@@ -68,6 +68,35 @@ async def test_scan_once_dispatches_mention(queue, tracker):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_dispatches_mention_alias(queue, tracker):
+    """@yonggang alias should dispatch while preserving @saas-agent support."""
+    fake_search = MagicMock(return_value={"results": [_ticket(2886, status="new")]})
+    fake_comments = MagicMock(return_value={
+        "comments": [_comment("c-alias", "**yonggang** 处理一下")],
+    })
+    fake_client = MagicMock(
+        search_tickets=fake_search,
+        get_ticket_comments=fake_comments,
+    )
+
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
+         patch("zd.client.ZendeskClient", return_value=fake_client):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = ["@yonggang"]
+        cfg_mock.return_value = cfg
+
+        n, _ = await scan_once(
+            trigger_queue=queue, tracker=tracker, last_poll_unix=time.time() - 600,
+        )
+
+    assert n == 1
+    msg = queue.get_nowait()
+    assert msg["ticket_id"] == 2886
+    assert msg["comment_id"] == "c-alias"
+
+
+@pytest.mark.asyncio
 async def test_scan_once_skips_processed(queue, tracker):
     """已经 mark_processed 的 mention 不再 dispatch（幂等）。"""
     tracker.mark_processed("c-already")
@@ -160,6 +189,7 @@ async def test_scan_once_searches_with_overlap_window(queue, tracker):
         time.gmtime(old - _SEARCH_LOOKBACK_SECONDS),
     )
     assert f"updated>{expected_since}" in query
+    assert query.startswith("status<solved ")
 
 
 @pytest.mark.asyncio

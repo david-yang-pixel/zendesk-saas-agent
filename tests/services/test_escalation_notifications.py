@@ -95,6 +95,30 @@ async def test_feishu_escalation_skips_when_webhook_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_feishu_escalation_skips_human_takeover() -> None:
+    mock_feishu_cls = MagicMock()
+
+    with (
+        patch(
+            "zd_agent.config.get_config",
+            return_value=_make_cfg(feishu_url="https://example.com/hook"),
+        ),
+        patch(
+            "zd_agent.integrations.feishu.client.FeishuClient",
+            mock_feishu_cls,
+        ),
+    ):
+        sent = await send_feishu_escalation_best_effort(
+            ticket_id=9999,
+            reason="human_takeover_detected",
+            source="zendesk_webhook",
+        )
+
+    assert sent is False
+    mock_feishu_cls.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_feishu_escalation_sends_reason_context() -> None:
     feishu_instance = MagicMock()
     feishu_instance.send_ticket_escalate = AsyncMock()

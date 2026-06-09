@@ -1,7 +1,9 @@
 import unittest
 from unittest.mock import patch
 
-from zd_agent.mention.detector import is_mention
+from types import SimpleNamespace
+
+from zd_agent.mention.detector import configured_mention_triggers, is_any_mention, is_mention
 
 
 class TestIsMention(unittest.TestCase):
@@ -131,6 +133,29 @@ class TestIsMention(unittest.TestCase):
             "zd_agent.mention.detector.get_self_user_id", return_value=12345,
         ):
             self.assertTrue(is_mention(comment, "@saas-agent"))
+
+    def test_configured_mention_triggers_keep_primary_and_aliases(self) -> None:
+        cfg = SimpleNamespace(
+            mention_trigger="@saas-agent",
+            mention_aliases=["@yonggang", "@saas-agent", "  "],
+        )
+
+        self.assertEqual(
+            configured_mention_triggers(cfg),
+            ["@saas-agent", "@yonggang"],
+        )
+
+    def test_is_any_mention_matches_alias(self) -> None:
+        comment = {
+            "is_public": False,
+            "body": "**yonggang** 处理一下",
+            "via": {"channel": "web"},
+        }
+
+        self.assertEqual(
+            is_any_mention(comment, ["@saas-agent", "@yonggang"]),
+            "@yonggang",
+        )
 
 
 if __name__ == "__main__":

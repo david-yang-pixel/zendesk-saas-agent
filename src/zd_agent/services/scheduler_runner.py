@@ -102,7 +102,7 @@ async def fetch_repos_task() -> None:
 async def poll_mention_task() -> None:
     """定时任务：轮询最近更新的工单，检测 @mention 并派发（APScheduler 注册用）"""
     from zd.client import ZendeskClient
-    from zd_agent.mention.detector import is_mention
+    from zd_agent.mention.detector import configured_mention_triggers, is_any_mention
 
     global _last_mention_poll_time
 
@@ -110,11 +110,13 @@ async def poll_mention_task() -> None:
         return
 
     cfg = get_config()
-    trigger = cfg.zendesk.mention_trigger
+    triggers = configured_mention_triggers(cfg.zendesk)
+    if not triggers:
+        return
 
     since = datetime.fromtimestamp(_last_mention_poll_time, tz=timezone.utc)
     since_iso = since.strftime("%Y-%m-%dT%H:%M:%SZ")
-    query = f"status:open status:new updated>{since_iso}"
+    query = f"status<solved updated>{since_iso}"
 
     # 更新 poll 时间（在请求前更新，避免遗漏同一秒内的事件）
     _last_mention_poll_time = time.time()
@@ -141,7 +143,8 @@ async def poll_mention_task() -> None:
                     continue
                 if _mention_tracker.is_processed(comment_id):
                     continue
-                if is_mention(comment, trigger):
+                matched_trigger = is_any_mention(comment, triggers)
+                if matched_trigger:
                     _mention_tracker.mark_processed(comment_id)
                     hint = f"[来自 @mention 的请求]\n{comment.get('body', '')}"
                     await _manager.dispatch(tid, hint=hint, dry_run=_dry_run, trigger_type="mention")
@@ -149,6 +152,7 @@ async def poll_mention_task() -> None:
                         "mention_poll_dispatched",
                         ticket_id=tid,
                         comment_id=comment_id,
+                        trigger=matched_trigger,
                     )
                     break  # 同一工单每轮只处理一条 mention
 

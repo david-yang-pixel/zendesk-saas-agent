@@ -179,7 +179,7 @@ async def _handle_comment_added(
     manager: object,
 ) -> web.Response:
     """处理 ticket.comment_added 事件：检测 @mention 并派发。"""
-    from zd_agent.mention.detector import is_mention
+    from zd_agent.mention.detector import configured_mention_triggers, is_any_mention
 
     cfg = get_config()
     tracker = request.app.get(TRACKER_APP_KEY)
@@ -200,12 +200,14 @@ async def _handle_comment_added(
         comment_raw=comment,
     )
 
-    if not is_mention(comment, cfg.zendesk.mention_trigger):
+    triggers = configured_mention_triggers(cfg.zendesk)
+    matched_trigger = is_any_mention(comment, triggers)
+    if not matched_trigger:
         logger.debug(
             "comment_added_no_mention",
             ticket_id=ticket_id,
             comment_id=comment_id,
-            trigger=cfg.zendesk.mention_trigger,
+            triggers=triggers,
         )
         return _build_ignored_response("no_mention_trigger")
 
@@ -223,6 +225,7 @@ async def _handle_comment_added(
         "mention_dispatched",
         ticket_id=ticket_id,
         comment_id=comment_id,
+        trigger=matched_trigger,
         session_id=session.session_id,
     )
 

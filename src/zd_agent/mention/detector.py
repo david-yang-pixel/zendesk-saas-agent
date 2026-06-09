@@ -9,6 +9,38 @@ logger = get_logger(module="mention.detector")
 _self_user_id: int | None = None
 
 
+def configured_mention_triggers(zendesk_cfg: object) -> list[str]:
+    """Return primary mention trigger plus aliases, preserving order."""
+    raw_aliases = getattr(zendesk_cfg, "mention_aliases", [])
+    if isinstance(raw_aliases, str):
+        aliases = [raw_aliases]
+    elif isinstance(raw_aliases, (list, tuple, set)):
+        aliases = list(raw_aliases)
+    else:
+        aliases = []
+
+    triggers: list[str] = []
+    seen: set[str] = set()
+    for raw in [getattr(zendesk_cfg, "mention_trigger", ""), *aliases]:
+        trigger = str(raw).strip()
+        if not trigger:
+            continue
+        key = trigger.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        triggers.append(trigger)
+    return triggers
+
+
+def is_any_mention(comment: dict, triggers: list[str]) -> str | None:
+    """Return the matched trigger, or None when no configured trigger matches."""
+    for trigger in triggers:
+        if is_mention(comment, trigger):
+            return trigger
+    return None
+
+
 def get_self_user_id() -> int | None:
     """获取 agent 自身的 Zendesk user_id（首次调用时查询并缓存）。"""
     global _self_user_id

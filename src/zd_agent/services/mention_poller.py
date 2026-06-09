@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
-from zd_agent.mention.detector import is_mention
+from zd_agent.mention.detector import configured_mention_triggers, is_any_mention
 from zd_agent.mention.tracker import MentionTracker
 
 logger = get_logger(module="services.mention_poller")
@@ -50,8 +50,8 @@ async def scan_once(
     from zd.client import ZendeskClient
 
     cfg = get_config()
-    trigger_word = cfg.zendesk.mention_trigger
-    if not trigger_word:
+    triggers = configured_mention_triggers(cfg.zendesk)
+    if not triggers:
         logger.warning("mention_poller_no_trigger_configured")
         return 0, last_poll_unix
 
@@ -64,7 +64,7 @@ async def scan_once(
     # previous windows to tolerate Zendesk search-index delay.
     new_cursor = _now_unix()
 
-    query = f"status:open status:new updated>{since_iso}"
+    query = f"status<solved updated>{since_iso}"
     try:
         client = ZendeskClient()
         data = await asyncio.to_thread(client.search_tickets, query)
@@ -99,7 +99,8 @@ async def scan_once(
                 continue
             if tracker.is_processed(comment_id):
                 continue
-            if not is_mention(comment, trigger_word):
+            matched_trigger = is_any_mention(comment, triggers)
+            if not matched_trigger:
                 continue
 
             tracker.mark_processed(comment_id)
@@ -114,7 +115,7 @@ async def scan_once(
             logger.info(
                 "mention_poller_dispatched",
                 ticket_id=tid, comment_id=comment_id,
-                trigger=trigger_word,
+                trigger=matched_trigger,
             )
             dispatched += 1
             break  # one ticket, one dispatch per cycle
@@ -133,7 +134,7 @@ async def run_mention_poller(
     logger.info(
         "mention_poller_started",
         interval_s=poll_interval_seconds,
-        trigger=get_config().zendesk.mention_trigger,
+        triggers=configured_mention_triggers(get_config().zendesk),
     )
     # 启动时清理 30 天以上的旧记录
     try:

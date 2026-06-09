@@ -69,6 +69,14 @@ async def send_feishu_escalation_best_effort(
     agent_last_reply: str = "",
 ) -> bool:
     """Push the internal Feishu escalation card when webhook is configured."""
+    if reason == "human_takeover_detected":
+        logger.info(
+            "escalated_feishu_skipped_human_takeover",
+            ticket_id=ticket_id,
+            reason=reason,
+        )
+        return False
+
     try:
         cfg = config_module.get_config()
         if not cfg.feishu.webhook_url:

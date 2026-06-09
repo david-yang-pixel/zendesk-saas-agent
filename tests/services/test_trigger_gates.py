@@ -98,6 +98,31 @@ def test_escalated_ticket_is_skipped_and_reason_logged(tmp_path) -> None:
     assert payload["escalated_reason"] == "high_risk_refund"
 
 
+def test_mention_trigger_bypasses_escalated_state(tmp_path) -> None:
+    state = _state(tmp_path)
+    state.set(
+        9999,
+        TicketState(
+            state="escalated_to_human",
+            first_seen=_now(),
+            escalated_at=_now(),
+            escalated_reason="customer_requested",
+        ),
+    )
+
+    result = handle_trigger_entry_gate(
+        ticket_id=9999,
+        source="mention",
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        is_paused_fn=MagicMock(return_value=False),
+    )
+
+    assert result.handled is False
+    assert result.action == "continue"
+
+
 def test_gate_allows_when_no_skip_condition_matches(tmp_path) -> None:
     result = handle_trigger_entry_gate(
         ticket_id=9999,

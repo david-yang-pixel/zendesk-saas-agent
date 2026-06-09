@@ -65,7 +65,11 @@ def handle_trigger_entry_gate(
         return TriggerGateResult(handled=True, action="paused")
 
     existing_state = state.get(ticket_id)
-    if existing_state is not None and existing_state.state == "escalated_to_human":
+    if (
+        existing_state is not None
+        and existing_state.state == "escalated_to_human"
+        and source != "mention"
+    ):
         logger.info(
             "trigger_skip_escalated",
             ticket_id=ticket_id,

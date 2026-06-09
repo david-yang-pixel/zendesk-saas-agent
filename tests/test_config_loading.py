@@ -19,10 +19,12 @@ resources:
 zendesk:
   search_query: "status:new tags:saas"
   mention_trigger: "@saas-bot"
+  mention_aliases:
+    - "@yonggang"
 trigger_decider:
   llm_model: gpt-5.4-mini
-  silence_minutes_default: 1
-  silence_extend_to_minutes: 5
+  silence_minutes_default: 0
+  silence_extend_to_minutes: 1
   rapid_burst_window_seconds: 30
 db_gateway:
   mcp_enabled: true
@@ -64,7 +66,9 @@ def saas_env(monkeypatch):
         "GITHUB_TOKEN": "gh_xxx",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
-        "DB_GATEWAY_MCP_BINARY": "/opt/db-gateway/code/scripts/db_gateway_mcp.py",
+        "ZENDESK_BROWSER_RELAY_URL": "http://127.0.0.1:8097/",
+        "ZENDESK_BROWSER_RELAY_API_KEY": "relay_xxx",
+        "ZENDESK_BROWSER_RELAY_TIMEOUT_SECONDS": "55",
     }
     for k, v in env_vars.items():
         monkeypatch.setenv(k, v)
@@ -90,8 +94,8 @@ def test_config_loads_resources_section(saas_env, saas_config_file):
 def test_config_loads_trigger_decider_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.trigger_decider.llm_model == "gpt-5.4-mini"
-    assert cfg.trigger_decider.silence_minutes_default == 1
-    assert cfg.trigger_decider.silence_extend_to_minutes == 5
+    assert cfg.trigger_decider.silence_minutes_default == 0
+    assert cfg.trigger_decider.silence_extend_to_minutes == 1
     assert cfg.trigger_decider.rapid_burst_window_seconds == 30
 
 
@@ -105,8 +109,14 @@ def test_config_loads_db_gateway_env(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.db_gateway.url == "https://db-gateway.example.com"
     assert cfg.db_gateway.api_key == "dbgw_xxx"
-    assert cfg.db_gateway.mcp_binary == "/opt/db-gateway/code/scripts/db_gateway_mcp.py"
     assert cfg.db_gateway.request_timeout_seconds == 35
+
+
+def test_config_loads_zendesk_browser_relay_env(saas_env, saas_config_file):
+    cfg = load_config(saas_config_file)
+    assert cfg.public_reply.browser_relay_url == "http://127.0.0.1:8097"
+    assert cfg.public_reply.browser_relay_api_key == "relay_xxx"
+    assert cfg.public_reply.browser_relay_timeout_seconds == 55
 
 
 def test_config_loads_feishu_section(saas_env, saas_config_file):
@@ -123,6 +133,12 @@ def test_config_loads_repos_aliases(saas_env, saas_config_file):
     assert cfg.repos.aliases["deploy"] == "saas-deploy"
     assert len(cfg.repos.repositories) == 5
     assert cfg.repos.repositories[0].name == "dify"
+
+
+def test_config_loads_zendesk_mention_aliases(saas_env, saas_config_file):
+    cfg = load_config(saas_config_file)
+    assert cfg.zendesk.mention_trigger == "@saas-bot"
+    assert cfg.zendesk.mention_aliases == ["@yonggang"]
 
 
 def test_config_resolves_repos_base_dir_under_resources(saas_env, saas_config_file):
