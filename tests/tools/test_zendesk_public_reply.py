@@ -176,6 +176,62 @@ class TestExecute:
         assert not r.success
         assert "ticket_id" in r.error
 
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            r = await tool.execute(
+                {"ticket_id": True, "body": "test", "reply_type": "ask"}, sess,
+            )
+        assert not r.success
+        assert "ticket_id" in r.error
+
+    @pytest.mark.asyncio
+    async def test_invalid_string_args_rejected_before_strip(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            r = await tool.execute(
+                {"ticket_id": 1, "body": ["hi"], "reply_type": "ask"}, sess,
+            )
+        assert not r.success
+        assert "body" in r.error
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 1,
+                    "body": "hi",
+                    "reply_type": "ask",
+                    "conversation_id": 123,
+                },
+                sess,
+            )
+        assert not r.success
+        assert "conversation_id" in r.error
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 1,
+                    "body": "hi",
+                    "reply_type": "ask",
+                    "messaging_app_id": 123,
+                },
+                sess,
+            )
+        assert not r.success
+        assert "messaging_app_id" in r.error
+
     @pytest.mark.asyncio
     async def test_empty_body_rejected(self) -> None:
         tool = ZendeskPublicReply()

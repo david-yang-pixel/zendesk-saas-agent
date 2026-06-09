@@ -393,10 +393,27 @@ class ZendeskPublicReply(Tool):
         self, args: dict[str, Any], session: "AgentSession",
     ) -> ToolResult:
         ticket_id = args.get("ticket_id")
-        body = (args.get("body") or "").strip()
+        raw_body = args.get("body")
         reply_type = args.get("reply_type")
-        conversation_id = (args.get("conversation_id") or "").strip() or None
-        messaging_app_id = (args.get("messaging_app_id") or "").strip() or None
+        raw_conversation_id = args.get("conversation_id")
+        raw_messaging_app_id = args.get("messaging_app_id")
+
+        # 先做类型校验，再 strip，避免非法工具参数变成 AttributeError。
+        if not isinstance(ticket_id, int) or isinstance(ticket_id, bool) or ticket_id <= 0:
+            return ToolResult(
+                success=False,
+                error=f"invalid ticket_id: {ticket_id!r}",
+            )
+        if not isinstance(raw_body, str):
+            return ToolResult(success=False, error="body must be a string")
+        if raw_conversation_id is not None and not isinstance(raw_conversation_id, str):
+            return ToolResult(success=False, error="conversation_id must be a string")
+        if raw_messaging_app_id is not None and not isinstance(raw_messaging_app_id, str):
+            return ToolResult(success=False, error="messaging_app_id must be a string")
+
+        body = raw_body.strip()
+        conversation_id = (raw_conversation_id or "").strip() or None
+        messaging_app_id = (raw_messaging_app_id or "").strip() or None
 
         # 1. Kill switch（出问题一秒下线）
         cfg = get_config()
@@ -416,11 +433,6 @@ class ZendeskPublicReply(Tool):
             )
 
         # 2. 参数校验
-        if not isinstance(ticket_id, int) or ticket_id <= 0:
-            return ToolResult(
-                success=False,
-                error=f"invalid ticket_id: {ticket_id!r}",
-            )
         if not body:
             return ToolResult(success=False, error="body is empty")
         if reply_type not in _VALID_REPLY_TYPES:
