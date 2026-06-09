@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from zd_agent.tools.knowledge import KnowledgeSearch, _resolve_search_dir
+from zd_agent.tools.knowledge import KnowledgeRead, KnowledgeSearch, _resolve_search_dir
 
 
 def test_knowledge_search_schema_does_not_advertise_ticket_records() -> None:
@@ -63,3 +63,45 @@ def test_knowledge_search_rejects_path_traversal(tmp_path: Path) -> None:
 
     assert search_dir is None
     assert error == "路径超出知识库范围"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_rejects_non_string_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeSearch().execute(
+        {"query": {"text": "workflow stuck"}},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is False
+    assert result.error == "query must be a string"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_read_rejects_non_string_filepath(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeRead().execute(
+        {"filepath": {"path": "index.md"}},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is False
+    assert result.error == "filepath must be a string"

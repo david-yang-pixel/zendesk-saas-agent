@@ -128,6 +128,8 @@ class KnowledgeSearch(Tool):
             return ToolResult(success=False, error="知识库目录解析失败")
 
         query = args["query"]
+        if not isinstance(query, str):
+            return ToolResult(success=False, error="query must be a string")
 
         output = await _search_with_rg(search_dir, query)
         if output is None:
@@ -268,7 +270,10 @@ class KnowledgeRead(Tool):
         if docs_dir is None:
             return ToolResult(success=False, error="知识库目录不存在")
         docs_dir = docs_dir.resolve()
-        target = (docs_dir / args["filepath"]).resolve()
+        filepath = args["filepath"]
+        if not isinstance(filepath, str):
+            return ToolResult(success=False, error="filepath must be a string")
+        target = (docs_dir / filepath).resolve()
 
         try:
             target.relative_to(docs_dir)
@@ -276,7 +281,7 @@ class KnowledgeRead(Tool):
             return ToolResult(success=False, error="路径超出知识库范围")
 
         if not target.exists():
-            return ToolResult(success=False, error=f"文件不存在: {args['filepath']}")
+            return ToolResult(success=False, error=f"文件不存在: {filepath}")
 
         try:
             content = target.read_text(encoding="utf-8")
