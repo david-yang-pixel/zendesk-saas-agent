@@ -21,6 +21,8 @@ _SEARCH_EXTENSIONS = {".md", ".json", ".txt", ".yaml", ".yml"}
 _MAX_MATCHES = 30
 _MAX_OUTPUT_CHARS = 5000
 _CONTEXT_LINES = 2
+_SEARCH_COMMAND_TIMEOUT_SECONDS = 10
+_TICKET_RECORD_PATH_NAMES = {"tickets", "ticket", "工单记录", "历史工单"}
 
 
 def _resolve_docs_dir() -> Path | None:
@@ -43,6 +45,39 @@ def _resolve_docs_dir() -> Path | None:
     if fallback.exists() and fallback.is_dir():
         return fallback
     return None
+
+
+def _resolve_search_dir(docs_dir: Path, raw_path: Any) -> tuple[Path | None, str | None]:
+    """Resolve an optional search subdirectory under ``docs_dir`` safely."""
+    docs_dir = docs_dir.resolve()
+    if raw_path is None or raw_path == "":
+        return docs_dir, None
+    if not isinstance(raw_path, str):
+        return None, "path 必须是字符串"
+
+    normalized = raw_path.strip().strip("/")
+    if not normalized:
+        return docs_dir, None
+
+    first_part = Path(normalized).parts[0] if Path(normalized).parts else normalized
+    if first_part in _TICKET_RECORD_PATH_NAMES:
+        return (
+            None,
+            "历史工单记录不在 knowledge_search 知识库目录里；请改用 "
+            "ticket_record_search / ticket_record_read。",
+        )
+
+    search_dir = (docs_dir / normalized).resolve()
+    try:
+        search_dir.relative_to(docs_dir)
+    except ValueError:
+        return None, "路径超出知识库范围"
+
+    if not search_dir.exists():
+        return None, f"子目录不存在: {normalized}"
+    if not search_dir.is_dir():
+        return None, f"path 不是目录: {normalized}"
+    return search_dir, None
 
 
 class KnowledgeSearch(Tool):
@@ -83,11 +118,11 @@ class KnowledgeSearch(Tool):
                 ),
             )
 
-        search_dir = docs_dir
-        if sub := args.get("path"):
-            search_dir = docs_dir / sub
-            if not search_dir.exists():
-                return ToolResult(success=False, error=f"子目录不存在: {search_dir}")
+        search_dir, path_error = _resolve_search_dir(docs_dir, args.get("path"))
+        if path_error:
+            return ToolResult(success=False, error=path_error)
+        if search_dir is None:
+            return ToolResult(success=False, error="知识库目录解析失败")
 
         query = args["query"]
 
@@ -112,6 +147,7 @@ async def _search_with_rg(search_dir: Path, query: str) -> str | None:
         proc = await asyncio.create_subprocess_exec(
             "rg",
             "--ignore-case",
+            "--fixed-strings",
             "--max-count", "5",
             "--context", str(_CONTEXT_LINES),
             "-g", "*.md",
@@ -121,7 +157,15 @@ async def _search_with_rg(search_dir: Path, query: str) -> str | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=_SEARCH_COMMAND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return None
         if proc.returncode == 1:
             return ""
         if proc.returncode != 0:
@@ -136,7 +180,7 @@ async def _search_with_grep(search_dir: Path, query: str) -> str | None:
     try:
         proc = await asyncio.create_subprocess_exec(
             "grep",
-            "-r", "-i", "-n",
+            "-r", "-i", "-n", "-F",
             "--include=*.md", "--include=*.json",
             "-C", str(_CONTEXT_LINES),
             query,
@@ -144,7 +188,15 @@ async def _search_with_grep(search_dir: Path, query: str) -> str | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=_SEARCH_COMMAND_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return None
         if proc.returncode == 1:
             return ""
         if proc.returncode != 0:

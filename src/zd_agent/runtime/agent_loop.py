@@ -126,6 +126,122 @@ def _assistant_message_dict(response: LLMResponse) -> dict[str, Any]:
     return msg
 
 
+async def _run_tool_call(
+    tc: ToolCallRequest,
+    registry: ToolRegistry,
+    session: AgentSession,
+    message_store: MessageStore,
+    current_round: int,
+) -> ToolExecuted:
+    """Execute one tool call and append its result to the message store."""
+    t0 = time.monotonic()
+    result = await registry.execute(tc.name, tc.arguments, session)
+    elapsed = time.monotonic() - t0
+    output = result.output if result.success else f"❌ 错误: {result.error}"
+    try:
+        args_dict = json.loads(tc.arguments) if tc.arguments else {}
+    except json.JSONDecodeError:
+        args_dict = {"raw": tc.arguments}
+    session.log_tool_call(
+        tc.name,
+        args_dict,
+        output,
+        success=result.success,
+        error=result.error,
+    )
+    message_store.append_tool_result(tc.id, tc.name, output)
+    return ToolExecuted(
+        round=current_round,
+        tool_name=tc.name,
+        success=result.success,
+        output_length=len(output),
+        elapsed=elapsed,
+        error=result.error,
+        arguments=args_dict,
+        output=output[:4000],
+    )
+
+
+async def _execute_tool_calls(
+    tool_calls: list[ToolCallRequest],
+    registry: ToolRegistry,
+    session: AgentSession,
+    message_store: MessageStore,
+    current_round: int,
+) -> AsyncGenerator[ToolExecuted, None]:
+    """Run safe tools in parallel and unsafe tools serially.
+
+    Some tools mutate Zendesk, local archives, sandbox state, or share a single
+    subprocess. Their ``concurrency_safe=False`` flag used to be ignored by the
+    main agent loop, so a model could trigger multiple writes in the same round.
+    """
+    async def _run_safe_batch(
+        safe_batch: list[ToolCallRequest],
+    ) -> AsyncGenerator[ToolExecuted, None]:
+        if not safe_batch:
+            return
+        tasks = [
+            _run_tool_call(tc, registry, session, message_store, current_round)
+            for tc in safe_batch
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for tc, result in zip(safe_batch, results, strict=False):
+            if isinstance(result, Exception):
+                yield _tool_execution_error_event(
+                    tc, session, message_store, current_round, result,
+                )
+            else:
+                yield result
+
+    safe_batch: list[ToolCallRequest] = []
+    for tc in tool_calls:
+        tool = registry.get(tc.name)
+        if tool is None or tool.concurrency_safe:
+            safe_batch.append(tc)
+            continue
+
+        async for event in _run_safe_batch(safe_batch):
+            yield event
+        safe_batch = []
+
+        try:
+            yield await _run_tool_call(
+                tc, registry, session, message_store, current_round,
+            )
+        except Exception as e:
+            yield _tool_execution_error_event(
+                tc, session, message_store, current_round, e,
+            )
+
+    async for event in _run_safe_batch(safe_batch):
+        yield event
+
+
+def _tool_execution_error_event(
+    tc: ToolCallRequest,
+    session: AgentSession,
+    message_store: MessageStore,
+    current_round: int,
+    error: Exception,
+) -> ToolExecuted:
+    err_text = f"❌ 工具执行异常: {error}"
+    message_store.append_tool_result(tc.id, tc.name, err_text)
+    logger.error(
+        "tool_execution_error",
+        ticket_id=session.ticket_id,
+        tool=tc.name,
+        error=str(error),
+    )
+    return ToolExecuted(
+        round=current_round,
+        tool_name=tc.name,
+        success=False,
+        output_length=len(err_text),
+        elapsed=0.0,
+        error=str(error),
+    )
+
+
 async def _inject_images(session: AgentSession, message_store: MessageStore) -> None:
     """将工单截图以多模态 user 消息注入上下文。
 
@@ -354,58 +470,14 @@ async def agent_loop(
                 )
                 return
 
-            async def _run_tool(tc: ToolCallRequest) -> ToolExecuted:
-                t0 = time.monotonic()
-                result = await registry.execute(tc.name, tc.arguments, session)
-                elapsed = time.monotonic() - t0
-                output = result.output if result.success else f"❌ 错误: {result.error}"
-                try:
-                    args_dict = json.loads(tc.arguments) if tc.arguments else {}
-                except json.JSONDecodeError:
-                    args_dict = {"raw": tc.arguments}
-                session.log_tool_call(
-                    tc.name,
-                    args_dict,
-                    output,
-                    success=result.success,
-                    error=result.error,
-                )
-                message_store.append_tool_result(tc.id, tc.name, output)
-                return ToolExecuted(
-                    round=guardrails.current_round,
-                    tool_name=tc.name,
-                    success=result.success,
-                    output_length=len(output),
-                    elapsed=elapsed,
-                    error=result.error,
-                    arguments=args_dict,
-                    output=output[:4000],
-                )
-
-            tasks = [_run_tool(tc) for tc in response.tool_calls]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            for i, r in enumerate(results):
-                tc = response.tool_calls[i]
-                if isinstance(r, Exception):
-                    err_text = f"❌ 工具执行异常: {r}"
-                    message_store.append_tool_result(tc.id, tc.name, err_text)
-                    logger.error(
-                        "tool_execution_error",
-                        ticket_id=session.ticket_id,
-                        tool=tc.name,
-                        error=str(r),
-                    )
-                    yield ToolExecuted(
-                        round=guardrails.current_round,
-                        tool_name=tc.name,
-                        success=False,
-                        output_length=len(err_text),
-                        elapsed=0.0,
-                        error=str(r),
-                    )
-                else:
-                    yield r
+            async for event in _execute_tool_calls(
+                response.tool_calls,
+                registry,
+                session,
+                message_store,
+                guardrails.current_round,
+            ):
+                yield event
 
             if session.image_urls and not session.images_injected:
                 await _inject_images(session, message_store)
