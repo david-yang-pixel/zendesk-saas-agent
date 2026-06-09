@@ -267,16 +267,43 @@ async def pre_send_check_or_abort(
         )
 
     current_count = len(current)
-    if current_count <= snapshot_count:
-        # 没新消息（或者甚至变少了，少见但容错）
+    new_msgs: list[dict]
+    if snapshot_last_id:
+        snapshot_index: int | None = None
+        for idx, msg in enumerate(current):
+            if str(msg.get("id") or "") == str(snapshot_last_id):
+                snapshot_index = idx
+        if snapshot_index is None:
+            logger.warning(
+                "pre_send_snapshot_last_id_missing",
+                ticket_id=ticket_id,
+                snapshot_last_id=snapshot_last_id,
+                snapshot_count=snapshot_count,
+                current_count=current_count,
+            )
+            return FreshnessResult(
+                continue_send=False,
+                reason="snapshot_last_id_missing",
+                new_messages_count=current_count,
+            )
+        new_msgs = current[snapshot_index + 1:]
+    else:
+        if current_count <= snapshot_count:
+            # 没新消息（或者甚至变少了，少见但容错）
+            return FreshnessResult(
+                continue_send=True,
+                reason="no_new_messages",
+                new_messages_count=0,
+            )
+        new_msgs = current[snapshot_count:]
+
+    new_count = len(new_msgs)
+    if new_count <= 0:
         return FreshnessResult(
             continue_send=True,
             reason="no_new_messages",
             new_messages_count=0,
         )
-
-    new_msgs = current[snapshot_count:]
-    new_count = len(new_msgs)
     logger.info(
         "pre_send_new_msgs_detected",
         ticket_id=ticket_id, new_count=new_count,

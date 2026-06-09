@@ -210,6 +210,45 @@ class TestPreSendCheckOrAbort:
         assert result.new_messages_count == 0
 
     @pytest.mark.asyncio
+    async def test_uses_snapshot_last_id_when_count_is_unchanged(self) -> None:
+        """消息列表过滤导致 count 未变时，仍应按 last_id 找到后续新消息。"""
+        msgs = [
+            {"id": "m0", "body": "older message"},
+            {
+                "id": "m2",
+                "body": "Workspace 1708272e-97d1-413c-9c8a-7a30d7022931",
+            },
+        ]
+        result = await pre_send_check_or_abort(
+            ticket_id=1,
+            snapshot_count=2,
+            snapshot_last_id="m0",
+            fetch_messages_fn=_make_fetcher(msgs),
+            skip_llm=True,
+        )
+
+        assert result.continue_send is False
+        assert result.new_messages_count == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_snapshot_last_id_aborts_conservatively(self) -> None:
+        """找不到 snapshot last_id 时，避免误发过期回复。"""
+        msgs = [
+            {"id": "m2", "body": "thanks"},
+        ]
+        result = await pre_send_check_or_abort(
+            ticket_id=1,
+            snapshot_count=1,
+            snapshot_last_id="missing",
+            fetch_messages_fn=_make_fetcher(msgs),
+            skip_llm=True,
+        )
+
+        assert result.continue_send is False
+        assert result.reason == "snapshot_last_id_missing"
+        assert result.new_messages_count == 1
+
+    @pytest.mark.asyncio
     async def test_new_image_attachment_aborts(self) -> None:
         msgs = [
             {"id": "m1", "body": "original"},
