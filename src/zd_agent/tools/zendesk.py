@@ -1122,7 +1122,12 @@ class ZendeskAddTags(Tool):
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         ticket_id = args["ticket_id"]
-        tags = [t.strip().lower() for t in args["tags"] if t.strip()]
+        if not isinstance(ticket_id, int) or isinstance(ticket_id, bool):
+            return ToolResult(success=False, error="ticket_id must be an integer")
+        raw_tags = args["tags"]
+        if not isinstance(raw_tags, list) or not all(isinstance(t, str) for t in raw_tags):
+            return ToolResult(success=False, error="tags must be a list of strings")
+        tags = [t.strip().lower() for t in raw_tags if t.strip()]
         if not tags:
             return ToolResult(success=False, error="标签列表不能为空")
 
