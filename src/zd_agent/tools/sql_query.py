@@ -142,7 +142,13 @@ class SqlQuery(Tool):
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
         db_key = args.get("database")
-        sql = (args.get("sql") or "").strip()
+        if not isinstance(db_key, str):
+            return ToolResult(success=False, error="database must be a string")
+
+        raw_sql = args.get("sql")
+        if not isinstance(raw_sql, str):
+            return ToolResult(success=False, error="sql must be a string")
+        sql = raw_sql.strip()
 
         if db_key not in _DATABASE_KEYS:
             return ToolResult(

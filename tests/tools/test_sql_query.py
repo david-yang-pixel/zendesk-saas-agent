@@ -180,6 +180,25 @@ async def test_sql_query_rejects_unknown_database(fake_session, sql_cfg):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("args", "expected_error"),
+    [
+        ({"database": ["prod"], "sql": "SELECT 1"}, "database must be a string"),
+        ({"database": "prod", "sql": {"query": "SELECT 1"}}, "sql must be a string"),
+    ],
+)
+async def test_sql_query_rejects_invalid_argument_types(
+    fake_session, sql_cfg, args, expected_error,
+):
+    tool = SqlQuery()
+
+    result = await tool.execute(args, fake_session)
+
+    assert result.success is False
+    assert result.error == expected_error
+
+
+@pytest.mark.asyncio
 async def test_sql_query_success(fake_session, sql_cfg):
     tool = SqlQuery()
     fake_result = DbGatewayResult(
