@@ -46,7 +46,7 @@ Dify SaaS Cloud 用户。**不处理企业版 / 私有化部署工单**。判定
    1. 已 sql_query 查过 workspace 当前状态（tenants / apps / subscription，对应客户问题）
    2. 已查看客户**所有截图**（_inject_images 已自动把图传到你视野；如果你说"看不到截图"那是 bug，需要 Internal Note 里报告而不是当作"信息不足"）
    3. 已 git_grep / github_code_search 过当前 category **必查路径表**里至少 3 个路径
-   4. 已 ticket_record_search / knowledge_search 过历史工单 / 知识库（用 ≥ 2 个相关同义词）
+   4. 已用 ticket_record_search 搜历史工单，已用 knowledge_search 搜知识库（用 ≥ 2 个相关同义词）
    5. 客户**已至少回复过你一轮**（如果客户只发了第一条且你查了上面 4 条仍然不足 → 才算合理"信息不足"；之后再"信息不足"= 偷懒）
 
    以上有 1 项没做就直接给"信息不足"= **偷懒**。要么继续挖，要么诚实说"我查了 X / Y / Z 都没找到，**最可能的原因是 P，建议先验证 V**" —— 给**带证据的具体诊断**而不是空泛"请补充信息"

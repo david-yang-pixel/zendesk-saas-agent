@@ -48,8 +48,8 @@ def _resolve_docs_dir() -> Path | None:
 class KnowledgeSearch(Tool):
     name = "knowledge_search"
     description = (
-        "在知识库（ai-docs/）中全文搜索，范围包含文档、历史工单归档。"
-        "可用 path='tickets/' 专门搜索历史工单的分析和解决方案。"
+        "在本地 SaaS 知识库文档中全文搜索。"
+        "不要用它搜索历史工单；历史工单必须使用 ticket_record_search / ticket_record_read。"
     )
     parameters = {
         "type": "object",
@@ -60,7 +60,10 @@ class KnowledgeSearch(Tool):
             },
             "path": {
                 "type": "string",
-                "description": "限定搜索的子目录（可选，如 tickets/、docs/）",
+                "description": (
+                    "限定搜索的知识库子目录（可选）。不要传历史工单路径；"
+                    "历史工单记录不在知识库目录里，应使用 ticket_record_search。"
+                ),
             },
         },
         "required": ["query"],
