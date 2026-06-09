@@ -6,6 +6,11 @@ from zd_agent.log import get_logger
 logger = get_logger(module="services.ticket_messages")
 
 
+def _message_created_at_sort_key(message: dict) -> str:
+    value = message.get("created_at")
+    return value if isinstance(value, str) else ""
+
+
 def extract_form_data_from_msgs(customer_msgs: list[dict]) -> dict:
     """Pull Name / Email / Workspace ID from the first form-like message body."""
     out: dict = {}
@@ -50,7 +55,7 @@ def _customer_public_comments(ticket: dict, comments: list[dict]) -> list[dict]:
                     image_urls.append(url)
         c = {**c, "image_urls": image_urls}
         out.append(c)
-    out.sort(key=lambda c: c.get("created_at", ""))
+    out.sort(key=_message_created_at_sort_key)
     return out
 
 
@@ -292,7 +297,7 @@ async def _fetch_customer_messages(
     msgs = _customer_public_comments(ticket, comments)
     if events:
         msgs.extend(_messaging_customer_messages(events))
-    msgs.sort(key=lambda c: c.get("created_at", ""))
+    msgs.sort(key=_message_created_at_sort_key)
     if log_success:
         logger.info(
             "trigger_fetch_messages_ok",

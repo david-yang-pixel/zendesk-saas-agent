@@ -16,6 +16,24 @@ def _records_dir() -> Path:
     return Path(cfg.resources.base_dir) / cfg.resources.ticket_records_dir
 
 
+def _normalize_keywords(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _coerce_max_results(value: Any) -> int | None:
+    try:
+        max_results = int(value)
+    except (TypeError, ValueError):
+        return None
+    if max_results < 1:
+        return None
+    return min(max_results, 50)
+
+
 class TicketRecordSearch(Tool):
     name = "ticket_record_search"
     description = (
@@ -43,10 +61,15 @@ class TicketRecordSearch(Tool):
     concurrency_safe = True
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
-        keywords = args.get("keywords") or []
-        if not keywords:
+        kws_lower = [k.lower() for k in _normalize_keywords(args.get("keywords"))]
+        if not kws_lower:
             return ToolResult(success=False, error="keywords is empty")
-        max_results = int(args.get("max_results", 10))
+        max_results = _coerce_max_results(args.get("max_results", 10))
+        if max_results is None:
+            return ToolResult(
+                success=False,
+                error="max_results must be a positive integer",
+            )
 
         records_dir = _records_dir()
         if not records_dir.exists():
@@ -54,10 +77,6 @@ class TicketRecordSearch(Tool):
                 success=False,
                 error=f"ticket records dir not found: {records_dir}",
             )
-
-        kws_lower = [k.lower() for k in keywords if k.strip()]
-        if not kws_lower:
-            return ToolResult(success=False, error="keywords all empty after strip")
 
         matches: list[str] = []
         hit_count = 0
@@ -110,17 +129,30 @@ class TicketRecordRead(Tool):
         ticket_id = str(args.get("ticket_id", "")).strip()
         if not ticket_id:
             return ToolResult(success=False, error="ticket_id is empty")
+        if "/" in ticket_id or "\\" in ticket_id:
+            return ToolResult(
+                success=False,
+                error="invalid ticket_id (path separator)",
+            )
 
         records_dir = _records_dir()
         path = records_dir / f"{ticket_id}.md"
         try:
             path_resolved = path.resolve()
             records_resolved = records_dir.resolve()
-            if not str(path_resolved).startswith(str(records_resolved)):
+            path_resolved.relative_to(records_resolved)
+            if not records_resolved.exists():
                 return ToolResult(
                     success=False,
-                    error=f"invalid ticket_id (path escape)",
+                    error=f"ticket records dir not found: {records_dir}",
                 )
+            if not records_resolved.is_dir():
+                return ToolResult(
+                    success=False,
+                    error=f"ticket records path is not a directory: {records_dir}",
+                )
+        except ValueError:
+            return ToolResult(success=False, error="invalid ticket_id (path escape)")
         except Exception:
             return ToolResult(success=False, error="path resolution failed")
         if not path.exists():

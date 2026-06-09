@@ -150,6 +150,32 @@ def test_customer_public_comments_extracts_image_attachments():
     assert out[0]["image_urls"] == ["https://example.zendesk.com/abc.png"]
 
 
+def test_customer_public_comments_handles_missing_created_at():
+    from zd_agent.services.ticket_messages import _customer_public_comments
+
+    ticket = {"requester_id": 42}
+    comments = [
+        {
+            "id": "missing-time",
+            "author_id": 42,
+            "public": True,
+            "body": "without created_at",
+            "created_at": None,
+        },
+        {
+            "id": "with-time",
+            "author_id": 42,
+            "public": True,
+            "body": "with created_at",
+            "created_at": "2026-06-04T15:52:00Z",
+        },
+    ]
+
+    out = _customer_public_comments(ticket, comments)
+
+    assert [item["id"] for item in out] == ["missing-time", "with-time"]
+
+
 @pytest.mark.asyncio
 async def test_collect_recent_image_data_urls_downloads_and_filters_failures():
     """_collect_recent_image_data_urls 取最近 lookback 条的图，逐张下载，失败的丢掉。"""

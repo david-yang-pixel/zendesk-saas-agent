@@ -79,6 +79,26 @@ async def test_search_empty_keywords_rejected(fake_session, records_setup):
 
 
 @pytest.mark.asyncio
+async def test_search_accepts_single_keyword_string(fake_session, records_setup):
+    tool = TicketRecordSearch()
+    r = await tool.execute({"keywords": "workflow"}, fake_session)
+    assert r.success is True
+    assert "100.md" in r.output
+    assert "300.md" in r.output
+
+
+@pytest.mark.asyncio
+async def test_search_rejects_invalid_max_results(fake_session, records_setup):
+    tool = TicketRecordSearch()
+    r = await tool.execute(
+        {"keywords": ["workflow"], "max_results": "many"},
+        fake_session,
+    )
+    assert r.success is False
+    assert "max_results" in (r.error or "")
+
+
+@pytest.mark.asyncio
 async def test_search_max_results_respected(fake_session, records_setup):
     tool = TicketRecordSearch()
     r = await tool.execute(
@@ -123,6 +143,23 @@ async def test_read_empty_id_rejected(fake_session, records_setup):
     tool = TicketRecordRead()
     r = await tool.execute({"ticket_id": ""}, fake_session)
     assert r.success is False
+
+
+@pytest.mark.asyncio
+async def test_read_rejects_adjacent_directory_escape(
+    fake_session,
+    records_setup,
+    tmp_path,
+):
+    adjacent = tmp_path / "zendesk-cli" / "工单记录2"
+    adjacent.mkdir(parents=True)
+    (adjacent / "secret.md").write_text("should not be readable", encoding="utf-8")
+
+    tool = TicketRecordRead()
+    r = await tool.execute({"ticket_id": "../工单记录2/secret"}, fake_session)
+
+    assert r.success is False
+    assert "invalid ticket_id" in (r.error or "")
 
 
 @pytest.mark.asyncio
