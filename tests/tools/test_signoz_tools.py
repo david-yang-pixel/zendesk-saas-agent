@@ -76,6 +76,10 @@ async def test_query_rejects_invalid_hours_before_call(monkeypatch):
     assert not r.success
     assert "hours" in (r.error or "")
 
+    r = await SignozQuery().execute({"sql": "SELECT 1", "hours": "nan"}, session=None)
+    assert not r.success
+    assert "hours" in (r.error or "")
+
 
 @pytest.mark.asyncio
 async def test_query_requires_sql(monkeypatch):

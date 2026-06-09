@@ -6,6 +6,7 @@ sz 直接打 SigNoz v4 query_range API，绕过 signoz-mcp-server 对 EE 后端�
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 from zd_agent.integrations.sz_cli import run_sz
@@ -26,6 +27,11 @@ def _coerce_hours(args: dict[str, Any], default: float) -> float | ToolResult:
         return ToolResult(
             success=False,
             error=f"hours must be a number in [{_MIN_HOURS}, {_MAX_HOURS}]",
+        )
+    if not math.isfinite(hours):
+        return ToolResult(
+            success=False,
+            error=f"hours must be a finite number in [{_MIN_HOURS}, {_MAX_HOURS}]",
         )
     return max(_MIN_HOURS, min(hours, _MAX_HOURS))
 
