@@ -29,6 +29,14 @@ _REF_NOT_FOUND_MARKERS = (
 _COMPLEX_RE_PATTERN = re.compile(r"(\(\?[!=<]|\\[bBdDwWsS]|\{[\d,]+\}|[|()]{3,})")
 
 
+def _coerce_limit(value: Any, *, default: int = 30, maximum: int = 200) -> int | ToolResult:
+    try:
+        limit = int(default if value is None else value)
+    except (TypeError, ValueError):
+        return ToolResult(success=False, error="limit must be an integer")
+    return max(1, min(limit, maximum))
+
+
 def _is_complex_regex(pattern: str) -> bool:
     """检测正则是否过于复杂，git grep 的 POSIX regex 可能无法处理"""
     if _COMPLEX_RE_PATTERN.search(pattern):
@@ -358,7 +366,9 @@ class ListRepoTags(Tool):
         if repo_dir is None:
             return ToolResult(success=False, error=f"仓库未找到: {repo_name}")
 
-        limit = max(1, min(int(args.get("limit", 30)), 200))
+        limit = _coerce_limit(args.get("limit"))
+        if isinstance(limit, ToolResult):
+            return limit
         tags = await asyncio.to_thread(list_tags, repo_name)
         if not tags:
             return ToolResult(output=f"仓库 {repo_name} 没有可用 tag")
