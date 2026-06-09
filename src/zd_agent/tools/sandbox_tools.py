@@ -20,6 +20,24 @@ SEARCH_MAX_OUTPUT_CHARS = 12000
 SEARCH_CONTEXT_LINES = 1
 
 
+def _coerce_int_arg(
+    args: dict[str, Any],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int | ToolResult:
+    try:
+        value = int(args.get(name, default))
+    except (TypeError, ValueError):
+        return ToolResult(
+            success=False,
+            error=f"{name} must be an integer in [{minimum}, {maximum}]",
+        )
+    return max(minimum, min(value, maximum))
+
+
 class SandboxCreateWorktree(Tool):
     name = "sandbox_create_worktree"
     description = "在 sandbox 中为指定仓库创建 git worktree（用于需要完整文件系统的排查场景）"
@@ -229,8 +247,12 @@ class SandboxList(Tool):
         if not target.exists():
             return ToolResult(success=False, error=f"路径不存在: {args.get('path', '.')}")
 
-        max_depth = max(0, min(int(args.get("max_depth", 2)), 6))
-        limit = max(1, min(int(args.get("limit", 200)), 1000))
+        max_depth = _coerce_int_arg(args, "max_depth", 2, minimum=0, maximum=6)
+        if isinstance(max_depth, ToolResult):
+            return max_depth
+        limit = _coerce_int_arg(args, "limit", 200, minimum=1, maximum=1000)
+        if isinstance(limit, ToolResult):
+            return limit
 
         lines: list[str] = [f"目录树: {target.relative_to(_sandbox_root(session))}"]
         count = 0
