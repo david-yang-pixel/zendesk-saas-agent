@@ -31,12 +31,15 @@ async def test_ask_template_builds_from_form_name_and_sends_public_reply() -> No
             verdict_kind="insufficient_info",
             customer_msgs=[
                 {
+                    "id": "m1",
                     "body": "Name: Alice\nEmail: alice@example.com\nWorkspace ID: ws-1",
                 },
-                {"body": "I get an error when upgrading."},
+                {"id": "m2", "body": "I get an error when upgrading."},
             ],
             ask_count=0,
             source="zendesk_webhook",
+            conversation_id="conv-1",
+            messaging_app_id="app-1",
         )
 
     assert sent is True
@@ -55,6 +58,10 @@ async def test_ask_template_builds_from_form_name_and_sends_public_reply() -> No
         ticket_id=9999,
         body="Hi Alice, please share details.",
         reply_type="ask",
+        conversation_id="conv-1",
+        messaging_app_id="app-1",
+        snapshot_customer_message_count=2,
+        snapshot_customer_last_message_id="m2",
     )
 
 

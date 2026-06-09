@@ -124,15 +124,13 @@ class TestCustomerRequestedHumanWiring:
 class TestAgentPublicReplySentWiring:
     @pytest.mark.asyncio
     async def test_send_public_reply_success_emits_metric(self) -> None:
-        """send_public_reply() 直发路径成功 → emit metric"""
+        """send_public_reply() relay 路径成功 → emit metric"""
         from zd_agent.tools.zendesk_public_reply import send_public_reply
 
         cfg = _make_cfg()
         cfg.public_reply = PublicReplyConfig(enabled=True)
-
-        mock_client = MagicMock()
-        # reply_ticket 是同步方法（在 _call_with_rate_limit_retry 内部跑 thread）
-        mock_client.reply_ticket = MagicMock(return_value=None)
+        cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097"
+        cfg.public_reply.browser_relay_api_key = "test-relay-key"
 
         with (
             patch(
@@ -140,8 +138,8 @@ class TestAgentPublicReplySentWiring:
                 return_value=cfg,
             ),
             patch(
-                "zd_agent.tools.zendesk_public_reply._get_client",
-                return_value=mock_client,
+                "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+                new=AsyncMock(),
             ),
             patch(
                 "zd_agent.observability.metrics.emit_agent_public_reply_sent",
@@ -151,6 +149,7 @@ class TestAgentPublicReplySentWiring:
                 ticket_id=12345,
                 body="Hi! Could you describe the issue?",
                 reply_type="ask",
+                conversation_id="conv-1",
             )
 
         assert success is True
@@ -191,9 +190,8 @@ class TestAgentPublicReplySentWiring:
 
         cfg = _make_cfg()
         cfg.public_reply = PublicReplyConfig(enabled=True)
-
-        mock_client = MagicMock()
-        mock_client.reply_ticket = MagicMock(return_value=None)
+        cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097"
+        cfg.public_reply.browser_relay_api_key = "test-relay-key"
 
         with (
             patch(
@@ -201,8 +199,8 @@ class TestAgentPublicReplySentWiring:
                 return_value=cfg,
             ),
             patch(
-                "zd_agent.tools.zendesk_public_reply._get_client",
-                return_value=mock_client,
+                "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+                new=AsyncMock(),
             ),
             patch(
                 "zd_agent.observability.metrics.emit_agent_public_reply_sent",
@@ -210,7 +208,10 @@ class TestAgentPublicReplySentWiring:
             ),
         ):
             success, _ = await send_public_reply(
-                ticket_id=1, body="hi", reply_type="ask",
+                ticket_id=1,
+                body="hi",
+                reply_type="ask",
+                conversation_id="conv-1",
             )
 
         # 主流程仍成功

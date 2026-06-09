@@ -46,9 +46,11 @@ class FakeRequest:
 async def test_messaging_webhook_enqueues_end_user_actor(tmp_path):
     payload = {
         "id": "evt-1",
+        "app": {"id": "app-1"},
         "detail": {"id": "2757"},
         "event": {
             "actor": {"type": "end_user"},
+            "conversation": {"id": "conv-1"},
             "message": {"id": "msg-1", "body": "hello"},
         },
         "subject": "zen:ticket:2757",
@@ -62,3 +64,5 @@ async def test_messaging_webhook_enqueues_end_user_actor(tmp_path):
     queued = trigger_queue(request.app).get_nowait()
     assert queued["source"] == "messaging_webhook"
     assert queued["ticket_id"] == "2757"
+    assert queued["conversation_id"] == "conv-1"
+    assert queued["messaging_app_id"] == "app-1"

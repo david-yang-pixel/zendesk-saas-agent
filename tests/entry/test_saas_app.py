@@ -25,6 +25,7 @@ def test_create_saas_app_has_expected_routes(tmp_path):
     route_paths = {r.resource.canonical for r in app.router.routes()}
     assert "/webhook/zendesk" in route_paths
     assert "/webhook/zendesk-messaging" in route_paths
+    assert "/internal/pre-send-freshness" in route_paths
     assert "/healthz" in route_paths
     assert "/webhook/feishu" not in route_paths
 

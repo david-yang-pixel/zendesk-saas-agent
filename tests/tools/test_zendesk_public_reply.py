@@ -6,14 +6,13 @@ Covers:
 - kill switch（cfg.public_reply.enabled=false 时直接失败）
 - 参数校验（ticket_id 类型 / body 空 / reply_type enum）
 - dry_run 模式（不真发，存草稿）
-- 真发送（mock client.reply_ticket）
+- 真发送（mock browser relay）
 """
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from zd.client import ZendeskError
 
 from zd_agent.config import AppConfig, PublicReplyConfig
 from zd_agent.tools.zendesk_public_reply import (
@@ -23,6 +22,7 @@ from zd_agent.tools.zendesk_public_reply import (
     _FOOTER_STANDARD,
     _append_footer,
     _VALID_REPLY_TYPES,
+    send_public_reply,
     ZendeskPublicReply,
 )
 
@@ -125,9 +125,13 @@ class TestStripDocsMdSuffix:
 
 # ---------- tool execute() ----------
 
-def _make_cfg(enabled: bool = True) -> AppConfig:
+def _make_cfg(enabled: bool = True, relay: bool = False) -> AppConfig:
     cfg = AppConfig()
     cfg.public_reply = PublicReplyConfig(enabled=enabled)
+    if relay:
+        cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097/mcp"
+        cfg.public_reply.browser_relay_api_key = "test-relay-key"
+        cfg.public_reply.browser_relay_timeout_seconds = 12
     return cfg
 
 
@@ -207,147 +211,173 @@ class TestExecute:
         with patch(
             "zd_agent.tools.zendesk_public_reply.get_config",
             return_value=_make_cfg(),
-        ), patch(
-            "zd_agent.tools.zendesk_public_reply._get_client",
-        ) as mock_get_client:
+        ):
             r = await tool.execute(
                 {"ticket_id": 1, "body": "Hi customer", "reply_type": "ask"}, sess,
             )
         assert r.success
         assert "Dry Run" in r.output
         assert "Dify SaaS Agent" in sess.reply_draft  # footer 追加了
-        mock_get_client.assert_not_called()  # 没真调 client
         assert sess.reply_sent is False
 
     @pytest.mark.asyncio
-    async def test_real_send_calls_client_with_public_true(self) -> None:
+    async def test_missing_conversation_id_does_not_fall_back_to_public_comment(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
 
         mock_client = MagicMock()
         mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
 
-        async def _passthrough(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
-
         with patch(
             "zd_agent.tools.zendesk_public_reply.get_config",
-            return_value=_make_cfg(),
+            return_value=_make_cfg(relay=True),
         ), patch(
-            "zd_agent.tools.zendesk_public_reply._get_client",
-            return_value=mock_client,
-        ), patch(
-            "zd_agent.tools.zendesk_public_reply._call_with_rate_limit_retry",
-            side_effect=_passthrough,
-        ):
-            r = await tool.execute(
-                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
-            )
-
-        assert r.success
-        assert sess.reply_sent is True
-        # 验证 client.reply_ticket 被调用且 public=True
-        call_args = mock_client.reply_ticket.call_args
-        assert call_args is not None
-        # signature: reply_ticket(ticket_id, body, public)
-        assert call_args[0][0] == 42  # ticket_id
-        assert "Dify SaaS Agent" in call_args[0][1]  # body 含 footer
-        assert call_args[0][2] is True  # public=True ← 关键
-
-    @pytest.mark.asyncio
-    async def test_502_after_write_is_treated_success_when_comment_exists(self) -> None:
-        """Zendesk may create the comment but return 502; do not send it again."""
-        tool = ZendeskPublicReply()
-        sess = _make_session(dry_run=False)
-        body_with_footer = _append_footer("Hi there", "ask")
-
-        mock_client = MagicMock()
-        mock_client.reply_ticket = MagicMock(
-            side_effect=ZendeskError(502, "API 请求失败"),
-        )
-        mock_client.get_ticket_comments = MagicMock(
-            return_value={
-                "comments": [
-                    {"id": "c1", "public": True, "body": body_with_footer},
-                ],
-            },
-        )
-
-        with patch(
-            "zd_agent.tools.zendesk_public_reply.get_config",
-            return_value=_make_cfg(),
-        ), patch(
-            "zd_agent.tools.zendesk_public_reply._get_client",
-            return_value=mock_client,
-        ):
-            r = await tool.execute(
-                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
-            )
-
-        assert r.success
-        assert sess.reply_sent is True
-        mock_client.reply_ticket.assert_called_once()
-        mock_client.get_ticket_comments.assert_called_once_with(42, 1, 20)
-
-    @pytest.mark.asyncio
-    async def test_502_without_confirmed_comment_is_not_retried(self) -> None:
-        """Ambiguous public-comment writes fail closed instead of duplicating."""
-        tool = ZendeskPublicReply()
-        sess = _make_session(dry_run=False)
-
-        mock_client = MagicMock()
-        mock_client.reply_ticket = MagicMock(
-            side_effect=ZendeskError(502, "API 请求失败"),
-        )
-        mock_client.get_ticket_comments = MagicMock(return_value={"comments": []})
-
-        with patch(
-            "zd_agent.tools.zendesk_public_reply.get_config",
-            return_value=_make_cfg(),
-        ), patch(
-            "zd_agent.tools.zendesk_public_reply._get_client",
-            return_value=mock_client,
+            "zd_agent.tools.zendesk_public_reply.get_messaging_context",
+            return_value={},
         ):
             r = await tool.execute(
                 {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
             )
 
         assert not r.success
+        assert "conversation_id" in r.error
         assert sess.reply_sent is False
-        mock_client.reply_ticket.assert_called_once()
-        mock_client.get_ticket_comments.assert_called_once_with(42, 1, 20)
+        mock_client.reply_ticket.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_429_still_retries_public_reply(self) -> None:
+    async def test_send_public_reply_aborts_before_relay_on_new_customer_message(self) -> None:
+        mock_relay = AsyncMock()
+
+        async def _fetch_customer_messages(ticket_id: int):
+            return [
+                {"id": "m1", "body": "Name: Alice"},
+                {
+                    "id": "m2",
+                    "body": "I was charged $59 after cancelling my subscription.",
+                },
+            ], {}
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.services.ticket_messages._fetch_customer_messages",
+            side_effect=_fetch_customer_messages,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            success, msg = await send_public_reply(
+                ticket_id=42,
+                body="Please share more details.",
+                reply_type="ask",
+                conversation_id="conv-1",
+                snapshot_customer_message_count=1,
+                snapshot_customer_last_message_id="m1",
+            )
+
+        assert success is False
+        assert "freshness check abort" in msg
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_native_messaging_context_sends_browser_relay_message(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
 
         mock_client = MagicMock()
-        mock_client.reply_ticket = MagicMock(
-            side_effect=[
-                ZendeskError(429, "rate limited", "1"),
-                {"ticket": {"id": 42}},
-            ],
-        )
+        mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
+        mock_relay = AsyncMock()
 
         with patch(
             "zd_agent.tools.zendesk_public_reply.get_config",
-            return_value=_make_cfg(),
+            return_value=_make_cfg(relay=True),
         ), patch(
-            "zd_agent.tools.zendesk_public_reply._get_client",
-            return_value=mock_client,
-        ), patch(
-            "zd_agent.tools.zendesk_public_reply.asyncio.sleep",
-            new=AsyncMock(),
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
         ):
             r = await tool.execute(
-                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
+                {
+                    "ticket_id": 42,
+                    "body": "Hi there",
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                    "messaging_app_id": "app-1",
+                },
+                sess,
             )
 
         assert r.success
         assert sess.reply_sent is True
-        assert mock_client.reply_ticket.call_count == 2
+        mock_relay.assert_awaited_once()
+        kwargs = mock_relay.await_args.kwargs
+        assert kwargs["ticket_id"] == 42
+        assert "Dify SaaS Agent" in kwargs["body"]
+        assert kwargs["url"] == "http://127.0.0.1:8097/mcp"
+        assert kwargs["api_key"] == "test-relay-key"
+        assert kwargs["timeout_seconds"] == 12
+        # native messaging 不应退回 Support API ticket comment。
+        mock_client.reply_ticket.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_saved_native_messaging_context_is_used_for_tool_call(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+
+        mock_client = MagicMock()
+        mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.get_messaging_context",
+            return_value={"conversation_id": "conv-saved", "app_id": "app-saved"},
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"},
+                sess,
+            )
+
+        assert r.success
+        kwargs = mock_relay.await_args.kwargs
+        assert kwargs["ticket_id"] == 42
+        mock_client.reply_ticket.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_native_messaging_relay_failure_does_not_fall_back_to_comment(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+
+        mock_client = MagicMock()
+        mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
+        mock_relay = AsyncMock(side_effect=RuntimeError("login_required"))
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Hi there",
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert not r.success
+        assert "login_required" in r.error
+        assert sess.reply_sent is False
+        mock_client.reply_ticket.assert_not_called()
 
 class TestPreSendCheckIntegration:
     """M5: ZendeskPublicReply 接入 pre_send_check（snapshot > 0 时调）"""
@@ -359,27 +389,26 @@ class TestPreSendCheckIntegration:
         sess = _make_session(dry_run=False)
         sess.customer_msgs_snapshot_count = 0
 
-        mock_client = MagicMock()
-        mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
-
-        async def _passthrough(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
+        mock_relay = AsyncMock()
 
         with patch(
             "zd_agent.tools.zendesk_public_reply.get_config",
-            return_value=_make_cfg(),
+            return_value=_make_cfg(relay=True),
         ), patch(
-            "zd_agent.tools.zendesk_public_reply._get_client",
-            return_value=mock_client,
-        ), patch(
-            "zd_agent.tools.zendesk_public_reply._call_with_rate_limit_retry",
-            side_effect=_passthrough,
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "test", "reply_type": "ask"}, sess,
+                {
+                    "ticket_id": 1,
+                    "body": "test",
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                },
+                sess,
             )
         assert r.success
-        mock_client.reply_ticket.assert_called_once()
+        mock_relay.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_handoff_skips_pre_send_check_even_with_snapshot(self) -> None:
@@ -388,27 +417,25 @@ class TestPreSendCheckIntegration:
         sess = _make_session(dry_run=False)
         sess.customer_msgs_snapshot_count = 5  # 即使有 snapshot
 
-        mock_client = MagicMock()
-        mock_client.reply_ticket = MagicMock(return_value={"ticket": {"id": 1}})
-
-        async def _passthrough(fn, *args, **kwargs):
-            return fn(*args, **kwargs)
+        mock_relay = AsyncMock()
 
         with patch(
             "zd_agent.tools.zendesk_public_reply.get_config",
-            return_value=_make_cfg(),
+            return_value=_make_cfg(relay=True),
         ), patch(
-            "zd_agent.tools.zendesk_public_reply._get_client",
-            return_value=mock_client,
-        ), patch(
-            "zd_agent.tools.zendesk_public_reply._call_with_rate_limit_retry",
-            side_effect=_passthrough,
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
         ), patch(
             "zd_agent.runtime.pre_send_check.pre_send_check_or_abort",
             new_callable=lambda: pytest.fail,  # 不应被调
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "transferred", "reply_type": "handoff"},
+                {
+                    "ticket_id": 1,
+                    "body": "transferred",
+                    "reply_type": "handoff",
+                    "conversation_id": "conv-1",
+                },
                 sess,
             )
         assert r.success
@@ -432,7 +459,7 @@ class TestPreSendCheckIntegration:
 
         with patch(
             "zd_agent.tools.zendesk_public_reply.get_config",
-            return_value=_make_cfg(),
+            return_value=_make_cfg(relay=True),
         ), patch(
             "zd_agent.runtime.pre_send_check.pre_send_check_or_abort",
             side_effect=_abort_check,
@@ -441,7 +468,13 @@ class TestPreSendCheckIntegration:
             new_callable=lambda: (lambda tid: ([], {})),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "ask", "reply_type": "ask"}, sess,
+                {
+                    "ticket_id": 1,
+                    "body": "ask",
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                },
+                sess,
             )
         assert not r.success
         assert "Pre-send check abort" in r.error

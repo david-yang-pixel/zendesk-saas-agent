@@ -34,6 +34,8 @@ async def send_ask_template_action(
     ticket_info: dict,
     ask_count: int,
     source: str,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
 ) -> bool:
     """Delegate public ask template sending to the notification service."""
     return await send_ask_template_best_effort(
@@ -42,6 +44,8 @@ async def send_ask_template_action(
         customer_msgs=customer_msgs,
         ask_count=ask_count,
         source=source,
+        conversation_id=conversation_id,
+        messaging_app_id=messaging_app_id,
     )
 
 
@@ -97,6 +101,8 @@ async def post_verdict_dispatch_action(
     source: str,
     now: Any,
     cfg: Any,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
     escalate_fn: Any = set_escalated_to_human_action,
     send_ask_fn: Any = send_ask_template_action,
 ) -> None:
@@ -114,6 +120,8 @@ async def post_verdict_dispatch_action(
         source=source,
         now=now,
         cfg=cfg,
+        conversation_id=conversation_id,
+        messaging_app_id=messaging_app_id,
         escalate_fn=escalate_fn,
         send_ask_fn=send_ask_fn,
     )

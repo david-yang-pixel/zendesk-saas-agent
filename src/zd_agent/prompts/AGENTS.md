@@ -47,11 +47,13 @@
 | 需客户提供更多信息 | **`zendesk_public_reply`** | `ask` |
 | 客户主动说解决了 (self_resolved) | **`zendesk_public_reply`** | `closed` |
 | **refund 判定明确**（SQL 查清楚 + 政策匹配）| **`zendesk_public_reply`** + `feishu_push` ticket_escalate | `solution`（告知客户符合/不符合，财务实操）|
-| 账号封禁 / 数据删除 / 转移 | `zendesk_internal_reply` ✋ | （需人工敏感决策）|
-| confidence = low + 没把握（含 refund SQL 查不到 wid）| `zendesk_internal_reply` ✋ | （让 SE 兜底）|
-| 不可重现 platform_issue 需 SRE drill down | `zendesk_internal_reply` ✋ | （转 SRE）|
+| 账号封禁 / 数据删除 / 转移 | `zendesk_internal_reply` ✋ | （只写内部分析，客户不可见）|
+| confidence = low + 没把握（含 refund SQL 查不到 wid）| `zendesk_internal_reply` ✋ | （只写内部分析，客户不可见）|
+| 不可重现 platform_issue 需 SRE drill down | `zendesk_internal_reply` ✋ | （只写内部分析，客户不可见）|
 
 **默认走 public_reply** — messaging 工单客户期待 agent 直接回不是 SE 转手。
+`zendesk_internal_reply` 永远不算客户已收到回复；不要先写 Internal Note 再等系统自动同步公开回复。
+成功调用 `zendesk_public_reply` 后，不要再调用 `zendesk_internal_reply`；处理摘要交给 `archive_ticket`。
 
 ---
 
@@ -110,4 +112,5 @@ Dify Support
 - 升级建议: <SRE / Dev / 财务>
 ```
 
-调用 `zendesk_internal_reply` （含 summary 字段）或 `zendesk_public_reply` 写入 Zendesk。
+需要客户看到的最终回复必须调用 `zendesk_public_reply`。只有敏感/低置信度/需人工复核场景才调用
+`zendesk_internal_reply` 写内部分析；内部备注不会自动同步成公开回复。

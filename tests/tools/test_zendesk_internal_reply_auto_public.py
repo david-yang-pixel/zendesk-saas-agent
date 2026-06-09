@@ -1,12 +1,10 @@
-"""B 路径测试：ZendeskInternalReply 发完后自动抽 Suggested Reply 段
-同步发 public_reply 给客户。
+"""ZendeskInternalReply only writes an internal note.
 
 覆盖：
 - 抽段函数：英/中标题 / emoji 前缀标题 / 找不到 → 空
 - reply_type 推断：含 "could you" → ask；否则 solution
-- 集成：execute 发完 internal 后，调 send_public_reply 一次
-- 兜底：没 Suggested Reply 段 → 只发 internal 不发 public（不抛）
-- kill switch：send_public_reply 返回 False → 不抛，只记 log
+- 集成：execute 发完 internal 后，不再自动调 send_public_reply
+- 客户可见回复必须直接使用 zendesk_public_reply，失败不能被 Internal Note 掩盖
 """
 from __future__ import annotations
 
@@ -14,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from zd_agent.config import AppConfig, PublicReplyConfig
 from zd_agent.tools.zendesk import (
     _extract_suggested_reply_section,
     _infer_reply_type,
@@ -130,7 +129,7 @@ def _mock_client():
     return client
 
 
-def _make_args(body: str) -> dict:
+def _make_args(body: str, *, needs_human: bool = True) -> dict:
     return {
         "ticket_id": 1234,
         "body": body,
@@ -138,7 +137,7 @@ def _make_args(body: str) -> dict:
             "problem_type": "usage-howto",
             "confidence": "high",
             "key_finding": "x",
-            "needs_human": False,
+            "needs_human": needs_human,
         },
     }
 
@@ -154,9 +153,17 @@ def _make_session() -> MagicMock:
     return s
 
 
+def _make_cfg(*, public_reply_enabled: bool = True) -> AppConfig:
+    cfg = AppConfig()
+    cfg.public_reply = PublicReplyConfig(enabled=public_reply_enabled)
+    return cfg
+
+
 class TestIntegration:
     @pytest.mark.asyncio
-    async def test_solution_body_triggers_public_reply(self, _mock_client) -> None:
+    async def test_solution_body_only_writes_internal_note(
+        self, _mock_client,
+    ) -> None:
         from zd_agent.tools.zendesk import ZendeskInternalReply
         body = (
             "## Internal Analysis\n\nDB checked\n\n"
@@ -178,27 +185,30 @@ class TestIntegration:
                 side_effect=_passthrough,
             ),
             patch(
+                "zd_agent.tools.zendesk.get_config",
+                return_value=_make_cfg(public_reply_enabled=True),
+            ),
+            patch(
                 "zd_agent.tools.zendesk_public_reply.send_public_reply",
                 mock_send_pr,
             ),
         ):
             tool = ZendeskInternalReply()
-            r = await tool.execute(_make_args(body), _make_session())
+            session = _make_session()
+            r = await tool.execute(_make_args(body), session)
 
         # Internal Note 发了
         assert r.success
         assert "Internal Note" in r.output
-        # 自动 public_reply 发了
-        mock_send_pr.assert_called_once()
-        kwargs = mock_send_pr.call_args.kwargs
-        assert kwargs["ticket_id"] == 1234
-        assert kwargs["reply_type"] == "solution"
-        # body 内容是抽出来的 Suggested Reply 段
-        assert "Hi Alice, please update setting X to Y" in kwargs["body"]
-        assert "Internal Analysis" not in kwargs["body"]
+        # Internal Note 不再自动同步客户可见回复。
+        mock_send_pr.assert_not_called()
+        assert session.reply_sent is False
+        assert "not customer-visible" in r.output
 
     @pytest.mark.asyncio
-    async def test_ask_signal_picks_ask_type(self, _mock_client) -> None:
+    async def test_ask_signal_still_does_not_auto_public_reply(
+        self, _mock_client,
+    ) -> None:
         from zd_agent.tools.zendesk import ZendeskInternalReply
         body = (
             "## Suggested Reply\n\n"
@@ -216,6 +226,10 @@ class TestIntegration:
                 side_effect=_passthrough,
             ),
             patch(
+                "zd_agent.tools.zendesk.get_config",
+                return_value=_make_cfg(public_reply_enabled=True),
+            ),
+            patch(
                 "zd_agent.tools.zendesk_public_reply.send_public_reply",
                 mock_send_pr,
             ),
@@ -223,7 +237,7 @@ class TestIntegration:
             tool = ZendeskInternalReply()
             await tool.execute(_make_args(body), _make_session())
 
-        assert mock_send_pr.call_args.kwargs["reply_type"] == "ask"
+        mock_send_pr.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_suggested_reply_section_only_internal(
@@ -244,6 +258,10 @@ class TestIntegration:
                 side_effect=_passthrough,
             ),
             patch(
+                "zd_agent.tools.zendesk.get_config",
+                return_value=_make_cfg(public_reply_enabled=True),
+            ),
+            patch(
                 "zd_agent.tools.zendesk_public_reply.send_public_reply",
                 mock_send_pr,
             ),
@@ -253,63 +271,43 @@ class TestIntegration:
 
         assert r.success
         mock_send_pr.assert_not_called()
-        assert "no_suggested_reply_section" in r.output
+        assert "not customer-visible" in r.output
 
     @pytest.mark.asyncio
-    async def test_public_send_failure_does_not_break_internal(
-        self, _mock_client,
-    ) -> None:
-        """public_reply 失败（kill switch 等）→ Internal Note 仍算成功"""
+    async def test_needs_human_false_requires_public_reply(self, _mock_client) -> None:
         from zd_agent.tools.zendesk import ZendeskInternalReply
-        body = (
-            "## Suggested Reply\n\nHere's the fix: X.\n"
-        )
-        mock_send_pr = AsyncMock(return_value=(False, "kill_switch_off"))
+        body = "## Suggested Reply\n\nHi, please try X.\n"
 
-        async def _passthrough(fn, *args, **kw):
-            return fn(*args, **kw)
-
-        with (
-            patch("zd_agent.tools.zendesk._get_client", return_value=_mock_client),
-            patch(
-                "zd_agent.tools.zendesk._call_with_rate_limit_retry",
-                side_effect=_passthrough,
-            ),
-            patch(
-                "zd_agent.tools.zendesk_public_reply.send_public_reply",
-                mock_send_pr,
-            ),
+        with patch(
+            "zd_agent.tools.zendesk.get_config",
+            return_value=_make_cfg(public_reply_enabled=True),
         ):
             tool = ZendeskInternalReply()
-            r = await tool.execute(_make_args(body), _make_session())
+            r = await tool.execute(
+                _make_args(body, needs_human=False),
+                _make_session(),
+            )
 
-        assert r.success
-        assert "failed" in r.output
+        assert not r.success
+        assert "zendesk_public_reply" in r.error
+        _mock_client.reply_ticket.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_public_send_exception_does_not_break(
+    async def test_skips_internal_note_after_public_reply_sent(
         self, _mock_client,
     ) -> None:
-        """public_reply 抛 exception → 不影响 Internal Note 已成功的 return"""
         from zd_agent.tools.zendesk import ZendeskInternalReply
-        body = "## Suggested Reply\n\nFix.\n"
+        body = "## Internal Analysis\n\nAlready replied.\n"
+        session = _make_session()
+        session.reply_sent = True
 
-        async def _passthrough(fn, *args, **kw):
-            return fn(*args, **kw)
-
-        with (
-            patch("zd_agent.tools.zendesk._get_client", return_value=_mock_client),
-            patch(
-                "zd_agent.tools.zendesk._call_with_rate_limit_retry",
-                side_effect=_passthrough,
-            ),
-            patch(
-                "zd_agent.tools.zendesk_public_reply.send_public_reply",
-                AsyncMock(side_effect=RuntimeError("network burned")),
-            ),
+        with patch(
+            "zd_agent.tools.zendesk.get_config",
+            return_value=_make_cfg(public_reply_enabled=True),
         ):
             tool = ZendeskInternalReply()
-            r = await tool.execute(_make_args(body), _make_session())
+            r = await tool.execute(_make_args(body), session)
 
         assert r.success
-        assert "exception" in r.output
+        assert "skipped" in r.output.lower()
+        _mock_client.reply_ticket.assert_not_called()

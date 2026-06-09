@@ -21,6 +21,7 @@ from zd.cli import (
     _get_ticket_thread,
 )
 
+from zd_agent.config import get_config
 from zd_agent.log import get_logger
 from zd_agent.runtime.source_selector import suggest_sources
 from zd_agent.runtime.retry import RetryPolicy, get_retry_policy, retry_async
@@ -36,7 +37,6 @@ _INTERNAL_REPLY_BANNER = (
 def _mention_footer() -> str:
     """动态从 config 读 mention_trigger，避免老 agent 轮询到硬编码 @support-agent 造成循环。"""
     try:
-        from zd_agent.config import get_config
         trigger = get_config().zendesk.mention_trigger or "@agent"
     except Exception:
         trigger = "@agent"
@@ -802,6 +802,8 @@ class ZendeskInternalReply(Tool):
     name = "zendesk_internal_reply"
     description = (
         "向工单发送 Internal Note（内部备注，客户不可见）。"
+        "它只记录分析，不会自动同步 Public Reply，也不会算作客户已收到回复。"
+        "需要回复客户时必须直接调用 zendesk_public_reply。"
         "必须同时提供 body（Markdown 正文）和 summary（结构化摘要），"
         "系统会自动将其渲染为带摘要卡片的 HTML 格式。"
     )
@@ -903,6 +905,31 @@ class ZendeskInternalReply(Tool):
         body_md = args["body"]
         summary = args.get("summary", {})
 
+        if getattr(session, "reply_sent", False):
+            logger.info(
+                "internal_reply_skipped_public_already_sent",
+                ticket_id=args["ticket_id"],
+            )
+            return ToolResult(
+                output=(
+                    f"Skipped Internal Note for ticket #{args['ticket_id']} "
+                    "because a customer-visible public reply was already sent."
+                ),
+            )
+
+        try:
+            public_reply_enabled = bool(get_config().public_reply.enabled)
+        except Exception:
+            public_reply_enabled = False
+        if public_reply_enabled and summary.get("needs_human") is False:
+            return ToolResult(
+                success=False,
+                error=(
+                    "needs_human=false means this ticket is customer-resolvable; "
+                    "use zendesk_public_reply instead of zendesk_internal_reply."
+                ),
+            )
+
         # LLM 判定的客户语言（以 LLM 判断为准，覆盖字符统计的初步检测）
         llm_language = summary.get("customer_language", "")
         if llm_language and session.context:
@@ -956,61 +983,15 @@ class ZendeskInternalReply(Tool):
                 False,
                 html_body=html_body,
             )
-            session.reply_sent = True
         except ZendeskError as e:
             return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
-        # B 路径 (2026-05-26)：发完 Internal Note 后，**自动抽 Suggested Reply
-        # 段同步发 public_reply** 给客户。原因：之前 agent 写完 Internal Note
-        # 客户什么都看不到，全靠 SE 手动 forward → 自动化没闭环。
-        # 抽段失败 / kill switch off / 已 escalate 等情况不发，不影响 Internal
-        # Note 主流程已成功。
-        public_status = "skipped"
-        try:
-            suggested = _extract_suggested_reply_section(body_md)
-            if suggested:
-                from zd_agent.tools.zendesk_public_reply import send_public_reply
-                # reply_type 选择：默认 solution（agent 走 internal_reply 通常是
-                # 写完分析有方案）。如果 Suggested Reply 段里出现"could you
-                # share"/"clarify"/"please confirm"等 ask 信号，改 reply_type=ask。
-                rtype = _infer_reply_type(suggested)
-                ok, msg = await send_public_reply(
-                    ticket_id=args["ticket_id"],
-                    body=suggested,
-                    reply_type=rtype,
-                )
-                if ok:
-                    public_status = f"sent({rtype})"
-                    logger.info(
-                        "internal_reply_auto_public_sent",
-                        ticket_id=args["ticket_id"], reply_type=rtype,
-                        body_chars=len(suggested),
-                    )
-                else:
-                    public_status = f"failed:{msg[:80]}"
-                    logger.warning(
-                        "internal_reply_auto_public_failed",
-                        ticket_id=args["ticket_id"], reason=msg[:200],
-                    )
-            else:
-                public_status = "no_suggested_reply_section"
-                logger.info(
-                    "internal_reply_auto_public_no_section",
-                    ticket_id=args["ticket_id"],
-                )
-        except Exception as e:
-            public_status = f"exception:{type(e).__name__}"
-            logger.warning(
-                "internal_reply_auto_public_exception",
-                ticket_id=args["ticket_id"], error=str(e)[:200],
-            )
-
         return ToolResult(
             output=(
-                f"已发送 Internal Note 到工单 #{args['ticket_id']}; "
-                f"自动同步 public_reply: {public_status}"
+                f"已发送 Internal Note 到工单 #{args['ticket_id']} "
+                "(not customer-visible; use zendesk_public_reply for customer replies)"
             ),
         )
 

@@ -28,6 +28,8 @@ async def handle_post_verdict_dispatch(
     cfg: Any,
     escalate_fn: EscalateFn,
     send_ask_fn: SendAskFn,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
 ) -> None:
     """Dispatch a pre-check verdict into state transitions and side effects."""
     from zd_agent.services.trigger_state_machine import (
@@ -181,6 +183,8 @@ async def handle_post_verdict_dispatch(
         ticket_info=ticket_info,
         ask_count=ask_count_now,
         source=source,
+        conversation_id=conversation_id,
+        messaging_app_id=messaging_app_id,
     )
 
     transition = apply_verdict_waiting_for_issue(

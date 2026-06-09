@@ -29,6 +29,8 @@ async def test_send_ask_template_action_delegates(monkeypatch) -> None:
         ticket_info={"id": 2808},
         ask_count=1,
         source="zendesk_webhook",
+        conversation_id="conv-1",
+        messaging_app_id="app-1",
     )
 
     assert result is True
@@ -38,6 +40,8 @@ async def test_send_ask_template_action_delegates(monkeypatch) -> None:
         customer_msgs=[{"body": "hello"}],
         ask_count=1,
         source="zendesk_webhook",
+        conversation_id="conv-1",
+        messaging_app_id="app-1",
     )
 
 

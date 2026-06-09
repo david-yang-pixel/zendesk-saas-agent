@@ -1,4 +1,4 @@
-"""ZendeskPublicReply tool: send a customer-visible public comment on a SaaS ticket.
+"""ZendeskPublicReply tool: send a customer-visible native messaging reply.
 
 Why a separate tool from :class:`zendesk.ZendeskInternalReply`
 ------------------------------------------------------------
@@ -6,8 +6,7 @@ Internal Note 与 Public Reply 是两类**完全不同**的对外动作：
 
 - **Internal Note** 给 Support Engineer 看，agent 写"草稿 + 分析 + 引导"三段式
   HTML 卡片，可以随便写、SE 审完发不发是 SE 的事；**风险低**。
-- **Public Reply** 客户**直接看到 + 邮件通知发出去**，agent 说错话不能撤回（Zendesk
-  能编辑但客户邮件已经投递了），**风险高**。
+- **Public Reply** 客户**直接看到**，agent 说错话不能撤回，**风险高**。
 
 为防止 agent 把两个语境混淆（用 internal 风格写 public reply 给客户读到内部摘要
 卡片是灾难），把 public reply 做成**完全独立的工具**，参数 schema、措辞约束、
@@ -28,20 +27,14 @@ footer 处理都不一样。
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any, TYPE_CHECKING
 
-from zd.client import ZendeskError
-
 from zd_agent.config import get_config
+from zd_agent.integrations.zendesk_browser_relay import send_browser_relay_reply
 from zd_agent.log import get_logger
-from zd_agent.runtime.retry import compute_delay, get_retry_policy
+from zd_agent.runtime.pre_send_check import FreshnessResult, pre_send_check_or_abort
+from zd_agent.services.messaging_context import get_messaging_context
 from zd_agent.tools.base import Tool, ToolResult
-from zd_agent.tools.zendesk import (
-    _call_with_rate_limit_retry,
-    _format_error,
-    _get_client,
-)
 
 if TYPE_CHECKING:
     from zd_agent.session.agent_session import AgentSession
@@ -94,9 +87,6 @@ _FOOTER_BY_TYPE = {
 }
 
 _VALID_REPLY_TYPES = frozenset(_FOOTER_BY_TYPE)
-_AMBIGUOUS_WRITE_STATUS_CODES = {0, 500, 502, 503, 504}
-
-
 # docs.dify.ai 的源码 markdown 文件路径会带 .md 后缀（给 LLM 用的 llms.txt
 # 索引列出的就是 .md 形式），但客户点开看到的是 raw markdown 源文本（content-type:
 # text/markdown），非常丑。HTML 形式（无 .md）才是给人看的正常文档页。
@@ -135,113 +125,71 @@ def _normalize_reply_body(body: str) -> str:
     return "\n".join(normalized.split()).strip()
 
 
-async def _public_reply_body_exists(
-    client: Any,
-    *,
-    ticket_id: int,
-    body_with_footer: str,
-) -> bool:
-    """Best-effort check whether Zendesk already created this public reply.
-
-    Zendesk may create the comment but still return a transient 5xx to the
-    client. Retrying that write blindly can create duplicate customer-visible
-    comments, so ambiguous write errors must be confirmed before another send.
-    """
-    expected = _normalize_reply_body(body_with_footer)
-    try:
-        comments_resp = await _call_with_rate_limit_retry(
-            client.get_ticket_comments,
-            ticket_id,
-            1,
-            20,
-        )
-    except Exception as e:
-        logger.warning(
-            "public_reply_duplicate_check_failed",
-            ticket_id=ticket_id,
-            error=str(e)[:200],
-        )
-        return False
-
-    comments = (comments_resp or {}).get("comments") or []
-    for comment in reversed(comments):
-        if not comment.get("public"):
-            continue
-        body = (
-            comment.get("body")
-            or comment.get("plain_body")
-            or comment.get("html_body")
-            or ""
-        )
-        if _normalize_reply_body(body) == expected:
-            logger.warning(
-                "public_reply_already_present_after_error",
-                ticket_id=ticket_id,
-                comment_id=comment.get("id"),
-            )
-            return True
-    return False
-
-
 async def _send_public_reply_safely(
-    client: Any,
     *,
     ticket_id: int,
     body_with_footer: str,
     reply_type: str,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    snapshot_customer_message_count: int | None = None,
+    snapshot_customer_last_message_id: str | None = None,
 ) -> None:
-    """Send one public reply without retrying ambiguous non-idempotent writes."""
-    policy = get_retry_policy("zendesk")
-    for attempt in range(1, policy.max_attempts + 1):
-        try:
-            await asyncio.to_thread(
-                client.reply_ticket,
-                ticket_id,
-                body_with_footer,
-                True,  # public=True
-            )
-            return
-        except ZendeskError as e:
-            if e.status_code in _AMBIGUOUS_WRITE_STATUS_CODES:
-                if await _public_reply_body_exists(
-                    client,
-                    ticket_id=ticket_id,
-                    body_with_footer=body_with_footer,
-                ):
-                    return
+    """Send one customer-visible reply through native messaging only."""
+    if not conversation_id:
+        raise RuntimeError(
+            "Zendesk Messaging conversation_id is missing; "
+            "Support API public-comment fallback is disabled"
+        )
 
-                logger.error(
-                    "public_reply_ambiguous_write_not_retried",
-                    ticket_id=ticket_id,
-                    reply_type=reply_type,
-                    status_code=e.status_code,
-                    error=str(e)[:200],
-                )
-                raise
+    cfg = get_config()
+    freshness_check_url = (
+        f"http://127.0.0.1:{cfg.webhook.listen_port}/internal/pre-send-freshness"
+        if snapshot_customer_message_count is not None
+        else None
+    )
+    await send_browser_relay_reply(
+        url=cfg.public_reply.browser_relay_url,
+        api_key=cfg.public_reply.browser_relay_api_key,
+        ticket_id=ticket_id,
+        body=body_with_footer,
+        timeout_seconds=cfg.public_reply.browser_relay_timeout_seconds,
+        freshness_check_url=freshness_check_url,
+        freshness_check_api_key=cfg.public_reply.browser_relay_api_key if freshness_check_url else None,
+        snapshot_customer_message_count=snapshot_customer_message_count,
+        snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+    )
 
-            if e.status_code != 429 or attempt >= policy.max_attempts:
-                raise
 
-            suggested_delay = (
-                max(float(e.detail), policy.base_delay_seconds)
-                if e.detail and e.detail.isdigit()
-                else None
-            )
-            delay = compute_delay(policy, attempt, suggested_delay)
-            logger.warning(
-                "retry_scheduled",
-                operation="reply_ticket_public",
-                policy=policy.name,
-                attempt=attempt,
-                max_attempts=policy.max_attempts,
-                retry_in=f"{delay:.1f}s",
-                error_type=type(e).__name__,
-                error=str(e),
-                ticket_id=ticket_id,
-            )
-            await asyncio.sleep(delay)
+async def _check_freshness_before_relay(
+    *,
+    ticket_id: int,
+    snapshot_count: int | None,
+    snapshot_last_id: str | None,
+) -> FreshnessResult | None:
+    """Best-effort first freshness guard before handing off to browser relay."""
+    if snapshot_count is None:
+        return None
 
-    raise RuntimeError("unexpected public reply retry state")
+    from zd_agent.config import EnvSettings
+    from zd_agent.services.ticket_messages import _fetch_customer_messages
+
+    cfg = get_config()
+
+    async def _fetch() -> list[dict]:
+        msgs, _ticket = await _fetch_customer_messages(ticket_id)
+        return msgs or []
+
+    env = EnvSettings()
+    return await pre_send_check_or_abort(
+        ticket_id=ticket_id,
+        snapshot_count=snapshot_count,
+        snapshot_last_id=snapshot_last_id,
+        fetch_messages_fn=_fetch,
+        model=cfg.trigger_decider.llm_model,
+        api_key=env.openai_api_key,
+        skip_llm=True,
+    )
 
 
 async def send_public_reply(
@@ -250,13 +198,16 @@ async def send_public_reply(
     body: str,
     reply_type: str,
     dry_run: bool = False,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    snapshot_customer_message_count: int | None = None,
+    snapshot_customer_last_message_id: str | None = None,
 ) -> tuple[bool, str]:
     """直接发 public reply 的公共入口（不需要 AgentSession）。
 
     给 trigger_consumer / 集成测试 / CLI 用。和 ZendeskPublicReply Tool 共享
-    底层送达逻辑（footer 追加 + kill switch + reply_ticket(public=True)），但
-    **不跑 pre_send_check**（pre_send_check 主要给 agent 长时间分析后用，
-    trigger 层 evaluate→send 间隔毫秒级，没必要）。
+    底层送达逻辑（footer 追加 + kill switch + browser relay），并在调用
+    relay 前用客户消息快照做一次轻量 freshness check。
 
     Returns:
         (success, message_or_error)
@@ -283,6 +234,10 @@ async def send_public_reply(
 
     # Footer 追加
     body_with_footer = _append_footer(body, reply_type)
+    if not conversation_id:
+        context = get_messaging_context(ticket_id)
+        conversation_id = context.get("conversation_id") or None
+        messaging_app_id = messaging_app_id or context.get("app_id") or None
 
     if dry_run:
         logger.info(
@@ -291,6 +246,44 @@ async def send_public_reply(
             body_len=len(body_with_footer),
         )
         return True, "[Dry Run] Not sent."
+    if not conversation_id:
+        logger.warning(
+            "public_reply_missing_conversation_id_direct",
+            ticket_id=ticket_id,
+            reply_type=reply_type,
+        )
+        return (
+            False,
+            "Zendesk Messaging conversation_id is missing; "
+            "Support API public-comment fallback is disabled.",
+        )
+
+    try:
+        check = await _check_freshness_before_relay(
+            ticket_id=ticket_id,
+            snapshot_count=snapshot_customer_message_count,
+            snapshot_last_id=snapshot_customer_last_message_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "public_reply_pre_relay_freshness_error",
+            ticket_id=ticket_id,
+            error=str(e)[:200],
+        )
+        check = None
+    if check is not None and not check.continue_send:
+        logger.info(
+            "public_reply_aborted_pre_relay_freshness",
+            ticket_id=ticket_id,
+            reply_type=reply_type,
+            reason=check.reason,
+            new_msg_count=check.new_messages_count,
+        )
+        return (
+            False,
+            "Pre-relay freshness check abort: customer added "
+            f"{check.new_messages_count} new message(s) ({check.reason}).",
+        )
 
     logger.info(
         "public_reply_send_start_direct",
@@ -298,12 +291,14 @@ async def send_public_reply(
         body_len=len(body_with_footer),
     )
     try:
-        client = _get_client()
         await _send_public_reply_safely(
-            client,
             ticket_id=ticket_id,
             body_with_footer=body_with_footer,
             reply_type=reply_type,
+            conversation_id=conversation_id,
+            messaging_app_id=messaging_app_id,
+            snapshot_customer_message_count=snapshot_customer_message_count,
+            snapshot_customer_last_message_id=snapshot_customer_last_message_id,
         )
         logger.info(
             "public_reply_sent_direct",
@@ -322,12 +317,6 @@ async def send_public_reply(
         except Exception:
             pass  # metric 失败不影响主流程
         return True, f"已发送 Public Reply 到工单 #{ticket_id}"
-    except ZendeskError as e:
-        logger.warning(
-            "public_reply_direct_zendesk_error",
-            ticket_id=ticket_id, error=str(e)[:200],
-        )
-        return False, _format_error(e)
     except Exception as e:
         logger.error(
             "public_reply_direct_send_failed",
@@ -385,6 +374,14 @@ class ZendeskPublicReply(Tool):
                     "closed（客户已解决，收尾）"
                 ),
             },
+            "conversation_id": {
+                "type": "string",
+                "description": "Zendesk Messaging conversation id（系统通常自动填充）",
+            },
+            "messaging_app_id": {
+                "type": "string",
+                "description": "Zendesk Messaging app id（系统通常自动填充）",
+            },
         },
         "required": ["ticket_id", "body", "reply_type"],
     }
@@ -398,6 +395,8 @@ class ZendeskPublicReply(Tool):
         ticket_id = args.get("ticket_id")
         body = (args.get("body") or "").strip()
         reply_type = args.get("reply_type")
+        conversation_id = (args.get("conversation_id") or "").strip() or None
+        messaging_app_id = (args.get("messaging_app_id") or "").strip() or None
 
         # 1. Kill switch（出问题一秒下线）
         cfg = get_config()
@@ -411,7 +410,8 @@ class ZendeskPublicReply(Tool):
                 success=False,
                 error=(
                     "Public reply is currently disabled (kill switch). "
-                    "Fall back to zendesk_internal_reply."
+                    "Do not use zendesk_internal_reply as a customer-visible "
+                    "fallback; escalate or retry after the public reply path is healthy."
                 ),
             )
 
@@ -434,6 +434,10 @@ class ZendeskPublicReply(Tool):
 
         # 3. Footer 强制追加（幂等）
         body_with_footer = _append_footer(body, reply_type)
+        if not conversation_id:
+            context = get_messaging_context(ticket_id)
+            conversation_id = context.get("conversation_id") or None
+            messaging_app_id = messaging_app_id or context.get("app_id") or None
 
         # 4. dry_run 模式：只存草稿不发
         session.reply_draft = body_with_footer
@@ -447,6 +451,19 @@ class ZendeskPublicReply(Tool):
                 output=(
                     f"[Dry Run] Public reply 已存草稿（未发送）。\n\n"
                     f"--- 草稿内容 ---\n{body_with_footer}"
+                ),
+            )
+        if not conversation_id:
+            logger.warning(
+                "public_reply_missing_conversation_id",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Zendesk Messaging conversation_id is missing; "
+                    "Support API public-comment fallback is disabled."
                 ),
             )
 
@@ -501,19 +518,25 @@ class ZendeskPublicReply(Tool):
                     ),
                 )
 
-        # 5. 真发送：调 client.reply_ticket(..., public=True)
+        # 5. 真发送：只走 native messaging browser relay，不回退 Support API。
         logger.info(
             "public_reply_send_start",
             ticket_id=ticket_id, reply_type=reply_type,
             body_len=len(body_with_footer),
         )
         try:
-            client = _get_client()
             await _send_public_reply_safely(
-                client,
                 ticket_id=ticket_id,
                 body_with_footer=body_with_footer,
                 reply_type=reply_type,
+                conversation_id=conversation_id,
+                messaging_app_id=messaging_app_id,
+                snapshot_customer_message_count=session.customer_msgs_snapshot_count
+                if session.customer_msgs_snapshot_count > 0
+                else None,
+                snapshot_customer_last_message_id=(
+                    session.customer_msgs_snapshot_last_id or None
+                ),
             )
             session.reply_sent = True
             logger.info(
@@ -537,12 +560,6 @@ class ZendeskPublicReply(Tool):
                     f"已发送 Public Reply 到工单 #{ticket_id}（reply_type={reply_type}）"
                 ),
             )
-        except ZendeskError as e:
-            logger.warning(
-                "public_reply_zendesk_error",
-                ticket_id=ticket_id, error=str(e)[:200],
-            )
-            return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             logger.error(
                 "public_reply_send_failed",

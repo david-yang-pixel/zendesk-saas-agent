@@ -8,7 +8,8 @@
 | `zendesk_get_attachments` | Step 7，有附件时下载（截图 / 文件） |
 | `zendesk_search` | 按语法搜工单（如 `requester:xxx status:solved`） |
 | `zendesk_search_articles` / `zendesk_get_article` | Help Center 查询（API 版，zd_kb_cli_exec 是 CLI 备选） |
-| `zendesk_internal_reply` | **最终产出** Internal Note。不要分多次调用；一次写完三段式 |
+| `zendesk_internal_reply` | 只写 Internal Note（客户不可见）。不要分多次调用；一次写完三段式 |
+| `zendesk_public_reply` | **客户可见最终回复**。SaaS messaging 工单要回复客户时直接调用它 |
 | `zendesk_add_tags` | 酌情打标（如确认退款 tag） |
 | `zendesk_get_user` | 查工单请求者信息 |
 
@@ -110,7 +111,7 @@ Step 10-14: run_subagents_parallel (根因)
   ↓
 Step 15-18: run_subagents_parallel (知识)
   ↓
-Step 19: zendesk_internal_reply
+Step 19: zendesk_public_reply（客户可见回复）或 zendesk_internal_reply（仅内部分析）
 Step 20: archive_ticket
 Step 22: feishu_push ticket_done
 ```
@@ -119,6 +120,8 @@ Step 22: feishu_push ticket_done
 
 - ❌ 串行调用 `run_subagent` 5 次查相同阶段的不同源 → 应该 `run_subagents_parallel`
 - ❌ 在不知道 Workspace ID 的情况下跑 SQL → 先跟客户确认或读已有评论找到 ID
+- ❌ 用 `zendesk_internal_reply` 当客户回复 → 客户看不到；客户可见回复必须直接 `zendesk_public_reply`
+- ❌ 成功 `zendesk_public_reply` 后再写 Internal Note → 重复且客户不可见，处理摘要交给 `archive_ticket`
 - ❌ 用 `zendesk_internal_reply` 多次写半成品 → 一次写完整三段
 - ❌ 反复调 `zendesk_get_ticket` → 拉一次就够，后续用 session 里的信息
 - ❌ 自行调用 shell 跑 `tsh proxy db` 之类命令 → DB Gateway 统一管理

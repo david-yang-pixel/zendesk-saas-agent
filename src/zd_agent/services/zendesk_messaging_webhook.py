@@ -11,6 +11,7 @@ from aiohttp import web
 
 from zd_agent.log import get_logger
 from zd_agent.services.app_context import app_config, trigger_queue, webhook_dedup
+from zd_agent.services.messaging_context import save_messaging_context
 
 logger = get_logger(module="services.zendesk_messaging_webhook")
 
@@ -45,6 +46,41 @@ def _extract_ticket_id(event_payload: dict[str, Any]) -> str:
     return ""
 
 
+def _extract_conversation_id(event_payload: dict[str, Any]) -> str:
+    """Best-effort conversation id extraction from Zendesk Messaging payload."""
+    event = event_payload.get("event") or {}
+    detail = event_payload.get("detail") or {}
+    if isinstance(event, dict):
+        conversation = event.get("conversation") or {}
+        if isinstance(conversation, dict) and conversation.get("id"):
+            return str(conversation["id"])
+        if event.get("conversation_id"):
+            return str(event["conversation_id"])
+    if isinstance(detail, dict) and detail.get("conversation_id"):
+        return str(detail["conversation_id"])
+    if event_payload.get("conversation_id"):
+        return str(event_payload["conversation_id"])
+    return ""
+
+
+def _extract_messaging_app_id(event_payload: dict[str, Any]) -> str:
+    """Best-effort Messaging app id extraction from Zendesk webhook payload."""
+    top_app = event_payload.get("app") or {}
+    if isinstance(top_app, dict) and top_app.get("id"):
+        return str(top_app["id"])
+    event = event_payload.get("event") or {}
+    if isinstance(event, dict):
+        event_app = event.get("app") or {}
+        if isinstance(event_app, dict) and event_app.get("id"):
+            return str(event_app["id"])
+        if event.get("app_id"):
+            return str(event["app_id"])
+    detail = event_payload.get("detail") or {}
+    if isinstance(detail, dict) and detail.get("app_id"):
+        return str(detail["app_id"])
+    return ""
+
+
 async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response:
     """aiohttp handler for `messaging_ticket.message_added` events."""
     cfg = app_config(request.app)
@@ -70,6 +106,8 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     ).lower()
     msg_id = event.get("event", {}).get("message", {}).get("id") or ""
     ticket_id = _extract_ticket_id(event)
+    conversation_id = _extract_conversation_id(event)
+    messaging_app_id = _extract_messaging_app_id(event)
 
     if actor_type not in _CUSTOMER_ACTOR_TYPES:
         logger.info(
@@ -96,15 +134,32 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
         return web.Response(status=200, text="dup")
     dedup.add(dedup_key)
 
+    try:
+        save_messaging_context(
+            ticket_id=ticket_id,
+            conversation_id=conversation_id,
+            app_id=messaging_app_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "messaging_context_save_failed",
+            ticket_id=ticket_id,
+            error=str(e)[:200],
+        )
+
     queue = trigger_queue(request.app)
     await queue.put({
         "source": "messaging_webhook",
         "ticket_id": ticket_id,
+        "conversation_id": conversation_id,
+        "messaging_app_id": messaging_app_id,
         "event": event,
     })
     logger.info(
         "zendesk_messaging_webhook_enqueued",
         event_id=event_id, ticket_id=ticket_id, msg_id=msg_id,
+        has_conversation_id=bool(conversation_id),
+        has_messaging_app_id=bool(messaging_app_id),
         body_preview=(event.get("event", {}).get("message", {}).get("body") or "")[:80],
     )
     return web.Response(status=200, text="ok")

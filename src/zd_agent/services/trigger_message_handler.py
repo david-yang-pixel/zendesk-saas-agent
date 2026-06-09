@@ -152,5 +152,7 @@ async def handle_trigger_message(
         source=source,
         now=customer_activity.now,
         cfg=cfg,
+        conversation_id=msg.get("conversation_id") or None,
+        messaging_app_id=msg.get("messaging_app_id") or None,
     )
     return TriggerMessageResult(True, "verdict_dispatched", ticket_id, source)
