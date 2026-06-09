@@ -137,6 +137,39 @@ async def test_send_browser_relay_reply_can_call_remote_mcp_endpoint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_browser_relay_reply_can_parse_remote_mcp_sse_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            text=(
+                "event: message\n"
+                'data: {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"sent"}],'
+                '"structuredContent":{"ok":true,"ticket_id":2861,"status":"sent",'
+                '"current_url":"https://langgenius.zendesk.com/agent/tickets/2861",'
+                '"error":null},"isError":false}}\n\n'
+            ),
+        )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.zendesk_browser_relay.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await send_browser_relay_reply(
+            url="https://zendesk.smlershou.top/zendesk-reply-mcp",
+            api_key="secret",
+            ticket_id=2861,
+            body="hello",
+            timeout_seconds=12,
+        )
+
+    assert result.ok is True
+    assert result.status == "sent"
+    assert result.current_url == "https://langgenius.zendesk.com/agent/tickets/2861"
+
+
+@pytest.mark.asyncio
 async def test_send_browser_relay_reply_reports_login_required() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

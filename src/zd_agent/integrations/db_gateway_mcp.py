@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from zd_agent.integrations.db_gateway import DbGatewayResult
+from zd_agent.integrations.mcp_response import load_json_or_sse_response
 
 
 def _mcp_endpoint(url: str) -> str:
@@ -94,18 +95,19 @@ async def query_db_gateway_mcp(
         )
 
     try:
-        data = resp.json()
-    except ValueError as e:
+        data = load_json_or_sse_response(resp, context="DB Gateway MCP")
+    except RuntimeError as e:
+        err = str(e)
+        if "expected JSON object" in err:
+            return DbGatewayResult(
+                success=False,
+                code="MCP_BAD_RESPONSE",
+                error=f"unexpected MCP response: {err}",
+            )
         return DbGatewayResult(
             success=False,
             code="MCP_BAD_JSON",
-            error=f"invalid MCP JSON response: {e}",
-        )
-    if not isinstance(data, dict):
-        return DbGatewayResult(
-            success=False,
-            code="MCP_BAD_RESPONSE",
-            error=f"unexpected MCP response: {data}",
+            error=f"invalid MCP JSON response: {err}",
         )
     if "error" in data:
         return DbGatewayResult(

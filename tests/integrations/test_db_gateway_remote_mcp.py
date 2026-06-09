@@ -83,6 +83,54 @@ async def test_query_db_gateway_mcp_uses_remote_streamable_http() -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_db_gateway_mcp_parses_sse_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        result_text = json.dumps(
+            {
+                "success": True,
+                "csv": "ok\n1\n",
+                "row_count": 1,
+                "elapsed_ms": 12,
+                "truncated": False,
+            },
+        )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/event-stream"},
+            text=(
+                "event: message\n"
+                f'data: {{"jsonrpc":"2.0","id":{body["id"]},"result":{{'
+                f'"content":[{{"type":"text","text":{json.dumps(result_text)}}}],'
+                '"isError":false}}\n\n'
+            ),
+        )
+
+    cfg = SimpleNamespace(
+        db_gateway=SimpleNamespace(
+            url="https://db-gateway.example.com/db-gateway/mcp",
+            api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.db_gateway_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await query_db_gateway_mcp(
+            cfg=cfg,
+            database="prod",
+            sql="select 1",
+            ticket_id="2830",
+        )
+
+    assert result.success is True
+    assert result.csv == "ok\n1\n"
+
+
+@pytest.mark.asyncio
 async def test_query_db_gateway_mcp_accepts_url_that_already_ends_with_mcp() -> None:
     seen_urls: list[str] = []
 
