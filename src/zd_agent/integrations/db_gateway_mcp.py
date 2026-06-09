@@ -19,19 +19,32 @@ def _mcp_endpoint(url: str) -> str:
 
 def _parse_tool_result(raw: dict[str, Any]) -> DbGatewayResult:
     content = raw.get("content", [])
-    if not content or content[0].get("type") != "text":
+    if not isinstance(content, list) or not content:
+        return DbGatewayResult(
+            success=False,
+            code="MCP_BAD_RESPONSE",
+            error=f"unexpected MCP response: {raw}",
+        )
+    first_content = content[0]
+    if not isinstance(first_content, dict) or first_content.get("type") != "text":
         return DbGatewayResult(
             success=False,
             code="MCP_BAD_RESPONSE",
             error=f"unexpected MCP response: {raw}",
         )
     try:
-        data = json.loads(content[0].get("text") or "{}")
+        data = json.loads(first_content.get("text") or "{}")
     except json.JSONDecodeError as e:
         return DbGatewayResult(
             success=False,
             code="MCP_BAD_JSON",
             error=f"invalid MCP JSON response: {e}",
+        )
+    if not isinstance(data, dict):
+        return DbGatewayResult(
+            success=False,
+            code="MCP_BAD_RESPONSE",
+            error=f"unexpected MCP tool result: {data}",
         )
 
     return DbGatewayResult(

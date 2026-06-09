@@ -230,3 +230,117 @@ async def test_query_db_gateway_mcp_handles_non_object_json_response() -> None:
 
     assert result.success is False
     assert result.code == "MCP_BAD_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_query_db_gateway_mcp_handles_non_list_content() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {"content": {"type": "text", "text": "{\"success\": true}"}},
+            },
+        )
+
+    cfg = SimpleNamespace(
+        db_gateway=SimpleNamespace(
+            url="https://db-gateway.example.com/db-gateway/mcp",
+            api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.db_gateway_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await query_db_gateway_mcp(
+            cfg=cfg,
+            database="prod",
+            sql="select 1",
+            ticket_id="2830",
+        )
+
+    assert result.success is False
+    assert result.code == "MCP_BAD_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_query_db_gateway_mcp_handles_non_object_content_item() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {"content": ["not an object"]},
+            },
+        )
+
+    cfg = SimpleNamespace(
+        db_gateway=SimpleNamespace(
+            url="https://db-gateway.example.com/db-gateway/mcp",
+            api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.db_gateway_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await query_db_gateway_mcp(
+            cfg=cfg,
+            database="prod",
+            sql="select 1",
+            ticket_id="2830",
+        )
+
+    assert result.success is False
+    assert result.code == "MCP_BAD_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_query_db_gateway_mcp_handles_non_object_tool_text() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "content": [{"type": "text", "text": "[\"not\", \"an\", \"object\"]"}],
+                    "isError": False,
+                },
+            },
+        )
+
+    cfg = SimpleNamespace(
+        db_gateway=SimpleNamespace(
+            url="https://db-gateway.example.com/db-gateway/mcp",
+            api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.db_gateway_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await query_db_gateway_mcp(
+            cfg=cfg,
+            database="prod",
+            sql="select 1",
+            ticket_id="2830",
+        )
+
+    assert result.success is False
+    assert result.code == "MCP_BAD_RESPONSE"
