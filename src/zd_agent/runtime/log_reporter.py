@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any
 
@@ -31,6 +32,7 @@ class LogReporter:
         self._api_key = env.hc_client_api_key
         self._enabled = bool(self._base_url and self._api_key)
         self._session: aiohttp.ClientSession | None = None
+        self._pending_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -77,6 +79,24 @@ class LogReporter:
         except Exception as e:
             logger.warning("log_report_failed", path=path, error=str(e))
             return None
+
+    async def _post_background(self, path: str, data: dict[str, Any]) -> None:
+        try:
+            await self._post(path, data)
+        except Exception as e:
+            logger.warning("log_report_background_failed", path=path, error=str(e))
+
+    def _schedule_post(self, path: str, data: dict[str, Any]) -> None:
+        if not self._enabled:
+            return
+        task = asyncio.create_task(self._post_background(path, data))
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+
+    async def flush(self) -> None:
+        """等待已排队的后台上报任务完成。"""
+        if self._pending_tasks:
+            await asyncio.gather(*list(self._pending_tasks), return_exceptions=True)
 
     async def report_run_start(
         self,
@@ -134,7 +154,7 @@ class LogReporter:
         event: ToolExecuted,
     ) -> None:
         """上报一次工具调用"""
-        await self._post(
+        self._schedule_post(
             f"/api/agent/logs/runs/{run_id}/rounds/{round_id}/tool-calls",
             {
                 "tool_name": event.tool_name,
@@ -154,6 +174,7 @@ class LogReporter:
         total_output_tokens: int = 0,
     ) -> None:
         """上报 agent 处理结束"""
+        await self.flush()
         await self._put(
             f"/api/agent/logs/runs/{run_id}",
             {
@@ -172,5 +193,6 @@ class LogReporter:
 
     async def close(self) -> None:
         """关闭 HTTP 连接"""
+        await self.flush()
         if self._session and not self._session.closed:
             await self._session.close()
