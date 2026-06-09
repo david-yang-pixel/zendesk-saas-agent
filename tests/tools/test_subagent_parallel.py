@@ -60,6 +60,32 @@ async def test_empty_tasks_returns_error(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_tasks_must_be_a_list(fake_session):
+    tool = RunSubagentsParallel()
+    result = await tool.execute({"tasks": "search code"}, fake_session)
+    assert result.success is False
+    assert "tasks" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_task_tools_must_be_string_list(fake_session):
+    tool = RunSubagentsParallel()
+    result = await tool.execute(
+        {"tasks": [{"task": "search code", "tools": "git_grep"}]},
+        fake_session,
+    )
+    assert result.success is False
+    assert "tools" in (result.error or "").lower()
+
+    result = await tool.execute(
+        {"tasks": [{"task": "search code", "tools": ["git_grep", 123]}]},
+        fake_session,
+    )
+    assert result.success is False
+    assert "tools" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
 async def test_one_failing_subagent_others_succeed(fake_session):
     """If one subagent raises, parallel should report error for it but still
     aggregate others' successful outputs."""

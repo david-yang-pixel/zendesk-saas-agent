@@ -81,12 +81,16 @@ class RunSubagentsParallel(Tool):
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
         tasks = args.get("tasks") or []
+        if not isinstance(tasks, list):
+            return ToolResult(success=False, error="tasks must be a list")
         if not tasks:
             return ToolResult(success=False, error="tasks is empty")
 
         # 招法 3: tools 是 required，没传就报错让 LLM 重写。避免 fallback
         # 到全工具集（76 个 schema = 16K tokens 浪费）。
         for i, t in enumerate(tasks):
+            if not isinstance(t, dict):
+                return ToolResult(success=False, error=f"task[{i}] must be an object")
             tools = t.get("tools") or []
             if not tools:
                 return ToolResult(
@@ -97,6 +101,11 @@ class RunSubagentsParallel(Tool):
                         "源码搜，['signoz_errors'] for 日志). Don't dump the "
                         "full toolset — each tool schema is 150-800 tokens."
                     ),
+                )
+            if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
+                return ToolResult(
+                    success=False,
+                    error=f"task[{i}].tools must be a list of tool name strings",
                 )
 
         # Late import to avoid circular dependency
