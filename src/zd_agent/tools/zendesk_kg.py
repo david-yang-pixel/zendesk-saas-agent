@@ -18,6 +18,14 @@ _MAX_OUTPUT_CHARS = 8000
 _VALID_PRIORITIES = {"low", "normal", "high", "urgent"}
 
 
+def _coerce_top_k(value: Any) -> int | ToolResult:
+    try:
+        top_k = int(value)
+    except (TypeError, ValueError):
+        return ToolResult(success=False, error="top_k must be an integer")
+    return min(max(top_k, 1), 20)
+
+
 async def _run_kg(args: list[str], timeout: float = 30) -> tuple[int, str, str]:
     """执行 zendesk-kg CLI 命令"""
     proc = await asyncio.create_subprocess_exec(
@@ -118,8 +126,10 @@ class ZendeskKgSearch(Tool):
 
         cmd_args = ["search", query, "--json"]
 
-        top_k = args.get("top_k", 5)
-        cmd_args.extend(["-k", str(min(max(int(top_k), 1), 20))])
+        top_k = _coerce_top_k(args.get("top_k", 5))
+        if isinstance(top_k, ToolResult):
+            return top_k
+        cmd_args.extend(["-k", str(top_k)])
 
         if args.get("version"):
             cmd_args.extend(["-v", str(args["version"])])
