@@ -34,8 +34,21 @@ async def query_db_gateway(
         "sql": sql,
         "ticket_id": ticket_id,
     }
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(endpoint, json=payload, headers=headers)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(endpoint, json=payload, headers=headers)
+    except httpx.TimeoutException as e:
+        return DbGatewayResult(
+            success=False,
+            code="TIMEOUT",
+            error=f"DB gateway request timed out: {e}",
+        )
+    except httpx.HTTPError as e:
+        return DbGatewayResult(
+            success=False,
+            code="REQUEST_ERROR",
+            error=f"DB gateway request failed: {e}",
+        )
 
     if resp.status_code == 401:
         return DbGatewayResult(
@@ -50,7 +63,21 @@ async def query_db_gateway(
             error=f"DB gateway HTTP {resp.status_code}: {resp.text[:500]}",
         )
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError as e:
+        return DbGatewayResult(
+            success=False,
+            code="BAD_JSON",
+            error=f"Invalid DB gateway JSON response: {e}",
+        )
+    if not isinstance(data, dict):
+        return DbGatewayResult(
+            success=False,
+            code="BAD_RESPONSE",
+            error=f"Expected DB gateway JSON object, got {type(data).__name__}",
+        )
+
     return DbGatewayResult(
         success=bool(data.get("success")),
         csv=str(data.get("csv") or ""),
