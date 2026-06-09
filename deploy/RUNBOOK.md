@@ -36,6 +36,7 @@
 | `trigger_decider.llm_model` | `gpt-5.5` | 触发判定模型（误判代价高，不省这个钱）|
 | `public_reply.enabled` | `true` | **总开关 / 应急回退**：出问题立即 flip 为 `false`，agent 全部退回只发 Internal Note（SE 手动 forward），无需改代码 |
 | `public_reply.max_ask_count` | `10` | 累计追问上限，超过转人工 |
+| `public_reply.browser_relay_url` | `http://127.0.0.1:8097` | SaaS native messaging 客户可见回复走独立 browser relay，不使用 Conversations API |
 | `zendesk.min_ticket_id` | `2624` | **灰度边界**：只处理 ID ≥ 此值的工单。上线稳定后改 `0` 处理全部 SaaS 工单 |
 | `zendesk.search_query` | `status:new tags:saas` | 处理范围 |
 
@@ -87,6 +88,11 @@ chmod 600 /opt/zd-agent/.env
 
 # DB Gateway env lives in the sibling db-gateway project.
 # See /opt/db-gateway/code/.env.example.
+
+# Browser relay env lives outside the agent repo. Copy only the relay API key
+# into /opt/zd-agent/.env:
+# ZENDESK_BROWSER_RELAY_URL=http://127.0.0.1:8097
+# ZENDESK_BROWSER_RELAY_API_KEY=<from /etc/zendesk-browser-relay/env>
 ```
 
 Required variables for `/opt/zd-agent/.env` (see `.env.example`):
@@ -95,7 +101,7 @@ Required variables for `/opt/zd-agent/.env` (see `.env.example`):
 - FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
 - SIGNOZ_API_KEY
 - GITHUB_TOKEN
-- DB_GATEWAY_URL / DB_GATEWAY_API_KEY / DB_GATEWAY_MCP_BINARY
+- DB_GATEWAY_URL / DB_GATEWAY_API_KEY
 
 Required variables for `/opt/db-gateway/.env` are documented in `/opt/db-gateway/code/.env.example`:
 - DB_GATEWAY_API_KEY（must match `/opt/zd-agent/.env`）

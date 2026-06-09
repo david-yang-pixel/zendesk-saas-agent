@@ -65,6 +65,7 @@ class ZendeskConfig(BaseModel):
     poll_query: str = "status:open status:new"
     search_query: str = "status:new tags:saas"
     mention_trigger: str = "@saas-bot"
+    mention_aliases: list[str] = Field(default_factory=list)
     mention_poll_interval_seconds: int = 60
     # 我（agent）在 Zendesk 上的 user_id；用于区分评论作者是否为自动回复作者。
     agent_user_id: int = 0
@@ -136,8 +137,8 @@ class ResourcesConfig(BaseModel):
 
 class TriggerDeciderConfig(BaseModel):
     llm_model: str = "gpt-5.4-mini"
-    silence_minutes_default: int = 3
-    silence_extend_to_minutes: int = 5
+    silence_minutes_default: int = 0
+    silence_extend_to_minutes: int = 1
     rapid_burst_window_seconds: int = 30
     rapid_burst_threshold: int = 2
     insufficient_timeout_minutes: int = 20
@@ -183,7 +184,6 @@ class DbGatewayConfig(BaseModel):
     url: str = ""
     api_key: str = ""
     mcp_enabled: bool = True
-    mcp_binary: str = ""
     request_timeout_seconds: int = 35
 
 
@@ -245,6 +245,12 @@ class PublicReplyConfig(BaseModel):
     # 24h 客户彻底无回复 → 标 abandoned + 飞书最终告警
     abandoned_hours: int = 24
 
+    # SaaS native messaging 工单的客户可见回复不再走 Conversations API。
+    # browser relay 使用已登录的 Zendesk Agent 前台会话提交消息，确保客户 widget 可见。
+    browser_relay_url: str = ""
+    browser_relay_api_key: str = ""
+    browser_relay_timeout_seconds: int = 90
+
 
 class LoggingConfig(BaseModel):
     """日志配置。stdout 始终走带色 ConsoleRenderer（不可配）；
@@ -297,6 +303,9 @@ class EnvSettings(BaseSettings):
     zd_model: str | None = None
     zd_llm_provider: str | None = None  # 覆盖 llm.provider（openai / anthropic）
     zd_webhook_signing_secret: str | None = None
+    zendesk_browser_relay_url: str = ""
+    zendesk_browser_relay_api_key: str = ""
+    zendesk_browser_relay_timeout_seconds: int | None = None
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
     anthropic_api_key: str = ""
     zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
@@ -305,7 +314,6 @@ class EnvSettings(BaseSettings):
     # SaaS-specific env vars
     db_gateway_url: str = ""
     db_gateway_api_key: str = ""
-    db_gateway_mcp_binary: str = ""
     signoz_api_key: str = ""
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
@@ -370,8 +378,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.db_gateway.url = env.db_gateway_url.rstrip("/")
     if env.db_gateway_api_key:
         cfg.db_gateway.api_key = env.db_gateway_api_key
-    if env.db_gateway_mcp_binary:
-        cfg.db_gateway.mcp_binary = env.db_gateway_mcp_binary
     # SigNoz
     if env.signoz_api_key:
         cfg.signoz.api_key = env.signoz_api_key
@@ -389,6 +395,15 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     # Messaging webhook secret (独立于 Tickets webhook secret，两套 signing 用不同 key)
     if env.zendesk_messaging_webhook_secret:
         cfg.webhook.messaging_signing_secret = env.zendesk_messaging_webhook_secret
+    # Zendesk browser relay (SaaS native messaging public reply path)
+    if env.zendesk_browser_relay_url:
+        cfg.public_reply.browser_relay_url = env.zendesk_browser_relay_url.rstrip("/")
+    if env.zendesk_browser_relay_api_key:
+        cfg.public_reply.browser_relay_api_key = env.zendesk_browser_relay_api_key
+    if env.zendesk_browser_relay_timeout_seconds is not None:
+        cfg.public_reply.browser_relay_timeout_seconds = (
+            env.zendesk_browser_relay_timeout_seconds
+        )
     return cfg
 
 

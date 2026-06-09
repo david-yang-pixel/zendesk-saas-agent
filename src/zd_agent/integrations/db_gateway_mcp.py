@@ -4,52 +4,19 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
+
 from zd_agent.integrations.db_gateway import DbGatewayResult
-from zd_agent.integrations.mcp_subprocess import MCPClientError, MCPSubprocessClient
 
 
-_client: MCPSubprocessClient | None = None
+def _mcp_endpoint(url: str) -> str:
+    base = (url or "").rstrip("/")
+    if base.endswith("/mcp"):
+        return base
+    return f"{base}/mcp"
 
 
-def _default_mcp_binary() -> str:
-    return "db-gateway-mcp"
-
-
-def _make_client(cfg: Any) -> MCPSubprocessClient:
-    global _client
-    if _client is not None:
-        return _client
-
-    binary = cfg.db_gateway.mcp_binary or _default_mcp_binary()
-    _client = MCPSubprocessClient(
-        binary=binary,
-        env={
-            "DB_GATEWAY_URL": cfg.db_gateway.url,
-            "DB_GATEWAY_API_KEY": cfg.db_gateway.api_key,
-            "DB_GATEWAY_TIMEOUT": str(cfg.db_gateway.request_timeout_seconds),
-        },
-        client_name="zd-agent-db-gateway",
-    )
-    return _client
-
-
-async def query_db_gateway_mcp(
-    *,
-    cfg: Any,
-    database: str,
-    sql: str,
-    ticket_id: str,
-) -> DbGatewayResult:
-    client = _make_client(cfg)
-    try:
-        raw = await client.call_tool(
-            "db_gateway_query",
-            {"database": database, "sql": sql, "ticket_id": ticket_id},
-            timeout=cfg.db_gateway.request_timeout_seconds + 5,
-        )
-    except MCPClientError as e:
-        return DbGatewayResult(success=False, code="MCP_ERROR", error=str(e))
-
+def _parse_tool_result(raw: dict[str, Any]) -> DbGatewayResult:
     content = raw.get("content", [])
     if not content or content[0].get("type") != "text":
         return DbGatewayResult(
@@ -77,8 +44,71 @@ async def query_db_gateway_mcp(
     )
 
 
+async def query_db_gateway_mcp(
+    *,
+    cfg: Any,
+    database: str,
+    sql: str,
+    ticket_id: str,
+) -> DbGatewayResult:
+    endpoint = _mcp_endpoint(cfg.db_gateway.url)
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    if cfg.db_gateway.api_key:
+        headers["Authorization"] = f"Bearer {cfg.db_gateway.api_key}"
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "db_gateway_query",
+            "arguments": {
+                "database": database,
+                "sql": sql,
+                "ticket_id": ticket_id,
+            },
+        },
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=cfg.db_gateway.request_timeout_seconds + 5,
+        ) as client:
+            resp = await client.post(endpoint, json=payload, headers=headers)
+    except Exception as e:
+        return DbGatewayResult(success=False, code="MCP_ERROR", error=str(e))
+
+    if resp.status_code == 401:
+        return DbGatewayResult(
+            success=False,
+            code="UNAUTHORIZED",
+            error="DB Gateway MCP rejected the API key",
+        )
+    if resp.status_code >= 400:
+        return DbGatewayResult(
+            success=False,
+            code="MCP_HTTP_ERROR",
+            error=f"DB Gateway MCP HTTP {resp.status_code}: {resp.text[:500]}",
+        )
+
+    data = resp.json()
+    if "error" in data:
+        return DbGatewayResult(
+            success=False,
+            code="MCP_ERROR",
+            error=str(data["error"]),
+        )
+    raw = data.get("result", {})
+    if not isinstance(raw, dict):
+        return DbGatewayResult(
+            success=False,
+            code="MCP_BAD_RESPONSE",
+            error=f"unexpected MCP response: {data}",
+        )
+    return _parse_tool_result(raw)
+
+
 async def shutdown_db_gateway_mcp() -> None:
-    global _client
-    if _client is not None:
-        await _client.close()
-        _client = None
+    return None

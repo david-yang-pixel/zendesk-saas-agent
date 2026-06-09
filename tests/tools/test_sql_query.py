@@ -16,7 +16,6 @@ def sql_cfg(tmp_path, monkeypatch):
     cfg.db_gateway.url = "https://db-gateway.example.com"
     cfg.db_gateway.api_key = "secret"
     cfg.db_gateway.mcp_enabled = True
-    cfg.db_gateway.mcp_binary = "/tmp/db-gateway-mcp"
     cfg.db_gateway.request_timeout_seconds = 30
 
     monkeypatch.setattr("zd_agent.tools.sql_query.get_config", lambda: cfg)
