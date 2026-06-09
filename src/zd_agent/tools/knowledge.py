@@ -22,7 +22,7 @@ _MAX_MATCHES = 30
 _MAX_OUTPUT_CHARS = 5000
 _CONTEXT_LINES = 2
 _SEARCH_COMMAND_TIMEOUT_SECONDS = 10
-_TICKET_RECORD_PATH_NAMES = {"tickets", "ticket", "工单记录", "历史工单"}
+_TICKET_RECORD_PATH_NAMES = {"工单记录", "历史工单"}
 
 
 def _resolve_docs_dir() -> Path | None:
@@ -74,7 +74,10 @@ def _resolve_search_dir(docs_dir: Path, raw_path: Any) -> tuple[Path | None, str
         return None, "路径超出知识库范围"
 
     if not search_dir.exists():
-        return None, f"子目录不存在: {normalized}"
+        return (
+            docs_dir,
+            f"已忽略不存在的知识库子目录: {normalized}；已回退到知识库根目录搜索。",
+        )
     if not search_dir.is_dir():
         return None, f"path 不是目录: {normalized}"
     return search_dir, None
@@ -119,7 +122,7 @@ class KnowledgeSearch(Tool):
             )
 
         search_dir, path_error = _resolve_search_dir(docs_dir, args.get("path"))
-        if path_error:
+        if path_error and search_dir is None:
             return ToolResult(success=False, error=path_error)
         if search_dir is None:
             return ToolResult(success=False, error="知识库目录解析失败")
@@ -133,10 +136,13 @@ class KnowledgeSearch(Tool):
             output = await asyncio.to_thread(_search_with_python, search_dir, query)
 
         if not output:
-            return ToolResult(output=f"未找到匹配「{query}」的内容")
+            output = f"未找到匹配「{query}」的内容"
 
         if len(output) > _MAX_OUTPUT_CHARS:
             output = output[:_MAX_OUTPUT_CHARS] + "\n\n... (结果过多，已截断)"
+
+        if path_error:
+            output = f"{path_error}\n\n{output}"
 
         return ToolResult(output=output)
 

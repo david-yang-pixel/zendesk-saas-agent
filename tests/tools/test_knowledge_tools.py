@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from zd_agent.tools.knowledge import KnowledgeSearch, _resolve_search_dir
 
 
@@ -18,11 +20,37 @@ def test_knowledge_search_rejects_ticket_record_path(tmp_path: Path) -> None:
     docs_dir = tmp_path / "kb"
     docs_dir.mkdir()
 
-    search_dir, error = _resolve_search_dir(docs_dir, "tickets//")
+    search_dir, error = _resolve_search_dir(docs_dir, "工单记录//")
 
     assert search_dir is None
     assert error is not None
     assert "ticket_record_search" in error
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_falls_back_to_root_for_missing_subdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    (docs_dir / "index.md").write_text(
+        "Queuing indexing documents stuck\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeSearch().execute(
+        {"query": "Queuing indexing documents stuck", "path": "tickets/"},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is True
+    assert "已忽略不存在的知识库子目录: tickets" in result.output
+    assert "Queuing indexing documents stuck" in result.output
 
 
 def test_knowledge_search_rejects_path_traversal(tmp_path: Path) -> None:

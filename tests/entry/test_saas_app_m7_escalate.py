@@ -414,12 +414,10 @@ class TestZendeskTag:
 # ---------------------------------------------------------------------------
 
 class TestTriggerSkipEscalated:
-    """已转人工的工单从 4 个 entry 入口（mention / silence_waker /
-    zendesk_webhook / waiting_poller / silence_expired_ask）一律 skip。"""
+    """已转人工的工单从自动触发入口 skip；mention 仍可人工强制唤起。"""
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("source", [
-        "mention",
         "silence_waker",
         "zendesk_webhook",
         "waiting_poller",
@@ -473,6 +471,40 @@ class TestTriggerSkipEscalated:
 
         # 关键：dispatch 永远没被调用（因为 skip 在最顶部）
         manager.dispatch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_mention_can_dispatch_when_state_escalated(self, tmp_path) -> None:
+        """mention 是人工强制唤起入口，允许覆盖 escalated_to_human 状态。"""
+        state = _make_state(tmp_path)
+        state.set(9999, TicketState(
+            state="escalated_to_human",
+            first_seen=_now(),
+            escalated_at=_now(),
+            escalated_reason="customer_requested",
+        ))
+
+        queue: asyncio.Queue = asyncio.Queue()
+        manager = MagicMock()
+        manager.dispatch = AsyncMock()
+        await queue.put({"ticket_id": 9999, "source": "mention", "hint": "处理一下"})
+
+        with patch("zd_agent.config.get_config", return_value=_make_cfg()):
+            try:
+                await asyncio.wait_for(
+                    run_saas_trigger_consumer(
+                        queue, manager, state, cfg=_make_cfg(),
+                    ),
+                    timeout=0.3,
+                )
+            except asyncio.TimeoutError:
+                pass
+
+        manager.dispatch.assert_called_once_with(
+            9999,
+            dry_run=False,
+            trigger_type="webhook-mention",
+            hint="处理一下",
+        )
 
     @pytest.mark.asyncio
     async def test_trigger_skip_logs_decision(self, tmp_path) -> None:
