@@ -24,7 +24,8 @@ def load_json_or_sse_response(response: httpx.Response, *, context: str) -> dict
         return expect_json_object(data, context=context)
 
     parsed: dict[str, Any] | None = None
-    for block in response.text.split("\n\n"):
+    text = response.text.replace("\r\n", "\n").replace("\r", "\n")
+    for block in text.split("\n\n"):
         data_lines = [
             line.partition(":")[2].lstrip()
             for line in block.splitlines()
