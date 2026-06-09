@@ -130,3 +130,34 @@ async def test_query_db_gateway_returns_structured_error_on_non_object_json(
     assert result.success is False
     assert result.code == "BAD_RESPONSE"
     assert "Expected DB gateway JSON object" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_query_db_gateway_returns_structured_error_on_bad_numeric_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_async_client(
+        monkeypatch,
+        lambda _request: httpx.Response(
+            200,
+            json={
+                "success": True,
+                "csv": "ok\n1\n",
+                "row_count": "not-a-number",
+                "elapsed_ms": "also-bad",
+            },
+        ),
+    )
+
+    result = await db_gateway.query_db_gateway(
+        url="https://db.example.com",
+        api_key="secret",
+        database="prod",
+        sql="select 1",
+        ticket_id="2861",
+        timeout=30,
+    )
+
+    assert result.success is False
+    assert result.code == "BAD_RESPONSE"
+    assert "Invalid DB gateway numeric field" in (result.error or "")

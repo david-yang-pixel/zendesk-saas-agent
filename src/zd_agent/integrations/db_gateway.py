@@ -18,6 +18,13 @@ class DbGatewayResult:
     error: str | None = None
 
 
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 async def query_db_gateway(
     *,
     url: str,
@@ -77,12 +84,24 @@ async def query_db_gateway(
             code="BAD_RESPONSE",
             error=f"Expected DB gateway JSON object, got {type(data).__name__}",
         )
+    row_count = _coerce_int(data.get("row_count"))
+    elapsed_ms = _coerce_int(data.get("elapsed_ms"))
+    if row_count is None or elapsed_ms is None:
+        return DbGatewayResult(
+            success=False,
+            code="BAD_RESPONSE",
+            error=(
+                "Invalid DB gateway numeric field: "
+                f"row_count={data.get('row_count')!r} "
+                f"elapsed_ms={data.get('elapsed_ms')!r}"
+            ),
+        )
 
     return DbGatewayResult(
         success=bool(data.get("success")),
         csv=str(data.get("csv") or ""),
-        row_count=int(data.get("row_count") or 0),
-        elapsed_ms=int(data.get("elapsed_ms") or 0),
+        row_count=row_count,
+        elapsed_ms=elapsed_ms,
         truncated=bool(data.get("truncated")),
         code=str(data.get("code") or ""),
         error=data.get("error"),
