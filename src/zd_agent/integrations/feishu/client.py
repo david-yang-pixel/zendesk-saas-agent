@@ -78,8 +78,19 @@ class FeishuClient:
                 body["timestamp"] = str(ts)
                 body["sign"] = _gen_sign(ts, self.webhook_secret)
 
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.post(self.webhook_url, json=body)
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(self.webhook_url, json=body)
+            except httpx.HTTPError as e:
+                if self._should_retry_transport_error(attempt):
+                    await self._sleep_before_retry(
+                        attempt,
+                        reason=f"transport_{type(e).__name__}",
+                    )
+                    continue
+                raise RuntimeError(
+                    f"Feishu webhook request failed: {type(e).__name__}"
+                ) from e
 
             if resp.status_code != 200:
                 if self._should_retry_http(resp.status_code, attempt):
@@ -106,6 +117,9 @@ class FeishuClient:
 
     def _should_retry_code(self, code: Any, attempt: int) -> bool:
         return code == 11232 and attempt < len(self.retry_delays)
+
+    def _should_retry_transport_error(self, attempt: int) -> bool:
+        return attempt < len(self.retry_delays)
 
     async def _sleep_before_retry(self, attempt: int, *, reason: str) -> None:
         delay = self.retry_delays[attempt]

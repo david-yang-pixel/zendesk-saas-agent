@@ -33,6 +33,34 @@ def _safe_error_text(value: Any) -> str:
     return text[:300]
 
 
+def _mcp_text_content(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "text":
+            continue
+        text = str(item.get("text") or "").strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _coerce_ticket_id(value: Any, *, fallback: int, context: str) -> int:
+    candidate = fallback if value in (None, "") else value
+    if isinstance(candidate, bool):
+        raise RuntimeError(f"{context} invalid ticket_id: {candidate!r}")
+    try:
+        ticket_id = int(candidate)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{context} invalid ticket_id: {candidate!r}") from exc
+    if ticket_id < 1:
+        raise RuntimeError(f"{context} invalid ticket_id: {candidate!r}")
+    return ticket_id
+
+
 def _uses_mcp_endpoint(base_url: str) -> bool:
     lowered = base_url.lower().rstrip("/")
     return lowered.endswith("/mcp") or lowered.endswith("/zendesk-reply-mcp")
@@ -106,7 +134,11 @@ async def send_browser_relay_reply(
 
     return _ensure_sent(BrowserRelaySendResult(
         ok=bool(data.get("ok")),
-        ticket_id=int(data.get("ticket_id") or ticket_id),
+        ticket_id=_coerce_ticket_id(
+            data.get("ticket_id"),
+            fallback=ticket_id,
+            context="Zendesk browser relay response",
+        ),
         status=str(data.get("status") or "unknown"),
         current_url=data.get("current_url") or None,
         error=data.get("error") or None,
@@ -183,12 +215,23 @@ async def _send_via_mcp(
         result.get("structuredContent") or {},
         context="Zendesk browser relay MCP structuredContent",
     )
+    is_error = bool(result.get("isError"))
+    error_text = structured.get("error")
+    if is_error and not error_text:
+        error_text = _mcp_text_content(result.get("content"))
     return BrowserRelaySendResult(
-        ok=bool(structured.get("ok")) and not bool(result.get("isError")),
-        ticket_id=int(structured.get("ticket_id") or ticket_id),
-        status=str(structured.get("status") or "unknown"),
+        ok=bool(structured.get("ok")) and not is_error,
+        ticket_id=_coerce_ticket_id(
+            structured.get("ticket_id"),
+            fallback=ticket_id,
+            context="Zendesk browser relay MCP response",
+        ),
+        status=str(
+            structured.get("status")
+            or ("mcp_tool_error" if is_error else "unknown")
+        ),
         current_url=structured.get("current_url") or None,
-        error=structured.get("error") or None,
+        error=error_text or None,
     )
 
 

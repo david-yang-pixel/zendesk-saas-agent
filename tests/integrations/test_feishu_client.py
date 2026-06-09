@@ -1,6 +1,7 @@
 """Test Feishu custom-bot client + card builders."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from zd_agent.integrations.feishu.cards import (
@@ -143,6 +144,25 @@ async def test_send_card_retries_feishu_rate_limit_code_11232():
     mock_http = MagicMock()
     mock_http.post = AsyncMock(side_effect=[
         _mock_response(200, {"code": 11232, "msg": "frequency limited"}),
+        _mock_response(200, {"code": 0, "msg": "success"}),
+    ])
+
+    with patch("httpx.AsyncClient", return_value=_AsyncClientCtx(mock_http)):
+        await client.send_alert(title="T", message="M")
+
+    assert mock_http.post.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_send_card_retries_transport_error_once():
+    client = FeishuClient(
+        webhook_url="https://open.feishu.cn/open-apis/bot/v2/hook/test",
+        retry_delays=(0,),
+    )
+    mock_http = MagicMock()
+    request = httpx.Request("POST", client.webhook_url)
+    mock_http.post = AsyncMock(side_effect=[
+        httpx.ConnectError("network down", request=request),
         _mock_response(200, {"code": 0, "msg": "success"}),
     ])
 

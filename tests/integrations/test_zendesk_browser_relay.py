@@ -235,6 +235,96 @@ async def test_send_browser_relay_reply_rejects_non_object_mcp_response() -> Non
 
 
 @pytest.mark.asyncio
+async def test_send_browser_relay_reply_reports_mcp_tool_error_text() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "login_required: browser session expired",
+                        }
+                    ],
+                    "isError": True,
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.zendesk_browser_relay.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        with pytest.raises(RuntimeError, match="browser session expired"):
+            await send_browser_relay_reply(
+                url="https://zendesk.smlershou.top/zendesk-reply-mcp",
+                api_key="secret",
+                ticket_id=2861,
+                body="hello",
+            )
+
+
+@pytest.mark.asyncio
+async def test_send_browser_relay_reply_rejects_invalid_ticket_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True, "ticket_id": "not-a-number", "status": "sent"},
+        )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.zendesk_browser_relay.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        with pytest.raises(RuntimeError, match="invalid ticket_id"):
+            await send_browser_relay_reply(
+                url="http://127.0.0.1:8097",
+                api_key="secret",
+                ticket_id=2861,
+                body="hello",
+            )
+
+
+@pytest.mark.asyncio
+async def test_send_browser_relay_reply_rejects_invalid_mcp_ticket_id() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [{"type": "text", "text": "sent"}],
+                    "structuredContent": {
+                        "ok": True,
+                        "ticket_id": "not-a-number",
+                        "status": "sent",
+                    },
+                    "isError": False,
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.zendesk_browser_relay.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        with pytest.raises(RuntimeError, match="invalid ticket_id"):
+            await send_browser_relay_reply(
+                url="https://zendesk.smlershou.top/zendesk-reply-mcp",
+                api_key="secret",
+                ticket_id=2861,
+                body="hello",
+            )
+
+
+@pytest.mark.asyncio
 async def test_send_browser_relay_reply_rejects_bad_api_key() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"detail": "Forbidden"})
