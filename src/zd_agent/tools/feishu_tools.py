@@ -55,6 +55,22 @@ class FeishuPush(Tool):
     async def execute(
         self, args: dict[str, Any], session: "AgentSession",
     ) -> ToolResult:
+        card_type = args["card_type"]
+        if not isinstance(card_type, str):
+            return ToolResult(success=False, error="card_type must be a string")
+        content = args.get("content", "")
+        if not isinstance(content, str):
+            return ToolResult(success=False, error="content must be a string")
+        title = args.get("title", "Alert")
+        if not isinstance(title, str):
+            return ToolResult(success=False, error="title must be a string")
+        zendesk_url = args.get("zendesk_url", "")
+        if not isinstance(zendesk_url, str):
+            return ToolResult(success=False, error="zendesk_url must be a string")
+        urgent = args.get("urgent", False)
+        if not isinstance(urgent, bool):
+            return ToolResult(success=False, error="urgent must be a boolean")
+
         cfg = get_config().feishu
         if not cfg.webhook_url:
             return ToolResult(
@@ -66,8 +82,6 @@ class FeishuPush(Tool):
             webhook_url=cfg.webhook_url,
             webhook_secret=cfg.webhook_secret,
         )
-        card_type = args["card_type"]
-        content = args.get("content", "")
         logger.info(
             "feishu_push_start",
             ticket_id=session.ticket_id,
@@ -78,19 +92,19 @@ class FeishuPush(Tool):
                 await client.send_ticket_done(
                     ticket_id=str(session.ticket_id),
                     summary=content,
-                    zendesk_url=args.get("zendesk_url", ""),
+                    zendesk_url=zendesk_url,
                 )
             elif card_type == "ticket_escalate":
                 await client.send_ticket_escalate(
                     ticket_id=str(session.ticket_id),
                     reason=content,
-                    zendesk_url=args.get("zendesk_url", ""),
+                    zendesk_url=zendesk_url,
                 )
             elif card_type == "alert":
                 await client.send_alert(
-                    title=args.get("title", "Alert"),
+                    title=title,
                     message=content,
-                    urgent=args.get("urgent", False),
+                    urgent=urgent,
                 )
             else:
                 return ToolResult(
