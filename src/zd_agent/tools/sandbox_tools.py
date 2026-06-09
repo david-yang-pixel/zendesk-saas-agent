@@ -38,6 +38,22 @@ def _coerce_int_arg(
     return max(minimum, min(value, maximum))
 
 
+def _coerce_required_string_arg(args: dict[str, Any], name: str) -> str | ToolResult:
+    value = args.get(name)
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return value
+
+
+def _coerce_optional_string_arg(args: dict[str, Any], name: str) -> str | ToolResult | None:
+    value = args.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return value
+
+
 class SandboxCreateWorktree(Tool):
     name = "sandbox_create_worktree"
     description = "在 sandbox 中为指定仓库创建 git worktree（用于需要完整文件系统的排查场景）"
@@ -64,12 +80,19 @@ class SandboxCreateWorktree(Tool):
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
 
-        repo_dir = resolve_repo(args["repo"])
+        repo = _coerce_required_string_arg(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        ref = _coerce_required_string_arg(args, "ref")
+        if isinstance(ref, ToolResult):
+            return ref
+
+        repo_dir = resolve_repo(repo)
         if repo_dir is None:
-            return ToolResult(success=False, error=f"仓库未找到: {args['repo']}")
+            return ToolResult(success=False, error=f"仓库未找到: {repo}")
 
         # resolve() 消除 macOS /tmp → /private/tmp 符号链接差异
-        worktree_path = (session.sandbox_dir / "worktree" / args["repo"]).resolve()
+        worktree_path = (session.sandbox_dir / "worktree" / repo).resolve()
         worktree_path.parent.mkdir(parents=True, exist_ok=True)
 
         if worktree_path.exists() and (worktree_path / ".git").exists():
@@ -86,7 +109,7 @@ class SandboxCreateWorktree(Tool):
                     "--force",
                     "--detach",
                     str(worktree_path),
-                    args["ref"],
+                    ref,
                 )
                 if code != 0:
                     raise RuntimeError((err or out).strip())
@@ -103,11 +126,11 @@ class SandboxCreateWorktree(Tool):
                 policy=get_retry_policy("sandbox"),
                 func=_create_worktree,
                 should_retry=_should_retry,
-                log_context={"repo": args["repo"], "ref": args["ref"]},
+                log_context={"repo": repo, "ref": ref},
             )
 
             return ToolResult(
-                output=f"已创建 worktree: {worktree_path}\n版本: {args['ref']}\n仓库: {args['repo']}"
+                output=f"已创建 worktree: {worktree_path}\n版本: {ref}\n仓库: {repo}"
             )
         except Exception as e:
             return ToolResult(success=False, error=f"创建 worktree 失败: {e}")
@@ -140,15 +163,22 @@ class SandboxWrite(Tool):
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
 
+        filepath = _coerce_required_string_arg(args, "filepath")
+        if isinstance(filepath, ToolResult):
+            return filepath
+        content = _coerce_required_string_arg(args, "content")
+        if isinstance(content, ToolResult):
+            return content
+
         sandbox_root = _sandbox_root(session)
-        target = (sandbox_root / args["filepath"]).resolve()
+        target = (sandbox_root / filepath).resolve()
         if not _is_within(target, sandbox_root):
             return ToolResult(success=False, error="路径超出 sandbox 范围")
 
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(args["content"], encoding="utf-8")
-            return ToolResult(output=f"已写入: {args['filepath']}")
+            target.write_text(content, encoding="utf-8")
+            return ToolResult(output=f"已写入: {filepath}")
         except Exception as e:
             return ToolResult(success=False, error=str(e))
 
@@ -182,13 +212,17 @@ class SandboxRead(Tool):
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
 
+        filepath = _coerce_required_string_arg(args, "filepath")
+        if isinstance(filepath, ToolResult):
+            return filepath
+
         sandbox_root = _sandbox_root(session)
-        target = (sandbox_root / args["filepath"]).resolve()
+        target = (sandbox_root / filepath).resolve()
         if not _is_within(target, sandbox_root):
             return ToolResult(success=False, error="路径超出 sandbox 范围")
 
         if not target.exists():
-            return ToolResult(success=False, error=f"文件不存在: {args['filepath']}")
+            return ToolResult(success=False, error=f"文件不存在: {filepath}")
 
         try:
             content = target.read_text(encoding="utf-8")
@@ -223,7 +257,7 @@ class SandboxRead(Tool):
             if len(output) > READ_MAX_CHARS:
                 output = output[:READ_MAX_CHARS] + "\n\n... (片段过长，已截断)"
 
-            header = f"文件: {args['filepath']}\n行号: {start_line}-{end_line}/{len(lines)}\n"
+            header = f"文件: {filepath}\n行号: {start_line}-{end_line}/{len(lines)}\n"
             if end_line < len(lines):
                 header += "提示: 文件未完整返回；如需更多内容，请继续读取相邻行号区间。\n"
             return ToolResult(output=f"{header}\n{output}")
@@ -256,12 +290,15 @@ class SandboxList(Tool):
     requires_sandbox = True
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        target = _resolve_sandbox_path(session, args.get("path", ""))
+        raw_path = _coerce_optional_string_arg(args, "path")
+        if isinstance(raw_path, ToolResult):
+            return raw_path
+        target = _resolve_sandbox_path(session, raw_path or "")
         if isinstance(target, ToolResult):
             return target
 
         if not target.exists():
-            return ToolResult(success=False, error=f"路径不存在: {args.get('path', '.')}")
+            return ToolResult(success=False, error=f"路径不存在: {raw_path or '.'}")
 
         max_depth = _coerce_int_arg(args, "max_depth", 2, minimum=0, maximum=6)
         if isinstance(max_depth, ToolResult):
@@ -332,22 +369,32 @@ class SandboxSearch(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        target = _resolve_sandbox_path(session, args.get("path", ""))
+        pattern = _coerce_required_string_arg(args, "pattern")
+        if isinstance(pattern, ToolResult):
+            return pattern
+        raw_path = _coerce_optional_string_arg(args, "path")
+        if isinstance(raw_path, ToolResult):
+            return raw_path
+        glob = _coerce_optional_string_arg(args, "glob")
+        if isinstance(glob, ToolResult):
+            return glob
+
+        target = _resolve_sandbox_path(session, raw_path or "")
         if isinstance(target, ToolResult):
             return target
 
         if not target.exists():
-            return ToolResult(success=False, error=f"路径不存在: {args.get('path', '.')}")
+            return ToolResult(success=False, error=f"路径不存在: {raw_path or '.'}")
 
-        output = await _search_with_rg(target, args["pattern"], args.get("glob"))
+        output = await _search_with_rg(target, pattern, glob)
         if output is None:
             output = await asyncio.to_thread(
-                _search_with_python, target, args["pattern"], args.get("glob")
+                _search_with_python, target, pattern, glob
             )
 
         if not output:
-            return ToolResult(output=f"未找到匹配「{args['pattern']}」的内容")
-        trimmed = _trim_search_output(output, args["pattern"])
+            return ToolResult(output=f"未找到匹配「{pattern}」的内容")
+        trimmed = _trim_search_output(output, pattern)
         return ToolResult(output=trimmed)
 
 
