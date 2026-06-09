@@ -121,6 +121,8 @@ class ZendeskKgSearch(Tool):
             )
 
         query = args.get("query", "")
+        if not isinstance(query, str):
+            return ToolResult(success=False, error="query must be a string")
         if not query.strip():
             return ToolResult(success=False, error="query 不能为空")
 
