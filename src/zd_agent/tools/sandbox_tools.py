@@ -194,11 +194,27 @@ class SandboxRead(Tool):
             content = target.read_text(encoding="utf-8")
             lines = content.splitlines()
 
-            start_line = int(args.get("start_line", 1))
-            if start_line < 1:
-                start_line = 1
-            end_line = int(args.get("end_line", start_line + READ_MAX_LINES - 1))
-            end_line = min(max(end_line, start_line), len(lines))
+            max_start_line = max(len(lines), 1)
+            start_line = _coerce_int_arg(
+                args,
+                "start_line",
+                1,
+                minimum=1,
+                maximum=max_start_line,
+            )
+            if isinstance(start_line, ToolResult):
+                return start_line
+
+            max_end_line = max(len(lines), start_line)
+            end_line = _coerce_int_arg(
+                args,
+                "end_line",
+                start_line + READ_MAX_LINES - 1,
+                minimum=start_line,
+                maximum=max_end_line,
+            )
+            if isinstance(end_line, ToolResult):
+                return end_line
 
             selected = lines[start_line - 1:end_line]
             numbered = [f"{idx}|{line}" for idx, line in enumerate(selected, start=start_line)]
