@@ -431,6 +431,20 @@ class ZendeskPublicReply(Tool):
                     f"must be one of {sorted(_VALID_REPLY_TYPES)}"
                 ),
             )
+        if getattr(session, "reply_sent", False):
+            logger.warning(
+                "public_reply_duplicate_blocked",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Public reply already sent in this agent session; "
+                    "do not send another customer-visible reply. Use archive_ticket "
+                    "for the processing summary, or re-fetch the ticket before retrying."
+                ),
+            )
 
         # 3. Footer 强制追加（幂等）
         body_with_footer = _append_footer(body, reply_type)

@@ -123,3 +123,62 @@ async def test_query_db_gateway_mcp_accepts_url_that_already_ends_with_mcp() -> 
 
     assert result.success is True
     assert seen_urls == ["https://db-gateway.example.com/db-gateway/mcp"]
+
+
+@pytest.mark.asyncio
+async def test_query_db_gateway_mcp_handles_invalid_json_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json")
+
+    cfg = SimpleNamespace(
+        db_gateway=SimpleNamespace(
+            url="https://db-gateway.example.com/db-gateway/mcp",
+            api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.db_gateway_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await query_db_gateway_mcp(
+            cfg=cfg,
+            database="prod",
+            sql="select 1",
+            ticket_id="2830",
+        )
+
+    assert result.success is False
+    assert result.code == "MCP_BAD_JSON"
+    assert "invalid MCP JSON response" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_query_db_gateway_mcp_handles_non_object_json_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["not", "an", "object"])
+
+    cfg = SimpleNamespace(
+        db_gateway=SimpleNamespace(
+            url="https://db-gateway.example.com/db-gateway/mcp",
+            api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.db_gateway_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await query_db_gateway_mcp(
+            cfg=cfg,
+            database="prod",
+            sql="select 1",
+            ticket_id="2830",
+        )
+
+    assert result.success is False
+    assert result.code == "MCP_BAD_RESPONSE"

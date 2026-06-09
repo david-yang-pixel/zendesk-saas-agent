@@ -93,7 +93,20 @@ async def query_db_gateway_mcp(
             error=f"DB Gateway MCP HTTP {resp.status_code}: {resp.text[:500]}",
         )
 
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError as e:
+        return DbGatewayResult(
+            success=False,
+            code="MCP_BAD_JSON",
+            error=f"invalid MCP JSON response: {e}",
+        )
+    if not isinstance(data, dict):
+        return DbGatewayResult(
+            success=False,
+            code="MCP_BAD_RESPONSE",
+            error=f"unexpected MCP response: {data}",
+        )
     if "error" in data:
         return DbGatewayResult(
             success=False,

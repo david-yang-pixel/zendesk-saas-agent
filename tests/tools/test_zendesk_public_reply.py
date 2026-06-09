@@ -221,6 +221,34 @@ class TestExecute:
         assert sess.reply_sent is False
 
     @pytest.mark.asyncio
+    async def test_execute_rejects_duplicate_public_reply_in_same_session(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.reply_sent = True
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Hi there",
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert not r.success
+        assert "already sent" in r.error
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_missing_conversation_id_does_not_fall_back_to_public_comment(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
