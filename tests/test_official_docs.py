@@ -1,6 +1,12 @@
 import unittest
 
-from zd_agent.tools.official_docs import OfficialDocEntry, parse_llms_index, search_doc_entries
+from zd_agent.session.agent_session import AgentSession
+from zd_agent.tools.official_docs import (
+    OfficialDocEntry,
+    OfficialDocsSearch,
+    parse_llms_index,
+    search_doc_entries,
+)
 
 
 class OfficialDocsTest(unittest.TestCase):
@@ -51,6 +57,19 @@ class OfficialDocsTest(unittest.TestCase):
         self.assertEqual(len(matches), 2)
         self.assertEqual(matches[0].title, "Dify Helm Chart")
         self.assertEqual(matches[1].title, "环境变量说明")
+
+
+class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_search_rejects_invalid_limit(self) -> None:
+        tool = OfficialDocsSearch()
+
+        result = await tool.execute(
+            {"query": "helm", "limit": "many"},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("limit", result.error or "")
 
 
 if __name__ == "__main__":

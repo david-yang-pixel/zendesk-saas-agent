@@ -27,6 +27,14 @@ MAX_READ_CHARS = 18000
 _INDEX_CACHE: dict[str, list["OfficialDocEntry"]] = {}
 
 
+def _coerce_limit(value: Any, *, default: int = 5, maximum: int = 10) -> int | ToolResult:
+    try:
+        limit = int(default if value is None else value)
+    except (TypeError, ValueError):
+        return ToolResult(success=False, error="limit must be an integer")
+    return max(1, min(limit, maximum))
+
+
 @dataclass(frozen=True)
 class OfficialDocEntry:
     """单篇官方文档索引条目。"""
@@ -130,7 +138,9 @@ class OfficialDocsSearch(Tool):
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         query = args["query"]
         source = args.get("source", "auto")
-        limit = max(1, min(int(args.get("limit", 5)), 10))
+        limit = _coerce_limit(args.get("limit"))
+        if isinstance(limit, ToolResult):
+            return limit
 
         sources = _resolve_sources(source)
         results: list[OfficialDocEntry] = []
