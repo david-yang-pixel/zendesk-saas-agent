@@ -58,6 +58,35 @@ async def test_classify_invalid_type_falls_back(fake_session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("args", "expected_error"),
+    [
+        (
+            {"ticket_type": ["workflow"], "reasoning": "x"},
+            "ticket_type must be a string",
+        ),
+        (
+            {"ticket_type": "workflow", "reasoning": {"why": "x"}},
+            "reasoning must be a string",
+        ),
+    ],
+)
+async def test_classify_rejects_invalid_argument_types(
+    fake_session, args, expected_error,
+):
+    tool = ClassifyTicket()
+    fake_session.ticket_type = ""
+    fake_session.classification_reasoning = ""
+
+    r = await tool.execute(args, fake_session)
+
+    assert r.success is False
+    assert r.error == expected_error
+    assert fake_session.ticket_type == ""
+    assert fake_session.classification_reasoning == ""
+
+
+@pytest.mark.asyncio
 async def test_all_saas_strategy_files_load(fake_session):
     tool = ClassifyTicket()
     saas_types = [

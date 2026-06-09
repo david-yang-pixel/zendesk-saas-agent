@@ -121,6 +121,10 @@ class ClassifyTicket(Tool):
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         ticket_type = args.get("ticket_type", DEFAULT_TYPE)
         reasoning = args.get("reasoning", "")
+        if not isinstance(ticket_type, str):
+            return ToolResult(success=False, error="ticket_type must be a string")
+        if not isinstance(reasoning, str):
+            return ToolResult(success=False, error="reasoning must be a string")
 
         if ticket_type not in VALID_TYPES:
             logger.warning(
