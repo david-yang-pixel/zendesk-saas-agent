@@ -293,6 +293,37 @@ class TestIntegration:
         _mock_client.reply_ticket.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_invalid_body_and_summary_types_rejected(self, _mock_client) -> None:
+        from zd_agent.tools.zendesk import ZendeskInternalReply
+
+        with patch(
+            "zd_agent.tools.zendesk.get_config",
+            return_value=_make_cfg(public_reply_enabled=True),
+        ):
+            tool = ZendeskInternalReply()
+            r = await tool.execute(
+                _make_args(["not markdown"]),
+                _make_session(),
+            )
+
+        assert not r.success
+        assert "body" in r.error
+        _mock_client.reply_ticket.assert_not_called()
+
+        with patch(
+            "zd_agent.tools.zendesk.get_config",
+            return_value=_make_cfg(public_reply_enabled=True),
+        ):
+            tool = ZendeskInternalReply()
+            args = _make_args("## Internal Analysis\n\nx\n")
+            args["summary"] = ["not summary"]
+            r = await tool.execute(args, _make_session())
+
+        assert not r.success
+        assert "summary" in r.error
+        _mock_client.reply_ticket.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_skips_internal_note_after_public_reply_sent(
         self, _mock_client,
     ) -> None:

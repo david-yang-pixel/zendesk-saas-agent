@@ -904,15 +904,22 @@ class ZendeskInternalReply(Tool):
 
         body_md = args["body"]
         summary = args.get("summary", {})
+        ticket_id = args["ticket_id"]
+        if not isinstance(ticket_id, int) or isinstance(ticket_id, bool):
+            return ToolResult(success=False, error="ticket_id must be an integer")
+        if not isinstance(body_md, str):
+            return ToolResult(success=False, error="body must be a string")
+        if not isinstance(summary, dict):
+            return ToolResult(success=False, error="summary must be an object")
 
         if getattr(session, "reply_sent", False):
             logger.info(
                 "internal_reply_skipped_public_already_sent",
-                ticket_id=args["ticket_id"],
+                ticket_id=ticket_id,
             )
             return ToolResult(
                 output=(
-                    f"Skipped Internal Note for ticket #{args['ticket_id']} "
+                    f"Skipped Internal Note for ticket #{ticket_id} "
                     "because a customer-visible public reply was already sent."
                 ),
             )
@@ -978,7 +985,7 @@ class ZendeskInternalReply(Tool):
         try:
             await _call_with_rate_limit_retry(
                 client.reply_ticket,
-                args["ticket_id"],
+                ticket_id,
                 plain_body,
                 False,
                 html_body=html_body,
@@ -990,7 +997,7 @@ class ZendeskInternalReply(Tool):
 
         return ToolResult(
             output=(
-                f"已发送 Internal Note 到工单 #{args['ticket_id']} "
+                f"已发送 Internal Note 到工单 #{ticket_id} "
                 "(not customer-visible; use zendesk_public_reply for customer replies)"
             ),
         )
