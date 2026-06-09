@@ -37,6 +37,22 @@ def _coerce_limit(value: Any, *, default: int = 30, maximum: int = 200) -> int |
     return max(1, min(limit, maximum))
 
 
+def _coerce_required_string(args: dict[str, Any], name: str) -> str | ToolResult:
+    value = args.get(name)
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return value
+
+
+def _coerce_optional_string(args: dict[str, Any], name: str) -> str | ToolResult | None:
+    value = args.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return value
+
+
 def _is_complex_regex(pattern: str) -> bool:
     """检测正则是否过于复杂，git grep 的 POSIX regex 可能无法处理"""
     if _COMPLEX_RE_PATTERN.search(pattern):
@@ -119,17 +135,25 @@ class GitShow(Tool):
     group = "source_code"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        repo_dir = resolve_repo(args["repo"])
-        if repo_dir is None:
-            return ToolResult(success=False, error=f"仓库未找到: {args['repo']}")
+        repo = _coerce_required_string(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        ref = _coerce_required_string(args, "ref")
+        if isinstance(ref, ToolResult):
+            return ref
+        filepath = _coerce_required_string(args, "filepath")
+        if isinstance(filepath, ToolResult):
+            return filepath
 
-        ref = args["ref"]
-        filepath = args["filepath"]
+        repo_dir = resolve_repo(repo)
+        if repo_dir is None:
+            return ToolResult(success=False, error=f"仓库未找到: {repo}")
+
         code, out, err = await _run_git(str(repo_dir), "show", f"{ref}:{filepath}")
 
         # 版本不存在时自动 fetch 重试
         if code != 0 and _is_ref_not_found(err):
-            if await _auto_fetch_repo(args["repo"]):
+            if await _auto_fetch_repo(repo):
                 code, out, err = await _run_git(str(repo_dir), "show", f"{ref}:{filepath}")
 
         if code != 0:
@@ -167,11 +191,22 @@ class GitGrep(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        repo_dir = resolve_repo(args["repo"])
-        if repo_dir is None:
-            return ToolResult(success=False, error=f"仓库未找到: {args['repo']}")
+        repo = _coerce_required_string(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        ref = _coerce_required_string(args, "ref")
+        if isinstance(ref, ToolResult):
+            return ref
+        pattern = _coerce_required_string(args, "pattern")
+        if isinstance(pattern, ToolResult):
+            return pattern
+        glob = _coerce_optional_string(args, "glob")
+        if isinstance(glob, ToolResult):
+            return glob
 
-        pattern = args["pattern"]
+        repo_dir = resolve_repo(repo)
+        if repo_dir is None:
+            return ToolResult(success=False, error=f"仓库未找到: {repo}")
 
         # 如果正则过于复杂（含多个特殊量词/断言），回退为固定字符串搜索
         use_fixed = len(pattern) > 120 or _is_complex_regex(pattern)
@@ -179,25 +214,25 @@ class GitGrep(Tool):
 
         git_args = [
             "grep", "-n", "--break", "--heading", "-i",
-            grep_flag, pattern, args["ref"],
+            grep_flag, pattern, ref,
         ]
-        if glob := args.get("glob"):
+        if glob:
             git_args.extend(["--", glob])
 
         code, out, err = await _run_git(str(repo_dir), *git_args)
 
         # 版本不存在时自动 fetch 重试
         if code != 0 and code != 1 and _is_ref_not_found(err):
-            if await _auto_fetch_repo(args["repo"]):
+            if await _auto_fetch_repo(repo):
                 code, out, err = await _run_git(str(repo_dir), *git_args)
 
         # 正则语法错误时，自动回退为固定字符串重试
         if code != 0 and code != 1 and not use_fixed and "invalid" in err.lower():
             git_args_fixed = [
                 "grep", "-n", "--break", "--heading", "-i",
-                "-F", pattern, args["ref"],
+                "-F", pattern, ref,
             ]
-            if glob := args.get("glob"):
+            if glob:
                 git_args_fixed.extend(["--", glob])
             code, out, err = await _run_git(str(repo_dir), *git_args_fixed)
 
@@ -238,23 +273,35 @@ class GitLog(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        repo_dir = resolve_repo(args["repo"])
-        if repo_dir is None:
-            return ToolResult(success=False, error=f"仓库未找到: {args['repo']}")
+        repo = _coerce_required_string(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        ref = _coerce_required_string(args, "ref")
+        if isinstance(ref, ToolResult):
+            return ref
+        filepath = _coerce_optional_string(args, "filepath")
+        if isinstance(filepath, ToolResult):
+            return filepath
+        limit = _coerce_limit(args.get("n"), default=20)
+        if isinstance(limit, ToolResult):
+            return limit
 
-        n = str(args.get("n", 20))
+        repo_dir = resolve_repo(repo)
+        if repo_dir is None:
+            return ToolResult(success=False, error=f"仓库未找到: {repo}")
+
         git_args = [
-            "log", args["ref"],
-            f"-{n}",
+            "log", ref,
+            f"-{limit}",
             "--oneline", "--decorate",
         ]
-        if filepath := args.get("filepath"):
+        if filepath:
             git_args.extend(["--", filepath])
 
         code, out, err = await _run_git(str(repo_dir), *git_args)
 
         if code != 0 and _is_ref_not_found(err):
-            if await _auto_fetch_repo(args["repo"]):
+            if await _auto_fetch_repo(repo):
                 code, out, err = await _run_git(str(repo_dir), *git_args)
 
         if code != 0:
@@ -292,18 +339,31 @@ class GitDiff(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        repo_dir = resolve_repo(args["repo"])
-        if repo_dir is None:
-            return ToolResult(success=False, error=f"仓库未找到: {args['repo']}")
+        repo = _coerce_required_string(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        ref1 = _coerce_required_string(args, "ref1")
+        if isinstance(ref1, ToolResult):
+            return ref1
+        ref2 = _coerce_required_string(args, "ref2")
+        if isinstance(ref2, ToolResult):
+            return ref2
+        filepath = _coerce_optional_string(args, "filepath")
+        if isinstance(filepath, ToolResult):
+            return filepath
 
-        git_args = ["diff", args["ref1"], args["ref2"], "--stat"]
-        if filepath := args.get("filepath"):
-            git_args = ["diff", args["ref1"], args["ref2"], "--", filepath]
+        repo_dir = resolve_repo(repo)
+        if repo_dir is None:
+            return ToolResult(success=False, error=f"仓库未找到: {repo}")
+
+        git_args = ["diff", ref1, ref2, "--stat"]
+        if filepath:
+            git_args = ["diff", ref1, ref2, "--", filepath]
 
         code, out, err = await _run_git(str(repo_dir), *git_args)
 
         if code != 0 and _is_ref_not_found(err):
-            if await _auto_fetch_repo(args["repo"]):
+            if await _auto_fetch_repo(repo):
                 code, out, err = await _run_git(str(repo_dir), *git_args)
 
         if code != 0:
@@ -361,7 +421,9 @@ class ListRepoTags(Tool):
     group = "source_code"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        repo_name = args["repo"]
+        repo_name = _coerce_required_string(args, "repo")
+        if isinstance(repo_name, ToolResult):
+            return repo_name
         repo_dir = resolve_repo(repo_name)
         if repo_dir is None:
             return ToolResult(success=False, error=f"仓库未找到: {repo_name}")
