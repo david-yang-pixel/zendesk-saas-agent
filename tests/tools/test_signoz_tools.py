@@ -52,6 +52,32 @@ async def test_errors_handles_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_errors_rejects_invalid_numeric_args_before_call(monkeypatch):
+    async def fake_run_sz(*args, **kw):
+        raise AssertionError("run_sz should not be called")
+    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+
+    r = await SignozErrors().execute({"hours": "soon"}, session=None)
+    assert not r.success
+    assert "hours" in (r.error or "")
+
+    r = await SignozErrors().execute({"limit": "many"}, session=None)
+    assert not r.success
+    assert "limit" in (r.error or "")
+
+
+@pytest.mark.asyncio
+async def test_query_rejects_invalid_hours_before_call(monkeypatch):
+    async def fake_run_sz(*args, **kw):
+        raise AssertionError("run_sz should not be called")
+    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+
+    r = await SignozQuery().execute({"sql": "SELECT 1", "hours": "later"}, session=None)
+    assert not r.success
+    assert "hours" in (r.error or "")
+
+
+@pytest.mark.asyncio
 async def test_query_requires_sql(monkeypatch):
     tool = SignozQuery()
     r = await tool.execute({}, session=None)

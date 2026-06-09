@@ -13,6 +13,32 @@ from zd_agent.tools.base import Tool, ToolResult
 
 _GROUP = "platform_issue"
 _MAX_OUT = 8000
+_MIN_HOURS = 0.01
+_MAX_HOURS = 168.0
+_MIN_LIMIT = 1
+_MAX_LIMIT = 1000
+
+
+def _coerce_hours(args: dict[str, Any], default: float) -> float | ToolResult:
+    try:
+        hours = float(args.get("hours", default))
+    except (TypeError, ValueError):
+        return ToolResult(
+            success=False,
+            error=f"hours must be a number in [{_MIN_HOURS}, {_MAX_HOURS}]",
+        )
+    return max(_MIN_HOURS, min(hours, _MAX_HOURS))
+
+
+def _coerce_limit(args: dict[str, Any], default: int) -> int | ToolResult:
+    try:
+        limit = int(args.get("limit", default))
+    except (TypeError, ValueError):
+        return ToolResult(
+            success=False,
+            error=f"limit must be an integer in [{_MIN_LIMIT}, {_MAX_LIMIT}]",
+        )
+    return max(_MIN_LIMIT, min(limit, _MAX_LIMIT))
 
 
 def _rows_to_text(rows: Any) -> str:
@@ -53,6 +79,13 @@ class SignozErrors(Tool):
     max_output_tokens = _MAX_OUT
 
     async def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
+        hours = _coerce_hours(args, 1)
+        if isinstance(hours, ToolResult):
+            return hours
+        limit = _coerce_limit(args, 30)
+        if isinstance(limit, ToolResult):
+            return limit
+
         sz_args = ["errors", "--env", str(args.get("env") or "production")]
         if args.get("tenant"):
             sz_args += ["--tenant", str(args["tenant"])]
@@ -60,8 +93,8 @@ class SignozErrors(Tool):
             sz_args += ["--grep", str(args["grep"])]
         if args.get("deployment"):
             sz_args += ["--deployment", str(args["deployment"])]
-        sz_args += ["--hours", str(args.get("hours", 1))]
-        sz_args += ["--limit", str(args.get("limit", 30))]
+        sz_args += ["--hours", str(hours)]
+        sz_args += ["--limit", str(limit)]
         rows = await run_sz(*sz_args)
         if rows is None:
             return ToolResult(success=False, error="sz errors 查询失败（SigNoz 不可达或 sz 缺失）")
@@ -90,6 +123,13 @@ class SignozTraceback(Tool):
     max_output_tokens = _MAX_OUT
 
     async def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
+        hours = _coerce_hours(args, 24)
+        if isinstance(hours, ToolResult):
+            return hours
+        limit = _coerce_limit(args, 5)
+        if isinstance(limit, ToolResult):
+            return limit
+
         sz_args = ["traceback"]
         if args.get("id"):
             sz_args += ["--id", str(args["id"])]
@@ -99,8 +139,8 @@ class SignozTraceback(Tool):
                 sz_args += ["--tenant", str(args["tenant"])]
             if args.get("grep"):
                 sz_args += ["--grep", str(args["grep"])]
-        sz_args += ["--hours", str(args.get("hours", 24))]
-        sz_args += ["--limit", str(args.get("limit", 5))]
+        sz_args += ["--hours", str(hours)]
+        sz_args += ["--limit", str(limit)]
         rows = await run_sz(*sz_args)
         if rows is None:
             return ToolResult(success=False, error="sz traceback 查询失败")
@@ -122,8 +162,15 @@ class SignozServices(Tool):
     max_output_tokens = _MAX_OUT
 
     async def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
+        hours = _coerce_hours(args, 1)
+        if isinstance(hours, ToolResult):
+            return hours
+        limit = _coerce_limit(args, 30)
+        if isinstance(limit, ToolResult):
+            return limit
+
         sz_args = ["services", "--env", str(args.get("env") or "production"),
-                   "--hours", str(args.get("hours", 1))]
+                   "--hours", str(hours), "--limit", str(limit)]
         rows = await run_sz(*sz_args)
         if rows is None:
             return ToolResult(success=False, error="sz services 查询失败")
@@ -154,7 +201,10 @@ class SignozQuery(Tool):
         sql = args.get("sql")
         if not sql:
             return ToolResult(success=False, error="sql 参数必填")
-        rows = await run_sz("query", str(sql), "--hours", str(args.get("hours", 1)))
+        hours = _coerce_hours(args, 1)
+        if isinstance(hours, ToolResult):
+            return hours
+        rows = await run_sz("query", str(sql), "--hours", str(hours))
         if rows is None:
             return ToolResult(success=False, error="sz query 执行失败（SQL 错误或 SigNoz 不可达）")
         return ToolResult(output=_rows_to_text(rows))
