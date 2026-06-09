@@ -28,6 +28,15 @@ class TestGithubSearchPrs(unittest.IsolatedAsyncioTestCase):
         self.assertIn("#123", result.output)
         self.assertIn("open", result.output)
 
+    async def test_search_prs_rejects_invalid_limit(self) -> None:
+        tool = GithubSearchPrs()
+        result = await tool.execute(
+            {"repo": "langgenius/dify", "query": "workspace null", "limit": "many"},
+            AgentSession(ticket_id=1),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("limit", result.error or "")
+
 
 class TestGithubGetPr(unittest.IsolatedAsyncioTestCase):
     @patch("zd_agent.tools.github_pr._github_request", new_callable=AsyncMock)
@@ -49,6 +58,15 @@ class TestGithubGetPr(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertIn("merged", result.output.lower())
         self.assertIn("auth retry", result.output.lower())
+
+    async def test_get_pr_rejects_invalid_pr_number(self) -> None:
+        tool = GithubGetPr()
+        result = await tool.execute(
+            {"repo": "langgenius/dify", "pr_number": "abc"},
+            AgentSession(ticket_id=1),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("pr_number", result.error or "")
 
 
 class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
@@ -131,3 +149,12 @@ class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
         result = await tool.execute({"query": "  "}, AgentSession(ticket_id=1))
         self.assertFalse(result.success)
         self.assertIn("不能为空", result.error)
+
+    async def test_code_search_rejects_invalid_limit(self) -> None:
+        tool = GithubCodeSearch()
+        result = await tool.execute(
+            {"query": "foo", "limit": "many"},
+            AgentSession(ticket_id=1),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("limit", result.error or "")

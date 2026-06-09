@@ -53,6 +53,26 @@ def _token_hint() -> str:
     return " 未配置 `github_token`，匿名请求可能触发 GitHub rate limit。"
 
 
+def _coerce_int_arg(
+    args: dict[str, Any],
+    name: str,
+    default: int | None = None,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int | ToolResult:
+    raw = args.get(name, default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return ToolResult(success=False, error=f"{name} must be an integer")
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
 class GithubSearchPrs(Tool):
     name = "github_search_prs"
     description = "搜索 GitHub pull requests，用于确认某个问题是否已有修复 PR"
@@ -84,7 +104,9 @@ class GithubSearchPrs(Tool):
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo = str(args["repo"]).strip()
         query = str(args["query"]).strip()
-        limit = max(1, min(int(args.get("limit", 5)), 10))
+        limit = _coerce_int_arg(args, "limit", 5, minimum=1, maximum=10)
+        if isinstance(limit, ToolResult):
+            return limit
         if not repo or not query:
             return ToolResult(success=False, error="repo 和 query 不能为空")
 
@@ -139,7 +161,9 @@ class GithubGetPr(Tool):
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         repo = str(args["repo"]).strip()
-        pr_number = int(args["pr_number"])
+        pr_number = _coerce_int_arg(args, "pr_number")
+        if isinstance(pr_number, ToolResult):
+            return pr_number
         if not repo:
             return ToolResult(success=False, error="repo 不能为空")
 
@@ -243,7 +267,9 @@ class GithubCodeSearch(Tool):
         scope = str(args.get("scope") or "langgenius").strip()
         language = (args.get("language") or "").strip()
         path = (args.get("path") or "").strip()
-        limit = max(1, min(int(args.get("limit", 10)), 30))
+        limit = _coerce_int_arg(args, "limit", 10, minimum=1, maximum=30)
+        if isinstance(limit, ToolResult):
+            return limit
 
         # 拼 GitHub search 的 qualifier。scope 同时支持 org 名和 owner/repo 格式
         qualifiers = [query]
