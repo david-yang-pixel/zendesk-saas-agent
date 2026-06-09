@@ -81,6 +81,8 @@ class ZdKbCliExec(Tool):
             q = args.get("query")
             if not q:
                 return ToolResult(success=False, error="search needs query")
+            if not isinstance(q, str):
+                return ToolResult(success=False, error="search query must be a string")
             cmd += ["search", q]
         elif sub == "article":
             aid = args.get("id")

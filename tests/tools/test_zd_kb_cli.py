@@ -73,6 +73,20 @@ async def test_search_needs_query(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_search_rejects_non_string_query(fake_session):
+    tool = ZdKbCliExec()
+
+    with patch("zd_agent.tools.zd_kb_cli._resolve_zd_bin", return_value="/tmp/zd"):
+        r = await tool.execute(
+            {"subcommand": "search", "query": {"text": "workflow 500"}},
+            fake_session,
+        )
+
+    assert r.success is False
+    assert r.error == "search query must be a string"
+
+
+@pytest.mark.asyncio
 async def test_article_needs_id(fake_session):
     tool = ZdKbCliExec()
     r = await tool.execute({"subcommand": "article"}, fake_session)
