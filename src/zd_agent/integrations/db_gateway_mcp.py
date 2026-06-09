@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from zd_agent.integrations.db_gateway import DbGatewayResult
+from zd_agent.integrations.db_gateway import DbGatewayResult, _coerce_int
 from zd_agent.integrations.mcp_response import load_json_or_sse_response
 
 
@@ -46,12 +46,24 @@ def _parse_tool_result(raw: dict[str, Any]) -> DbGatewayResult:
             code="MCP_BAD_RESPONSE",
             error=f"unexpected MCP tool result: {data}",
         )
+    row_count = _coerce_int(data.get("row_count"))
+    elapsed_ms = _coerce_int(data.get("elapsed_ms"))
+    if row_count is None or elapsed_ms is None:
+        return DbGatewayResult(
+            success=False,
+            code="MCP_BAD_RESPONSE",
+            error=(
+                "Invalid DB Gateway MCP numeric field: "
+                f"row_count={data.get('row_count')!r} "
+                f"elapsed_ms={data.get('elapsed_ms')!r}"
+            ),
+        )
 
     return DbGatewayResult(
         success=bool(data.get("success")),
         csv=str(data.get("csv") or ""),
-        row_count=int(data.get("row_count") or 0),
-        elapsed_ms=int(data.get("elapsed_ms") or 0),
+        row_count=row_count,
+        elapsed_ms=elapsed_ms,
         truncated=bool(data.get("truncated")),
         code=str(data.get("code") or ""),
         error=data.get("error"),

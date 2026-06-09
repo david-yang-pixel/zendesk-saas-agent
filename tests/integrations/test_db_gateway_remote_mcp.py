@@ -344,3 +344,56 @@ async def test_query_db_gateway_mcp_handles_non_object_tool_text() -> None:
 
     assert result.success is False
     assert result.code == "MCP_BAD_RESPONSE"
+
+
+@pytest.mark.asyncio
+async def test_query_db_gateway_mcp_handles_bad_numeric_fields() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "success": True,
+                                    "csv": "ok\n1\n",
+                                    "row_count": "not-a-number",
+                                    "elapsed_ms": "also-bad",
+                                },
+                            ),
+                        },
+                    ],
+                    "isError": False,
+                },
+            },
+        )
+
+    cfg = SimpleNamespace(
+        db_gateway=SimpleNamespace(
+            url="https://db-gateway.example.com/db-gateway/mcp",
+            api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.db_gateway_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await query_db_gateway_mcp(
+            cfg=cfg,
+            database="prod",
+            sql="select 1",
+            ticket_id="2830",
+        )
+
+    assert result.success is False
+    assert result.code == "MCP_BAD_RESPONSE"
+    assert "Invalid DB Gateway MCP numeric field" in (result.error or "")
