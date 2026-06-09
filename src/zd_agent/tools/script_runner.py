@@ -41,6 +41,8 @@ class RunScript(Tool):
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         script_name = args["script_name"]
+        if not isinstance(script_name, str):
+            return ToolResult(success=False, error="script_name must be a string")
 
         if script_name not in ALLOWED_SCRIPTS:
             return ToolResult(
@@ -52,7 +54,10 @@ class RunScript(Tool):
         if not script_path.exists():
             return ToolResult(success=False, error=f"脚本文件不存在: {script_path}")
 
-        cmd_args = ["bash", str(script_path)] + (args.get("args") or [])
+        script_args = args.get("args") or []
+        if not isinstance(script_args, list) or not all(isinstance(a, str) for a in script_args):
+            return ToolResult(success=False, error="args must be a list of strings")
+        cmd_args = ["bash", str(script_path)] + script_args
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -127,7 +132,10 @@ class SandboxExec(Tool):
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
 
-        command = args["command"].strip()
+        raw_command = args["command"]
+        if not isinstance(raw_command, str):
+            return ToolResult(success=False, error="command must be a string")
+        command = raw_command.strip()
         cmd_lower = command.lower()
 
         # 黑名单检查：包含危险模式直接拒绝
@@ -148,6 +156,8 @@ class SandboxExec(Tool):
 
         work_dir = session.sandbox_dir
         if cwd := args.get("cwd"):
+            if not isinstance(cwd, str):
+                return ToolResult(success=False, error="cwd must be a string")
             work_dir = session.sandbox_dir / cwd
             if not _is_within(work_dir, session.sandbox_dir):
                 return ToolResult(success=False, error="工作目录超出 sandbox 范围")
