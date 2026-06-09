@@ -33,6 +33,12 @@ def _uses_mcp_endpoint(base_url: str) -> bool:
     return lowered.endswith("/mcp") or lowered.endswith("/zendesk-reply-mcp")
 
 
+def _expect_json_object(value: Any, *, context: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    raise RuntimeError(f"{context} expected JSON object, got {type(value).__name__}")
+
+
 async def send_browser_relay_reply(
     *,
     url: str,
@@ -101,6 +107,7 @@ async def send_browser_relay_reply(
         data = response.json()
     except ValueError as exc:
         raise RuntimeError("Zendesk browser relay returned invalid JSON") from exc
+    data = _expect_json_object(data, context="Zendesk browser relay")
 
     return _ensure_sent(BrowserRelaySendResult(
         ok=bool(data.get("ok")),
@@ -169,6 +176,7 @@ async def _send_via_mcp(
         data = response.json()
     except ValueError as exc:
         raise RuntimeError("Zendesk browser relay MCP returned invalid JSON") from exc
+    data = _expect_json_object(data, context="Zendesk browser relay MCP")
 
     if "error" in data:
         raise RuntimeError(
@@ -176,8 +184,14 @@ async def _send_via_mcp(
             f"{_safe_error_text(data.get('error'))}"
         )
 
-    result = data.get("result") or {}
-    structured = result.get("structuredContent") or {}
+    result = _expect_json_object(
+        data.get("result") or {},
+        context="Zendesk browser relay MCP result",
+    )
+    structured = _expect_json_object(
+        result.get("structuredContent") or {},
+        context="Zendesk browser relay MCP structuredContent",
+    )
     return BrowserRelaySendResult(
         ok=bool(structured.get("ok")) and not bool(result.get("isError")),
         ticket_id=int(structured.get("ticket_id") or ticket_id),

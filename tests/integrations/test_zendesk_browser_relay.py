@@ -164,6 +164,44 @@ async def test_send_browser_relay_reply_reports_login_required() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_browser_relay_reply_rejects_non_object_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["unexpected"])
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.zendesk_browser_relay.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        with pytest.raises(RuntimeError, match="expected JSON object"):
+            await send_browser_relay_reply(
+                url="http://127.0.0.1:8097",
+                api_key="secret",
+                ticket_id=2861,
+                body="hello",
+            )
+
+
+@pytest.mark.asyncio
+async def test_send_browser_relay_reply_rejects_non_object_mcp_response() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=["unexpected"])
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.zendesk_browser_relay.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        with pytest.raises(RuntimeError, match="expected JSON object"):
+            await send_browser_relay_reply(
+                url="https://zendesk.smlershou.top/zendesk-reply-mcp",
+                api_key="secret",
+                ticket_id=2861,
+                body="hello",
+            )
+
+
+@pytest.mark.asyncio
 async def test_send_browser_relay_reply_rejects_bad_api_key() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"detail": "Forbidden"})
