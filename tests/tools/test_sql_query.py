@@ -34,6 +34,84 @@ async def test_sql_query_rejects_write(fake_session, sql_cfg):
 
 
 @pytest.mark.asyncio
+async def test_sql_query_allows_forbidden_words_inside_string_literals(fake_session, sql_cfg):
+    tool = SqlQuery()
+    fake_result = DbGatewayResult(
+        success=True,
+        csv="msg\nplease update your app\n",
+        row_count=1,
+        elapsed_ms=20,
+        truncated=False,
+    )
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
+        result = await tool.execute(
+            {
+                "database": "prod",
+                "sql": "SELECT 'please update your app' AS msg",
+            },
+            fake_session,
+        )
+
+    assert result.success is True
+    assert "please update your app" in result.output
+
+
+@pytest.mark.asyncio
+async def test_sql_query_allows_forbidden_words_inside_escaped_string(fake_session, sql_cfg):
+    tool = SqlQuery()
+    fake_result = DbGatewayResult(
+        success=True,
+        csv="msg\nuser asked: drop it\n",
+        row_count=1,
+        elapsed_ms=20,
+        truncated=False,
+    )
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
+        result = await tool.execute(
+            {
+                "database": "prod",
+                "sql": "SELECT 'user asked: ''drop it''' AS msg",
+            },
+            fake_session,
+        )
+
+    assert result.success is True
+    assert "drop it" in result.output
+
+
+@pytest.mark.asyncio
+async def test_sql_query_allows_forbidden_words_inside_comments(fake_session, sql_cfg):
+    tool = SqlQuery()
+    fake_result = DbGatewayResult(
+        success=True,
+        csv="ok\n1\n",
+        row_count=1,
+        elapsed_ms=20,
+        truncated=False,
+    )
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
+        result = await tool.execute(
+            {
+                "database": "prod",
+                "sql": "/* drop old note */ SELECT 1 AS ok -- update comment",
+            },
+            fake_session,
+        )
+
+    assert result.success is True
+    assert "Rows: 1" in result.output
+
+
+@pytest.mark.asyncio
 async def test_sql_query_rejects_unknown_database(fake_session, sql_cfg):
     tool = SqlQuery()
     result = await tool.execute(

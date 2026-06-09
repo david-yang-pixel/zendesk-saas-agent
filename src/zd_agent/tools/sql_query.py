@@ -22,9 +22,55 @@ _FORBIDDEN_KEYWORDS = [
 ]
 
 
+def _strip_comments_and_string_literals(sql: str) -> str:
+    """Remove SQL comments and quoted string contents for safety scanning.
+
+    This is not a full SQL parser. It only prevents false positives such as
+    ``SELECT 'please update your app'`` while preserving real statement
+    structure and keywords outside literals.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+
+        if ch == "-" and nxt == "-":
+            i += 2
+            while i < n and sql[i] not in "\r\n":
+                i += 1
+            out.append(" ")
+            continue
+
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < n and not (sql[i] == "*" and sql[i + 1] == "/"):
+                i += 1
+            i = min(i + 2, n)
+            out.append(" ")
+            continue
+
+        if ch == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'" and i + 1 < n and sql[i + 1] == "'":
+                    i += 2
+                    continue
+                if sql[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            out.append(" '' ")
+            continue
+
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _validate_read_only_sql(sql: str) -> str | None:
-    cleaned = re.sub(r"--[^\n]*", "", sql)
-    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    cleaned = _strip_comments_and_string_literals(sql)
     stripped = cleaned.strip().rstrip(";").strip()
     if not stripped:
         return "empty SQL"
