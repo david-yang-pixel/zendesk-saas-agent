@@ -90,6 +90,58 @@ async def test_push_rejects_invalid_arg_types(fake_session, feishu_cfg):
 
 
 @pytest.mark.asyncio
+async def test_push_rejects_missing_required_args(fake_session, feishu_cfg):
+    tool = FeishuPush()
+    with patch("zd_agent.tools.feishu_tools.FeishuClient") as m:
+        m.return_value.send_alert = AsyncMock()
+        r = await tool.execute(
+            {"content": "M"},
+            fake_session,
+        )
+
+    assert r.success is False
+    assert r.error == "card_type is required"
+    m.return_value.send_alert.assert_not_awaited()
+
+    with patch("zd_agent.tools.feishu_tools.FeishuClient") as m:
+        m.return_value.send_alert = AsyncMock()
+        r = await tool.execute(
+            {"card_type": "alert"},
+            fake_session,
+        )
+
+    assert r.success is False
+    assert r.error == "content is required"
+    m.return_value.send_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_push_rejects_blank_string_args(fake_session, feishu_cfg):
+    tool = FeishuPush()
+    with patch("zd_agent.tools.feishu_tools.FeishuClient") as m:
+        m.return_value.send_alert = AsyncMock()
+        r = await tool.execute(
+            {"card_type": "   ", "content": "M"},
+            fake_session,
+        )
+
+    assert r.success is False
+    assert r.error == "card_type is empty"
+    m.return_value.send_alert.assert_not_awaited()
+
+    with patch("zd_agent.tools.feishu_tools.FeishuClient") as m:
+        m.return_value.send_alert = AsyncMock()
+        r = await tool.execute(
+            {"card_type": "alert", "content": "   "},
+            fake_session,
+        )
+
+    assert r.success is False
+    assert r.error == "content is empty"
+    m.return_value.send_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_push_not_configured(fake_session, monkeypatch):
     cfg = MagicMock()
     cfg.feishu.webhook_url = ""

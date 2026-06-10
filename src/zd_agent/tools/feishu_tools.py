@@ -55,12 +55,24 @@ class FeishuPush(Tool):
     async def execute(
         self, args: dict[str, Any], session: "AgentSession",
     ) -> ToolResult:
+        if "card_type" not in args:
+            return ToolResult(success=False, error="card_type is required")
         card_type = args["card_type"]
         if not isinstance(card_type, str):
             return ToolResult(success=False, error="card_type must be a string")
-        content = args.get("content", "")
+        card_type = card_type.strip()
+        if not card_type:
+            return ToolResult(success=False, error="card_type is empty")
+
+        if "content" not in args:
+            return ToolResult(success=False, error="content is required")
+        content = args["content"]
         if not isinstance(content, str):
             return ToolResult(success=False, error="content must be a string")
+        content = content.strip()
+        if not content:
+            return ToolResult(success=False, error="content is empty")
+
         title = args.get("title", "Alert")
         if not isinstance(title, str):
             return ToolResult(success=False, error="title must be a string")
