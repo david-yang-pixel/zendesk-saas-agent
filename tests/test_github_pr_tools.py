@@ -37,6 +37,23 @@ class TestGithubSearchPrs(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertIn("limit", result.error or "")
 
+    async def test_search_prs_rejects_invalid_string_args(self) -> None:
+        tool = GithubSearchPrs()
+
+        bad_repo = await tool.execute(
+            {"repo": ["langgenius/dify"], "query": "workspace null"},
+            AgentSession(ticket_id=1),
+        )
+        bad_query = await tool.execute(
+            {"repo": "langgenius/dify", "query": {"text": "workspace null"}},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(bad_repo.success)
+        self.assertEqual(bad_repo.error, "repo must be a string")
+        self.assertFalse(bad_query.success)
+        self.assertEqual(bad_query.error, "query must be a string")
+
 
 class TestGithubGetPr(unittest.IsolatedAsyncioTestCase):
     @patch("zd_agent.tools.github_pr._github_request", new_callable=AsyncMock)
@@ -67,6 +84,16 @@ class TestGithubGetPr(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(result.success)
         self.assertIn("pr_number", result.error or "")
+
+    async def test_get_pr_rejects_invalid_repo_arg(self) -> None:
+        tool = GithubGetPr()
+        result = await tool.execute(
+            {"repo": ["langgenius/dify"], "pr_number": 123},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "repo must be a string")
 
 
 class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
@@ -175,3 +202,20 @@ class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bad_language.error, "language must be a string")
         self.assertFalse(bad_path.success)
         self.assertEqual(bad_path.error, "path must be a string")
+
+    async def test_code_search_rejects_invalid_required_string_args(self) -> None:
+        tool = GithubCodeSearch()
+
+        bad_query = await tool.execute(
+            {"query": ["InvalidCredential"]},
+            AgentSession(ticket_id=1),
+        )
+        bad_scope = await tool.execute(
+            {"query": "InvalidCredential", "scope": {"org": "langgenius"}},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(bad_query.success)
+        self.assertEqual(bad_query.error, "query must be a string")
+        self.assertFalse(bad_scope.success)
+        self.assertEqual(bad_scope.error, "scope must be a string")

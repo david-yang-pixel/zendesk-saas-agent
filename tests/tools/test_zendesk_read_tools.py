@@ -6,6 +6,7 @@ from zd_agent.tools.zendesk import (
     ZendeskGetArticle,
     ZendeskGetAttachments,
     ZendeskGetTicket,
+    ZendeskGetUser,
     ZendeskSearch,
     ZendeskSearchArticles,
 )
@@ -74,3 +75,12 @@ async def test_get_article_rejects_invalid_args_before_client(fake_session):
 
     assert result.success is False
     assert result.error == "locale must be a string"
+
+
+@pytest.mark.asyncio
+async def test_get_user_rejects_invalid_user_id_before_client(fake_session):
+    with patch("zd_agent.tools.zendesk._get_client", side_effect=_client_must_not_initialize):
+        result = await ZendeskGetUser().execute({"user_id": 0}, fake_session)
+
+    assert result.success is False
+    assert result.error == "user_id must be a positive integer"

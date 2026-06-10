@@ -82,6 +82,13 @@ def _coerce_optional_string_arg(args: dict[str, Any], name: str) -> str | ToolRe
     return raw.strip()
 
 
+def _coerce_required_string_arg(args: dict[str, Any], name: str) -> str | ToolResult:
+    raw = args.get(name)
+    if not isinstance(raw, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return raw.strip()
+
+
 class GithubSearchPrs(Tool):
     name = "github_search_prs"
     description = "搜索 GitHub pull requests，用于确认某个问题是否已有修复 PR"
@@ -111,8 +118,12 @@ class GithubSearchPrs(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        repo = str(args["repo"]).strip()
-        query = str(args["query"]).strip()
+        repo = _coerce_required_string_arg(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        query = _coerce_required_string_arg(args, "query")
+        if isinstance(query, ToolResult):
+            return query
         limit = _coerce_int_arg(args, "limit", 5, minimum=1, maximum=10)
         if isinstance(limit, ToolResult):
             return limit
@@ -169,7 +180,9 @@ class GithubGetPr(Tool):
     group = "source_code"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        repo = str(args["repo"]).strip()
+        repo = _coerce_required_string_arg(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
         pr_number = _coerce_int_arg(args, "pr_number")
         if isinstance(pr_number, ToolResult):
             return pr_number
@@ -269,11 +282,16 @@ class GithubCodeSearch(Tool):
     max_output_tokens = 5000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        query = str(args["query"]).strip()
+        query = _coerce_required_string_arg(args, "query")
+        if isinstance(query, ToolResult):
+            return query
         if not query:
             return ToolResult(success=False, error="query 不能为空")
 
-        scope = str(args.get("scope") or "langgenius").strip()
+        scope = _coerce_optional_string_arg(args, "scope")
+        if isinstance(scope, ToolResult):
+            return scope
+        scope = scope or "langgenius"
         language = _coerce_optional_string_arg(args, "language")
         if isinstance(language, ToolResult):
             return language

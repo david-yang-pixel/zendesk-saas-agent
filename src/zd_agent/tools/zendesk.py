@@ -1223,9 +1223,12 @@ class ZendeskGetUser(Tool):
     group = "zendesk"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        user_id = _coerce_positive_int_arg(args, "user_id")
+        if isinstance(user_id, ToolResult):
+            return user_id
         client = _get_client()
         try:
-            data = await _call_with_rate_limit_retry(client.get_user, args["user_id"])
+            data = await _call_with_rate_limit_retry(client.get_user, user_id)
             user = data.get("user", data)
             lines = [
                 f"**姓名**: {user.get('name', 'N/A')}",
