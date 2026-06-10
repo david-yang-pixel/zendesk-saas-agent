@@ -79,6 +79,14 @@ async def test_search_empty_keywords_rejected(fake_session, records_setup):
 
 
 @pytest.mark.asyncio
+async def test_search_rejects_non_string_keyword_items(fake_session, records_setup):
+    tool = TicketRecordSearch()
+    r = await tool.execute({"keywords": ["workflow", {"text": "timeout"}]}, fake_session)
+    assert r.success is False
+    assert r.error == "keywords items must be strings"
+
+
+@pytest.mark.asyncio
 async def test_search_accepts_single_keyword_string(fake_session, records_setup):
     tool = TicketRecordSearch()
     r = await tool.execute({"keywords": "workflow"}, fake_session)
@@ -143,6 +151,14 @@ async def test_read_empty_id_rejected(fake_session, records_setup):
     tool = TicketRecordRead()
     r = await tool.execute({"ticket_id": ""}, fake_session)
     assert r.success is False
+
+
+@pytest.mark.asyncio
+async def test_read_rejects_non_string_ticket_id(fake_session, records_setup):
+    tool = TicketRecordRead()
+    r = await tool.execute({"ticket_id": ["100"]}, fake_session)
+    assert r.success is False
+    assert r.error == "ticket_id must be a string"
 
 
 @pytest.mark.asyncio

@@ -16,11 +16,16 @@ def _records_dir() -> Path:
     return Path(cfg.resources.base_dir) / cfg.resources.ticket_records_dir
 
 
-def _normalize_keywords(value: Any) -> list[str]:
+def _normalize_keywords(value: Any) -> list[str] | ToolResult:
     if isinstance(value, str):
         return [value.strip()] if value.strip() else []
     if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
+        if not all(isinstance(item, str) for item in value):
+            return ToolResult(
+                success=False,
+                error="keywords items must be strings",
+            )
+        return [item.strip() for item in value if item.strip()]
     return []
 
 
@@ -61,7 +66,10 @@ class TicketRecordSearch(Tool):
     concurrency_safe = True
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
-        kws_lower = [k.lower() for k in _normalize_keywords(args.get("keywords"))]
+        keywords = _normalize_keywords(args.get("keywords"))
+        if isinstance(keywords, ToolResult):
+            return keywords
+        kws_lower = [k.lower() for k in keywords]
         if not kws_lower:
             return ToolResult(success=False, error="keywords is empty")
         max_results = _coerce_max_results(args.get("max_results", 10))
@@ -126,7 +134,10 @@ class TicketRecordRead(Tool):
     concurrency_safe = True
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
-        ticket_id = str(args.get("ticket_id", "")).strip()
+        raw_ticket_id = args.get("ticket_id", "")
+        if not isinstance(raw_ticket_id, str):
+            return ToolResult(success=False, error="ticket_id must be a string")
+        ticket_id = raw_ticket_id.strip()
         if not ticket_id:
             return ToolResult(success=False, error="ticket_id is empty")
         if "/" in ticket_id or "\\" in ticket_id:
