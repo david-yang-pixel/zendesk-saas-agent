@@ -3,7 +3,7 @@
 设计原则：
 - 未配置 HC_CLIENT_URL 时静默跳过
 - 所有上报 fire-and-forget，失败只打 warning 不影响 agent 主流程
-- HTTP 请求 3s 超时，不做重试
+- HTTP 请求 15s 超时，不做重试
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from zd_agent.runtime.events import LoopFinished, LoopProgress, ToolExecuted
 
 logger = get_logger(module="log_reporter")
 
-_TIMEOUT = aiohttp.ClientTimeout(total=3)
+_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
 class LogReporter:
@@ -62,7 +62,13 @@ class LogReporter:
                     return None
                 return await resp.json()
         except Exception as e:
-            logger.warning("log_report_failed", path=path, error=str(e))
+            logger.warning(
+                "log_report_failed",
+                path=path,
+                error=str(e),
+                error_repr=repr(e),
+                error_type=type(e).__name__,
+            )
             return None
 
     async def _put(self, path: str, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -77,7 +83,13 @@ class LogReporter:
                     return None
                 return await resp.json()
         except Exception as e:
-            logger.warning("log_report_failed", path=path, error=str(e))
+            logger.warning(
+                "log_report_failed",
+                path=path,
+                error=str(e),
+                error_repr=repr(e),
+                error_type=type(e).__name__,
+            )
             return None
 
     async def _post_background(self, path: str, data: dict[str, Any]) -> None:

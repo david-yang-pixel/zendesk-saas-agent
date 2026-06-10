@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from zd_agent.runtime import log_reporter
 from zd_agent.runtime.events import LoopFinished, ToolExecuted
 from zd_agent.runtime.log_reporter import LogReporter
 
@@ -112,3 +113,33 @@ async def test_report_run_finish_flushes_pending_tool_calls(monkeypatch):
     can_finish.set()
     await asyncio.wait_for(finish_task, timeout=1)
     assert order == ["tool", "finish"]
+
+
+@pytest.mark.asyncio
+async def test_log_reporter_uses_longer_timeout_for_remote_hc_client():
+    assert log_reporter._TIMEOUT.total >= 10
+
+
+@pytest.mark.asyncio
+async def test_log_reporter_logs_exception_type_for_empty_message(monkeypatch):
+    monkeypatch.setenv("HC_CLIENT_URL", "https://hc.example.com")
+    monkeypatch.setenv("HC_CLIENT_API_KEY", "agent-key")
+    captured = {}
+
+    class FakeSession:
+        def post(self, *args, **kwargs):
+            raise TimeoutError()
+
+    def fake_warning(event, **kwargs):
+        captured["event"] = event
+        captured.update(kwargs)
+
+    reporter = LogReporter()
+    monkeypatch.setattr(reporter, "_get_session", lambda: FakeSession())
+    monkeypatch.setattr(log_reporter.logger, "warning", fake_warning)
+
+    result = await reporter._post("/api/agent/logs/runs", {"ticket_id": 1})
+
+    assert result is None
+    assert captured["event"] == "log_report_failed"
+    assert captured["error_type"] == "TimeoutError"
