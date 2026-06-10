@@ -105,3 +105,14 @@ class TestRegistryEnforces:
         reg.register(_NormalTool())
         out = await reg.execute("normal", "{}", session=None)
         assert out.output == "z" * 100
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args_json", ["[]", "null", '"query"'])
+    async def test_registry_execute_rejects_non_object_args(self, args_json: str) -> None:
+        reg = ToolRegistry()
+        reg.register(_NormalTool())
+
+        out = await reg.execute("normal", args_json, session=None)
+
+        assert out.success is False
+        assert out.error == "工具参数必须是 JSON object"

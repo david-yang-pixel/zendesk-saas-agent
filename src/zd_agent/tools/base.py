@@ -137,6 +137,8 @@ class ToolRegistry:
             args = json.loads(args_json) if args_json else {}
         except json.JSONDecodeError as e:
             return ToolResult(success=False, error=f"参数解析失败: {e}")
+        if not isinstance(args, dict):
+            return ToolResult(success=False, error="工具参数必须是 JSON object")
 
         try:
             result = await tool.execute(args, session)
