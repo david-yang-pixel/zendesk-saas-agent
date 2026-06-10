@@ -367,6 +367,32 @@ def _zendesk_retry_delay(
 # ── 工具定义 ──────────────────────────────────────────────────
 
 
+def _coerce_positive_int_arg(args: dict[str, Any], name: str) -> int | ToolResult:
+    value = args.get(name)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return ToolResult(success=False, error=f"{name} must be a positive integer")
+    return value
+
+
+def _coerce_required_string_arg(args: dict[str, Any], name: str) -> str | ToolResult:
+    value = args.get(name)
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return value
+
+
+def _coerce_optional_string_arg(
+    args: dict[str, Any],
+    name: str,
+    *,
+    default: str,
+) -> str | ToolResult:
+    value = args.get(name, default)
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    return value
+
+
 class ZendeskGetTicket(Tool):
     name = "zendesk_get_ticket"
     description = (
@@ -387,8 +413,10 @@ class ZendeskGetTicket(Tool):
     group = "zendesk"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        tid = _coerce_positive_int_arg(args, "ticket_id")
+        if isinstance(tid, ToolResult):
+            return tid
         client = _get_client()
-        tid = args["ticket_id"]
 
         try:
             tdata = await _call_with_rate_limit_retry(client.get_ticket, tid)
@@ -588,11 +616,14 @@ class ZendeskGetAttachments(Tool):
     group = "zendesk"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        client = _get_client()
-        tid = args["ticket_id"]
+        tid = _coerce_positive_int_arg(args, "ticket_id")
+        if isinstance(tid, ToolResult):
+            return tid
 
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
+
+        client = _get_client()
 
         try:
             tdata = await _call_with_rate_limit_retry(client.get_ticket, tid)
@@ -680,9 +711,12 @@ class ZendeskSearch(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        query = _coerce_required_string_arg(args, "query")
+        if isinstance(query, ToolResult):
+            return query
         client = _get_client()
         try:
-            data = await _call_with_rate_limit_retry(client.search_tickets, args["query"])
+            data = await _call_with_rate_limit_retry(client.search_tickets, query)
             results = data.get("results", [])
             if not results:
                 return ToolResult(output="未找到匹配的历史工单")
@@ -726,10 +760,15 @@ class ZendeskSearchArticles(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        query = _coerce_required_string_arg(args, "query")
+        if isinstance(query, ToolResult):
+            return query
+        locale = _coerce_optional_string_arg(args, "locale", default="zh-cn")
+        if isinstance(locale, ToolResult):
+            return locale
         client = _get_client()
-        locale = args.get("locale", "zh-cn")
         try:
-            data = await _call_with_rate_limit_retry(client.search_articles, args["query"], locale)
+            data = await _call_with_rate_limit_retry(client.search_articles, query, locale)
             results = data.get("results", [])
             if not results:
                 return ToolResult(output="未找到匹配的知识库文章")
@@ -770,10 +809,15 @@ class ZendeskGetArticle(Tool):
     group = "zendesk"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        article_id = _coerce_positive_int_arg(args, "article_id")
+        if isinstance(article_id, ToolResult):
+            return article_id
+        locale = _coerce_optional_string_arg(args, "locale", default="zh-cn")
+        if isinstance(locale, ToolResult):
+            return locale
         client = _get_client()
-        locale = args.get("locale", "zh-cn")
         try:
-            data = await _call_with_rate_limit_retry(client.get_article, args["article_id"], locale)
+            data = await _call_with_rate_limit_retry(client.get_article, article_id, locale)
             article = data.get("article", data)
 
             import re
