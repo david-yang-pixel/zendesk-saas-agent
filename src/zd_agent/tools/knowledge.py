@@ -276,9 +276,17 @@ class KnowledgeRead(Tool):
         if docs_dir is None:
             return ToolResult(success=False, error="知识库目录不存在")
         docs_dir = docs_dir.resolve()
+
+        if "filepath" not in args:
+            return ToolResult(success=False, error="filepath is required")
+
         filepath = args["filepath"]
         if not isinstance(filepath, str):
             return ToolResult(success=False, error="filepath must be a string")
+        filepath = filepath.strip()
+        if not filepath:
+            return ToolResult(success=False, error="filepath is empty")
+
         target = (docs_dir / filepath).resolve()
 
         try:
@@ -288,6 +296,8 @@ class KnowledgeRead(Tool):
 
         if not target.exists():
             return ToolResult(success=False, error=f"文件不存在: {filepath}")
+        if not target.is_file():
+            return ToolResult(success=False, error=f"filepath is not a file: {filepath}")
 
         try:
             content = target.read_text(encoding="utf-8")

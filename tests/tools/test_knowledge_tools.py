@@ -147,3 +147,67 @@ async def test_knowledge_read_rejects_non_string_filepath(
 
     assert result.success is False
     assert result.error == "filepath must be a string"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_read_rejects_missing_filepath(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeRead().execute(
+        {},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is False
+    assert result.error == "filepath is required"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_read_rejects_blank_filepath(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeRead().execute(
+        {"filepath": "   "},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is False
+    assert result.error == "filepath is empty"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_read_rejects_directory_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    (docs_dir / "guide").mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeRead().execute(
+        {"filepath": "guide"},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is False
+    assert result.error == "filepath is not a file: guide"
