@@ -41,9 +41,26 @@ class RunSubagent(Tool):
     concurrency_safe = False
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        task = args["task"]
+        if not isinstance(task, str):
+            return ToolResult(success=False, error="task must be a string")
+        task = task.strip()
+        if not task:
+            return ToolResult(success=False, error="task is empty")
+
+        tool_names = args.get("tools") or []
+        if not isinstance(tool_names, list) or not all(
+            isinstance(tool_name, str) for tool_name in tool_names
+        ):
+            return ToolResult(
+                success=False,
+                error="tools must be a list of strings",
+            )
+
+        context = args.get("context", "")
+        if not isinstance(context, str):
+            return ToolResult(success=False, error="context must be a string")
+
         from zd_agent.runtime.subagent import run_subagent
 
-        task = args["task"]
-        tool_names = args.get("tools") or []
-        context = args.get("context", "")
         return await run_subagent(task, tool_names, context, session)
