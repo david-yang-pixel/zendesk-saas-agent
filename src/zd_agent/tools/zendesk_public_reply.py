@@ -404,8 +404,12 @@ class ZendeskPublicReply(Tool):
                 success=False,
                 error=f"invalid ticket_id: {ticket_id!r}",
             )
+        if "body" not in args:
+            return ToolResult(success=False, error="body is required")
         if not isinstance(raw_body, str):
             return ToolResult(success=False, error="body must be a string")
+        if "reply_type" not in args:
+            return ToolResult(success=False, error="reply_type is required")
         if raw_conversation_id is not None and not isinstance(raw_conversation_id, str):
             return ToolResult(success=False, error="conversation_id must be a string")
         if raw_messaging_app_id is not None and not isinstance(raw_messaging_app_id, str):

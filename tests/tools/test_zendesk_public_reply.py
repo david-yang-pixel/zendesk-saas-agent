@@ -233,6 +233,30 @@ class TestExecute:
         assert "messaging_app_id" in r.error
 
     @pytest.mark.asyncio
+    async def test_missing_required_text_args_are_explicit(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            r = await tool.execute(
+                {"ticket_id": 1, "reply_type": "ask"}, sess,
+            )
+        assert not r.success
+        assert r.error == "body is required"
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            r = await tool.execute(
+                {"ticket_id": 1, "body": "hi"}, sess,
+            )
+        assert not r.success
+        assert r.error == "reply_type is required"
+
+    @pytest.mark.asyncio
     async def test_empty_body_rejected(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session()
