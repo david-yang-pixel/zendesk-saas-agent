@@ -30,6 +30,13 @@ async def test_add_tags_rejects_invalid_arg_types(fake_session):
     assert "tags" in (result.error or "")
 
     result = await tool.execute(
+        {"ticket_id": 12345},
+        fake_session,
+    )
+    assert result.success is False
+    assert result.error == "tags is required"
+
+    result = await tool.execute(
         {"ticket_id": 12345, "tags": ["bug", 123]},
         fake_session,
     )
@@ -48,3 +55,4 @@ async def test_add_tags_dry_run_accepts_allowed_tags(fake_session):
     assert result.success is True
     assert "bug" in (result.output or "")
     assert "helm" in (result.output or "")
+    assert (result.output or "").count("bug") == 1

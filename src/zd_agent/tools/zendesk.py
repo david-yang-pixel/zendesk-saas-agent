@@ -1182,10 +1182,12 @@ class ZendeskAddTags(Tool):
         ticket_id = _coerce_positive_int_arg(args, "ticket_id")
         if isinstance(ticket_id, ToolResult):
             return ticket_id
+        if "tags" not in args:
+            return ToolResult(success=False, error="tags is required")
         raw_tags = args["tags"]
         if not isinstance(raw_tags, list) or not all(isinstance(t, str) for t in raw_tags):
             return ToolResult(success=False, error="tags must be a list of strings")
-        tags = [t.strip().lower() for t in raw_tags if t.strip()]
+        tags = list(dict.fromkeys(t.strip().lower() for t in raw_tags if t.strip()))
         if not tags:
             return ToolResult(success=False, error="标签列表不能为空")
 
