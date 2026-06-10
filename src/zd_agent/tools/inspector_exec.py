@@ -78,6 +78,23 @@ def _flag_to_cli(flag: str) -> str:
     return "--" + flag.replace("_", "-")
 
 
+def _coerce_string_arg(args: dict[str, Any], name: str) -> str:
+    value = args.get(name, "")
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    return value.strip()
+
+
+def _coerce_optional_string_arg(args: dict[str, Any], name: str) -> str | None:
+    value = args.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    cleaned = value.strip()
+    return cleaned or None
+
+
 class InspectorExec(Tool):
     name = "inspector_exec"
     description = (
@@ -162,7 +179,10 @@ class InspectorExec(Tool):
             )
 
         primary_flag = primary[0]
-        primary_value = str(args[primary_flag]).strip()
+        try:
+            primary_value = _coerce_string_arg(args, primary_flag)
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
         if not primary_value:
             return ToolResult(
                 success=False, error=f"{primary_flag} value is empty",
@@ -197,6 +217,12 @@ class InspectorExec(Tool):
                     error=f"invalid limit {limit!r}; must be int in [1, 500]",
                 )
 
+        try:
+            from_d = _coerce_optional_string_arg(args, "from_date")
+            to_d = _coerce_optional_string_arg(args, "to_date")
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
+
         # 5. 拼命令（每个 arg 单独传，不用 shell 拼接，避免注入）
         cfg = get_config()
         cmd: list[str] = [
@@ -211,12 +237,10 @@ class InspectorExec(Tool):
             cmd += ["--query", query]
         if limit is not None:
             cmd += ["--limit", str(limit)]
-        from_d = args.get("from_date")
         if from_d:
-            cmd += ["--from", str(from_d)]
-        to_d = args.get("to_date")
+            cmd += ["--from", from_d]
         if to_d:
-            cmd += ["--to", str(to_d)]
+            cmd += ["--to", to_d]
 
         # 注意：从不传 --show-all，避免 leak Stripe customer ID / token 等敏感字段
         # 到工单回复
