@@ -26,6 +26,16 @@ def _coerce_top_k(value: Any) -> int | ToolResult:
     return min(max(top_k, 1), 20)
 
 
+def _coerce_optional_string(args: dict[str, Any], name: str) -> str | ToolResult | None:
+    value = args.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    cleaned = value.strip()
+    return cleaned or None
+
+
 async def _run_kg(args: list[str], timeout: float = 30) -> tuple[int, str, str]:
     """执行 zendesk-kg CLI 命令"""
     proc = await asyncio.create_subprocess_exec(
@@ -133,14 +143,25 @@ class ZendeskKgSearch(Tool):
             return top_k
         cmd_args.extend(["-k", str(top_k)])
 
-        if args.get("version"):
-            cmd_args.extend(["-v", str(args["version"])])
-        if args.get("priority"):
-            p = str(args["priority"]).lower()
-            if p in _VALID_PRIORITIES:
-                cmd_args.extend(["-p", p])
-        if args.get("keyword"):
-            cmd_args.extend(["--keyword", str(args["keyword"])])
+        version = _coerce_optional_string(args, "version")
+        priority = _coerce_optional_string(args, "priority")
+        keyword = _coerce_optional_string(args, "keyword")
+        for value in (version, priority, keyword):
+            if isinstance(value, ToolResult):
+                return value
+
+        if version:
+            cmd_args.extend(["-v", version])
+        if priority:
+            p = priority.lower()
+            if p not in _VALID_PRIORITIES:
+                return ToolResult(
+                    success=False,
+                    error=f"invalid priority {priority!r}; allowed: {sorted(_VALID_PRIORITIES)}",
+                )
+            cmd_args.extend(["-p", p])
+        if keyword:
+            cmd_args.extend(["--keyword", keyword])
 
         returncode, stdout, stderr = await _run_kg(cmd_args)
 
