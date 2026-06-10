@@ -946,6 +946,11 @@ class ZendeskInternalReply(Tool):
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         from zd_agent.tools.html_renderer import render_internal_note
 
+        if "body" not in args:
+            return ToolResult(success=False, error="body is required")
+        if "summary" not in args:
+            return ToolResult(success=False, error="summary is required")
+
         body_md = args["body"]
         summary = args.get("summary", {})
         ticket_id = _coerce_positive_int_arg(args, "ticket_id")
@@ -953,6 +958,8 @@ class ZendeskInternalReply(Tool):
             return ticket_id
         if not isinstance(body_md, str):
             return ToolResult(success=False, error="body must be a string")
+        if not body_md.strip():
+            return ToolResult(success=False, error="body is empty")
         if not isinstance(summary, dict):
             return ToolResult(success=False, error="summary must be an object")
 
