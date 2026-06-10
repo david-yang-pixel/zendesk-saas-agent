@@ -74,9 +74,14 @@ class ArchiveTicket(Tool):
         if not isinstance(solution, str):
             return ToolResult(success=False, error="solution must be a string")
 
-        category = args.get("category") or session.ticket_type or ""
-        if not isinstance(category, str):
-            category = str(category)
+        category_arg = args.get("category")
+        if category_arg is not None:
+            if not isinstance(category_arg, str):
+                return ToolResult(success=False, error="category must be a string")
+            category = category_arg.strip()
+        else:
+            session_category = session.ticket_type
+            category = session_category if isinstance(session_category, str) else ""
         reply_draft = session.reply_draft if isinstance(session.reply_draft, str) else ""
         now = _now_iso()
 

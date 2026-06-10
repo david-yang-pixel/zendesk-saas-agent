@@ -139,6 +139,10 @@ async def test_followup_without_reply_no_draft_section(records_env, session):
             {"ticket_id": 123, "analysis": "a", "solution": ["s"]},
             "solution must be a string",
         ),
+        (
+            {"ticket_id": 123, "analysis": "a", "solution": "s", "category": ["refund"]},
+            "category must be a string",
+        ),
     ],
 )
 async def test_archive_rejects_invalid_argument_types(
