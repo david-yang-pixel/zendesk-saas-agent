@@ -171,6 +171,16 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
+                {"body": "test", "reply_type": "ask"}, sess,
+            )
+        assert not r.success
+        assert r.error == "ticket_id is required"
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            r = await tool.execute(
                 {"ticket_id": "abc", "body": "test", "reply_type": "ask"}, sess,
             )
         assert not r.success

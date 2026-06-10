@@ -399,6 +399,8 @@ class ZendeskPublicReply(Tool):
         raw_messaging_app_id = args.get("messaging_app_id")
 
         # 先做类型校验，再 strip，避免非法工具参数变成 AttributeError。
+        if "ticket_id" not in args:
+            return ToolResult(success=False, error="ticket_id is required")
         if not isinstance(ticket_id, int) or isinstance(ticket_id, bool) or ticket_id <= 0:
             return ToolResult(
                 success=False,
