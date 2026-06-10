@@ -58,6 +58,21 @@ async def test_classify_invalid_type_falls_back(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_classify_normalizes_ticket_type(fake_session):
+    tool = ClassifyTicket()
+    fake_session.ticket_type = ""
+
+    r = await tool.execute(
+        {"ticket_type": " Refund ", "reasoning": "客户要求退款"},
+        fake_session,
+    )
+
+    assert r.success is True
+    assert fake_session.ticket_type == "refund"
+    assert "工单已分类为 **refund**" in r.output
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("args", "expected_error"),
     [

@@ -125,6 +125,7 @@ class ClassifyTicket(Tool):
             return ToolResult(success=False, error="ticket_type must be a string")
         if not isinstance(reasoning, str):
             return ToolResult(success=False, error="reasoning must be a string")
+        ticket_type = ticket_type.strip().lower()
 
         if ticket_type not in VALID_TYPES:
             logger.warning(
