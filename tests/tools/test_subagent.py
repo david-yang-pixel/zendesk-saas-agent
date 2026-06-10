@@ -16,6 +16,7 @@ def _install_fake_subagent(monkeypatch, fake_fn):
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
+        ({}, "task is required"),
         ({"task": ["analyze ticket"]}, "task must be a string"),
         ({"task": "analyze ticket", "tools": "zendesk_get_ticket"}, "tools must be a list of strings"),
         ({"task": "analyze ticket", "tools": ["zendesk_get_ticket", 123]}, "tools must be a list of strings"),

@@ -41,6 +41,8 @@ class RunSubagent(Tool):
     concurrency_safe = False
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        if "task" not in args:
+            return ToolResult(success=False, error="task is required")
         task = args["task"]
         if not isinstance(task, str):
             return ToolResult(success=False, error="task must be a string")
