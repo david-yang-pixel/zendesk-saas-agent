@@ -84,6 +84,10 @@ async def test_classify_normalizes_ticket_type(fake_session):
             {"ticket_type": "workflow", "reasoning": {"why": "x"}},
             "reasoning must be a string",
         ),
+        (
+            {"ticket_type": "workflow", "reasoning": "   "},
+            "reasoning is empty",
+        ),
     ],
 )
 async def test_classify_rejects_invalid_argument_types(
