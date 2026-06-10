@@ -9,6 +9,13 @@ async def test_add_tags_rejects_invalid_arg_types(fake_session):
     tool = ZendeskAddTags()
 
     result = await tool.execute(
+        {"ticket_id": 0, "tags": ["bug"]},
+        fake_session,
+    )
+    assert result.success is False
+    assert result.error == "ticket_id must be a positive integer"
+
+    result = await tool.execute(
         {"ticket_id": "12345", "tags": ["bug"]},
         fake_session,
     )

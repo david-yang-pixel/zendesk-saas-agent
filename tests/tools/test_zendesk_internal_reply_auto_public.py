@@ -301,6 +301,19 @@ class TestIntegration:
             return_value=_make_cfg(public_reply_enabled=True),
         ):
             tool = ZendeskInternalReply()
+            args = _make_args("## Internal Analysis\n\nx\n")
+            args["ticket_id"] = 0
+            r = await tool.execute(args, _make_session())
+
+        assert not r.success
+        assert r.error == "ticket_id must be a positive integer"
+        _mock_client.reply_ticket.assert_not_called()
+
+        with patch(
+            "zd_agent.tools.zendesk.get_config",
+            return_value=_make_cfg(public_reply_enabled=True),
+        ):
+            tool = ZendeskInternalReply()
             r = await tool.execute(
                 _make_args(["not markdown"]),
                 _make_session(),
