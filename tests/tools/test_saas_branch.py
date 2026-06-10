@@ -180,6 +180,29 @@ async def test_empty_branch_rejected(fake_session, configured_repos):
 
 
 @pytest.mark.asyncio
+async def test_rejects_non_string_repo(fake_session, configured_repos):
+    tool = SaasBranchSwitch()
+
+    r = await tool.execute({"repo": ["dify"], "branch": "main"}, fake_session)
+
+    assert r.success is False
+    assert r.error == "repo must be a string"
+
+
+@pytest.mark.asyncio
+async def test_rejects_non_string_branch(fake_session, configured_repos):
+    tool = SaasBranchSwitch()
+
+    r = await tool.execute(
+        {"repo": "dify", "branch": {"name": "main"}},
+        fake_session,
+    )
+
+    assert r.success is False
+    assert r.error == "branch must be a string"
+
+
+@pytest.mark.asyncio
 async def test_nonexistent_branch_error(fake_session, configured_repos):
     tool = SaasBranchSwitch()
     r = await tool.execute(

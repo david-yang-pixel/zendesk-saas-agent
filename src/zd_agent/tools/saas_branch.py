@@ -17,6 +17,13 @@ def _resolve_repo_name(name: str, aliases: dict[str, str]) -> str:
     return aliases.get(name.lower(), name)
 
 
+def _coerce_string_arg(args: dict[str, Any], name: str) -> str:
+    value = args.get(name, "")
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
+    return value.strip()
+
+
 async def _run_git(
     *args: str, cwd: Path, timeout: float = 60.0,
 ) -> tuple[int, str, str]:
@@ -61,8 +68,11 @@ class SaasBranchSwitch(Tool):
     concurrency_safe = False  # same repo checkout races are unsafe
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
-        repo_in = str(args.get("repo", "")).strip()
-        branch = str(args.get("branch", "")).strip()
+        try:
+            repo_in = _coerce_string_arg(args, "repo")
+            branch = _coerce_string_arg(args, "branch")
+        except ValueError as e:
+            return ToolResult(success=False, error=str(e))
         if not repo_in:
             return ToolResult(success=False, error="repo is empty")
         if not branch:
