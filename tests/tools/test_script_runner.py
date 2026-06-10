@@ -25,6 +25,19 @@ def script_dir(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_script_rejects_missing_or_blank_script_name(sandbox_session, script_dir):
+    result = await RunScript().execute({}, sandbox_session)
+
+    assert result.success is False
+    assert result.error == "script_name is required"
+
+    result = await RunScript().execute({"script_name": "   "}, sandbox_session)
+
+    assert result.success is False
+    assert result.error == "script_name is empty"
+
+
+@pytest.mark.asyncio
 async def test_run_script_args_must_be_string_list(sandbox_session, script_dir):
     result = await RunScript().execute(
         {"script_name": "check-plugin-runtime.sh", "args": "--bad"},
@@ -56,10 +69,20 @@ async def test_run_script_executes_allowed_script(sandbox_session, script_dir):
 
 @pytest.mark.asyncio
 async def test_sandbox_exec_command_and_cwd_must_be_strings(sandbox_session):
+    result = await SandboxExec().execute({}, sandbox_session)
+
+    assert result.success is False
+    assert result.error == "command is required"
+
     result = await SandboxExec().execute({"command": 123}, sandbox_session)
 
     assert result.success is False
     assert "command" in (result.error or "")
+
+    result = await SandboxExec().execute({"command": "   "}, sandbox_session)
+
+    assert result.success is False
+    assert result.error == "command is empty"
 
     result = await SandboxExec().execute(
         {"command": "pwd", "cwd": ["src"]},

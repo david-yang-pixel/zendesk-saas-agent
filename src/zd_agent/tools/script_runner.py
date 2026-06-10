@@ -40,9 +40,14 @@ class RunScript(Tool):
     concurrency_safe = False
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        if "script_name" not in args:
+            return ToolResult(success=False, error="script_name is required")
         script_name = args["script_name"]
         if not isinstance(script_name, str):
             return ToolResult(success=False, error="script_name must be a string")
+        script_name = script_name.strip()
+        if not script_name:
+            return ToolResult(success=False, error="script_name is empty")
 
         if script_name not in ALLOWED_SCRIPTS:
             return ToolResult(
@@ -132,10 +137,14 @@ class SandboxExec(Tool):
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
 
+        if "command" not in args:
+            return ToolResult(success=False, error="command is required")
         raw_command = args["command"]
         if not isinstance(raw_command, str):
             return ToolResult(success=False, error="command must be a string")
         command = raw_command.strip()
+        if not command:
+            return ToolResult(success=False, error="command is empty")
         cmd_lower = command.lower()
 
         # 黑名单检查：包含危险模式直接拒绝
