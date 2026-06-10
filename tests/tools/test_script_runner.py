@@ -99,3 +99,14 @@ async def test_sandbox_exec_runs_allowed_command(sandbox_session):
 
     assert result.success is True
     assert "退出码: 0" in (result.output or "")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_exec_rejects_shell_control_operators(sandbox_session):
+    result = await SandboxExec().execute(
+        {"command": "echo safe; echo unsafe"},
+        sandbox_session,
+    )
+
+    assert result.success is False
+    assert "shell control operator" in (result.error or "")

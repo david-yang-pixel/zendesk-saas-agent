@@ -133,6 +133,10 @@ class SandboxExec(Tool):
         "__import__", "exec(", "eval(",
     }
 
+    SHELL_CONTROL_OPERATORS = {
+        ";", "&&", "||", "|", "`", "$(", ">", "<", "\n", "\r",
+    }
+
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
@@ -146,6 +150,13 @@ class SandboxExec(Tool):
         if not command:
             return ToolResult(success=False, error="command is empty")
         cmd_lower = command.lower()
+
+        for operator in self.SHELL_CONTROL_OPERATORS:
+            if operator in command:
+                return ToolResult(
+                    success=False,
+                    error=f"command contains forbidden shell control operator: {operator!r}",
+                )
 
         # 黑名单检查：包含危险模式直接拒绝
         for pattern in self.BLOCKED_PATTERNS:
