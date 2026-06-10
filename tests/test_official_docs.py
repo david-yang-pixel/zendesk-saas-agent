@@ -62,6 +62,30 @@ class OfficialDocsTest(unittest.TestCase):
 
 
 class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
+    async def test_search_rejects_missing_query(self) -> None:
+        tool = OfficialDocsSearch()
+
+        result = await tool.execute(
+            {},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "query is required")
+
+    async def test_search_rejects_blank_query(self) -> None:
+        tool = OfficialDocsSearch()
+
+        with patch("zd_agent.tools.official_docs._load_index") as load_index:
+            result = await tool.execute(
+                {"query": "   "},
+                AgentSession(ticket_id=1),
+            )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "query is empty")
+        load_index.assert_not_called()
+
     async def test_search_rejects_invalid_limit(self) -> None:
         tool = OfficialDocsSearch()
 
@@ -108,6 +132,28 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OfficialDocsReadTest(unittest.IsolatedAsyncioTestCase):
+    async def test_read_rejects_missing_url(self) -> None:
+        tool = OfficialDocsRead()
+
+        result = await tool.execute(
+            {},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "url is required")
+
+    async def test_read_rejects_blank_url(self) -> None:
+        tool = OfficialDocsRead()
+
+        result = await tool.execute(
+            {"url": "   "},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "url is empty")
+
     async def test_read_rejects_non_string_url(self) -> None:
         tool = OfficialDocsRead()
 

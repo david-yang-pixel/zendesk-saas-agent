@@ -136,9 +136,14 @@ class OfficialDocsSearch(Tool):
     max_output_tokens = 4000
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        if "query" not in args:
+            return ToolResult(success=False, error="query is required")
         query = args["query"]
         if not isinstance(query, str):
             return ToolResult(success=False, error="query must be a string")
+        query = query.strip()
+        if not query:
+            return ToolResult(success=False, error="query is empty")
 
         source = args.get("source", "auto")
         if not isinstance(source, str):
@@ -184,9 +189,14 @@ class OfficialDocsRead(Tool):
     group = "knowledge"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        if "url" not in args:
+            return ToolResult(success=False, error="url is required")
         url = args["url"]
         if not isinstance(url, str):
             return ToolResult(success=False, error="url must be a string")
+        url = url.strip()
+        if not url:
+            return ToolResult(success=False, error="url is empty")
 
         if not _is_allowed_url(url):
             return ToolResult(success=False, error="仅允许读取 Dify 官方文档站点")
