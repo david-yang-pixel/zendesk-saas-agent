@@ -212,6 +212,9 @@ async def send_public_reply(
     Returns:
         (success, message_or_error)
     """
+    if not isinstance(ticket_id, int) or isinstance(ticket_id, bool) or ticket_id <= 0:
+        return False, "ticket_id must be a positive integer"
+
     # Kill switch
     cfg = get_config()
     if not getattr(cfg, "public_reply", None) or not cfg.public_reply.enabled:

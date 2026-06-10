@@ -399,6 +399,32 @@ class TestExecute:
         mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_send_public_reply_rejects_invalid_ticket_id_before_context_lookup(self) -> None:
+        mock_context = MagicMock(return_value={"conversation_id": "conv-1"})
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.get_messaging_context",
+            mock_context,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            success, msg = await send_public_reply(
+                ticket_id=0,
+                body="Please share more details.",
+                reply_type="ask",
+            )
+
+        assert success is False
+        assert msg == "ticket_id must be a positive integer"
+        mock_context.assert_not_called()
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_native_messaging_context_sends_browser_relay_message(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
