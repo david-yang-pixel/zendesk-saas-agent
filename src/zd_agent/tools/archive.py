@@ -62,9 +62,18 @@ class ArchiveTicket(Tool):
     async def execute(
         self, args: dict[str, Any], session: AgentSession,
     ) -> ToolResult:
+        if "ticket_id" not in args:
+            return ToolResult(success=False, error="ticket_id is required")
+        if "analysis" not in args:
+            return ToolResult(success=False, error="analysis is required")
+        if "solution" not in args:
+            return ToolResult(success=False, error="solution is required")
+
         ticket_id = args["ticket_id"]
         if not isinstance(ticket_id, int) or isinstance(ticket_id, bool):
             return ToolResult(success=False, error="ticket_id must be an integer")
+        if ticket_id <= 0:
+            return ToolResult(success=False, error="ticket_id must be positive")
 
         analysis = args["analysis"]
         if not isinstance(analysis, str):

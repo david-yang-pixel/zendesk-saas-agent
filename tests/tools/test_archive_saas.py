@@ -132,6 +132,26 @@ async def test_followup_without_reply_no_draft_section(records_env, session):
             "ticket_id must be an integer",
         ),
         (
+            {"ticket_id": 0, "analysis": "a", "solution": "s"},
+            "ticket_id must be positive",
+        ),
+        (
+            {"ticket_id": -1, "analysis": "a", "solution": "s"},
+            "ticket_id must be positive",
+        ),
+        (
+            {"analysis": "a", "solution": "s"},
+            "ticket_id is required",
+        ),
+        (
+            {"ticket_id": 123, "solution": "s"},
+            "analysis is required",
+        ),
+        (
+            {"ticket_id": 123, "analysis": "a"},
+            "solution is required",
+        ),
+        (
             {"ticket_id": 123, "analysis": {"text": "a"}, "solution": "s"},
             "analysis must be a string",
         ),
