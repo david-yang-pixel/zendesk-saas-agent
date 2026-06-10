@@ -127,9 +127,15 @@ class KnowledgeSearch(Tool):
         if search_dir is None:
             return ToolResult(success=False, error="知识库目录解析失败")
 
+        if "query" not in args:
+            return ToolResult(success=False, error="query is required")
+
         query = args["query"]
         if not isinstance(query, str):
             return ToolResult(success=False, error="query must be a string")
+        query = query.strip()
+        if not query:
+            return ToolResult(success=False, error="query is empty")
 
         output = await _search_with_rg(search_dir, query)
         if output is None:

@@ -87,6 +87,48 @@ async def test_knowledge_search_rejects_non_string_query(
 
 
 @pytest.mark.asyncio
+async def test_knowledge_search_rejects_missing_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeSearch().execute(
+        {},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is False
+    assert result.error == "query is required"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_rejects_blank_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docs_dir = tmp_path / "kb"
+    docs_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.knowledge._resolve_docs_dir",
+        lambda: docs_dir,
+    )
+
+    result = await KnowledgeSearch().execute(
+        {"query": "   "},
+        session=None,  # type: ignore[arg-type]
+    )
+
+    assert result.success is False
+    assert result.error == "query is empty"
+
+
+@pytest.mark.asyncio
 async def test_knowledge_read_rejects_non_string_filepath(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
