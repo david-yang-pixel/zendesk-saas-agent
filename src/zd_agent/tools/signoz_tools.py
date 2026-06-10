@@ -47,6 +47,33 @@ def _coerce_limit(args: dict[str, Any], default: int) -> int | ToolResult:
     return max(_MIN_LIMIT, min(limit, _MAX_LIMIT))
 
 
+def _coerce_optional_string(
+    args: dict[str, Any],
+    name: str,
+    *,
+    default: str | None = None,
+) -> str | ToolResult | None:
+    value = args.get(name)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    cleaned = value.strip()
+    return cleaned or default
+
+
+def _coerce_required_string(args: dict[str, Any], name: str) -> str | ToolResult:
+    value = args.get(name)
+    if not value:
+        return ToolResult(success=False, error=f"{name} 参数必填")
+    if not isinstance(value, str):
+        return ToolResult(success=False, error=f"{name} must be a string")
+    cleaned = value.strip()
+    if not cleaned:
+        return ToolResult(success=False, error=f"{name} 参数必填")
+    return cleaned
+
+
 def _rows_to_text(rows: Any) -> str:
     """sz --json 返回的 list[dict] → 紧凑文本。空 → 提示语。"""
     if not rows:
@@ -92,13 +119,21 @@ class SignozErrors(Tool):
         if isinstance(limit, ToolResult):
             return limit
 
-        sz_args = ["errors", "--env", str(args.get("env") or "production")]
-        if args.get("tenant"):
-            sz_args += ["--tenant", str(args["tenant"])]
-        if args.get("grep"):
-            sz_args += ["--grep", str(args["grep"])]
-        if args.get("deployment"):
-            sz_args += ["--deployment", str(args["deployment"])]
+        env = _coerce_optional_string(args, "env", default="production")
+        tenant = _coerce_optional_string(args, "tenant")
+        grep = _coerce_optional_string(args, "grep")
+        deployment = _coerce_optional_string(args, "deployment")
+        for value in (env, tenant, grep, deployment):
+            if isinstance(value, ToolResult):
+                return value
+
+        sz_args = ["errors", "--env", env or "production"]
+        if tenant:
+            sz_args += ["--tenant", tenant]
+        if grep:
+            sz_args += ["--grep", grep]
+        if deployment:
+            sz_args += ["--deployment", deployment]
         sz_args += ["--hours", str(hours)]
         sz_args += ["--limit", str(limit)]
         rows = await run_sz(*sz_args)
@@ -136,15 +171,23 @@ class SignozTraceback(Tool):
         if isinstance(limit, ToolResult):
             return limit
 
+        log_id = _coerce_optional_string(args, "id")
+        env = _coerce_optional_string(args, "env", default="production")
+        tenant = _coerce_optional_string(args, "tenant")
+        grep = _coerce_optional_string(args, "grep")
+        for value in (log_id, env, tenant, grep):
+            if isinstance(value, ToolResult):
+                return value
+
         sz_args = ["traceback"]
-        if args.get("id"):
-            sz_args += ["--id", str(args["id"])]
+        if log_id:
+            sz_args += ["--id", log_id]
         else:
-            sz_args += ["--env", str(args.get("env") or "production")]
-            if args.get("tenant"):
-                sz_args += ["--tenant", str(args["tenant"])]
-            if args.get("grep"):
-                sz_args += ["--grep", str(args["grep"])]
+            sz_args += ["--env", env or "production"]
+            if tenant:
+                sz_args += ["--tenant", tenant]
+            if grep:
+                sz_args += ["--grep", grep]
         sz_args += ["--hours", str(hours)]
         sz_args += ["--limit", str(limit)]
         rows = await run_sz(*sz_args)
@@ -175,7 +218,11 @@ class SignozServices(Tool):
         if isinstance(limit, ToolResult):
             return limit
 
-        sz_args = ["services", "--env", str(args.get("env") or "production"),
+        env = _coerce_optional_string(args, "env", default="production")
+        if isinstance(env, ToolResult):
+            return env
+
+        sz_args = ["services", "--env", env or "production",
                    "--hours", str(hours), "--limit", str(limit)]
         rows = await run_sz(*sz_args)
         if rows is None:
@@ -204,13 +251,13 @@ class SignozQuery(Tool):
     max_output_tokens = _MAX_OUT
 
     async def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
-        sql = args.get("sql")
-        if not sql:
-            return ToolResult(success=False, error="sql 参数必填")
+        sql = _coerce_required_string(args, "sql")
+        if isinstance(sql, ToolResult):
+            return sql
         hours = _coerce_hours(args, 1)
         if isinstance(hours, ToolResult):
             return hours
-        rows = await run_sz("query", str(sql), "--hours", str(hours))
+        rows = await run_sz("query", sql, "--hours", str(hours))
         if rows is None:
             return ToolResult(success=False, error="sz query 执行失败（SQL 错误或 SigNoz 不可达）")
         return ToolResult(output=_rows_to_text(rows))

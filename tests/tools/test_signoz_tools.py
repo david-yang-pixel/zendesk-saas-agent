@@ -67,6 +67,34 @@ async def test_errors_rejects_invalid_numeric_args_before_call(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "args", "expected"),
+    [
+        (SignozErrors(), {"env": ["production"]}, "env must be a string"),
+        (SignozErrors(), {"tenant": {"id": "tenant-1"}}, "tenant must be a string"),
+        (SignozTraceback(), {"id": ["log-1"]}, "id must be a string"),
+        (SignozTraceback(), {"grep": {"q": "boom"}}, "grep must be a string"),
+        (SignozServices(), {"env": ["production"]}, "env must be a string"),
+        (SignozQuery(), {"sql": ["SELECT 1"]}, "sql must be a string"),
+    ],
+)
+async def test_rejects_invalid_string_args_before_call(
+    monkeypatch,
+    tool,
+    args,
+    expected,
+):
+    async def fake_run_sz(*_args, **_kw):
+        raise AssertionError("run_sz should not be called")
+    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+
+    r = await tool.execute(args, session=None)
+
+    assert not r.success
+    assert r.error == expected
+
+
+@pytest.mark.asyncio
 async def test_query_rejects_invalid_hours_before_call(monkeypatch):
     async def fake_run_sz(*args, **kw):
         raise AssertionError("run_sz should not be called")
