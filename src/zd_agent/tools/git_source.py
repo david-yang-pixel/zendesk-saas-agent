@@ -19,6 +19,7 @@ from zd_agent.tools.base import Tool, ToolResult
 logger = get_logger(module="tools.git_source")
 
 _REF_NOT_FOUND_MARKERS = (
+    "ambiguous argument",
     "unknown revision",
     "not a valid object name",
     "bad revision",
@@ -79,6 +80,17 @@ def _is_ref_not_found(err: str) -> bool:
     """检查 git 错误是否因为版本引用不存在"""
     err_lower = err.lower()
     return any(marker in err_lower for marker in _REF_NOT_FOUND_MARKERS)
+
+
+def _format_git_error(command: str, ref: str, err: str) -> str:
+    message = err.strip()
+    if _is_ref_not_found(message):
+        return (
+            f"{command} 失败: 无法解析版本引用 {ref!r}。"
+            "不要猜测 hotfix/tag/branch 名称；请先调用 list_repo_tags 或 saas_deployed_version "
+            f"确认可用 ref 后重试。原始错误: {message}"
+        )
+    return f"{command} 失败: {message}"
 
 
 async def _auto_fetch_repo(repo_name: str) -> bool:
@@ -157,7 +169,7 @@ class GitShow(Tool):
                 code, out, err = await _run_git(str(repo_dir), "show", f"{ref}:{filepath}")
 
         if code != 0:
-            return ToolResult(success=False, error=f"git show 失败: {err.strip()}")
+            return ToolResult(success=False, error=_format_git_error("git show", ref, err))
         return ToolResult(output=out)
 
 
@@ -239,7 +251,7 @@ class GitGrep(Tool):
         if code == 1:
             return ToolResult(output=f"未找到匹配「{pattern}」的代码")
         if code != 0:
-            return ToolResult(success=False, error=f"git grep 失败: {err.strip()}")
+            return ToolResult(success=False, error=_format_git_error("git grep", ref, err))
         return ToolResult(output=out)
 
 

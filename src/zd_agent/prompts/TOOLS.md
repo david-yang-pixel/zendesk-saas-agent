@@ -40,6 +40,8 @@
 ## 源码工具组
 
 - `git_grep` / `git_show` / `git_log` / `git_diff`：直接在 `saas源代码/<repo>/` 下运行
+- 查线上 SaaS 行为前先用 `saas_deployed_version` 或 `list_repo_tags` 确认可用 ref；不要猜
+  `hotfix-*` / `release-*` 名称。`git_grep` 提示 ref 无法解析时，先确认 ref 再重试，不要反复用同一个错 ref。
 - `github_search_prs` / `github_get_pr`：GitHub API（langgenius/dify 等）
 
 ## Subagent 工具

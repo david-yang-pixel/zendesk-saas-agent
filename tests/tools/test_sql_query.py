@@ -236,6 +236,35 @@ async def test_sql_query_teleport_expired_from_gateway_marks_session(fake_sessio
 
 
 @pytest.mark.asyncio
+async def test_sql_query_gateway_error_includes_database_elapsed_and_sql(fake_session, sql_cfg):
+    tool = SqlQuery()
+    fake_result = DbGatewayResult(
+        success=False,
+        code="QUERY_ERROR",
+        error="psql failed (rc=1): column does not exist",
+        elapsed_ms=3700,
+    )
+    with patch("zd_agent.tools.sql_query.query_db_gateway_mcp", AsyncMock(return_value=fake_result)):
+        result = await tool.execute(
+            {
+                "database": "prod",
+                "sql": """
+                    SELECT missing_column
+                    FROM tenants
+                    WHERE id = 'workspace-id'
+                """,
+            },
+            fake_session,
+        )
+
+    assert result.success is False
+    assert "DB gateway query failed [QUERY_ERROR]" in (result.error or "")
+    assert "database=prod" in (result.error or "")
+    assert "elapsed=3700ms" in (result.error or "")
+    assert "Failed SQL: SELECT missing_column FROM tenants" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_sql_query_requires_gateway_config(fake_session, sql_cfg):
     tool = SqlQuery()
     sql_cfg.db_gateway.url = ""

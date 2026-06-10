@@ -56,6 +56,73 @@ async def test_git_grep_rejects_invalid_string_args(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_git_grep_fetches_once_on_ambiguous_ref(fake_session, tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.git_source.resolve_repo",
+        lambda name: repo_dir if name == "dify" else None,
+    )
+
+    calls = 0
+
+    async def fake_run_git(repo_dir_arg, *args, max_output=30000):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 128, "", "fatal: ambiguous argument 'hotfix--1.14.2': unknown revision"
+        return 0, "api/foo.py\n12:queue\n", ""
+
+    fetches = 0
+
+    async def fake_fetch(repo_name):
+        nonlocal fetches
+        fetches += 1
+        return True
+
+    monkeypatch.setattr("zd_agent.tools.git_source._run_git", fake_run_git)
+    monkeypatch.setattr("zd_agent.tools.git_source._auto_fetch_repo", fake_fetch)
+
+    result = await GitGrep().execute(
+        {"repo": "dify", "ref": "hotfix--1.14.2", "pattern": "queue"},
+        fake_session,
+    )
+
+    assert result.success is True
+    assert "api/foo.py" in result.output
+    assert calls == 2
+    assert fetches == 1
+
+
+@pytest.mark.asyncio
+async def test_git_grep_ref_error_tells_agent_to_confirm_ref(fake_session, tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    monkeypatch.setattr(
+        "zd_agent.tools.git_source.resolve_repo",
+        lambda name: repo_dir if name == "dify" else None,
+    )
+
+    async def fake_run_git(repo_dir_arg, *args, max_output=30000):
+        return 128, "", "fatal: unable to resolve revision: hotfix-1.14.2"
+
+    async def fake_fetch(repo_name):
+        return False
+
+    monkeypatch.setattr("zd_agent.tools.git_source._run_git", fake_run_git)
+    monkeypatch.setattr("zd_agent.tools.git_source._auto_fetch_repo", fake_fetch)
+
+    result = await GitGrep().execute(
+        {"repo": "dify", "ref": "hotfix-1.14.2", "pattern": "queue"},
+        fake_session,
+    )
+
+    assert result.success is False
+    assert "无法解析版本引用 'hotfix-1.14.2'" in (result.error or "")
+    assert "list_repo_tags" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_git_log_rejects_invalid_string_args(fake_session):
     tool = GitLog()
 

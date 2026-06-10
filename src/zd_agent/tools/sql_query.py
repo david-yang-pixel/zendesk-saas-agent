@@ -21,6 +21,7 @@ _FORBIDDEN_KEYWORDS = [
     "VACUUM", "ANALYZE", "REINDEX", "SET", "LOCK", "SHOW",
 ]
 _DOLLAR_QUOTE_START = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
+_MAX_ERROR_SQL_CHARS = 800
 
 
 def _strip_comments_and_string_literals(sql: str) -> str:
@@ -109,6 +110,24 @@ def _validate_read_only_sql(sql: str) -> str | None:
     if fw not in ("SELECT", "WITH"):
         return f"SQL must start with SELECT or WITH, got: {fw or '(empty)'}"
     return None
+
+
+def _compact_sql_for_error(sql: str) -> str:
+    compact = re.sub(r"\s+", " ", sql).strip()
+    if len(compact) > _MAX_ERROR_SQL_CHARS:
+        return compact[:_MAX_ERROR_SQL_CHARS] + " ... (SQL truncated)"
+    return compact
+
+
+def _format_gateway_error(*, result: Any, database: str, sql: str) -> str:
+    code = result.code or "ERROR"
+    elapsed = f"{result.elapsed_ms}ms" if result.elapsed_ms else "unknown"
+    error = result.error or "(empty error from DB gateway)"
+    return (
+        f"DB gateway query failed [{code}] "
+        f"database={database} elapsed={elapsed}: {error}\n"
+        f"Failed SQL: {_compact_sql_for_error(sql)}"
+    )
 
 
 class SqlQuery(Tool):
@@ -205,7 +224,12 @@ class SqlQuery(Tool):
             )
         except Exception as e:
             return ToolResult(success=False, error=f"DB gateway MCP request failed: {e}")
-        return self._gateway_result_to_tool_result(result=result, session=session)
+        return self._gateway_result_to_tool_result(
+            result=result,
+            session=session,
+            database=database,
+            sql=sql,
+        )
 
     async def _execute_via_gateway(
         self,
@@ -228,13 +252,20 @@ class SqlQuery(Tool):
         except Exception as e:
             return ToolResult(success=False, error=f"DB gateway request failed: {e}")
 
-        return self._gateway_result_to_tool_result(result=result, session=session)
+        return self._gateway_result_to_tool_result(
+            result=result,
+            session=session,
+            database=database,
+            sql=sql,
+        )
 
     def _gateway_result_to_tool_result(
         self,
         *,
         result: Any,
         session: "AgentSession",
+        database: str,
+        sql: str,
     ) -> ToolResult:
         if not result.success:
             if result.code == "TELEPORT_EXPIRED":
@@ -245,7 +276,7 @@ class SqlQuery(Tool):
                 )
             return ToolResult(
                 success=False,
-                error=f"DB gateway query failed [{result.code or 'ERROR'}]: {result.error}",
+                error=_format_gateway_error(result=result, database=database, sql=sql),
             )
         summary_lines = [f"Rows: {result.row_count} | elapsed: {result.elapsed_ms}ms"]
         if result.truncated:
