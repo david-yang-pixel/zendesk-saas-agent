@@ -21,6 +21,7 @@ from zd_agent.tools.zendesk_public_reply import (
     _FOOTER_HANDOFF,
     _FOOTER_STANDARD,
     _append_footer,
+    _format_reply_body,
     _VALID_REPLY_TYPES,
     send_public_reply,
     ZendeskPublicReply,
@@ -43,7 +44,7 @@ class TestFooterAppend:
         assert "support engineer" in out
         # 视觉顺序：正向邀请必须在 escape hatch 之前
         assert out.find("tell me your question") < out.find('"human"')
-        assert out.endswith(_FOOTER_STANDARD.rstrip())
+        assert out.startswith("Hello world\n\u200b\n---\n🤖")
 
     def test_append_solution_uses_same_standard_footer(self) -> None:
         out_ask = _append_footer("body", "ask")
@@ -121,6 +122,52 @@ class TestStripDocsMdSuffix:
         # URL 主体仍在
         assert "run-workflow" in out
         assert "upload-file" in out
+
+
+class TestReplyBodyFormatting:
+    def test_adds_blank_lines_around_sections_lists_and_signature(self) -> None:
+        body = (
+            "Hi cg,\n"
+            "I checked the backend logs for the timestamps you shared.\n"
+            "Evidence from your app `客服工具`:\n"
+            "- 2026-06-10 02:57:46 UTC run `522f5006...`: failed after `604.277s`.\n"
+            "- 2026-06-10 03:07:49 UTC run `8a778c32...`: failed after `609.042s`.\n"
+            "Recommended next steps:\n"
+            "1. In the LLM node, switch from the current plugin.\n"
+            "2. Reduce the context passed into the LLM node.\n"
+            "Best regards,\n"
+            "Dify Support"
+        )
+
+        out = _format_reply_body(body)
+
+        assert "Hi cg,\n\nI checked" in out
+        assert "Evidence from your app `客服工具`:\n\n- 2026" in out
+        assert "`609.042s`.\n\nRecommended next steps:" in out
+        assert "Recommended next steps:\n\n1. In the LLM node" in out
+        assert "2. Reduce the context passed into the LLM node.\n\nBest regards," in out
+        assert "Best regards,\nDify Support" in out
+
+    def test_append_footer_uses_formatted_body(self) -> None:
+        out = _append_footer(
+            "Hi cg,\nI checked it.\nRecommended next steps:\n1. Retry.\nBest regards,\nDify Support",
+            "ask",
+        )
+
+        assert "Hi cg,\n\u200b\nI checked it." in out
+        assert "Recommended next steps:\n\u200b\n1. Retry." in out
+        assert "Dify Support\n\u200b\n---\n🤖" in out
+
+    def test_append_footer_preserves_visual_blank_lines_for_messaging(self) -> None:
+        out = _append_footer(
+            "Hi cg,\n\nI checked it.\n\nEvidence:\n\n- One\n\nBest regards,\nDify Support",
+            "solution",
+        )
+
+        assert "\n\n" not in out
+        assert "Hi cg,\n\u200b\nI checked it." in out
+        assert "Evidence:\n\u200b\n- One" in out
+        assert "- One\n\u200b\nBest regards," in out
 
 
 # ---------- tool execute() ----------

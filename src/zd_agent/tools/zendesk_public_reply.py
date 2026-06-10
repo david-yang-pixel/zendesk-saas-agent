@@ -105,6 +105,115 @@ def _strip_docs_md_suffix(body: str) -> str:
     return _DOCS_MD_PATTERN.sub(r"\1", body)
 
 
+_BULLET_RE = _re.compile(r"^\s*[-*]\s+")
+_NUMBERED_RE = _re.compile(r"^\s*\d+\.\s+")
+_GREETING_RE = _re.compile(r"^\s*Hi\b.*,\s*$", _re.IGNORECASE)
+_SIGNATURE_RE = _re.compile(r"^\s*(Best regards|Regards|Thanks|Thank you),?\s*$", _re.IGNORECASE)
+_ZENDESK_VISUAL_BLANK_LINE = "\u200b"
+
+
+def _format_reply_body(body: str) -> str:
+    """Normalize customer-visible plain text spacing before Zendesk delivery.
+
+    Zendesk Messaging renders this as plain text. Without explicit blank lines,
+    section labels, bullets, numbered lists, signature and footer visually run
+    together. Keep the text content intact, but add Markdown-style vertical
+    spacing where the model commonly omits it.
+    """
+    raw_lines = (body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    lines = [line.rstrip() for line in raw_lines]
+    lines = _collapse_blank_lines(lines)
+
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            _append_blank_once(out)
+            continue
+
+        previous = _previous_nonblank(out)
+        is_list_item = _is_list_item(stripped)
+        prev_is_list_item = _is_list_item(previous or "")
+
+        if out and previous is not None:
+            if _GREETING_RE.match(previous):
+                _append_blank_once(out)
+            elif stripped.endswith(":") and not out[-1].strip():
+                pass
+            elif stripped.endswith(":") and not prev_is_list_item:
+                _append_blank_once(out)
+            elif is_list_item and previous.endswith(":"):
+                _append_blank_once(out)
+            elif is_list_item and not prev_is_list_item and not previous.endswith(":"):
+                _append_blank_once(out)
+            elif not is_list_item and prev_is_list_item:
+                _append_blank_once(out)
+            elif _SIGNATURE_RE.match(stripped):
+                _append_blank_once(out)
+
+        out.append(stripped)
+
+    return "\n".join(_collapse_blank_lines(out)).strip()
+
+
+def _is_list_item(line: str) -> bool:
+    return bool(_BULLET_RE.match(line) or _NUMBERED_RE.match(line))
+
+
+def _append_blank_once(lines: list[str]) -> None:
+    if lines and lines[-1].strip():
+        lines.append("")
+
+
+def _previous_nonblank(lines: list[str]) -> str | None:
+    for line in reversed(lines):
+        if line.strip():
+            return line.strip()
+    return None
+
+
+def _collapse_blank_lines(lines: list[str]) -> list[str]:
+    collapsed: list[str] = []
+    blank_seen = False
+    for line in lines:
+        if line.strip():
+            collapsed.append(line)
+            blank_seen = False
+        elif not blank_seen:
+            collapsed.append("")
+            blank_seen = True
+    while collapsed and not collapsed[0].strip():
+        collapsed.pop(0)
+    while collapsed and not collapsed[-1].strip():
+        collapsed.pop()
+    return collapsed
+
+
+def _preserve_visual_blank_lines_for_messaging(text: str) -> str:
+    """Turn semantic blank lines into visible spacer rows in Zendesk Messaging.
+
+    The native messaging composer collapses empty lines when it renders the
+    conversation. A zero-width character on otherwise blank rows keeps the visual
+    paragraph break without adding visible content for the customer.
+    """
+    lines = (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    rendered: list[str] = []
+    blank_seen = False
+    for line in lines:
+        if line.strip():
+            rendered.append(line.rstrip())
+            blank_seen = False
+        elif not blank_seen:
+            rendered.append(_ZENDESK_VISUAL_BLANK_LINE)
+            blank_seen = True
+
+    while rendered and rendered[0] == _ZENDESK_VISUAL_BLANK_LINE:
+        rendered.pop(0)
+    while rendered and rendered[-1] == _ZENDESK_VISUAL_BLANK_LINE:
+        rendered.pop()
+    return "\n".join(rendered)
+
+
 def _append_footer(body: str, reply_type: str) -> str:
     """按 reply_type 在 body 末尾追加 footer。
 
@@ -112,11 +221,11 @@ def _append_footer(body: str, reply_type: str) -> str:
     顺手清理：docs.dify.ai 的 .md 后缀（agent 易从 llms.txt 抓到 .md 形式
     给客户但 .md 服务的是 raw markdown 不是渲染好的文档）。
     """
-    body = _strip_docs_md_suffix(body)
+    body = _format_reply_body(_strip_docs_md_suffix(body))
     footer = _FOOTER_BY_TYPE[reply_type]
     if body.rstrip().endswith(footer.rstrip()):
-        return body
-    return body.rstrip() + footer
+        return _preserve_visual_blank_lines_for_messaging(body)
+    return _preserve_visual_blank_lines_for_messaging(body.rstrip() + footer)
 
 
 def _normalize_reply_body(body: str) -> str:
