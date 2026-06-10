@@ -78,10 +78,16 @@ class ArchiveTicket(Tool):
         analysis = args["analysis"]
         if not isinstance(analysis, str):
             return ToolResult(success=False, error="analysis must be a string")
+        analysis = analysis.strip()
+        if not analysis:
+            return ToolResult(success=False, error="analysis is empty")
 
         solution = args["solution"]
         if not isinstance(solution, str):
             return ToolResult(success=False, error="solution must be a string")
+        solution = solution.strip()
+        if not solution:
+            return ToolResult(success=False, error="solution is empty")
 
         category_arg = args.get("category")
         if category_arg is not None:
