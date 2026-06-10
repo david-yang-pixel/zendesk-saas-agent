@@ -86,6 +86,41 @@ async def test_task_tools_must_be_string_list(fake_session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_spec", "expected"),
+    [
+        ({"task": ["search code"], "tools": ["git_grep"]}, "task[0].task must be a string"),
+        ({"task": "   ", "tools": ["git_grep"]}, "task[0].task is empty"),
+        (
+            {"task": "search code", "tools": ["git_grep"], "context": {"ticket_id": 123}},
+            "task[0].context must be a string",
+        ),
+    ],
+)
+async def test_task_and_context_must_be_strings(fake_session, task_spec, expected):
+    tool = RunSubagentsParallel()
+
+    result = await tool.execute({"tasks": [task_spec]}, fake_session)
+
+    assert result.success is False
+    assert result.error == expected
+
+
+@pytest.mark.asyncio
+async def test_rejects_more_than_three_tasks(fake_session):
+    tool = RunSubagentsParallel()
+    tasks = [
+        {"task": f"task {i}", "tools": ["git_grep"]}
+        for i in range(4)
+    ]
+
+    result = await tool.execute({"tasks": tasks}, fake_session)
+
+    assert result.success is False
+    assert result.error == "tasks must contain at most 3 items"
+
+
+@pytest.mark.asyncio
 async def test_one_failing_subagent_others_succeed(fake_session):
     """If one subagent raises, parallel should report error for it but still
     aggregate others' successful outputs."""

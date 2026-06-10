@@ -85,12 +85,25 @@ class RunSubagentsParallel(Tool):
             return ToolResult(success=False, error="tasks must be a list")
         if not tasks:
             return ToolResult(success=False, error="tasks is empty")
+        if len(tasks) > 3:
+            return ToolResult(success=False, error="tasks must contain at most 3 items")
 
         # 招法 3: tools 是 required，没传就报错让 LLM 重写。避免 fallback
         # 到全工具集（76 个 schema = 16K tokens 浪费）。
         for i, t in enumerate(tasks):
             if not isinstance(t, dict):
                 return ToolResult(success=False, error=f"task[{i}] must be an object")
+            task = t.get("task")
+            if not isinstance(task, str):
+                return ToolResult(success=False, error=f"task[{i}].task must be a string")
+            task = task.strip()
+            if not task:
+                return ToolResult(success=False, error=f"task[{i}].task is empty")
+            context = t.get("context", "")
+            if not isinstance(context, str):
+                return ToolResult(success=False, error=f"task[{i}].context must be a string")
+            t["task"] = task
+            t["context"] = context
             tools = t.get("tools") or []
             if not tools:
                 return ToolResult(
@@ -115,7 +128,7 @@ class RunSubagentsParallel(Tool):
             run_subagent(
                 t["task"],
                 t.get("tools", []) or [],
-                t.get("context", "") or "",
+                t["context"],
                 session,
             )
             for t in tasks
