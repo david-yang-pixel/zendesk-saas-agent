@@ -10,7 +10,7 @@
 - **敏感场景人工兜底**：退款、情绪、账号操作、低置信度 → 走 `zendesk_internal_reply` + 飞书推送 SE/财务
 - **触发判定前置**：用便宜模型先把客户消息分类成 6 种 verdict，避免对寒暄/打招呼/已解决的工单浪费主 Agent 算力
 - **静默窗口去抖**：客户连发多条消息时先攒一攒,窗口结束再一次性处理,避免半句话就触发
-- **真实数据驱动**：通过独立 DB Gateway 调用当前运维服务器维护的 Teleport / DB proxy 只读连生产库(prod / billing / plugin)，并结合 SigNoz 日志查证据,不靠猜
+- **真实数据驱动**：通过独立 DB Gateway 调用当前运维服务器维护的 Teleport / DB proxy 只读连生产库(prod / billing / plugin)，并通过独立 SigNoz MCP 查询日志证据,不靠猜
 - **可灰度可回滚**：`min_ticket_id` 限缩处理范围,`public_reply.enabled` 一键回退到「只发 Internal Note」
 - **单语言输出**：自动检测客户语言,中文客户回中文,其他一律 English(不双语对照)
 
@@ -110,7 +110,8 @@ Sandbox:  sandbox_list / search / read / write
 
 > 数据库工具通过远程 DB Gateway MCP endpoint 调用同级项目 `../db-gateway`；
 > MCP 只配置 `DB_GATEWAY_URL` 和 `DB_GATEWAY_API_KEY`，不持有 Teleport / DB 凭据。
-> SigNoz 工具经 vendored `scripts/sz` CLI 查询，旧 SigNoz MCP 已停用。
+> SigNoz 工具通过远程 Signoz MCP endpoint 调用同级项目 `../signoz-mcp`；
+> agent 只配置 `SIGNOZ_MCP_URL` 和 `SIGNOZ_MCP_API_KEY`，不持有原始 `SIGNOZ_API_KEY`。
 
 ## 目录结构
 
@@ -206,12 +207,15 @@ ZENDESK_API_TOKEN=your-api-token
 ZENDESK_WEBHOOK_SECRET=...           # 经典 webhook 签名
 ZENDESK_MESSAGING_WEBHOOK_SECRET=... # messaging webhook 签名
 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_BOT_CHAT_ID
-SIGNOZ_API_KEY / GITHUB_TOKEN
+SIGNOZ_MCP_URL=https://<agent-public-domain>/signoz-mcp
+SIGNOZ_MCP_API_KEY=<shared-secret>
+GITHUB_TOKEN=ghp_xxx
 DB_GATEWAY_URL=https://<agent-public-domain>/db-gateway
 DB_GATEWAY_API_KEY=<shared-secret>
 ```
 
 `db-gateway` 的配置、部署和 Teleport 凭据在同级项目 `../db-gateway`，不属于本仓库。
+`signoz-mcp` 的配置、部署和 SigNoz 原始凭据在同级项目 `../signoz-mcp`，不属于本仓库。
 
 ### 常用 CLI
 

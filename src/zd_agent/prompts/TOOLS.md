@@ -23,7 +23,7 @@
 
 ## 平台日志工具组
 
-### SigNoz（经 sz CLI；旧 MCP 已停用）
+### SigNoz（经远程 sz MCP）
 - `signoz_errors`：查 ERROR/FATAL 日志，可按 `tenant` / `grep`(body 子串) / `deployment` / `env`(默认 production) / `hours` / `limit` 过滤
 - `signoz_traceback`：拉完整 Python stacktrace（按 `id` / `tenant` / `grep`）。要看堆栈用这个，不要用 signoz_errors
 - `signoz_services`：列当前活跃 service / k8s deployment（查不到日志时核对 deployment 名）

@@ -29,7 +29,8 @@ trigger_decider:
 db_gateway:
   request_timeout_seconds: 35
 signoz:
-  url: https://dify.us2.signoz.cloud
+  mcp_url: https://ops.example.com/signoz-mcp
+  request_timeout_seconds: 35
 feishu:
   daily_summary_time: "09:00"
 repos:
@@ -61,7 +62,9 @@ def saas_env(monkeypatch):
         "OPENAI_API_KEY": "sk-xxx",
         "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test",
         "FEISHU_WEBHOOK_SECRET": "fs_sign_xxx",
-        "SIGNOZ_API_KEY": "sn_xxx",
+        "SIGNOZ_MCP_URL": "https://ops.example.com/signoz-mcp/",
+        "SIGNOZ_MCP_API_KEY": "signoz_mcp_xxx",
+        "SIGNOZ_MCP_TIMEOUT_SECONDS": "45",
         "GITHUB_TOKEN": "gh_xxx",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
@@ -100,8 +103,9 @@ def test_config_loads_trigger_decider_section(saas_env, saas_config_file):
 
 def test_config_loads_signoz_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
-    assert cfg.signoz.url == "https://dify.us2.signoz.cloud"
-    assert cfg.signoz.api_key == "sn_xxx"
+    assert cfg.signoz.mcp_url == "https://ops.example.com/signoz-mcp"
+    assert cfg.signoz.mcp_api_key == "signoz_mcp_xxx"
+    assert cfg.signoz.request_timeout_seconds == 45
 
 
 def test_config_loads_db_gateway_env(saas_env, saas_config_file):

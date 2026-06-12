@@ -93,13 +93,18 @@ chmod 600 /opt/zd-agent/.env
 # into /opt/zd-agent/.env:
 # ZENDESK_BROWSER_RELAY_URL=http://127.0.0.1:8097
 # ZENDESK_BROWSER_RELAY_API_KEY=<from /etc/zendesk-browser-relay/env>
+
+# SigNoz env lives outside the agent repo. Copy only the MCP URL/key
+# into /opt/zd-agent/.env:
+# SIGNOZ_MCP_URL=http://127.0.0.1:8098
+# SIGNOZ_MCP_API_KEY=<from /etc/signoz-mcp/env>
 ```
 
 Required variables for `/opt/zd-agent/.env` (see `.env.example`):
 - ZENDESK_SUBDOMAIN / ZENDESK_EMAIL (`<zendesk-agent-email>`) / ZENDESK_API_TOKEN / ZENDESK_WEBHOOK_SECRET
 - OPENAI_API_KEY
 - FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
-- SIGNOZ_API_KEY
+- SIGNOZ_MCP_URL / SIGNOZ_MCP_API_KEY
 - GITHUB_TOKEN
 - DB_GATEWAY_URL / DB_GATEWAY_API_KEY
 
@@ -108,6 +113,11 @@ Required variables for `/opt/db-gateway/.env` are documented in `/opt/db-gateway
 - TELEPORT_USER
 - TELEPORT_PUBLIC_BASE_URL
 - INTERNAL_SHARED_SECRET
+
+Required variables for `/opt/signoz-mcp/.env` are documented in `/opt/signoz-mcp/code/.env.example`:
+- SIGNOZ_MCP_API_KEY（must match `/opt/zd-agent/.env`）
+- SIGNOZ_URL
+- SIGNOZ_API_KEY
 - FEISHU_WEBHOOK_URL / FEISHU_WEBHOOK_SECRET（watchdog alerting）
 
 **可选**：

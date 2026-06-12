@@ -1,7 +1,6 @@
-"""SigNoz 日志查询工具组，经 vendored sz CLI（替换已失效的 SigNoz MCP）。
+"""SigNoz 日志查询工具组，经远程 sz MCP。
 
-sz 直接打 SigNoz v4 query_range API，绕过旧 SigNoz MCP 对 EE 后端的不兼容。
-四个工具对应 sz 子命令：errors / traceback / services / query(raw SQL 兜底)。
+四个工具对应远程 sz 子命令：errors / traceback / services / query(raw SQL 兜底)。
 """
 from __future__ import annotations
 
@@ -9,7 +8,7 @@ import json
 import math
 from typing import Any
 
-from zd_agent.integrations.sz_cli import run_sz
+from zd_agent.integrations.signoz_mcp import run_signoz_sz
 from zd_agent.tools.base import Tool, ToolResult
 
 _GROUP = "platform_issue"
@@ -92,7 +91,7 @@ def _rows_to_text(rows: Any) -> str:
 class SignozErrors(Tool):
     name = "signoz_errors"
     description = (
-        "查 cloud.dify.ai 生产 ERROR/FATAL 日志（经 sz CLI）。可按 tenant_id、"
+        "查 cloud.dify.ai 生产 ERROR/FATAL 日志（经远程 sz MCP）。可按 tenant_id、"
         "body 子串(grep)、k8s deployment 过滤。env 默认 production。"
         "workflow 异步任务跑在 deployment=dify-app-worker，不是 dify-api-oltp。"
     )
@@ -136,9 +135,9 @@ class SignozErrors(Tool):
             sz_args += ["--deployment", deployment]
         sz_args += ["--hours", str(hours)]
         sz_args += ["--limit", str(limit)]
-        rows = await run_sz(*sz_args)
+        rows = await run_signoz_sz(*sz_args)
         if rows is None:
-            return ToolResult(success=False, error="sz errors 查询失败（SigNoz 不可达或 sz 缺失）")
+            return ToolResult(success=False, error="远程 sz MCP errors 查询失败（SigNoz MCP 不可达或查询错误）")
         return ToolResult(output=_rows_to_text(rows))
 
 
@@ -190,9 +189,9 @@ class SignozTraceback(Tool):
                 sz_args += ["--grep", grep]
         sz_args += ["--hours", str(hours)]
         sz_args += ["--limit", str(limit)]
-        rows = await run_sz(*sz_args)
+        rows = await run_signoz_sz(*sz_args)
         if rows is None:
-            return ToolResult(success=False, error="sz traceback 查询失败")
+            return ToolResult(success=False, error="远程 sz MCP traceback 查询失败")
         return ToolResult(output=_rows_to_text(rows))
 
 
@@ -224,9 +223,9 @@ class SignozServices(Tool):
 
         sz_args = ["services", "--env", env or "production",
                    "--hours", str(hours), "--limit", str(limit)]
-        rows = await run_sz(*sz_args)
+        rows = await run_signoz_sz(*sz_args)
         if rows is None:
-            return ToolResult(success=False, error="sz services 查询失败")
+            return ToolResult(success=False, error="远程 sz MCP services 查询失败")
         return ToolResult(output=_rows_to_text(rows))
 
 
@@ -257,7 +256,7 @@ class SignozQuery(Tool):
         hours = _coerce_hours(args, 1)
         if isinstance(hours, ToolResult):
             return hours
-        rows = await run_sz("query", sql, "--hours", str(hours))
+        rows = await run_signoz_sz("query", sql, "--hours", str(hours))
         if rows is None:
-            return ToolResult(success=False, error="sz query 执行失败（SQL 错误或 SigNoz 不可达）")
+            return ToolResult(success=False, error="远程 sz MCP query 执行失败（SQL 错误或 SigNoz MCP 不可达）")
         return ToolResult(output=_rows_to_text(rows))

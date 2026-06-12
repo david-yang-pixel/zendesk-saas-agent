@@ -53,12 +53,12 @@ def _clear_cache():
 
 @pytest.mark.asyncio
 async def test_resolve_from_signoz(monkeypatch):
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         return [{"image_tag": "hotfix-1.14.2-fix.4",
                  "service_version": "hotfix-1.14.2-fix.4"}]
     async def fake_verify(ref):
         return True
-    monkeypatch.setattr(sv, "run_sz", fake_run_sz)
+    monkeypatch.setattr(sv, "run_signoz_sz", fake_run_signoz_sz)
     monkeypatch.setattr(sv, "_verify_ref", fake_verify)
 
     dv = await sv.resolve_deployed_version(use_cache=False)
@@ -72,13 +72,13 @@ async def test_resolve_from_signoz(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resolve_falls_back_to_saas_deploy(monkeypatch):
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         return None  # SigNoz 失败
     async def fake_fallback():
         return "hotfix-1.14.2-fix.3"
     async def fake_verify(ref):
         return True
-    monkeypatch.setattr(sv, "run_sz", fake_run_sz)
+    monkeypatch.setattr(sv, "run_signoz_sz", fake_run_signoz_sz)
     monkeypatch.setattr(sv, "_read_saas_deploy_tag", fake_fallback)
     monkeypatch.setattr(sv, "_verify_ref", fake_verify)
 
@@ -90,11 +90,11 @@ async def test_resolve_falls_back_to_saas_deploy(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resolve_returns_none_when_all_fail(monkeypatch):
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         return None
     async def fake_fallback():
         return None
-    monkeypatch.setattr(sv, "run_sz", fake_run_sz)
+    monkeypatch.setattr(sv, "run_signoz_sz", fake_run_signoz_sz)
     monkeypatch.setattr(sv, "_read_saas_deploy_tag", fake_fallback)
 
     dv = await sv.resolve_deployed_version(use_cache=False)
@@ -104,12 +104,12 @@ async def test_resolve_returns_none_when_all_fail(monkeypatch):
 @pytest.mark.asyncio
 async def test_resolve_uses_cache(monkeypatch):
     calls = {"n": 0}
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         calls["n"] += 1
         return [{"image_tag": "hotfix-1.14.2-fix.4"}]
     async def fake_verify(ref):
         return True
-    monkeypatch.setattr(sv, "run_sz", fake_run_sz)
+    monkeypatch.setattr(sv, "run_signoz_sz", fake_run_signoz_sz)
     monkeypatch.setattr(sv, "_verify_ref", fake_verify)
 
     await sv.resolve_deployed_version(use_cache=True)

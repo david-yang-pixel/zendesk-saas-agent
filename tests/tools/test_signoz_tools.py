@@ -1,4 +1,4 @@
-"""SigNoz 日志查询工具（基于 sz CLI）测试。"""
+"""SigNoz 日志查询工具（基于远程 sz MCP）测试。"""
 import pytest
 
 import zd_agent.tools.signoz_tools as st
@@ -9,11 +9,11 @@ from zd_agent.tools.signoz_tools import (
 
 @pytest.mark.asyncio
 async def test_errors_returns_rows(monkeypatch):
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         assert args[0] == "errors"
         return [{"ts": "2026-05-30 16:13", "sev": "ERROR",
                  "dep": "dify-api-oltp", "id": "x", "body": "boom"}]
-    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+    monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
 
     tool = SignozErrors()
     r = await tool.execute({"hours": 1, "limit": 3}, session=None)
@@ -25,10 +25,10 @@ async def test_errors_returns_rows(monkeypatch):
 @pytest.mark.asyncio
 async def test_errors_passes_filters(monkeypatch):
     seen = {}
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         seen["args"] = args
         return []
-    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+    monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
 
     tool = SignozErrors()
     await tool.execute({"tenant": "abc", "deployment": "dify-app-worker"}, session=None)
@@ -41,9 +41,9 @@ async def test_errors_passes_filters(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_errors_handles_failure(monkeypatch):
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         return None
-    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+    monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
 
     tool = SignozErrors()
     r = await tool.execute({}, session=None)
@@ -53,9 +53,9 @@ async def test_errors_handles_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_errors_rejects_invalid_numeric_args_before_call(monkeypatch):
-    async def fake_run_sz(*args, **kw):
-        raise AssertionError("run_sz should not be called")
-    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+    async def fake_run_signoz_sz(*args, **kw):
+        raise AssertionError("run_signoz_sz should not be called")
+    monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
 
     r = await SignozErrors().execute({"hours": "soon"}, session=None)
     assert not r.success
@@ -84,9 +84,9 @@ async def test_rejects_invalid_string_args_before_call(
     args,
     expected,
 ):
-    async def fake_run_sz(*_args, **_kw):
-        raise AssertionError("run_sz should not be called")
-    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+    async def fake_run_signoz_sz(*_args, **_kw):
+        raise AssertionError("run_signoz_sz should not be called")
+    monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
 
     r = await tool.execute(args, session=None)
 
@@ -96,9 +96,9 @@ async def test_rejects_invalid_string_args_before_call(
 
 @pytest.mark.asyncio
 async def test_query_rejects_invalid_hours_before_call(monkeypatch):
-    async def fake_run_sz(*args, **kw):
-        raise AssertionError("run_sz should not be called")
-    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+    async def fake_run_signoz_sz(*args, **kw):
+        raise AssertionError("run_signoz_sz should not be called")
+    monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
 
     r = await SignozQuery().execute({"sql": "SELECT 1", "hours": "later"}, session=None)
     assert not r.success
@@ -118,8 +118,8 @@ async def test_query_requires_sql(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_traceback_and_services_smoke(monkeypatch):
-    async def fake_run_sz(*args, **kw):
+    async def fake_run_signoz_sz(*args, **kw):
         return []
-    monkeypatch.setattr(st, "run_sz", fake_run_sz)
+    monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
     assert (await SignozTraceback().execute({}, session=None)).success
     assert (await SignozServices().execute({}, session=None)).success

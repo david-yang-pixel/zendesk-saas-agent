@@ -1,4 +1,4 @@
-"""线上部署版本解析：SigNoz 主源（经 sz CLI）+ saas-deploy 兜底。
+"""线上部署版本解析：SigNoz 主源（经远程 sz MCP）+ saas-deploy 兜底。
 
 - resolve_deployed_version()：返回 cloud.dify.ai 生产 dify-api 当前运行版本。
 - SaasDeployedVersion：agent 深挖工具。
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from zd_agent.config import get_config
-from zd_agent.integrations.sz_cli import run_sz
+from zd_agent.integrations.signoz_mcp import run_signoz_sz
 from zd_agent.log import get_logger
 from zd_agent.repos import fetch_repo, resolve_repo
 from zd_agent.tools.base import Tool, ToolResult
@@ -130,8 +130,8 @@ async def _verify_ref(ref: str) -> bool:
 
 
 async def _query_signoz_image_tag() -> str | None:
-    """经 sz 查 dify-api-oltp 的 container.image.tag。多 tag 时取第一个。"""
-    rows = await run_sz("query", _VERSION_SQL, "--hours", "3")
+    """经远程 sz MCP 查 dify-api-oltp 的 container.image.tag。多 tag 时取第一个。"""
+    rows = await run_signoz_sz("query", _VERSION_SQL, "--hours", "3")
     if not rows or not isinstance(rows, list):
         return None
     for row in rows:

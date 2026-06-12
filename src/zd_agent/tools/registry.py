@@ -130,7 +130,7 @@ def create_tool_registry() -> ToolRegistry:
     # 飞书通知工具（主动推送）
     registry.register(FeishuPush())
 
-    # SigNoz 日志查询工具组（经 sz CLI，替换已失效的 SigNoz MCP）
+    # SigNoz 日志查询工具组（经远程 sz MCP）
     registry.register(SignozErrors())
     registry.register(SignozTraceback())
     registry.register(SignozServices())

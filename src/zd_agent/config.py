@@ -187,8 +187,15 @@ class DbGatewayConfig(BaseModel):
 
 
 class SignozConfig(BaseModel):
-    url: str = ""
-    api_key: str = ""  # from env SIGNOZ_API_KEY
+    """Remote SigNoz MCP client config.
+
+    The agent must not hold the raw SigNoz API key. That key belongs to the
+    sibling signoz-mcp service, which exposes a narrow remote MCP tool.
+    """
+
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 35
 
 
 class FeishuConfig(BaseModel):
@@ -313,7 +320,9 @@ class EnvSettings(BaseSettings):
     # SaaS-specific env vars
     db_gateway_url: str = ""
     db_gateway_api_key: str = ""
-    signoz_api_key: str = ""
+    signoz_mcp_url: str = ""
+    signoz_mcp_api_key: str = ""
+    signoz_mcp_timeout_seconds: int | None = None
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
@@ -377,9 +386,13 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.db_gateway.url = env.db_gateway_url.rstrip("/")
     if env.db_gateway_api_key:
         cfg.db_gateway.api_key = env.db_gateway_api_key
-    # SigNoz
-    if env.signoz_api_key:
-        cfg.signoz.api_key = env.signoz_api_key
+    # SigNoz remote MCP
+    if env.signoz_mcp_url:
+        cfg.signoz.mcp_url = env.signoz_mcp_url.rstrip("/")
+    if env.signoz_mcp_api_key:
+        cfg.signoz.mcp_api_key = env.signoz_mcp_api_key
+    if env.signoz_mcp_timeout_seconds is not None:
+        cfg.signoz.request_timeout_seconds = env.signoz_mcp_timeout_seconds
     # Feishu
     if env.feishu_webhook_url:
         cfg.feishu.webhook_url = env.feishu_webhook_url
