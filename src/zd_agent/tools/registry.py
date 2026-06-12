@@ -137,14 +137,3 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(SignozQuery())
 
     return registry
-
-
-async def augment_registry_async(registry: "ToolRegistry") -> None:
-    """[已停用] 原用于异步注册 SigNoz MCP 工具。
-
-    SigNoz MCP（signoz-mcp-server）对 SigNoz EE v0.121 后端不兼容（启动即
-    closed stdout），生产从未成功加载。已改用 vendored sz CLI（见 signoz_tools.py
-    + saas_version.py），SigNoz 工具改为同步注册。本函数保留为 no-op 以兼容
-    runner.py 的调用点；signoz_mcp_tools.py 代码保留备用，不删。
-    """
-    return None

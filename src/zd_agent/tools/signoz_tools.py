@@ -1,6 +1,6 @@
 """SigNoz 日志查询工具组，经 vendored sz CLI（替换已失效的 SigNoz MCP）。
 
-sz 直接打 SigNoz v4 query_range API，绕过 signoz-mcp-server 对 EE 后端的不兼容。
+sz 直接打 SigNoz v4 query_range API，绕过旧 SigNoz MCP 对 EE 后端的不兼容。
 四个工具对应 sz 子命令：errors / traceback / services / query(raw SQL 兜底)。
 """
 from __future__ import annotations
