@@ -1,6 +1,7 @@
 """Route registration for the SaaS aiohttp app."""
 from __future__ import annotations
 
+import hmac
 from typing import Any
 
 from aiohttp import web
@@ -8,6 +9,12 @@ from aiohttp import web
 from zd_agent.config import EnvSettings
 from zd_agent.log import get_logger
 from zd_agent.runtime.pre_send_check import pre_send_check_or_abort
+from zd_agent.services.agent_management import (
+    build_agent_config_manifest,
+    build_agent_tools_manifest,
+    list_agent_models,
+    update_agent_config,
+)
 from zd_agent.services.app_context import app_config
 from zd_agent.services.ticket_messages import _fetch_customer_messages
 from zd_agent.services.zendesk_messaging_webhook import (
@@ -20,6 +27,70 @@ logger = get_logger(module="services.saas_routes")
 
 async def handle_healthz(request: web.Request) -> web.Response:
     return web.Response(status=200, text="ok")
+
+
+def _bearer_token(request: web.Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return ""
+    return auth.removeprefix("Bearer ").strip()
+
+
+def _management_auth_ok(request: web.Request) -> bool:
+    expected = EnvSettings().hc_client_api_key.strip()
+    token = _bearer_token(request)
+    return bool(expected and token and hmac.compare_digest(expected, token))
+
+
+def _require_management_auth(request: web.Request) -> web.Response | None:
+    if _management_auth_ok(request):
+        return None
+    return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+
+async def handle_agent_config(request: web.Request) -> web.Response:
+    unauthorized = _require_management_auth(request)
+    if unauthorized is not None:
+        return unauthorized
+    return web.json_response(
+        build_agent_config_manifest(app_config(request.app), env=EnvSettings())
+    )
+
+
+async def handle_update_agent_config(request: web.Request) -> web.Response:
+    unauthorized = _require_management_auth(request)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+    if not isinstance(payload, dict):
+        return web.json_response({"ok": False, "error": "bad_request"}, status=400)
+    manifest = update_agent_config(app_config(request.app), payload, env=EnvSettings())
+    return web.json_response(manifest)
+
+
+async def handle_agent_models(request: web.Request) -> web.Response:
+    unauthorized = _require_management_auth(request)
+    if unauthorized is not None:
+        return unauthorized
+    return web.json_response(
+        await list_agent_models(
+            app_config(request.app),
+            target=request.query.get("target"),
+            base_url=request.query.get("base_url"),
+            api_key=request.headers.get("X-Agent-Model-Api-Key"),
+            env=EnvSettings(),
+        )
+    )
+
+
+async def handle_agent_tools(request: web.Request) -> web.Response:
+    unauthorized = _require_management_auth(request)
+    if unauthorized is not None:
+        return unauthorized
+    return web.json_response(build_agent_tools_manifest())
 
 
 async def handle_pre_send_freshness(request: web.Request) -> web.Response:
@@ -77,5 +148,9 @@ def register_saas_routes(*, app: web.Application, cfg: Any) -> None:
         cfg.webhook.zendesk_messaging_path,
         handle_zendesk_messaging_webhook,
     )
+    app.router.add_get("/agent/config", handle_agent_config)
+    app.router.add_put("/agent/config", handle_update_agent_config)
+    app.router.add_get("/agent/models", handle_agent_models)
+    app.router.add_get("/agent/tools", handle_agent_tools)
     app.router.add_post("/internal/pre-send-freshness", handle_pre_send_freshness)
     app.router.add_get("/healthz", handle_healthz)

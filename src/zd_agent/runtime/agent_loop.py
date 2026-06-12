@@ -22,7 +22,7 @@ except ImportError:
 from openai import RateLimitError as OpenAIRateLimitError
 
 from zd_agent.log import get_logger
-from zd_agent.runtime.compaction import multi_level_compact
+from zd_agent.runtime.compaction import count_tokens, history_snip, multi_level_compact
 from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, ToolExecuted
 from zd_agent.runtime.guardrails import GuardrailTriggered, Guardrails
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
@@ -37,6 +37,7 @@ _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BASE_DELAY = 30  # Anthropic 每分钟限额，等 30s 比较安全
 _CONNECTION_MAX_RETRIES = 2
 _CONNECTION_BASE_DELAY = 5  # 网络瞬时抖动通常 5s 内恢复
+_PROACTIVE_CONTEXT_SNIP_TOKEN_THRESHOLD = 12_000
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -61,6 +62,19 @@ def _is_connection_error(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return "connection error" in msg or "connection reset" in msg
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    """判断是否为请求超时；超时通常适合降级整理上下文后重试。"""
+    if isinstance(exc, APITimeoutError):
+        return True
+    if AnthropicTimeoutError is not None and isinstance(exc, AnthropicTimeoutError):
+        return True
+    name = type(exc).__name__
+    if name in ("TimeoutError", "ReadTimeout", "ConnectTimeout"):
+        return True
+    msg = str(exc).lower()
+    return "timeout" in msg or "timed out" in msg
 
 
 def _get_retry_after(exc: Exception) -> float:
@@ -107,6 +121,62 @@ def _strip_images_from_messages(messages: list[dict[str, Any]]) -> int:
         })
         msg["content"] = new_content
     return removed
+
+
+def _apply_history_snip(message_store: MessageStore) -> tuple[int, int]:
+    """对 message_store 做一次 cheap history_snip，返回前后 token 估算。"""
+    before_tokens = count_tokens(message_store.to_api_messages())
+    message_store.raw = history_snip(message_store.to_api_messages())
+    after_tokens = count_tokens(message_store.to_api_messages())
+    return before_tokens, after_tokens
+
+
+def _groom_context_proactively(
+    session: AgentSession,
+    message_store: MessageStore,
+    *,
+    message_store_tokens: int,
+) -> int:
+    """软阈值上下文整理：只裁剪长工具输出，不丢客户原文和截图。"""
+    if message_store_tokens < _PROACTIVE_CONTEXT_SNIP_TOKEN_THRESHOLD:
+        return message_store_tokens
+
+    before_tokens, after_tokens = _apply_history_snip(message_store)
+    if after_tokens < before_tokens:
+        logger.info(
+            "context_groomed_proactively",
+            ticket_id=session.ticket_id,
+            before_tokens=before_tokens,
+            after_tokens=after_tokens,
+            saved_tokens=before_tokens - after_tokens,
+        )
+    return after_tokens
+
+
+def _groom_context_for_retry(
+    session: AgentSession,
+    message_store: MessageStore,
+    *,
+    reason: str,
+) -> None:
+    """timeout 后的重试整理：去掉图片块并裁剪长工具输出。
+
+    首次请求仍保留截图；只有模型超时后才降级到纯文本上下文，避免
+    因图片下载/视觉分析拖垮整单。
+    """
+    before_tokens = count_tokens(message_store.to_api_messages())
+    removed_images = _strip_images_from_messages(message_store.raw)
+    message_store.raw = history_snip(message_store.to_api_messages())
+    after_tokens = count_tokens(message_store.to_api_messages())
+    logger.warning(
+        "context_groomed_for_retry",
+        ticket_id=session.ticket_id,
+        reason=reason,
+        removed_images=removed_images,
+        before_tokens=before_tokens,
+        after_tokens=after_tokens,
+        saved_tokens=before_tokens - after_tokens,
+    )
 
 
 def _assistant_message_dict(response: LLMResponse) -> dict[str, Any]:
@@ -339,8 +409,12 @@ async def agent_loop(
 
             # 计算 message_store 当前 token 数（不算很贵，每轮一次）—
             # 用于"修法 2"基于 message_store 大小的提前 compaction 触发。
-            from zd_agent.runtime.compaction import count_tokens as _count_msg_tokens
-            ms_tokens = _count_msg_tokens(message_store.to_api_messages())
+            ms_tokens = count_tokens(message_store.to_api_messages())
+            ms_tokens = _groom_context_proactively(
+                session,
+                message_store,
+                message_store_tokens=ms_tokens,
+            )
 
             if guardrails.should_compact(message_store_tokens=ms_tokens):
                 logger.info(
@@ -401,6 +475,12 @@ async def agent_loop(
                             continue
                         if _is_connection_error(e) and conn_attempts < _CONNECTION_MAX_RETRIES:
                             conn_attempts += 1
+                            if _is_timeout_error(e):
+                                _groom_context_for_retry(
+                                    session,
+                                    message_store,
+                                    reason=type(e).__name__,
+                                )
                             delay = _CONNECTION_BASE_DELAY * (2 ** (conn_attempts - 1))
                             logger.warning(
                                 "connection_error_retry",
