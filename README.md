@@ -108,7 +108,7 @@ Sandbox:  sandbox_list / search / read / write
 子代理:    run_subagent / run_subagents_parallel
 ```
 
-> 数据库工具通过同级项目 `../db-gateway/scripts/db_gateway_mcp.py` 调用 DB Gateway HTTP API；
+> 数据库工具通过远程 DB Gateway MCP endpoint 调用同级项目 `../db-gateway`；
 > MCP 只配置 `DB_GATEWAY_URL` 和 `DB_GATEWAY_API_KEY`，不持有 Teleport / DB 凭据。
 > SigNoz 工具经 vendored `scripts/sz` CLI 查询，旧 SigNoz MCP 已停用。
 

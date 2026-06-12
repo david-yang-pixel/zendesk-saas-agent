@@ -183,7 +183,6 @@ class DbGatewayConfig(BaseModel):
 
     url: str = ""
     api_key: str = ""
-    mcp_enabled: bool = True
     request_timeout_seconds: int = 35
 
 

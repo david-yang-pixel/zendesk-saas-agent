@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from zd_agent.integrations.db_gateway import DbGatewayResult, _coerce_int
 from zd_agent.integrations.mcp_response import load_json_or_sse_response
+
+
+@dataclass
+class DbGatewayResult:
+    success: bool
+    csv: str = ""
+    row_count: int = 0
+    elapsed_ms: int = 0
+    truncated: bool = False
+    code: str = ""
+    error: str | None = None
+
+
+def _coerce_int(value: Any) -> int | None:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return None
 
 
 def _mcp_endpoint(url: str) -> str:

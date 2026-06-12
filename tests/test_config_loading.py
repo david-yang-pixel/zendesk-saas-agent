@@ -27,7 +27,6 @@ trigger_decider:
   silence_extend_to_minutes: 1
   rapid_burst_window_seconds: 30
 db_gateway:
-  mcp_enabled: true
   request_timeout_seconds: 35
 signoz:
   url: https://dify.us2.signoz.cloud

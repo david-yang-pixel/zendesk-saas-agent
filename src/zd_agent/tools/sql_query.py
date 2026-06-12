@@ -5,7 +5,6 @@ import re
 from typing import Any, TYPE_CHECKING
 
 from zd_agent.config import get_config
-from zd_agent.integrations.db_gateway import query_db_gateway
 from zd_agent.integrations.db_gateway_mcp import query_db_gateway_mcp
 from zd_agent.tools.base import Tool, ToolResult
 
@@ -190,15 +189,7 @@ class SqlQuery(Tool):
                 ),
             )
 
-        if getattr(cfg.db_gateway, "mcp_enabled", True):
-            return await self._execute_via_gateway_mcp(
-                cfg=cfg,
-                database=db_key,
-                sql=sql,
-                ticket_id=ticket_id,
-                session=session,
-            )
-        return await self._execute_via_gateway(
+        return await self._execute_via_gateway_mcp(
             cfg=cfg,
             database=db_key,
             sql=sql,
@@ -224,34 +215,6 @@ class SqlQuery(Tool):
             )
         except Exception as e:
             return ToolResult(success=False, error=f"DB gateway MCP request failed: {e}")
-        return self._gateway_result_to_tool_result(
-            result=result,
-            session=session,
-            database=database,
-            sql=sql,
-        )
-
-    async def _execute_via_gateway(
-        self,
-        *,
-        cfg: Any,
-        database: str,
-        sql: str,
-        ticket_id: str,
-        session: "AgentSession",
-    ) -> ToolResult:
-        try:
-            result = await query_db_gateway(
-                url=cfg.db_gateway.url,
-                api_key=cfg.db_gateway.api_key,
-                database=database,
-                sql=sql,
-                ticket_id=ticket_id,
-                timeout=cfg.db_gateway.request_timeout_seconds,
-            )
-        except Exception as e:
-            return ToolResult(success=False, error=f"DB gateway request failed: {e}")
-
         return self._gateway_result_to_tool_result(
             result=result,
             session=session,

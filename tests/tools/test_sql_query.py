@@ -3,7 +3,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from zd_agent.integrations.db_gateway import DbGatewayResult
+from zd_agent.integrations.db_gateway_mcp import DbGatewayResult
+import zd_agent.tools.sql_query as sql_query_module
 from zd_agent.tools.sql_query import SqlQuery
 
 
@@ -15,7 +16,6 @@ def sql_cfg(tmp_path, monkeypatch):
     cfg.resources.state_dir = ".state"
     cfg.db_gateway.url = "https://db-gateway.example.com"
     cfg.db_gateway.api_key = "secret"
-    cfg.db_gateway.mcp_enabled = True
     cfg.db_gateway.request_timeout_seconds = 30
 
     monkeypatch.setattr("zd_agent.tools.sql_query.get_config", lambda: cfg)
@@ -275,7 +275,7 @@ async def test_sql_query_requires_gateway_config(fake_session, sql_cfg):
 
 
 @pytest.mark.asyncio
-async def test_sql_query_uses_db_gateway_mcp_when_configured(fake_session, sql_cfg):
+async def test_sql_query_uses_db_gateway_mcp(fake_session, sql_cfg):
     tool = SqlQuery()
     gateway_result = DbGatewayResult(
         success=True,
@@ -287,10 +287,7 @@ async def test_sql_query_uses_db_gateway_mcp_when_configured(fake_session, sql_c
     with patch(
         "zd_agent.tools.sql_query.query_db_gateway_mcp",
         AsyncMock(return_value=gateway_result),
-    ) as gateway_mcp, patch(
-        "zd_agent.tools.sql_query.query_db_gateway",
-        AsyncMock(),
-    ) as gateway_http:
+    ) as gateway_mcp:
         result = await tool.execute(
             {"database": "prod", "sql": "SELECT id, name FROM tenants LIMIT 1"},
             fake_session,
@@ -299,4 +296,8 @@ async def test_sql_query_uses_db_gateway_mcp_when_configured(fake_session, sql_c
     assert result.success is True
     assert "alice" in result.output
     gateway_mcp.assert_awaited_once()
-    gateway_http.assert_not_awaited()
+
+
+def test_sql_query_exposes_no_http_gateway_fallback():
+    """SqlQuery has no HTTP DB Gateway fallback; MCP is the only transport."""
+    assert not hasattr(sql_query_module, "query_db_gateway")

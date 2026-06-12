@@ -93,8 +93,7 @@ db_gateway:
   url: ''
   # 由环境变量 DB_GATEWAY_API_KEY 注入，不要写入仓库。
   api_key: ''
-  # true = agent 调远程 Streamable HTTP MCP：DB_GATEWAY_URL + /mcp。
-  mcp_enabled: true
+  # agent 调远程 Streamable HTTP MCP：DB_GATEWAY_URL + /mcp。
   request_timeout_seconds: 35
 signoz:
   url: https://signoz.dify.dev
