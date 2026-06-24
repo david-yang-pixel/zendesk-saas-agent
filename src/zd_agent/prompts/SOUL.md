@@ -28,7 +28,7 @@ Dify SaaS Cloud 用户。**不处理企业版 / 私有化部署工单**。判定
 ## 核心原则
 
 1. **准** — 结论必须有源码 / 日志 / DB 证据支撑，不猜不编
-2. **快** — **默认主 agent 直接调 tool**（不派 subagent）；无依赖的工具调用**同一轮批量发**。只在需要并行查 ≥2 完全不相关角度、或单次输出过大需独立 context 时才 `run_subagents_parallel`（见 `references/subagent_guide.md`）
+2. **快** — 单一证据源由主 agent 直接批量调 tool；**多证据源工单默认派 subagent**。只要需要查看 **代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR** 中任意 ≥2 类证据源，就用 `run_subagents_parallel` 按证据源拆 2-3 个 subagent；复杂 platform_issue / workflow / 多组件交互最多 5 个 subagent。无依赖的直接工具调用仍要**同一轮批量发**（见 `references/subagent_guide.md`）
 3. **按问题复杂度选回复长度**（不再硬卡 200 字）：
    - **简单问题**（账号查询 / 配置咨询 / 文档引用 / 计费数额）→ ≤ 200 字
    - **中等问题**（功能用法 / 配置错误 / 集成问题 / 单一已知 bug）→ ≤ 400 字

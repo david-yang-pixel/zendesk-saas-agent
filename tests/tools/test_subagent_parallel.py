@@ -52,6 +52,28 @@ async def test_parallel_dispatch_runs_concurrently(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_parallel_dispatch_allows_up_to_five_tasks(fake_session):
+    tool = RunSubagentsParallel()
+    started: list[str] = []
+
+    async def fake_subagent(task, tools, context, session):
+        started.append(task)
+        return ToolResult(output=f"ok {task}")
+
+    tasks = [
+        {"task": f"task {i}", "tools": ["git_grep"]}
+        for i in range(5)
+    ]
+
+    with _make_subagent_patch(fake_subagent):
+        result = await tool.execute({"tasks": tasks}, fake_session)
+
+    assert result.success is True
+    assert started == [f"task {i}" for i in range(5)]
+    assert "ok task 4" in result.output
+
+
+@pytest.mark.asyncio
 async def test_empty_tasks_returns_error(fake_session):
     tool = RunSubagentsParallel()
     result = await tool.execute({"tasks": []}, fake_session)
@@ -107,17 +129,39 @@ async def test_task_and_context_must_be_strings(fake_session, task_spec, expecte
 
 
 @pytest.mark.asyncio
-async def test_rejects_more_than_three_tasks(fake_session):
+async def test_rejects_more_than_five_tasks(fake_session):
     tool = RunSubagentsParallel()
     tasks = [
         {"task": f"task {i}", "tools": ["git_grep"]}
-        for i in range(4)
+        for i in range(6)
     ]
 
     result = await tool.execute({"tasks": tasks}, fake_session)
 
     assert result.success is False
-    assert result.error == "tasks must contain at most 3 items"
+    assert result.error == "tasks must contain at most 5 items"
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatch_truncates_large_subagent_outputs(fake_session):
+    tool = RunSubagentsParallel()
+    huge = "TOKEN_BLOWUP_RISK\n" + ("x" * 50000)
+
+    async def fake_subagent(task, tools, context, session):
+        return ToolResult(output=huge)
+
+    tasks = [
+        {"task": f"large output {i}", "tools": ["git_grep"]}
+        for i in range(5)
+    ]
+
+    with _make_subagent_patch(fake_subagent):
+        result = await tool.execute({"tasks": tasks}, fake_session)
+
+    assert result.success is True
+    assert "TOKEN_BLOWUP_RISK" in result.output
+    assert "subagent 输出已截断" in result.output
+    assert len(result.output) < 25000
 
 
 @pytest.mark.asyncio

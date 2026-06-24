@@ -77,7 +77,7 @@
    - `zendesk_get_ticket` 拉对话 + 附件
    - 有 Workspace ID → 首轮 SQL 起手式(`sql_query` / `inspector_exec`,经 DB Gateway 只读)
    - 直接调工具查根因:`git_grep` / `github_code_search`(源码)、`signoz_errors` / `signoz_traceback`(日志)、`ticket_record_search`(历史工单)
-   - 复杂场景才派 `run_subagents_parallel`(默认不派,主 Agent 直接查更快)
+   - 多证据源工单默认派 `run_subagents_parallel`：需要跨代码/文档/数据库/日志/历史工单/GitHub PR 任意 ≥2 类证据源时按来源拆给 subagent，最多 5 个
    - Confidence 自检 → 写 reply(public 或 internal)
 5. **归档**:`archive_ticket` 写入 `工单记录/<id>.md`(首次新建,跟进追加)
 6. **escalate**:退款/情绪/低置信度 → `feishu_push` 通知 SE/财务(content 内联完整 draft)

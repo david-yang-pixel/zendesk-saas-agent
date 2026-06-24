@@ -2,9 +2,12 @@
 
 ## 核心原则
 
-**默认不派 subagent —— 主 agent 直接调 tool 更快**。
-只有以下情况才派 subagent：
-- 需要**并行查 ≥2 个完全不相关角度**（如同时查源码 + SigNoz + GitHub）
+**多证据源工单默认派 subagent**。
+只要需要查看 **代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR** 中任意 ≥2 类证据源，
+就用 `run_subagents_parallel` 按证据源拆任务，而不是让主 agent 串行硬查到底。
+
+单一证据源问题仍由主 agent 直接批量调工具；下列情况必须优先派 subagent：
+- 同时查源码 + SigNoz + GitHub / 文档 / 历史工单
 - 单次 tool 输出可能很大（如 SigNoz raw search），让 subagent 在独立 context 处理后返回精简结论
 - 任务复杂，需要多轮 tool 调用闭环（subagent 在自己的 message_store 闭环，不污染主 loop）
 
@@ -12,9 +15,11 @@
 
 | 复杂度 | 触发条件 | 累计 subagent 数 |
 |---|---|---|
-| **simple** | usage-howto / product_usage / yes-no | **0-1** |
-| **medium** | billing / refund / api / permissions / knowledge_base | **1-3** |
-| **complex** | platform_issue / workflow / 多组件交互 / 数据驱动诊断 | **2-5** |
+| **simple** | usage-howto / product_usage / yes-no / 单一 SQL 可判定 | **0-1** |
+| **medium** | billing / refund / api / permissions / knowledge_base 且需 ≥2 类证据源 | **2-3** |
+| **complex** | platform_issue / workflow / 多组件交互 / 数据驱动诊断 | **3-5** |
+
+**硬上限：每个工单最多 5 个 subagent。** 超过 5 个说明任务拆得太碎，应合并相近证据源。
 
 ## 派 subagent 必须传 `tools` 字段（小子集 1-3 个）
 

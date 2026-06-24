@@ -31,3 +31,12 @@ def test_prompt_keeps_zendesk_as_followup_source_of_truth():
 
     assert "Zendesk 最新对话是唯一真相源" in prompt
     assert "本地工单记录只作为参考" in prompt
+
+
+def test_prompt_dispatches_subagents_for_multi_source_investigations():
+    prompt = _build()
+
+    assert "多证据源工单默认派 subagent" in prompt
+    assert "代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR" in prompt
+    assert "最多 5 个 subagent" in prompt
+    assert "默认不派 subagent" not in prompt

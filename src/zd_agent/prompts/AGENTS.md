@@ -24,14 +24,16 @@
 1. **`classify_ticket`** — 拿 ticket_type + 该 type 的针对性策略
 2. **`zendesk_get_ticket`** — 拉对话 + 附件 + tag
 3. **首轮 SQL**（有 Workspace ID 时必跑）— 调 `sql_query` 拿 workspace + plan + 状态；`sql_query` 底层经 DB Gateway MCP 执行。SQL 模板见 strategies/<category>.md
-4. **直接调 tool 查根因**（**默认不派 subagent**）：
+4. **直接调 tool 查单一证据源**：
    - 源码：`git_grep` / `git_show`（默认经 Source MCP 查 `runtime`，即线上正在运行的代码）/ `github_code_search`（未接入仓库或 PR/Issue 证据）
    - 数据：`inspector_exec` / `sql_query`（数据库查询唯一入口，底层经 DB Gateway MCP）
    - 日志：`signoz_errors` / `signoz_traceback`（堆栈）/ `signoz_query`（raw SQL）
    - 历史：`ticket_record_search` / `zd_kb_cli_exec`
-5. **只在以下情况派 subagent**（用 `run_subagents_parallel`）：
-   - 需要并行查 ≥2 完全不相关角度
-   - 单次 tool 输出大想让 subagent 在独立 context 处理
+5. **多证据源工单默认派 subagent**（用 `run_subagents_parallel`）：
+   - 只要一个工单需要查看 **代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR** 中任意 ≥2 类证据源，就默认派 subagent，而不是主 agent 串行硬查到底
+   - 默认按证据源拆 2-3 个 subagent：源码、日志、文档/历史、GitHub PR；复杂 platform_issue / workflow / 多组件交互最多 5 个 subagent
+   - 每个 subagent 只给 1-3 个工具；数据库查询若依赖 workspace_id / 前序 SQL，由主 agent 先跑，独立统计或大输出摘要再派 subagent
+   - 简单 usage-howto / yes-no / 单一 SQL 可判定的问题不派，避免浪费 token
    - 详细规则 → 看 `references/subagent_guide.md`（用 sandbox_read 加载）
 6. **写 reply**（同时设 confidence + needs_human + summary）— 见下面"选哪个 reply 工具"
 7. **`archive_ticket`** — 存工单记录

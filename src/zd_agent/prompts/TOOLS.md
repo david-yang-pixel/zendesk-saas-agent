@@ -49,9 +49,10 @@
 ## Subagent 工具
 
 ### `run_subagents_parallel`（复杂并行时使用）
-默认主 agent 直接调工具排查；只有需要并行查 ≥2 个完全不相关角度、单次工具输出过大需要独立 context 处理，或 `AGENTS.md` 指定的复杂场景时才使用。
+多证据源工单默认使用：只要需要查看 **代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR**
+中任意 ≥2 类证据源，就按证据源拆给 subagent。单一证据源问题可由主 agent 直接批量调工具。
 一次调用派发多个独立 subagent，参数 `tasks: [{task, tools, context}]`。
-最多 6 个，推荐 3-4 个。每个 subagent 独立上下文，互不污染。
+最多 5 个，推荐 2-3 个；复杂 platform_issue / workflow / 多组件交互可派 3-5 个。每个 subagent 独立上下文，互不污染。
 
 ### `run_subagent`（单个）
 只有在明确"只需查一件事"时用。默认应该用 parallel 版本。
@@ -119,9 +120,9 @@ Step 4: classify_ticket → 决定激活哪些工具组
 ├─ product_usage  → zd_kb_cli_exec / zendesk_search_articles 为主
 └─ general        → 广谱
   ↓
-Step 10-14: 直接工具排查；复杂并行场景才 run_subagents_parallel (根因)
+Step 10-14: 单一证据源直接工具排查；多证据源默认 run_subagents_parallel (根因)
   ↓
-Step 15-18: 直接知识/历史检索；复杂并行场景才 run_subagents_parallel (知识)
+Step 15-18: 文档/历史/GitHub/日志等跨源核查交给 subagent 并行摘要 (知识)
   ↓
 Step 19: zendesk_public_reply（客户可见回复）或 zendesk_internal_reply（仅内部分析）
 Step 20: archive_ticket
