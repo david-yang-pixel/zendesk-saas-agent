@@ -97,6 +97,51 @@ async def test_scan_once_dispatches_mention_alias(queue, tracker):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_finds_mentions_after_first_comment_page(queue, tracker):
+    """Regression: #2861 had 11 comments; page 1/per_page 10 missed newest mention."""
+    fake_search = MagicMock(return_value={"results": [_ticket(2861, status="open")]})
+
+    def fake_comments(ticket_id, page=1, per_page=100):
+        assert ticket_id == 2861
+        if page == 1:
+            return {
+                "comments": [
+                    _comment(f"c{i}", f"old comment {i}")
+                    for i in range(1, 11)
+                ],
+                "next_page": "page-2",
+            }
+        if page == 2:
+            return {
+                "comments": [_comment("c11", "**yonggang**")],
+                "next_page": None,
+            }
+        raise AssertionError(f"unexpected page {page}")
+
+    fake_client = MagicMock(
+        search_tickets=fake_search,
+        get_ticket_comments=MagicMock(side_effect=fake_comments),
+    )
+
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, \
+         patch("zd.client.ZendeskClient", return_value=fake_client):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = ["@yonggang"]
+        cfg_mock.return_value = cfg
+
+        n, _ = await scan_once(
+            trigger_queue=queue, tracker=tracker, last_poll_unix=time.time() - 600,
+        )
+
+    assert n == 1
+    msg = queue.get_nowait()
+    assert msg["ticket_id"] == 2861
+    assert msg["comment_id"] == "c11"
+    assert tracker.is_processed("c11")
+
+
+@pytest.mark.asyncio
 async def test_scan_once_skips_processed(queue, tracker):
     """已经 mark_processed 的 mention 不再 dispatch（幂等）。"""
     tracker.mark_processed("c-already")

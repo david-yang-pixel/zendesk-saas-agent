@@ -31,10 +31,32 @@ logger = get_logger(module="services.mention_poller")
 # Zendesk search has eventual-consistency lag. Keep a generous overlap and let
 # MentionTracker's comment-id idempotency prevent duplicate dispatch.
 _SEARCH_LOOKBACK_SECONDS = 30 * 60
+_COMMENT_PAGE_SIZE = 100
+_COMMENT_MAX_PAGES = 10
 
 
 def _now_unix() -> float:
     return time.time()
+
+
+def _fetch_ticket_comments_for_mentions(client: object, ticket_id: int) -> list[dict]:
+    """Fetch enough ticket comments to see recent internal @mentions.
+
+    Zendesk returns comments oldest-first for page 1. Fetching only page 1 with
+    a small per_page misses the newest note once a ticket has enough history.
+    """
+    comments: list[dict] = []
+    for page in range(1, _COMMENT_MAX_PAGES + 1):
+        data = client.get_ticket_comments(  # type: ignore[attr-defined]
+            ticket_id,
+            page,
+            _COMMENT_PAGE_SIZE,
+        )
+        page_comments = data.get("comments", []) or []
+        comments.extend(page_comments)
+        if not page_comments or not data.get("next_page"):
+            break
+    return comments
 
 
 async def scan_once(
@@ -81,8 +103,8 @@ async def scan_once(
             continue
 
         try:
-            comments_data = await asyncio.to_thread(
-                client.get_ticket_comments, tid, 1, 10,
+            comments = await asyncio.to_thread(
+                _fetch_ticket_comments_for_mentions, client, tid,
             )
         except Exception as e:
             logger.warning(
@@ -91,7 +113,6 @@ async def scan_once(
             )
             continue
 
-        comments = comments_data.get("comments", []) or []
         # Walk newest → oldest, only handle one mention per ticket per cycle
         for comment in reversed(comments):
             comment_id = str(comment.get("id", ""))

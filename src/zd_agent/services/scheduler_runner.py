@@ -131,10 +131,13 @@ async def poll_mention_task() -> None:
             if not tid:
                 continue
 
-            comments_data = await asyncio.to_thread(
-                client.get_ticket_comments, tid, 1, 10
+            from zd_agent.services.mention_poller import (
+                _fetch_ticket_comments_for_mentions,
             )
-            comments = comments_data.get("comments", [])
+
+            comments = await asyncio.to_thread(
+                _fetch_ticket_comments_for_mentions, client, tid,
+            )
 
             # 倒序遍历（最新评论优先）
             for comment in reversed(comments):
