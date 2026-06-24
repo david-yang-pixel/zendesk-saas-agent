@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from zd_agent.config import get_config
+from zd_agent.integrations.source_mcp import call_source_tool, source_mcp_enabled
 from zd_agent.integrations.signoz_mcp import run_signoz_sz
 from zd_agent.log import get_logger
 from zd_agent.repos import fetch_repo, resolve_repo
@@ -26,13 +27,18 @@ _TARGET_DEPLOYMENT = "dify-api-oltp"
 _KUSTOMIZATION_PATH = "environments/production/dify/api-oltp/kustomization.yaml"
 _CACHE_TTL_SECONDS = 300.0
 _VERSION_SQL = (
-    "SELECT DISTINCT "
-    "resources_string['container.image.tag']  AS image_tag, "
-    "resources_string['service.version']      AS service_version "
+    "SELECT "
+    "resources_string['container.image.tag'] AS image_tag, "
+    "any(resources_string['service.version']) AS service_version, "
+    "count() AS log_count, "
+    "max(timestamp) AS latest_ts "
     "FROM signoz_logs.distributed_logs_v2 "
     "WHERE timestamp >= {start_ns} "
     "AND resources_string['k8s.deployment.name'] = '" + _TARGET_DEPLOYMENT + "' "
     "AND resources_string['deployment.environment'] = 'production' "
+    "AND resources_string['container.image.tag'] != '' "
+    "GROUP BY image_tag "
+    "ORDER BY log_count DESC, latest_ts DESC "
     "LIMIT 5"
 )
 
@@ -130,15 +136,59 @@ async def _verify_ref(ref: str) -> bool:
 
 
 async def _query_signoz_image_tag() -> str | None:
-    """经远程 sz MCP 查 dify-api-oltp 的 container.image.tag。多 tag 时取第一个。"""
+    """经远程 sz MCP 查 dify-api-oltp 的主 container.image.tag。"""
     rows = await run_signoz_sz("query", _VERSION_SQL, "--hours", "3")
     if not rows or not isinstance(rows, list):
         return None
+    return _select_primary_image_tag(rows)
+
+
+def _select_primary_image_tag(rows: list[dict[str, Any]]) -> str | None:
+    """Pick the dominant production tag.
+
+    New SigNoz SQL returns rows already ranked by log_count/latest_ts. The
+    Python sorter keeps tests deterministic and preserves legacy behavior when
+    older callers return plain rows without ranking columns.
+    """
+    candidates: list[tuple[int, float, int, str]] = []
+    legacy_first: str | None = None
     for row in rows:
         tag = (row or {}).get("image_tag")
-        if tag:
-            return str(tag)
-    return None
+        if not tag:
+            continue
+        tag_s = str(tag)
+        if legacy_first is None:
+            legacy_first = tag_s
+        if "log_count" not in row and "latest_ts" not in row:
+            continue
+        candidates.append((
+            _coerce_int(row.get("log_count")),
+            _coerce_timestamp(row.get("latest_ts")),
+            -len(candidates),
+            tag_s,
+        ))
+    if not candidates:
+        return legacy_first
+    candidates.sort(reverse=True)
+    return candidates[0][3]
+
+
+def _coerce_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coerce_timestamp(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 
 async def _read_saas_deploy_tag() -> str | None:
@@ -215,6 +265,35 @@ class SaasDeployedVersion(Tool):
     concurrency_safe = True
 
     async def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
+        if source_mcp_enabled():
+            payload = await call_source_tool("source_runtime_ref", {"repo": "dify"})
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=(
+                        f"{payload.get('code') or 'SOURCE_MCP_FAILED'}: "
+                        f"{payload.get('error') or 'source MCP failed to resolve runtime ref'}"
+                    ),
+                )
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            source = data.get("source") or "source-mcp"
+            image_tag = data.get("image_tag") or "(unknown)"
+            ref = data.get("ref") or "(unknown)"
+            commit = str(data.get("commit") or "")
+            base_version = data.get("base_version") or "(未知)"
+            deployment = data.get("deployment") or "dify-api-oltp"
+            commit_line = f"- commit: `{commit}`\n" if commit else ""
+            return ToolResult(output=(
+                "## cloud.dify.ai 生产 dify-api 运行版本\n"
+                f"- deployment: `{deployment}`\n"
+                f"- 镜像 tag: `{image_tag}`\n"
+                f"- 基线版本: {base_version}\n"
+                f"- 源码 ref: `{ref}`\n"
+                f"{commit_line}"
+                f"- 数据来源: Source MCP / {source}\n"
+                "  → 不传 ref 调 git_show / git_grep 时默认查这个线上运行 ref"
+            ))
+
         dv = await resolve_deployed_version()
         if dv is None:
             return ToolResult(

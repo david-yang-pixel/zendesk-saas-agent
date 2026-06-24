@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import asyncio
 import re
+import json
 from typing import Any
 
 from zd_agent.config import get_config
+from zd_agent.integrations.source_mcp import call_source_tool, source_mcp_enabled
 from zd_agent.log import get_logger
 from zd_agent.runtime.retry import get_retry_policy, retry_async
 from zd_agent.repos import fetch_repo, list_tags, resolve_repo
@@ -28,6 +30,16 @@ _REF_NOT_FOUND_MARKERS = (
 )
 
 _COMPLEX_RE_PATTERN = re.compile(r"(\(\?[!=<]|\\[bBdDwWsS]|\{[\d,]+\}|[|()]{3,})")
+_GIT_COMMAND_TIMEOUT_SECONDS = 60.0
+
+
+def _coerce_source_ref(args: dict[str, Any]) -> str | ToolResult:
+    ref = args.get("ref")
+    if ref is None:
+        return "runtime"
+    if not isinstance(ref, str):
+        return ToolResult(success=False, error="ref must be a string")
+    return ref.strip() or "runtime"
 
 
 def _coerce_limit(value: Any, *, default: int = 30, maximum: int = 200) -> int | ToolResult:
@@ -62,6 +74,62 @@ def _is_complex_regex(pattern: str) -> bool:
     return special > 8
 
 
+def _source_mcp_error(payload: dict[str, Any]) -> ToolResult:
+    code = payload.get("code") or "SOURCE_MCP_FAILED"
+    error = payload.get("error") or "unknown source MCP error"
+    return ToolResult(success=False, error=f"{code}: {error}")
+
+
+def _format_source_mcp_output(data: Any) -> str:
+    if isinstance(data, dict):
+        header = _format_source_mcp_header(data)
+        if isinstance(data.get("content"), str):
+            return header + data["content"]
+        if isinstance(data.get("output"), str):
+            return header + data["output"]
+        if isinstance(data.get("tags"), list):
+            tags = data["tags"]
+            lines = [
+                f"仓库 {data.get('repo', '(unknown)')} 的 tag（共 {data.get('total', len(tags))} 个，显示 {len(tags)} 个）:"
+            ]
+            lines.extend(f"- {tag}" for tag in tags)
+            return "\n".join(lines)
+    if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+        status_lines = []
+        for item in data:
+            repo = item.get("repo", "(unknown)")
+            if item.get("cloned"):
+                status_lines.append(
+                    f"- **{repo}** ✅ (commit: {str(item.get('commit', ''))[:12]}, "
+                    f"tags: {item.get('tag_count', 0)}, default: {item.get('default_branch_ref', '')})"
+                )
+            else:
+                status_lines.append(f"- **{repo}** ❌ 未克隆")
+        return "\n".join(status_lines)
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _format_source_mcp_header(data: dict[str, Any]) -> str:
+    repo = data.get("repo")
+    ref = data.get("ref")
+    commit = str(data.get("commit") or "")
+    source = data.get("source")
+    if not repo and not ref and not commit:
+        return ""
+    commit_part = f", commit={commit[:12]}" if commit else ""
+    source_part = f", source={source}" if source else ""
+    return f"[source-mcp: repo={repo}, ref={ref}{commit_part}{source_part}]\n"
+
+
+async def _remote_source_tool(name: str, arguments: dict[str, Any]) -> ToolResult | None:
+    if not source_mcp_enabled():
+        return None
+    payload = await call_source_tool(name, arguments)
+    if not payload.get("success"):
+        return _source_mcp_error(payload)
+    return ToolResult(output=_format_source_mcp_output(payload.get("data")))
+
+
 async def _run_git(repo_dir: str, *args: str, max_output: int = 30000) -> tuple[int, str, str]:
     """在指定仓库目录执行 git 命令"""
     proc = await asyncio.create_subprocess_exec(
@@ -69,7 +137,19 @@ async def _run_git(repo_dir: str, *args: str, max_output: int = 30000) -> tuple[
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        stdout, stderr = await proc.communicate()
+        err = stderr.decode("utf-8", errors="replace")
+        timeout_msg = f"git command timeout after {_GIT_COMMAND_TIMEOUT_SECONDS:.0f}s"
+        if err.strip():
+            timeout_msg = f"{timeout_msg}: {err.strip()}"
+        return 124, stdout.decode("utf-8", errors="replace"), timeout_msg
     out = stdout.decode("utf-8", errors="replace")
     if len(out) > max_output:
         out = out[:max_output] + "\n\n... (输出过长，已截断)"
@@ -124,7 +204,7 @@ async def _auto_fetch_repo(repo_name: str) -> bool:
 
 class GitShow(Tool):
     name = "git_show"
-    description = "读取指定仓库在特定版本（tag/branch）下某个文件的内容"
+    description = "读取指定仓库某个文件内容；默认 ref=runtime，即线上正在跑的代码"
     parameters = {
         "type": "object",
         "properties": {
@@ -134,14 +214,14 @@ class GitShow(Tool):
             },
             "ref": {
                 "type": "string",
-                "description": "版本引用（tag 或 branch，如 v1.3.0、main）",
+                "description": "版本引用（tag/branch/commit）。不填默认 runtime = 线上正在跑的代码",
             },
             "filepath": {
                 "type": "string",
                 "description": "文件路径（相对于仓库根目录）",
             },
         },
-        "required": ["repo", "ref", "filepath"],
+        "required": ["repo", "filepath"],
     }
 
     group = "source_code"
@@ -150,12 +230,19 @@ class GitShow(Tool):
         repo = _coerce_required_string(args, "repo")
         if isinstance(repo, ToolResult):
             return repo
-        ref = _coerce_required_string(args, "ref")
+        ref = _coerce_source_ref(args)
         if isinstance(ref, ToolResult):
             return ref
         filepath = _coerce_required_string(args, "filepath")
         if isinstance(filepath, ToolResult):
             return filepath
+
+        remote = await _remote_source_tool(
+            "source_read",
+            {"repo": repo, "ref": ref, "filepath": filepath},
+        )
+        if remote is not None:
+            return remote
 
         repo_dir = resolve_repo(repo)
         if repo_dir is None:
@@ -175,7 +262,7 @@ class GitShow(Tool):
 
 class GitGrep(Tool):
     name = "git_grep"
-    description = "在指定仓库的特定版本中搜索代码，返回匹配的文件和行"
+    description = "在指定仓库中搜索代码；默认 ref=runtime，即线上正在跑的代码"
     parameters = {
         "type": "object",
         "properties": {
@@ -185,7 +272,7 @@ class GitGrep(Tool):
             },
             "ref": {
                 "type": "string",
-                "description": "版本引用（tag 或 branch）",
+                "description": "版本引用（tag/branch/commit）。不填默认 runtime = 线上正在跑的代码",
             },
             "pattern": {
                 "type": "string",
@@ -196,7 +283,7 @@ class GitGrep(Tool):
                 "description": "文件 glob 过滤（可选，如 *.py、*.go）",
             },
         },
-        "required": ["repo", "ref", "pattern"],
+        "required": ["repo", "pattern"],
     }
 
     group = "source_code"
@@ -206,7 +293,7 @@ class GitGrep(Tool):
         repo = _coerce_required_string(args, "repo")
         if isinstance(repo, ToolResult):
             return repo
-        ref = _coerce_required_string(args, "ref")
+        ref = _coerce_source_ref(args)
         if isinstance(ref, ToolResult):
             return ref
         pattern = _coerce_required_string(args, "pattern")
@@ -215,6 +302,13 @@ class GitGrep(Tool):
         glob = _coerce_optional_string(args, "glob")
         if isinstance(glob, ToolResult):
             return glob
+
+        remote_args: dict[str, Any] = {"repo": repo, "ref": ref, "pattern": pattern}
+        if glob:
+            remote_args["glob"] = glob
+        remote = await _remote_source_tool("source_search", remote_args)
+        if remote is not None:
+            return remote
 
         repo_dir = resolve_repo(repo)
         if repo_dir is None:
@@ -257,7 +351,7 @@ class GitGrep(Tool):
 
 class GitLog(Tool):
     name = "git_log"
-    description = "查看仓库的提交历史"
+    description = "查看仓库提交历史；默认 ref=runtime，即线上正在跑的代码"
     parameters = {
         "type": "object",
         "properties": {
@@ -267,7 +361,7 @@ class GitLog(Tool):
             },
             "ref": {
                 "type": "string",
-                "description": "版本引用（tag 或 branch）",
+                "description": "版本引用（tag/branch/commit）。不填默认 runtime = 线上正在跑的代码",
             },
             "filepath": {
                 "type": "string",
@@ -278,7 +372,7 @@ class GitLog(Tool):
                 "description": "显示最近 N 条提交（默认 20）",
             },
         },
-        "required": ["repo", "ref"],
+        "required": ["repo"],
     }
 
     group = "source_code"
@@ -288,7 +382,7 @@ class GitLog(Tool):
         repo = _coerce_required_string(args, "repo")
         if isinstance(repo, ToolResult):
             return repo
-        ref = _coerce_required_string(args, "ref")
+        ref = _coerce_source_ref(args)
         if isinstance(ref, ToolResult):
             return ref
         filepath = _coerce_optional_string(args, "filepath")
@@ -297,6 +391,13 @@ class GitLog(Tool):
         limit = _coerce_limit(args.get("n"), default=20)
         if isinstance(limit, ToolResult):
             return limit
+
+        remote_args: dict[str, Any] = {"repo": repo, "ref": ref, "n": limit}
+        if filepath:
+            remote_args["filepath"] = filepath
+        remote = await _remote_source_tool("source_log", remote_args)
+        if remote is not None:
+            return remote
 
         repo_dir = resolve_repo(repo)
         if repo_dir is None:
@@ -364,6 +465,13 @@ class GitDiff(Tool):
         if isinstance(filepath, ToolResult):
             return filepath
 
+        remote_args: dict[str, Any] = {"repo": repo, "ref1": ref1, "ref2": ref2}
+        if filepath:
+            remote_args["filepath"] = filepath
+        remote = await _remote_source_tool("source_diff", remote_args)
+        if remote is not None:
+            return remote
+
         repo_dir = resolve_repo(repo)
         if repo_dir is None:
             return ToolResult(success=False, error=f"仓库未找到: {repo}")
@@ -394,6 +502,10 @@ class ListRepos(Tool):
     group = "source_code"
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        remote = await _remote_source_tool("repo_status", {})
+        if remote is not None:
+            return remote
+
         from zd_agent.repos import get_repo_status
 
         cfg = get_config()
@@ -436,13 +548,20 @@ class ListRepoTags(Tool):
         repo_name = _coerce_required_string(args, "repo")
         if isinstance(repo_name, ToolResult):
             return repo_name
-        repo_dir = resolve_repo(repo_name)
-        if repo_dir is None:
-            return ToolResult(success=False, error=f"仓库未找到: {repo_name}")
-
         limit = _coerce_limit(args.get("limit"))
         if isinstance(limit, ToolResult):
             return limit
+
+        remote = await _remote_source_tool(
+            "list_repo_tags",
+            {"repo": repo_name, "limit": limit},
+        )
+        if remote is not None:
+            return remote
+
+        repo_dir = resolve_repo(repo_name)
+        if repo_dir is None:
+            return ToolResult(success=False, error=f"仓库未找到: {repo_name}")
         tags = await asyncio.to_thread(list_tags, repo_name)
         if not tags:
             return ToolResult(output=f"仓库 {repo_name} 没有可用 tag")

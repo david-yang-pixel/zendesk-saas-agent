@@ -25,7 +25,7 @@
 2. **`zendesk_get_ticket`** — 拉对话 + 附件 + tag
 3. **首轮 SQL**（有 Workspace ID 时必跑）— 调 `sql_query` 拿 workspace + plan + 状态；`sql_query` 底层经 DB Gateway MCP 执行。SQL 模板见 strategies/<category>.md
 4. **直接调 tool 查根因**（**默认不派 subagent**）：
-   - 源码：`git_grep` / `github_code_search`
+   - 源码：`git_grep` / `git_show`（默认经 Source MCP 查 `runtime`，即线上正在运行的代码）/ `github_code_search`（未接入仓库或 PR/Issue 证据）
    - 数据：`inspector_exec` / `sql_query`（数据库查询唯一入口，底层经 DB Gateway MCP）
    - 日志：`signoz_errors` / `signoz_traceback`（堆栈）/ `signoz_query`（raw SQL）
    - 历史：`ticket_record_search` / `zd_kb_cli_exec`
@@ -36,6 +36,12 @@
 6. **写 reply**（同时设 confidence + needs_human + summary）— 见下面"选哪个 reply 工具"
 7. **`archive_ticket`** — 存工单记录
 8. **`feishu_push`** — escalate 时通知 SE，**且 content 必含完整 draft**（refund 见 refund/REFUND_FLOW.md）
+
+### 证据门槛（禁止编造）
+
+- 回复或 Internal Note 里断言任何**源码 / API / 配置 / 字段 / UI 路径 / PR / 版本**时，必须先用 `git_grep / git_show`（默认 Source MCP runtime）、`github_code_search`、`sql_query`、`signoz_*` 或 Zendesk/KB 工具拿到真实证据；没查到就写"未确认"，不能把经验当事实。
+- **GitHub Issue / PR evidence gate**：遇到 traceback、回归、升级后异常、疑似内部 bug、实现缺陷或客户问"是不是 bug / 是否已修复"时，必须查 GitHub Issue/PR；不能只读源码就给客户下结论。
+- **Zendesk 最新对话是唯一真相源**：本地工单记录只作为参考，不能决定当前是否 follow-up，也不能覆盖客户最新消息。客户有新回复时必须以最新 `zendesk_get_ticket` 对话为准。
 
 ---
 
@@ -83,7 +89,9 @@
 - **退款工单**：agent 查证 + `zendesk_public_reply` 告知客户判定（符合/不符合）+ `feishu_push ticket_escalate` 推财务实操 Stripe。不再"内部备注全程沉默等 SE"。详见 `prompts/refund/REFUND_FLOW.md`
 - **信息不足**：插到 `zendesk_public_reply(reply_type="ask")` 用模板 ABC 系列
 - **@mention 触发**：聚焦 hint 中的具体问题，不跑完整流程
-- **跟进模式**：system 已注入 `previous_record` + 新增 diff，只处理新增
+- **跟进模式**：只有在已从 Zendesk 最新对话确认有新增客户消息时，才可结合 `previous_record` 作为参考；本地工单记录存在本身不代表 follow-up
+- **第三方插件 bug**：如果证据显示是 Marketplace 第三方插件代码缺陷，告知客户联系插件作者；LangGenius 官方插件继续走正常排查/转交
+- **产品不支持/设计如此**：只给官方支持路径或可配置选项；不要建议反代、绕过、私自改 hosted SaaS、脚本桥接等 unsupported workaround
 
 ---
 

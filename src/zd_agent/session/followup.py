@@ -1,4 +1,9 @@
-"""Followup mode detection: checks 工单记录/<id>.md and diffs customer comments."""
+"""Follow-up helpers.
+
+Zendesk's latest conversation is the source of truth for whether a ticket has a
+new follow-up. Local ticket records are historical references only; their
+existence must not force follow-up mode by default.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,11 +31,17 @@ def detect_followup_mode(
     resources_base_dir: str,
     ticket_records_dir: str,
     ticket_id: int | str,
+    trust_local_record: bool = False,
 ) -> tuple[str, str]:
     """Return (mode, previous_record).
 
-    mode == "followup" when a prior record exists, else "first_pass".
+    By default this returns first_pass even if a local record exists. Callers
+    should only pass trust_local_record=True after they have already verified
+    from live Zendesk context that the customer added new follow-up content.
     """
+    if not trust_local_record:
+        return ("first_pass", "")
+
     record = load_previous_record(
         resources_base_dir=resources_base_dir,
         ticket_records_dir=ticket_records_dir,

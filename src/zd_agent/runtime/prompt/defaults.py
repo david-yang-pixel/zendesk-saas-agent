@@ -148,13 +148,19 @@ def register_dynamic_sections(builder: PromptBuilder) -> None:
         PromptSection(
             name="followup_context",
             content=lambda ctx: (
-                f"## 跟进模式 · 历史分析记录\n\n"
-                f"本工单已有历史分析，**不要重复已有分析**。只处理客户新增对话。\n\n"
+                f"## 跟进模式 · 最新 Zendesk 对话优先\n\n"
+                f"Zendesk 最新对话是唯一真相源；本地工单记录只作为参考，"
+                f"不能覆盖或代替最新客户消息。只处理下面确认过的新增客户对话，"
+                f"不要重复已有分析。\n\n"
                 f"### 上次分析记录\n\n{ctx.previous_record}\n\n"
                 f"### 本次新增客户对话\n\n{ctx.new_comments_diff or '(无)'}"
             ),
             order=15,
-            condition=lambda ctx: ctx.mode == "followup" and bool(ctx.previous_record),
+            condition=lambda ctx: (
+                ctx.mode == "followup"
+                and bool(ctx.previous_record)
+                and bool(ctx.new_comments_diff)
+            ),
         )
     )
 

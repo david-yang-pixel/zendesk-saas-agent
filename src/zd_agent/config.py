@@ -198,6 +198,18 @@ class SignozConfig(BaseModel):
     request_timeout_seconds: int = 35
 
 
+class SourceMcpConfig(BaseModel):
+    """Remote source-code MCP client config.
+
+    The source MCP resolves ``ref=runtime`` to the code currently running
+    online, then reads/searches cloned SaaS repositories from that exact ref.
+    """
+
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 45
+
+
 class FeishuConfig(BaseModel):
     # Custom bot (incoming webhook) mode
     webhook_url: str = ""       # from env FEISHU_WEBHOOK_URL
@@ -283,6 +295,7 @@ class AppConfig(BaseModel):
     waiting_poller: WaitingPollerConfig = Field(default_factory=WaitingPollerConfig)
     db_gateway: DbGatewayConfig = Field(default_factory=DbGatewayConfig)
     signoz: SignozConfig = Field(default_factory=SignozConfig)
+    source_mcp: SourceMcpConfig = Field(default_factory=SourceMcpConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
@@ -323,6 +336,9 @@ class EnvSettings(BaseSettings):
     signoz_mcp_url: str = ""
     signoz_mcp_api_key: str = ""
     signoz_mcp_timeout_seconds: int | None = None
+    source_mcp_url: str = ""
+    source_mcp_api_key: str = ""
+    source_mcp_timeout_seconds: int | None = None
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
@@ -393,6 +409,13 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.signoz.mcp_api_key = env.signoz_mcp_api_key
     if env.signoz_mcp_timeout_seconds is not None:
         cfg.signoz.request_timeout_seconds = env.signoz_mcp_timeout_seconds
+    # Source-code remote MCP
+    if env.source_mcp_url:
+        cfg.source_mcp.mcp_url = env.source_mcp_url.rstrip("/")
+    if env.source_mcp_api_key:
+        cfg.source_mcp.mcp_api_key = env.source_mcp_api_key
+    if env.source_mcp_timeout_seconds is not None:
+        cfg.source_mcp.request_timeout_seconds = env.source_mcp_timeout_seconds
     # Feishu
     if env.feishu_webhook_url:
         cfg.feishu.webhook_url = env.feishu_webhook_url

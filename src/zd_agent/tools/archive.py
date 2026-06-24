@@ -1,6 +1,7 @@
 """归档工具：将工单分析结果追加到本地 zendesk-cli/工单记录/<id>.md
 
-SaaS 版：单 markdown 文件，按 skill 规范；支持首次写入和跟进模式追加。
+SaaS 版：单 markdown 文件，按 skill 规范；支持首次写入和追加历史记录。
+归档文件只作为历史检索参考，不决定当前工单是否进入 follow-up 模式。
 """
 from __future__ import annotations
 
@@ -31,7 +32,8 @@ class ArchiveTicket(Tool):
     description = (
         "将本次工单分析结果和建议回复草稿追加到本地工单记录 "
         "(<ticket_records_dir>/<ticket_id>.md)。首次写入创建新文件（带 frontmatter）；"
-        "已存在则追加一段跟进记录。工单记录供 agent 下次处理该工单时参考（跟进模式）。"
+        "已存在则追加一段历史记录。工单记录只供显式历史检索参考；"
+        "是否跟进必须以最新 Zendesk 对话为准。"
     )
     parameters = {
         "type": "object",

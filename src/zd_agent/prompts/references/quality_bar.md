@@ -13,6 +13,13 @@
 | 5 | 我的回复里**有没有引用具体证据**？（"看到 message_credit_service.py:39 quota_limit=5000" 这种）| 没 → 必须要么找到证据，要么诚实说"未找到" |
 | 6 | 我打算给的 confidence 是 high / medium / low？ | medium / low → 见下面 "Redo 规则" |
 
+## 证据门槛补充
+
+- 任何**源码 / API / 配置 / 字段 / UI 路径 / PR / 版本**断言，都必须有 `git_grep / github_code_search`、`git_show`、SQL、SigNoz、Zendesk 或 KB 真实返回支撑。没验证就不写进客户回复。
+- **GitHub Issue / PR evidence gate**：traceback、回归、升级后异常、疑似内部 bug、实现缺陷、"是否已修复"类问题，必须查 Issue/PR；不能只读源码就给客户下结论。
+- **Zendesk 最新对话是唯一真相源**：本地工单记录只作为参考。follow-up 判断和本次回复范围必须来自最新 Zendesk 对话，而不是本地归档是否存在。
+- Billing/plan 判断必须优先使用 billing 库订阅表或 Stripe 状态证据；不要用主库 `tenants.plan` 或 inspector 显示替代。
+
 ## Redo 规则
 
 - **confidence ≥ high 且回复有具体诊断 + 证据** → 可以发

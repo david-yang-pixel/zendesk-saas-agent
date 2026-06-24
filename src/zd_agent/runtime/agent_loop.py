@@ -38,6 +38,7 @@ _RATE_LIMIT_BASE_DELAY = 30  # Anthropic 每分钟限额，等 30s 比较安全
 _CONNECTION_MAX_RETRIES = 2
 _CONNECTION_BASE_DELAY = 5  # 网络瞬时抖动通常 5s 内恢复
 _PROACTIVE_CONTEXT_SNIP_TOKEN_THRESHOLD = 12_000
+_TOOL_CALL_TIMEOUT_SECONDS = 180.0
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -205,13 +206,45 @@ async def _run_tool_call(
 ) -> ToolExecuted:
     """Execute one tool call and append its result to the message store."""
     t0 = time.monotonic()
-    result = await registry.execute(tc.name, tc.arguments, session)
+    try:
+        result = await asyncio.wait_for(
+            registry.execute(tc.name, tc.arguments, session),
+            timeout=_TOOL_CALL_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        elapsed = time.monotonic() - t0
+        error = f"工具执行超时: {tc.name} exceeded {_TOOL_CALL_TIMEOUT_SECONDS:.0f}s"
+        output = f"❌ {error}"
+        args_dict = _parse_tool_arguments(tc.arguments)
+        session.log_tool_call(
+            tc.name,
+            args_dict,
+            output,
+            success=False,
+            error=error,
+        )
+        message_store.append_tool_result(tc.id, tc.name, output)
+        logger.warning(
+            "tool_execution_timeout",
+            ticket_id=session.ticket_id,
+            tool=tc.name,
+            round=current_round,
+            timeout_s=_TOOL_CALL_TIMEOUT_SECONDS,
+            elapsed=elapsed,
+        )
+        return ToolExecuted(
+            round=current_round,
+            tool_name=tc.name,
+            success=False,
+            output_length=len(output),
+            elapsed=elapsed,
+            error=error,
+            arguments=args_dict,
+            output=output[:4000],
+        )
     elapsed = time.monotonic() - t0
     output = result.output if result.success else f"❌ 错误: {result.error}"
-    try:
-        args_dict = json.loads(tc.arguments) if tc.arguments else {}
-    except json.JSONDecodeError:
-        args_dict = {"raw": tc.arguments}
+    args_dict = _parse_tool_arguments(tc.arguments)
     session.log_tool_call(
         tc.name,
         args_dict,
@@ -230,6 +263,13 @@ async def _run_tool_call(
         arguments=args_dict,
         output=output[:4000],
     )
+
+
+def _parse_tool_arguments(arguments: str) -> dict[str, Any]:
+    try:
+        return json.loads(arguments) if arguments else {}
+    except json.JSONDecodeError:
+        return {"raw": arguments}
 
 
 async def _execute_tool_calls(

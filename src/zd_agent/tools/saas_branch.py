@@ -47,7 +47,7 @@ class SaasBranchSwitch(Tool):
     description = (
         "切换指定 SaaS 仓库到指定分支（等价于 git fetch + git checkout）。"
         "repo 支持别名（例如 d=dify, bill=dify-billing, mb=dify-marketplace-backend, "
-        "mf=dify-marketplace-frontend, deploy=saas-deploy）。"
+        "mf=dify-marketplace-frontend, plugin=dify-plugin-daemon, deploy=saas-deploy）。"
         "用于跟进 SaaS 线上发布：发布新分支后可立即切换代码到对应版本。"
     )
     parameters = {

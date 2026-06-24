@@ -56,6 +56,7 @@ async def run_tool_loop(
     reporter = LogReporter()
     run_id: int | None = None
     current_round_id: int | None = None
+    finish_reported = False
 
     if reporter.enabled:
         run_id = await reporter.report_run_start(
@@ -144,6 +145,7 @@ async def run_tool_loop(
                             total_input_tokens=session.token_usage.prompt_tokens,
                             total_output_tokens=session.token_usage.completion_tokens,
                         )
+                        finish_reported = True
 
                 case LoopFinished(status="guardrail"):
                     _console.print(f"\n[bold yellow]⚠️  护栏触发: {event.reason}[/bold yellow]")
@@ -153,6 +155,7 @@ async def run_tool_loop(
                             total_input_tokens=session.token_usage.prompt_tokens,
                             total_output_tokens=session.token_usage.completion_tokens,
                         )
+                        finish_reported = True
 
                 case LoopFinished(status="error"):
                     _console.print(f"\n[bold red]❌ 异常: {event.reason}[/bold red]")
@@ -162,7 +165,28 @@ async def run_tool_loop(
                             total_input_tokens=session.token_usage.prompt_tokens,
                             total_output_tokens=session.token_usage.completion_tokens,
                         )
+                        finish_reported = True
     finally:
+        if run_id is not None and not finish_reported:
+            reason = "agent loop exited before finish event"
+            logger.warning(
+                "tool_loop_finish_missing",
+                ticket_id=session.ticket_id,
+                run_id=run_id,
+                status=session.status.value,
+            )
+            await reporter.report_run_finish(
+                run_id,
+                LoopFinished(
+                    status="error",
+                    total_rounds=session.round_count,
+                    total_tokens=session.token_usage.total_tokens,
+                    elapsed_seconds=guardrails.elapsed_seconds,
+                    reason=reason,
+                ),
+                total_input_tokens=session.token_usage.prompt_tokens,
+                total_output_tokens=session.token_usage.completion_tokens,
+            )
         await reporter.close()
 
     session.messages = message_store.raw

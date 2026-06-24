@@ -18,8 +18,8 @@ class PromptContext:
     current_date: str = ""
     # SaaS followup / playbook integration
     mode: str = "first_pass"          # "first_pass" | "followup"
-    previous_record: str = ""         # 历史工单记录内容（followup 模式注入）
-    new_comments_diff: str = ""       # 与上次比新增的客户对话
+    previous_record: str = ""         # 经 live Zendesk follow-up 判定后附加的历史参考
+    new_comments_diff: str = ""       # 从最新 Zendesk 对话中确认的新增客户对话
     # P2-8 客户画像（dispatch 前预拉）
     customer_profile: dict[str, Any] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)

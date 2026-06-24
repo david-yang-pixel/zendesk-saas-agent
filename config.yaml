@@ -101,6 +101,12 @@ signoz:
   # 由环境变量 SIGNOZ_MCP_API_KEY 注入，不要写入仓库。
   mcp_api_key: ''
   request_timeout_seconds: 35
+source_mcp:
+  # agent 只调用外部 Source MCP 查询 SaaS 源码；默认 ref=runtime = 线上正在跑的代码。
+  mcp_url: ''
+  # 由环境变量 SOURCE_MCP_API_KEY 注入，不要写入仓库。
+  mcp_api_key: ''
+  request_timeout_seconds: 45
 repos:
   base_dir: ''
   repositories:
@@ -108,6 +114,7 @@ repos:
   - dify-billing
   - dify-marketplace-backend
   - dify-marketplace-frontend
+  - dify-plugin-daemon
   - saas-deploy
   aliases:
     d: dify
@@ -118,4 +125,6 @@ repos:
     marketplace-backend: dify-marketplace-backend
     mf: dify-marketplace-frontend
     marketplace-frontend: dify-marketplace-frontend
+    plugin: dify-plugin-daemon
+    daemon: dify-plugin-daemon
     deploy: saas-deploy

@@ -102,6 +102,7 @@ def test_followup_context_injected_when_mode_followup():
         new_comments_diff="客户补充：ABC",
     ))
     assert "跟进模式" in out
+    assert "Zendesk 最新对话是唯一真相源" in out
     assert "上次分析：XYZ" in out
     assert "客户补充：ABC" in out
 
@@ -112,6 +113,15 @@ def test_followup_context_skipped_when_mode_first_pass():
         previous_record="should be ignored",
     ))
     assert "跟进模式 · 历史分析记录" not in out
+
+
+def test_followup_context_skipped_without_verified_new_diff():
+    out = _build(PromptContext(
+        mode="followup",
+        previous_record="old local record",
+        new_comments_diff="",
+    ))
+    assert "跟进模式 · 最新 Zendesk 对话优先" not in out
 
 
 def test_dev_report_loaded_for_platform_issue():

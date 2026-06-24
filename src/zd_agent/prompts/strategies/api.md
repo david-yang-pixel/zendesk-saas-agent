@@ -13,7 +13,8 @@
 | dify | `api/core/app/*` — app runtime |
 
 ### **插件类（Lark Bitable / Notion / Slack / Google Drive / 飞书）必走 GitHub 远程搜**
-插件源码**不在本地 5 仓库**里！必须用 `github_code_search`：
+官方插件源码不一定在 Source MCP runtime 仓库里。插件类先用 `github_code_search` 覆盖
+`langgenius/dify-official-plugins`，不要只看 dify 主仓就下结论：
 
 ```
 github_code_search query="<feature 名 + 错误关键词>" scope="langgenius/dify-official-plugins"
@@ -27,7 +28,7 @@ github_code_search query="<feature 名 + 错误关键词>" scope="langgenius/dif
 | Google Drive / Sheets / Docs | `langgenius/dify-official-plugins` |
 | invalid_credential / unauthorized / scope | 同上，配合 query="<plugin> auth" / "InvalidCredential" |
 
-⚠️ **反例（之前 #2313）**：客户报 Lark Bitable invalid credential，agent 只 git_grep 本地 dify 主仓搜 0 hit 就下结论"无相关代码" → 完全错过 dify-official-plugins 仓里的 lark_trigger / lark_bitable 实现。
+⚠️ **反例（之前 #2313）**：客户报 Lark Bitable invalid credential，agent 只 git_grep dify 主仓搜 0 hit 就下结论"无相关代码" → 完全错过 dify-official-plugins 仓里的 lark_trigger / lark_bitable 实现。
 
 ## 关键步骤
 1. 收集：Workspace ID、具体端点 / 插件名、请求示例（curl/代码）、完整报错

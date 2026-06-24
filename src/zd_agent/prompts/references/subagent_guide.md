@@ -54,12 +54,12 @@
 
 ## Subagent 工作策略（源码搜索类）
 
-1. 先用 `git_grep` 在本地 5 个仓库（dify / dify-billing / dify-marketplace-backend / dify-marketplace-frontend / saas-deploy）搜
-2. 本地搜不到 → **立刻** `github_code_search query="..." scope="langgenius"` 覆盖第三方插件仓
+1. 先用 `git_grep` 搜 Source MCP 已接入仓库（dify / dify-billing / dify-marketplace-backend / dify-marketplace-frontend / dify-plugin-daemon / saas-deploy）。默认不传 `ref`，让工具查 `runtime`（线上正在运行的代码）。
+2. Source MCP runtime 搜不到 → **立刻** `github_code_search query="..." scope="langgenius"` 覆盖未接入仓库 / 第三方插件仓
 3. 拿到匹配后用 `github_get_pr` / `github_search_prs` 看看有没有 fix PR
 
 ## 反例（绝不能这样）
 
 - "billing 类工单只搜了 dify 主仓 i18n + workspace_service" → 漏掉 dify-billing 是真理之源
-- "插件类问题在本地 dify 仓搜了 0 hit 就下结论代码里没有" → 必须 github_code_search dify-official-plugins
+- "插件类问题在 Source MCP 的 dify 仓搜了 0 hit 就下结论代码里没有" → 必须 github_code_search dify-official-plugins
 - "git_grep 命中 1 个文件就停" → 要把所有命中文件的关键代码读完再 summarize

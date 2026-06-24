@@ -148,7 +148,7 @@ src/zd_agent/
   observability/      指标埋点 + modify_rate 测量
 
 resources/(运行时数据,base_dir=/opt/zd-agent/resources)
-  saas源代码/          5 个 SaaS 仓库 clone
+  saas源代码/          6 个 SaaS 仓库 clone
   saas版知识库/        本地知识库 md
   zendesk-cli/工单记录/ 工单归档 <id>.md
   .state/              工单状态 / dedup / mention 记录

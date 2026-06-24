@@ -15,7 +15,7 @@ def test_no_record_is_first_pass(tmp_path):
     assert rec == ""
 
 
-def test_existing_record_is_followup(tmp_path):
+def test_existing_record_does_not_force_followup_by_default(tmp_path):
     records = tmp_path / "工单记录"
     records.mkdir()
     (records / "12345.md").write_text("# 工单 12345\n\nprev content", encoding="utf-8")
@@ -23,6 +23,20 @@ def test_existing_record_is_followup(tmp_path):
         resources_base_dir=str(tmp_path),
         ticket_records_dir="工单记录",
         ticket_id=12345,
+    )
+    assert mode == "first_pass"
+    assert rec == ""
+
+
+def test_existing_record_can_be_loaded_for_explicit_followup_context(tmp_path):
+    records = tmp_path / "工单记录"
+    records.mkdir()
+    (records / "12345.md").write_text("# 工单 12345\n\nprev content", encoding="utf-8")
+    mode, rec = detect_followup_mode(
+        resources_base_dir=str(tmp_path),
+        ticket_records_dir="工单记录",
+        ticket_id=12345,
+        trust_local_record=True,
     )
     assert mode == "followup"
     assert "prev content" in rec

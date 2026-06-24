@@ -73,7 +73,7 @@ ssh root@<agent-server> "/opt/zd-agent/code/scripts/init-resources.sh /opt/zd-ag
 ```bash
 ssh root@<agent-server>
 cd /opt/zd-agent/resources/saas源代码
-for repo in dify dify-billing dify-marketplace-backend dify-marketplace-frontend saas-deploy; do
+for repo in dify dify-billing dify-marketplace-backend dify-marketplace-frontend dify-plugin-daemon saas-deploy; do
     git clone git@github.com:langgenius/$repo.git
 done
 ```

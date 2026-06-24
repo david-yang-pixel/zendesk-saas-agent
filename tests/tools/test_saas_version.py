@@ -3,6 +3,8 @@ import pytest
 
 from zd_agent.tools.saas_version import (
     DeployedVersion,
+    _VERSION_SQL,
+    _select_primary_image_tag,
     image_tag_to_git_ref,
     extract_base_version,
 )
@@ -41,6 +43,32 @@ def test_deployed_version_dataclass():
     assert dv.source == "signoz"
 
 
+def test_version_sql_ranks_tags_by_count_then_latest():
+    assert "GROUP BY image_tag" in _VERSION_SQL
+    assert "count() AS log_count" in _VERSION_SQL
+    assert "max(timestamp) AS latest_ts" in _VERSION_SQL
+    assert "ORDER BY log_count DESC, latest_ts DESC" in _VERSION_SQL
+
+
+def test_select_primary_image_tag_prefers_count_then_latest():
+    rows = [
+        {"image_tag": "hotfix-1.14.2-fix.3", "log_count": 200, "latest_ts": 300},
+        {"image_tag": "hotfix-1.14.2-fix.4", "log_count": 500, "latest_ts": 100},
+        {"image_tag": "hotfix-1.14.2-fix.5", "log_count": 500, "latest_ts": 400},
+    ]
+
+    assert _select_primary_image_tag(rows) == "hotfix-1.14.2-fix.5"
+
+
+def test_select_primary_image_tag_ignores_empty_tags_and_keeps_legacy_rows():
+    rows = [
+        {"image_tag": "", "log_count": 999, "latest_ts": 999},
+        {"image_tag": "hotfix-1.14.2-fix.4"},
+    ]
+
+    assert _select_primary_image_tag(rows) == "hotfix-1.14.2-fix.4"
+
+
 import zd_agent.tools.saas_version as sv
 
 
@@ -54,8 +82,20 @@ def _clear_cache():
 @pytest.mark.asyncio
 async def test_resolve_from_signoz(monkeypatch):
     async def fake_run_signoz_sz(*args, **kw):
-        return [{"image_tag": "hotfix-1.14.2-fix.4",
-                 "service_version": "hotfix-1.14.2-fix.4"}]
+        return [
+            {
+                "image_tag": "hotfix-1.14.2-fix.3",
+                "service_version": "hotfix-1.14.2-fix.3",
+                "log_count": 100,
+                "latest_ts": 300,
+            },
+            {
+                "image_tag": "hotfix-1.14.2-fix.4",
+                "service_version": "hotfix-1.14.2-fix.4",
+                "log_count": 200,
+                "latest_ts": 200,
+            },
+        ]
     async def fake_verify(ref):
         return True
     monkeypatch.setattr(sv, "run_signoz_sz", fake_run_signoz_sz)
@@ -137,6 +177,36 @@ async def test_tool_returns_version(monkeypatch):
     assert result.success
     assert "hotfix-1.14.2-fix.4" in result.output
     assert "hotfix/1.14.2-fix.4" in result.output
+
+
+@pytest.mark.asyncio
+async def test_tool_uses_source_mcp_when_configured(monkeypatch):
+    async def fake_call_source_tool(name, arguments):
+        assert name == "source_runtime_ref"
+        assert arguments == {"repo": "dify"}
+        return {
+            "success": True,
+            "data": {
+                "repo": "dify",
+                "deployment": "dify-api-oltp",
+                "image_tag": "hotfix-1.14.2-fix.4",
+                "base_version": "1.14.2",
+                "ref": "hotfix/1.14.2-fix.4",
+                "commit": "abc123def456",
+                "source": "signoz",
+            },
+        }
+
+    monkeypatch.setattr(sv, "source_mcp_enabled", lambda: True)
+    monkeypatch.setattr(sv, "call_source_tool", fake_call_source_tool)
+
+    tool = SaasDeployedVersion()
+    result = await tool.execute({}, session=None)
+
+    assert result.success
+    assert "hotfix-1.14.2-fix.4" in result.output
+    assert "hotfix/1.14.2-fix.4" in result.output
+    assert "Source MCP" in result.output
 
 
 @pytest.mark.asyncio

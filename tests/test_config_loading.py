@@ -31,6 +31,9 @@ db_gateway:
 signoz:
   mcp_url: https://ops.example.com/signoz-mcp
   request_timeout_seconds: 35
+source_mcp:
+  mcp_url: https://ops.example.com/source-mcp
+  request_timeout_seconds: 45
 feishu:
   daily_summary_time: "09:00"
 repos:
@@ -40,6 +43,7 @@ repos:
     - dify-billing
     - dify-marketplace-backend
     - dify-marketplace-frontend
+    - dify-plugin-daemon
     - saas-deploy
   aliases:
     d: dify
@@ -48,6 +52,8 @@ repos:
     billing: dify-billing
     mb: dify-marketplace-backend
     mf: dify-marketplace-frontend
+    plugin: dify-plugin-daemon
+    daemon: dify-plugin-daemon
     deploy: saas-deploy
 """
 
@@ -65,6 +71,9 @@ def saas_env(monkeypatch):
         "SIGNOZ_MCP_URL": "https://ops.example.com/signoz-mcp/",
         "SIGNOZ_MCP_API_KEY": "signoz_mcp_xxx",
         "SIGNOZ_MCP_TIMEOUT_SECONDS": "45",
+        "SOURCE_MCP_URL": "https://ops.example.com/source-mcp/",
+        "SOURCE_MCP_API_KEY": "source_mcp_xxx",
+        "SOURCE_MCP_TIMEOUT_SECONDS": "55",
         "GITHUB_TOKEN": "gh_xxx",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
@@ -108,6 +117,13 @@ def test_config_loads_signoz_section(saas_env, saas_config_file):
     assert cfg.signoz.request_timeout_seconds == 45
 
 
+def test_config_loads_source_mcp_section(saas_env, saas_config_file):
+    cfg = load_config(saas_config_file)
+    assert cfg.source_mcp.mcp_url == "https://ops.example.com/source-mcp"
+    assert cfg.source_mcp.mcp_api_key == "source_mcp_xxx"
+    assert cfg.source_mcp.request_timeout_seconds == 55
+
+
 def test_config_loads_db_gateway_env(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.db_gateway.url == "https://db-gateway.example.com"
@@ -133,8 +149,10 @@ def test_config_loads_repos_aliases(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.repos.aliases["d"] == "dify"
     assert cfg.repos.aliases["bill"] == "dify-billing"
+    assert cfg.repos.aliases["plugin"] == "dify-plugin-daemon"
+    assert cfg.repos.aliases["daemon"] == "dify-plugin-daemon"
     assert cfg.repos.aliases["deploy"] == "saas-deploy"
-    assert len(cfg.repos.repositories) == 5
+    assert len(cfg.repos.repositories) == 6
     assert cfg.repos.repositories[0].name == "dify"
 
 

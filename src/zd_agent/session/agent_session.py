@@ -86,8 +86,8 @@ class AgentSession:
 
     # 跟进模式支持
     mode: str = "first_pass"           # "first_pass" | "followup"
-    previous_record: str = ""          # 读取自 zendesk-cli/工单记录/<id>.md
-    new_comments_diff: str = ""        # 与上次记录时比新增的客户对话
+    previous_record: str = ""          # 经 live Zendesk follow-up 判定后附加的历史参考
+    new_comments_diff: str = ""        # 从最新 Zendesk 对话中确认的新增客户对话
 
     # 额外提示
     hint: str = ""

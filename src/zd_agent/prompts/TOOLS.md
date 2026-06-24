@@ -39,15 +39,17 @@
 
 ## 源码工具组
 
-- `git_grep` / `git_show` / `git_log` / `git_diff`：直接在 `saas源代码/<repo>/` 下运行
-- 查线上 SaaS 行为前先用 `saas_deployed_version` 或 `list_repo_tags` 确认可用 ref；不要猜
-  `hotfix-*` / `release-*` 名称。`git_grep` 提示 ref 无法解析时，先确认 ref 再重试，不要反复用同一个错 ref。
+- `git_grep` / `git_show` / `git_log` / `git_diff`：底层通过 Source MCP 查询 SaaS 源码；默认
+  `ref=runtime`，也就是线上正在运行的代码版本。不要假设本地 checkout 或 main 分支就是线上事实。
+- 查线上 SaaS 行为时优先不传 `ref`，让 Source MCP 自动解析 runtime。只有客户明确问某个版本 / PR /
+  tag 时才显式指定 ref。`git_grep` 提示 ref 无法解析时，先用 `saas_deployed_version` /
+  `list_repo_tags` 确认 ref 再重试，不要反复用同一个错 ref。
 - `github_search_prs` / `github_get_pr`：GitHub API（langgenius/dify 等）
 
 ## Subagent 工具
 
-### `run_subagents_parallel`（⚡⚡ 核心）
-根因分析（Step 10-14）和知识匹配（Step 15-18）**必须**使用。
+### `run_subagents_parallel`（复杂并行时使用）
+默认主 agent 直接调工具排查；只有需要并行查 ≥2 个完全不相关角度、单次工具输出过大需要独立 context 处理，或 `AGENTS.md` 指定的复杂场景时才使用。
 一次调用派发多个独立 subagent，参数 `tasks: [{task, tools, context}]`。
 最多 6 个，推荐 3-4 个。每个 subagent 独立上下文，互不污染。
 
@@ -109,9 +111,9 @@ Step 4: classify_ticket → 决定激活哪些工具组
 ├─ product_usage  → zd_kb_cli_exec / zendesk_search_articles 为主
 └─ general        → 广谱
   ↓
-Step 10-14: run_subagents_parallel (根因)
+Step 10-14: 直接工具排查；复杂并行场景才 run_subagents_parallel (根因)
   ↓
-Step 15-18: run_subagents_parallel (知识)
+Step 15-18: 直接知识/历史检索；复杂并行场景才 run_subagents_parallel (知识)
   ↓
 Step 19: zendesk_public_reply（客户可见回复）或 zendesk_internal_reply（仅内部分析）
 Step 20: archive_ticket
