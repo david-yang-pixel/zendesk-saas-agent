@@ -77,6 +77,14 @@ service.name/endpoint 回退；源码类先 grep 上下文再下结论），**�
 
 ### `feishu_push`
 - `ticket_done`：工单处理完，推送摘要给 Support Engineer
+  - `content` 必须用固定字段，不要写成一整段：
+    ```text
+    处理结果：已回复客户 / 已完成
+    关键事实：一句话写最重要证据或判定
+    客户回复：一句话概括已发给客户的内容
+    后续动作：无需跟进 / 等客户补充 / 需观察
+    注意事项：SigNoz 不可用 / 证据缺口 / 无
+    ```
 - `ticket_escalate`：需人工介入（退款 / 信息不足 / 敏感决策）
 - `alert`：通用告警（`urgent=true` 会触发 @ 所有人）
 
@@ -117,7 +125,7 @@ Step 15-18: 直接知识/历史检索；复杂并行场景才 run_subagents_para
   ↓
 Step 19: zendesk_public_reply（客户可见回复）或 zendesk_internal_reply（仅内部分析）
 Step 20: archive_ticket
-Step 22: feishu_push ticket_done
+Step 22: feishu_push ticket_done（content 用固定字段摘要，不要粘贴完整客户回复）
 ```
 
 ## 避免的反模式

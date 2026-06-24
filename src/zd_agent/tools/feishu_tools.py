@@ -18,7 +18,7 @@ class FeishuPush(Tool):
     name = "feishu_push"
     description = (
         "主动推送消息到飞书群。card_type 选项："
-        "ticket_done（工单处理完成摘要卡片，需 zendesk_url）/"
+        "ticket_done（工单处理完成摘要卡片，content 用固定字段：处理结果/关键事实/客户回复/后续动作/注意事项）/"
         "ticket_escalate（需人工介入，需 zendesk_url）/"
         "alert（通用告警，不附 zendesk 链接，urgent=true 时 @ 所有人）。"
     )
@@ -35,7 +35,11 @@ class FeishuPush(Tool):
             },
             "content": {
                 "type": "string",
-                "description": "卡片正文，支持 lark_md。ticket_done 填摘要，ticket_escalate 填原因，alert 填消息",
+                "description": (
+                    "卡片正文，支持 lark_md。ticket_done 必须用多行固定字段："
+                    "处理结果：...\n关键事实：...\n客户回复：...\n后续动作：...\n注意事项：..."
+                    "；ticket_escalate 填原因，alert 填消息"
+                ),
             },
             "zendesk_url": {
                 "type": "string",

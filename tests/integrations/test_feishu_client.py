@@ -16,6 +16,14 @@ from zd_agent.integrations.feishu.client import FeishuClient, _gen_sign
 
 # ===== Card builder tests (unchanged) =====
 
+def _div_text_contents(card: dict) -> list[str]:
+    return [
+        element["text"]["content"]
+        for element in card["elements"]
+        if element.get("tag") == "div" and "text" in element
+    ]
+
+
 def test_ticket_done_card_has_ticket_id_in_title():
     card = ticket_done_card(
         ticket_id="12345", summary="ok", zendesk_url="https://z.example.com/12345",
@@ -30,6 +38,60 @@ def test_ticket_done_card_without_url_has_no_view_button():
     button_texts = [a["text"]["content"] for a in actions]
     assert "查看 Zendesk" not in button_texts
     assert "重新处理" in button_texts
+
+
+def test_ticket_done_card_renders_labeled_summary_as_readable_sections():
+    card = ticket_done_card(
+        ticket_id="3066",
+        summary=(
+            "处理结果：已回复客户\n"
+            "关键事实：workspace subscription is healthy\n"
+            "客户回复：asked customer to retry /subscription/info\n"
+            "后续动作：no manual follow-up needed\n"
+            "注意事项：SigNoz unavailable, traceback not retrieved"
+        ),
+        zendesk_url="https://z.example.com/3066",
+    )
+
+    assert _div_text_contents(card)[:5] == [
+        "**处理结果**\n已回复客户",
+        "**关键事实**\nworkspace subscription is healthy",
+        "**客户回复**\nasked customer to retry /subscription/info",
+        "**后续动作**\nno manual follow-up needed",
+        "**注意事项**\nSigNoz unavailable, traceback not retrieved",
+    ]
+    assert card["elements"][-1]["tag"] == "action"
+
+
+def test_ticket_done_card_splits_plain_summary_into_bullet_digest():
+    summary = (
+        "Ticket #3066 handled (billing). "
+        "Workspace 5f1000d5 subscription is healthy in billing DB: plan=team, active. "
+        "Customer error maps to `api/services/billing_service.py:337`. "
+        "Public reply sent asking customer to retry and provide endpoint/timestamp."
+    )
+
+    card = ticket_done_card(ticket_id="3066", summary=summary, zendesk_url="")
+    contents = _div_text_contents(card)
+
+    assert contents == [
+        "**摘要**\n"
+        "- Ticket #3066 handled (billing).\n"
+        "- Workspace 5f1000d5 subscription is healthy in billing DB: plan=team, active.\n"
+        "- Customer error maps to `api/services/billing_service.py:337`.\n"
+        "- Public reply sent asking customer to retry and provide endpoint/timestamp."
+    ]
+    assert max(len(line) for line in contents[0].splitlines()) < len(summary)
+
+
+def test_ticket_done_card_caps_long_plain_summary_sentence():
+    summary = " ".join(["Long customer-facing update"] * 80) + " tail-marker."
+
+    card = ticket_done_card(ticket_id="3066", summary=summary, zendesk_url="")
+    content = _div_text_contents(card)[0]
+
+    assert "tail-marker" not in content
+    assert len(content) < 500
 
 
 def test_ticket_escalate_template_is_orange():

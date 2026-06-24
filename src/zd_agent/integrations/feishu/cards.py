@@ -1,7 +1,122 @@
 """Feishu interactive card builders. Pure functions returning JSON-ready dicts."""
 from __future__ import annotations
 
+import re
+import textwrap
 from typing import Any
+
+
+_TICKET_DONE_SECTION_TITLES = (
+    "处理结果",
+    "关键事实",
+    "客户回复",
+    "后续动作",
+    "注意事项",
+)
+_TICKET_DONE_SECTION_RE = re.compile(
+    r"^\s*(处理结果|关键事实|客户回复|后续动作|注意事项)\s*[:：]\s*(.*)\s*$"
+)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+")
+_SECTION_MAX_CHARS = 500
+_PLAIN_SENTENCE_MAX_CHARS = 320
+_PLAIN_DIGEST_MAX_CHARS = _SECTION_MAX_CHARS
+
+
+def _truncate_text(text: str, *, max_chars: int) -> str:
+    cleaned = text.strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    if max_chars <= 3:
+        return cleaned[:max_chars]
+    return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def _section_element(title: str, content: str) -> dict[str, Any]:
+    rendered = _truncate_text(content, max_chars=_SECTION_MAX_CHARS)
+    return {
+        "tag": "div",
+        "text": {"tag": "lark_md", "content": f"**{title}**\n{rendered}"},
+    }
+
+
+def _append_section(
+    sections: dict[str, list[str]],
+    title: str,
+    content: str,
+) -> None:
+    cleaned = content.strip()
+    if cleaned:
+        sections.setdefault(title, []).append(cleaned)
+
+
+def _parse_ticket_done_sections(summary: str) -> list[tuple[str, str]]:
+    sections: dict[str, list[str]] = {}
+    current_title: str | None = None
+    unlabeled_lines: list[str] = []
+
+    for raw_line in summary.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _TICKET_DONE_SECTION_RE.match(line)
+        if match:
+            current_title = match.group(1)
+            _append_section(sections, current_title, match.group(2))
+            continue
+        if current_title:
+            _append_section(sections, current_title, line)
+        else:
+            unlabeled_lines.append(line)
+
+    if not sections:
+        return []
+
+    if unlabeled_lines:
+        fallback_title = "注意事项" if "注意事项" in sections else "关键事实"
+        _append_section(sections, fallback_title, " ".join(unlabeled_lines))
+
+    return [
+        (title, "\n".join(sections[title]).strip())
+        for title in _TICKET_DONE_SECTION_TITLES
+        if sections.get(title)
+    ]
+
+
+def _split_plain_summary(summary: str, *, max_items: int = 6) -> list[str]:
+    normalized = " ".join(line.strip() for line in summary.splitlines() if line.strip())
+    if not normalized:
+        return ["未提供摘要"]
+    parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(normalized) if part.strip()]
+    return [
+        _truncate_text(part, max_chars=_PLAIN_SENTENCE_MAX_CHARS)
+        for part in (parts or [normalized])[:max_items]
+    ]
+
+
+def _wrap_bullet(text: str, *, width: int = 110) -> list[str]:
+    wrapped = textwrap.wrap(
+        text,
+        width=width,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+    return wrapped or [text]
+
+
+def _plain_summary_digest(summary: str) -> str:
+    lines: list[str] = []
+    for sentence in _split_plain_summary(summary):
+        wrapped = _wrap_bullet(sentence)
+        lines.append(f"- {wrapped[0]}")
+        lines.extend(f"  {line}" for line in wrapped[1:])
+    return _truncate_text("\n".join(lines), max_chars=_PLAIN_DIGEST_MAX_CHARS)
+
+
+def _ticket_done_body_elements(summary: str) -> list[dict[str, Any]]:
+    sections = _parse_ticket_done_sections(summary)
+    if sections:
+        return [_section_element(title, content) for title, content in sections]
+    return [_section_element("摘要", _plain_summary_digest(summary))]
 
 
 def ticket_done_card(*, ticket_id: str, summary: str, zendesk_url: str) -> dict[str, Any]:
@@ -26,7 +141,7 @@ def ticket_done_card(*, ticket_id: str, summary: str, zendesk_url: str) -> dict[
             "template": "green",
         },
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": summary}},
+            *_ticket_done_body_elements(summary),
             {"tag": "action", "actions": actions},
         ],
     }

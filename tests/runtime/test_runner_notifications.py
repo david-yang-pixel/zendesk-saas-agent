@@ -85,6 +85,44 @@ async def test_ticket_done_fallback_retries_after_failed_llm_feishu(monkeypatch)
     client_cls.return_value.send_ticket_done.assert_awaited_once()
 
 
+def test_ticket_done_fallback_summary_formats_customer_reply_digest():
+    from zd_agent.services.feishu_notifications import _ticket_done_summary
+
+    session = AgentSession(ticket_id=3066)
+    session.reply_draft = (
+        "Hi,\n\n"
+        "The workspace subscription is healthy in billing DB. "
+        "Please retry /subscription/info and provide the endpoint and timestamp if it persists.\n\n"
+        "🤖 This message is sent by Dify AI (Dify SaaS Agent). "
+        "If you would prefer a human teammate, reply with \"human\"."
+    )
+
+    summary = _ticket_done_summary(session)
+
+    assert summary.startswith("处理结果：已回复客户\n")
+    assert "客户回复：" in summary
+    assert "The workspace subscription is healthy in billing DB." in summary
+    assert "Dify SaaS Agent" not in summary
+
+
+def test_ticket_done_fallback_summary_caps_long_low_punctuation_reply():
+    from zd_agent.services.feishu_notifications import _ticket_done_summary
+
+    session = AgentSession(ticket_id=3066)
+    session.reply_draft = (
+        "Hello,\n\n"
+        + " ".join(["This reply has important details but no sentence break"] * 40)
+        + " tail-marker\n\n"
+        "🤖 This message is sent by Dify AI (Dify SaaS Agent)."
+    )
+
+    summary = _ticket_done_summary(session)
+    digest = summary.split("客户回复：", 1)[1]
+
+    assert "tail-marker" not in digest
+    assert len(digest) <= 323
+
+
 @pytest.mark.asyncio
 async def test_ticket_done_fallback_skips_if_llm_already_pushed(monkeypatch):
     from zd_agent.services import feishu_notifications
