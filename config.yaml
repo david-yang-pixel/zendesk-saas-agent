@@ -7,12 +7,13 @@ agent:
     # 导致 agent "I couldn't verify" 频发。gpt-5.x 支持 1M context，
     # 单 ticket 累计 1.5M 足够覆盖 fan-out + 多轮总结。
     max_tokens_per_session: 1500000
-    # 0.65 → 0.3：配套 max_tokens 提到 1.5M 后必须降，否则 0.65×1.5M=975K，
-    # message store 实际 80-100K，永远不会触发 compaction（log 显示典型
-    # before_tokens=42K，远低于 975K 阈值）。降到 0.3 = 450K，让 compaction
-    # 在 message store 累计 ~450K 时确实触发（gpt-5 一次 input ~50K，
-    # 9 轮就到）。
+    # compaction_threshold 只用于"整单累计 token"护栏；它不能代表当前上下文大小，
+    # 也不能倒扣已经花掉的 token。
     compaction_threshold: 0.3
+    # 当前 message_store 超过 45K 时正式压缩到约 30K，避免后续每轮重复携带
+    # 40K+ 上下文。12K 以上仍会先做 cheap history_snip。
+    context_compaction_trigger_tokens: 45000
+    context_compaction_target_tokens: 30000
 llm:
   provider: openai
   model: gpt-5.5

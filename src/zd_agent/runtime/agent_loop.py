@@ -457,11 +457,15 @@ async def agent_loop(
             )
 
             if guardrails.should_compact(message_store_tokens=ms_tokens):
+                compaction_target = guardrails.compaction_target_tokens(
+                    message_store_tokens=ms_tokens,
+                )
                 logger.info(
                     "compaction_triggered",
                     ticket_id=session.ticket_id,
                     message_store_tokens=ms_tokens,
                     cumulative_tokens=guardrails.total_tokens,
+                    target_tokens=compaction_target,
                 )
                 # 用 multi_level_compact：先 Level 1 history_snip（cheap，截 tool
                 # 输出到 200 字符）；如果还不够再 Level 2 LLM 摘要。之前直接调
@@ -470,6 +474,7 @@ async def agent_loop(
                 compacted = await multi_level_compact(
                     message_store.to_api_messages(),
                     provider,
+                    target_tokens=compaction_target,
                 )
                 message_store.raw = compacted
 

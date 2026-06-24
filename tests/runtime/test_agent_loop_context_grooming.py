@@ -151,3 +151,44 @@ async def test_agent_loop_grooms_context_before_timeout_retry(monkeypatch: pytes
         msg for msg in retry_messages if msg.get("name") == "knowledge_search"
     )
     assert "[... 输出已精简 ...]" in retry_tool["content"]
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_uses_context_compaction_target_for_large_message_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, int | None] = {}
+
+    monkeypatch.setattr(
+        agent_loop_module,
+        "count_tokens",
+        lambda messages: 90_000,
+    )
+    monkeypatch.setattr(
+        agent_loop_module,
+        "_groom_context_proactively",
+        lambda session, message_store, *, message_store_tokens: message_store_tokens,
+    )
+
+    async def fake_multi_level_compact(
+        messages: list[dict[str, Any]],
+        llm_or_provider: _RecordingProvider,
+        target_tokens: int | None = None,
+    ) -> list[dict[str, Any]]:
+        seen["target_tokens"] = target_tokens
+        return messages
+
+    monkeypatch.setattr(
+        agent_loop_module,
+        "multi_level_compact",
+        fake_multi_level_compact,
+    )
+
+    provider = _RecordingProvider()
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user("hello")
+
+    await _drain_loop(store, provider)
+
+    assert seen["target_tokens"] == 30_000

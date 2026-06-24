@@ -60,6 +60,8 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
                     "timeout_seconds": 480,
                     "max_context_tokens": 800000,
                     "compaction_threshold": 0.4,
+                    "context_compaction_trigger_tokens": 42000,
+                    "context_compaction_target_tokens": 28000,
                 },
             },
             "features": {
@@ -86,6 +88,8 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert cfg.agent.guardrails.timeout_seconds == 480
     assert cfg.agent.guardrails.max_tokens_per_session == 800000
     assert cfg.agent.guardrails.compaction_threshold == 0.4
+    assert cfg.agent.guardrails.context_compaction_trigger_tokens == 42000
+    assert cfg.agent.guardrails.context_compaction_target_tokens == 28000
     assert cfg.public_reply.enabled is True
     assert cfg.public_reply.silence_window_seconds == 45
     assert cfg.public_reply.max_ask_count == 8
@@ -93,6 +97,7 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert cfg.zendesk.mention_trigger == "@saas-agent"
     assert cfg.zendesk.api_token == ""
     assert manifest["agent"]["guardrails"]["max_context_tokens"] == 800000
+    assert manifest["agent"]["guardrails"]["context_compaction_target_tokens"] == 28000
 
 
 def test_build_agent_tools_manifest_includes_metadata() -> None:

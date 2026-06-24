@@ -15,6 +15,8 @@ class GuardrailsConfig(BaseModel):
     timeout_seconds: int = 600
     max_tokens_per_session: int = 200_000
     compaction_threshold: float = 0.75
+    context_compaction_trigger_tokens: int = 45_000
+    context_compaction_target_tokens: int = 30_000
 
 
 class AgentConfig(BaseModel):

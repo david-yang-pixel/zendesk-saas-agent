@@ -61,7 +61,7 @@ class Guardrails:
 
         1. cumulative ``total_tokens > max_tokens_per_session * compaction_threshold``
            （传统：累计触发，控制总成本）
-        2. ``message_store_tokens > 80_000``（**修法 2 新增**：每轮 message_store
+        2. ``message_store_tokens > context_compaction_trigger_tokens``：每轮 message_store
            太大就压缩，控制单次 LLM input 大小，避免 forced_summary on token）
 
         message_store_tokens=0（不传）时只检查累计条件，向后兼容。
@@ -73,10 +73,32 @@ class Guardrails:
         if self.total_tokens > cum_threshold:
             return True
         # message_store 大小条件（新增，更主动）
-        # 80K tokens ≈ 单次 LLM call input 上限，超过就有 forced_summary 风险
-        if message_store_tokens > 80_000:
+        if message_store_tokens > self.config.context_compaction_trigger_tokens:
             return True
         return False
+
+    def compaction_target_tokens(self, message_store_tokens: int = 0) -> int:
+        """Return the target token count for the next compaction pass.
+
+        ``max_tokens_per_session`` is a cumulative ticket budget, not a good
+        target for current prompt context. When the live message store is what
+        triggered compaction, aim for the smaller context target so compaction
+        actually reduces the next prompt instead of no-oping under a 450K
+        cumulative threshold.
+        """
+        cumulative_target = int(
+            self.config.max_tokens_per_session * self.config.compaction_threshold,
+        )
+        if message_store_tokens > self.config.context_compaction_trigger_tokens:
+            context_target = min(
+                self.config.context_compaction_target_tokens,
+                self.config.context_compaction_trigger_tokens,
+            )
+            return min(
+                cumulative_target,
+                context_target,
+            )
+        return cumulative_target
 
     def increment_round(self) -> None:
         self.current_round += 1

@@ -58,6 +58,8 @@ def _guardrails_manifest(cfg: AppConfig) -> dict[str, Any]:
         "timeout_seconds": guardrails.timeout_seconds,
         "max_context_tokens": guardrails.max_tokens_per_session,
         "compaction_threshold": guardrails.compaction_threshold,
+        "context_compaction_trigger_tokens": guardrails.context_compaction_trigger_tokens,
+        "context_compaction_target_tokens": guardrails.context_compaction_target_tokens,
     }
 
 
@@ -245,6 +247,16 @@ def update_agent_config(
             "max_tokens_per_session",
         )
     _set_float_if_present(cfg.agent.guardrails, guardrails, "compaction_threshold")
+    _set_positive_int_if_present(
+        cfg.agent.guardrails,
+        guardrails,
+        "context_compaction_trigger_tokens",
+    )
+    _set_positive_int_if_present(
+        cfg.agent.guardrails,
+        guardrails,
+        "context_compaction_target_tokens",
+    )
 
     features = _as_mapping(update.get("features"))
     auto_public_reply = _as_mapping(features.get("auto_public_reply"))
