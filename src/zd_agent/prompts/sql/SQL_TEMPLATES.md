@@ -29,6 +29,20 @@
 > - `database=prod` (langgenius) / `database=billing` / `database=plugin`
 >   (dify_plugin_daemon) 三个独立 DB，**不能跨库 JOIN**
 > - `graph` / `features` 字段是 text 类型，使用 JSON 操作符前需要 `::jsonb` 转换
+>
+> **表到 `database` 参数的硬路由（写 `sql_query` 参数前先对照）：**
+> - `tenant_subscription_settings` -> `database="billing"`（除非模板明确写 Dify-Prod 简版）
+> - `tenant_stripe_status` -> `database="billing"`
+> - `tenant_stripe_customers` -> `database="billing"`
+> - `tenant_subscription_details` -> `database="billing"`
+> - `tenant_feature_usages` -> `database="billing"`
+> - `tenant_message_credit_logs` -> `database="billing"`
+> - `quota_usage_histories` -> `database="billing"`
+> - `tenants` / `accounts` / `tenant_account_joins` / `apps` / `workflow_runs` / `messages`
+>   -> `database="prod"`
+>
+> 看到 SQL 注释是 `[Dify-billing]` 时，`sql_query.database` 必须填 `"billing"`；
+> 不要把 billing 表发到 prod。库不确定时，先用对应库的 `information_schema` 查表是否存在。
 
 ---
 

@@ -61,6 +61,23 @@ def test_classify_ticket_attaches_sql_for_sql_categories():
     assert "SQL 查询模板" in (result.output or "")
 
 
+def test_classify_ticket_attaches_billing_table_routing_rules():
+    """SQL 模板必须明确 billing 表的 database 参数，避免发到 prod。"""
+    import asyncio
+    from zd_agent.session.agent_session import AgentSession
+    from zd_agent.tools.classify import ClassifyTicket
+
+    tool = ClassifyTicket()
+    session = AgentSession(ticket_id=1)
+    result = asyncio.get_event_loop().run_until_complete(
+        tool.execute({"ticket_type": "billing", "reasoning": "test"}, session)
+    )
+
+    assert result.success is True
+    assert 'tenant_feature_usages` -> `database="billing"`' in (result.output or "")
+    assert 'tenant_stripe_status` -> `database="billing"`' in (result.output or "")
+
+
 def test_classify_ticket_skips_sql_for_non_sql_categories():
     """ticket_type ∉ NEEDS_SQL → classify tool 输出不附加 SQL_TEMPLATES。"""
     import asyncio
