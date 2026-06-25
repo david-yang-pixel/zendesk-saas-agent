@@ -39,4 +39,19 @@ def test_prompt_dispatches_subagents_for_multi_source_investigations():
     assert "多证据源工单默认派 subagent" in prompt
     assert "代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR" in prompt
     assert "最多 5 个 subagent" in prompt
+    assert "完成判定" in prompt
+    assert "不要主动加载" in prompt
+    assert "sandbox_read 加载" not in prompt
     assert "默认不派 subagent" not in prompt
+
+
+def test_prompt_requires_structured_ticket_done_evidence_blocks():
+    prompt = _build()
+
+    assert "数据库核查" in prompt
+    assert "代码路径" in prompt
+    assert "日志核查" in prompt
+    assert "不要把 DB 字段写进一整段英文长句" in prompt
+    assert "**workspace**" in prompt
+    assert "- `status`: normal" in prompt
+    assert "`字段`: 值" in prompt

@@ -9,15 +9,39 @@ from typing import Any
 _TICKET_DONE_SECTION_TITLES = (
     "处理结果",
     "关键事实",
+    "数据库核查",
+    "代码路径",
+    "日志核查",
     "客户回复",
     "后续动作",
     "注意事项",
 )
 _TICKET_DONE_SECTION_RE = re.compile(
-    r"^\s*(处理结果|关键事实|客户回复|后续动作|注意事项)\s*[:：]\s*(.*)\s*$"
+    r"^\s*(处理结果|关键事实|数据库核查|代码路径|日志核查|客户回复|后续动作|注意事项)\s*[:：]\s*(.*)\s*$"
 )
+_TICKET_DONE_STRUCTURED_SECTION_TITLES = {"数据库核查", "代码路径", "日志核查"}
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+")
+_STRIPE_SIMPLE_ID_PREFIXES = (
+    "sub|cus|pi|in|pm|ch|re|evt|seti|si|price|prod|promo"
+)
+_STRIPE_FIELD_ID_VALUE_PATTERN = (
+    rf"(?:cs_(?:test|live)_[A-Za-z0-9]{{8,}}|"
+    rf"(?:{_STRIPE_SIMPLE_ID_PREFIXES})_[A-Za-z0-9]{{8,}})"
+)
+_STRIPE_ID_VALUE_PATTERN = (
+    rf"(?:cs_(?:test|live)_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{{8,}}|"
+    rf"(?:{_STRIPE_SIMPLE_ID_PREFIXES})_(?=[A-Za-z0-9]*\d)[A-Za-z0-9]{{8,}})"
+)
+_SENSITIVE_STRIPE_FIELD_RE = re.compile(
+    rf"(?i)(?P<prefix>`?(?:stripe_)?"
+    rf"(?:subscription|customer|payment|payment_intent|invoice|last_invoice|promo|price|product)_id"
+    rf"`?\s*[:=]\s*)(?P<quote>`?)(?P<value>{_STRIPE_FIELD_ID_VALUE_PATTERN})(?P=quote)"
+)
+_STRIPE_ID_VALUE_RE = re.compile(
+    rf"(?i)(?<![A-Za-z0-9_])(?P<value>{_STRIPE_ID_VALUE_PATTERN})(?![A-Za-z0-9_])"
+)
 _SECTION_MAX_CHARS = 500
+_STRUCTURED_SECTION_MAX_CHARS = 800
 _PLAIN_SENTENCE_MAX_CHARS = 320
 _PLAIN_DIGEST_MAX_CHARS = _SECTION_MAX_CHARS
 
@@ -31,8 +55,33 @@ def _truncate_text(text: str, *, max_chars: int) -> str:
     return cleaned[: max_chars - 3].rstrip() + "..."
 
 
+def _mask_identifier(value: str) -> str:
+    if len(value) <= 12:
+        return value
+    return f"{value[:8]}...{value[-4:]}"
+
+
+def _redact_sensitive_values(text: str) -> str:
+    field_redacted = _SENSITIVE_STRIPE_FIELD_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}{match.group('quote')}"
+            f"{_mask_identifier(match.group('value'))}{match.group('quote')}"
+        ),
+        text,
+    )
+    return _STRIPE_ID_VALUE_RE.sub(
+        lambda match: _mask_identifier(match.group("value")),
+        field_redacted,
+    )
+
+
 def _section_element(title: str, content: str) -> dict[str, Any]:
-    rendered = _truncate_text(content, max_chars=_SECTION_MAX_CHARS)
+    max_chars = (
+        _STRUCTURED_SECTION_MAX_CHARS
+        if title in _TICKET_DONE_STRUCTURED_SECTION_TITLES
+        else _SECTION_MAX_CHARS
+    )
+    rendered = _truncate_text(_redact_sensitive_values(content), max_chars=max_chars)
     return {
         "tag": "div",
         "text": {"tag": "lark_md", "content": f"**{title}**\n{rendered}"},

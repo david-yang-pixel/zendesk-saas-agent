@@ -63,6 +63,121 @@ def test_ticket_done_card_renders_labeled_summary_as_readable_sections():
     assert card["elements"][-1]["tag"] == "action"
 
 
+def test_ticket_done_card_renders_structured_evidence_sections():
+    card = ticket_done_card(
+        ticket_id="2861",
+        summary=(
+            "处理结果：已回复客户\n"
+            "数据库核查：\n"
+            "**workspace**\n"
+            "- `status`: normal\n"
+            "**tenant_subscription_settings**\n"
+            "- `plan`: team\n"
+            "- `expiration_date`: 2026-07-11 01:39:43\n"
+            "代码路径：\n"
+            "- `api/services/billing_service.py:188-191`: proxy subscription info\n"
+            "- `app/routes/subscription.py:31`: exposes /subscription/info\n"
+            "日志核查：48 小时内未找到该 tenant 或 /subscription/info 的 ERROR/FATAL\n"
+            "客户回复：告知客户订阅 active，并请重试页面"
+        ),
+        zendesk_url="https://z.example.com/2861",
+    )
+
+    assert _div_text_contents(card)[:5] == [
+        "**处理结果**\n已回复客户",
+        (
+            "**数据库核查**\n"
+            "**workspace**\n"
+            "- `status`: normal\n"
+            "**tenant_subscription_settings**\n"
+            "- `plan`: team\n"
+            "- `expiration_date`: 2026-07-11 01:39:43"
+        ),
+        (
+            "**代码路径**\n"
+            "- `api/services/billing_service.py:188-191`: proxy subscription info\n"
+            "- `app/routes/subscription.py:31`: exposes /subscription/info"
+        ),
+        "**日志核查**\n48 小时内未找到该 tenant 或 /subscription/info 的 ERROR/FATAL",
+        "**客户回复**\n告知客户订阅 active，并请重试页面",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("value", "raw_line", "masked"),
+    [
+        (
+            "sub_1RYHABAaK72P10paQVg1PkcE",
+            "- `stripe_subscription_id`: sub_1RYHABAaK72P10paQVg1PkcE",
+            "`stripe_subscription_id`: sub_1RYH...PkcE",
+        ),
+        (
+            "in_1234567890ABCDEF",
+            "- last_invoice_id: in_1234567890ABCDEF",
+            "last_invoice_id: in_12345...CDEF",
+        ),
+        (
+            "pi_1234567890ABCDEF",
+            "- stripe_payment_intent_id: `pi_1234567890ABCDEF`",
+            "stripe_payment_intent_id: `pi_12345...CDEF`",
+        ),
+        (
+            "promo_1234567890ABCDEF",
+            "- stripe_promo_id: promo_1234567890ABCDEF",
+            "stripe_promo_id: promo_12...CDEF",
+        ),
+        (
+            "cus_1234567890ABCDEF",
+            "- customer log ref: cus_1234567890ABCDEF",
+            "customer log ref: cus_1234...CDEF",
+        ),
+        (
+            "cs_test_1234567890ABCDEF",
+            "- checkout session: cs_test_1234567890ABCDEF",
+            "checkout session: cs_test_...CDEF",
+        ),
+    ],
+)
+def test_ticket_done_card_redacts_stripe_ids_in_structured_evidence(
+    value: str,
+    raw_line: str,
+    masked: str,
+):
+    card = ticket_done_card(
+        ticket_id="2861",
+        summary=(
+            "数据库核查：\n"
+            "**tenant_subscription_settings**\n"
+            f"{raw_line}\n"
+            "- `plan`: team"
+        ),
+        zendesk_url="",
+    )
+
+    content = _div_text_contents(card)[0]
+
+    assert value not in content
+    assert masked in content
+    assert "`plan`: team" in content
+
+
+def test_ticket_done_card_does_not_redact_non_stripe_values():
+    card = ticket_done_card(
+        ticket_id="2861",
+        summary=(
+            "数据库核查：\n"
+            "- workspace_id: 5f1000d5420\n"
+            "- environment: in_production"
+        ),
+        zendesk_url="",
+    )
+
+    content = _div_text_contents(card)[0]
+
+    assert "workspace_id: 5f1000d5420" in content
+    assert "environment: in_production" in content
+
+
 def test_ticket_done_card_splits_plain_summary_into_bullet_digest():
     summary = (
         "Ticket #3066 handled (billing). "

@@ -87,10 +87,19 @@ Subagent 返回后先读它的 `Conclusion / Checked / Evidence / Gaps / Parent 
 
 ### `feishu_push`
 - `ticket_done`：工单处理完，推送摘要给 Support Engineer
-  - `content` 必须用固定字段，不要写成一整段：
+  - `content` 必须用固定字段，不要写成一整段；DB 字段按表名分组，用 - `字段`: 值 逐行展示，**不要把 DB 字段写进一整段英文长句**：
     ```text
     处理结果：已回复客户 / 已完成
     关键事实：一句话写最重要证据或判定
+    数据库核查：
+    **workspace**
+    - `status`: normal
+    **tenant_subscription_settings**
+    - `plan`: team
+    - `expiration_date`: 2026-07-11 01:39:43
+    代码路径：
+    - `api/services/billing_service.py:188-191`: /subscription/info proxy
+    日志核查：48 小时内未找到该 tenant 或 /subscription/info 的 ERROR/FATAL
     客户回复：一句话概括已发给客户的内容
     后续动作：无需跟进 / 等客户补充 / 需观察
     注意事项：SigNoz 不可用 / 证据缺口 / 无
