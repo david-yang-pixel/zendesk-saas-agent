@@ -35,6 +35,7 @@ class ToolExecuted(AgentEvent):
     error: str | None = None
     arguments: dict[str, Any] = field(default_factory=dict)
     output: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

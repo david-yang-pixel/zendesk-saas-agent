@@ -7,10 +7,11 @@ from typing import Any
 from zd_agent.config import EnvSettings, get_config
 from zd_agent.log import get_logger
 from zd_agent.runtime.agent_loop import agent_loop
-from zd_agent.runtime.events import LoopFinished, ToolExecuted
+from zd_agent.runtime.events import LoopFinished, LoopProgress, ToolExecuted
 from zd_agent.runtime.guardrails import Guardrails, GuardrailsConfig
 from zd_agent.runtime.llm.factory import create_llm_provider
 from zd_agent.runtime.llm.types import ToolSchema
+from zd_agent.runtime.log_reporter import LogReporter
 from zd_agent.runtime.messages import MessageStore
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import ToolRegistry, ToolResult
@@ -41,6 +42,12 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个专注于特定分析任务的子 Agent�
 - 完成后直接输出结论，不需要调用 zendesk_internal_reply
 - 结论中包含关键发现、证据引用、和你的判断
 - 控制在 1000 字以内
+- 最终输出必须使用下面 5 个字段，方便父 agent 直接汇总，不重复查同一证据源：
+  - Conclusion: 一句话结论（找到 / 没找到 / 部分找到）
+  - Checked: 你实际查过的工具、关键词、时间窗、路径或表
+  - Evidence: 最关键 1-3 条证据，带路径/行号/SQL 摘要/日志条件
+  - Gaps: 仍缺什么；没有缺口就写 none
+  - Parent next action: 建议父 agent 直接回复、补查哪个具体事实，或转人工
 
 # 数据/日志/Trace 类分析任务的统一 Quality Bar
 
@@ -116,6 +123,7 @@ async def run_subagent(
     tool_names: list[str],
     context: str,
     parent_session: AgentSession,
+    log_metadata: dict[str, Any] | None = None,
 ) -> ToolResult:
     """执行子 Agent：独立上下文 + 有限工具集 + 精简护栏。"""
     cfg = get_config()
@@ -181,29 +189,93 @@ async def run_subagent(
         tool_count=len(tool_schemas),
     )
 
+    child_reporter: LogReporter | None = None
+    child_run_id: int | None = None
+    current_round_id: int | None = None
+    finish_reported = False
+    parent_run_id = parent_session.remote_log_run_id
+
     final_content = ""
-    async for event in agent_loop(
-        sub_session, provider, message_store, sub_registry, guardrails, tool_schemas,
-    ):
-        if isinstance(event, LoopFinished):
-            if event.status != "completed":
-                logger.warning(
-                    "subagent_abnormal",
+    try:
+        if parent_run_id is not None and log_metadata:
+            child_reporter = LogReporter()
+            if child_reporter.enabled:
+                child_run_id = await child_reporter.report_run_start(
                     ticket_id=parent_session.ticket_id,
-                    status=event.status,
-                    reason=event.reason,
+                    session_id=sub_session.session_id,
+                    trigger_type="subagent",
+                    model=sub_llm_cfg.model,
+                    parent_run_id=parent_run_id,
+                    task_preview=log_metadata.get("task_preview") or task[:500],
+                    worker_role=log_metadata.get("worker_role"),
+                    question_preview=log_metadata.get("question_preview") or task[:500],
+                    batch_id=log_metadata.get("batch_id"),
+                    sibling_index=log_metadata.get("sibling_index"),
                 )
-                return ToolResult(
-                    success=False,
-                    error=f"子 Agent 异常终止: {event.reason}",
+
+        async for event in agent_loop(
+            sub_session, provider, message_store, sub_registry, guardrails, tool_schemas,
+        ):
+            if (
+                isinstance(event, LoopProgress)
+                and child_reporter is not None
+                and child_run_id is not None
+            ):
+                current_round_id = await child_reporter.report_round(
+                    child_run_id, event, sub_llm_cfg.model,
                 )
-            # 从消息历史尾部提取最终结论
-            for msg in reversed(message_store.raw):
-                if msg.get("role") == "assistant" and msg.get("content"):
-                    content = msg["content"]
-                    if isinstance(content, str):
-                        final_content = content
-                        break
+            elif (
+                isinstance(event, ToolExecuted)
+                and child_reporter is not None
+                and child_run_id is not None
+                and current_round_id is not None
+            ):
+                await child_reporter.report_tool_call(
+                    child_run_id, current_round_id, event,
+                )
+            elif isinstance(event, LoopFinished):
+                if child_reporter is not None and child_run_id is not None:
+                    await child_reporter.report_run_finish(
+                        child_run_id,
+                        event,
+                        total_input_tokens=sub_session.token_usage.prompt_tokens,
+                        total_output_tokens=sub_session.token_usage.completion_tokens,
+                    )
+                    finish_reported = True
+                if event.status != "completed":
+                    logger.warning(
+                        "subagent_abnormal",
+                        ticket_id=parent_session.ticket_id,
+                        status=event.status,
+                        reason=event.reason,
+                    )
+                    return ToolResult(
+                        success=False,
+                        error=f"子 Agent 异常终止: {event.reason}",
+                    )
+                # 从消息历史尾部提取最终结论
+                for msg in reversed(message_store.raw):
+                    if msg.get("role") == "assistant" and msg.get("content"):
+                        content = msg["content"]
+                        if isinstance(content, str):
+                            final_content = content
+                            break
+    finally:
+        if child_reporter is not None:
+            if child_run_id is not None and not finish_reported:
+                await child_reporter.report_run_finish(
+                    child_run_id,
+                    LoopFinished(
+                        status="error",
+                        total_rounds=sub_session.round_count,
+                        total_tokens=sub_session.token_usage.total_tokens,
+                        elapsed_seconds=guardrails.elapsed_seconds,
+                        reason="subagent exited before finish event",
+                    ),
+                    total_input_tokens=sub_session.token_usage.prompt_tokens,
+                    total_output_tokens=sub_session.token_usage.completion_tokens,
+                )
+            await child_reporter.close()
 
     # 累计 token 消耗到父会话
     parent_session.token_usage.prompt_tokens += sub_session.token_usage.prompt_tokens

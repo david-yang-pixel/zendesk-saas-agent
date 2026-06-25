@@ -6,7 +6,7 @@ import json
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from zd_agent.session.agent_session import AgentSession
@@ -18,6 +18,7 @@ class ToolResult(BaseModel):
     success: bool = True
     output: str = ""
     error: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Tool(ABC):
@@ -80,6 +81,7 @@ def _enforce_max_output(
         success=result.success,
         output=truncated_output,
         error=result.error,
+        metadata=result.metadata,
     )
 
 
@@ -156,6 +158,7 @@ class ToolRegistry:
                 success=result.success,
                 output=result.output,
                 error=result.error + _NO_FABRICATION_BANNER,
+                metadata=result.metadata,
             )
 
         # Enforce max_output_tokens

@@ -63,6 +63,15 @@ Subagent 已内置统一 contract（数据类必给 count+p50+p90+max+基线对�
 service.name/endpoint 回退；源码类先 grep 上下文再下结论），**不要在 task 里重复列这些
 通用约束**——重复反而稀释主任务，且每次调用浪费 ~200-400 tokens。
 
+### Subagent 完成判定（减少重复排查）
+
+Subagent 返回后先读它的 `Conclusion / Checked / Evidence / Gaps / Parent next action`。
+若 `Gaps` 为 none，或缺口不会改变客户回复结论，父 agent 应直接汇总并回复；不要再用
+`git_grep` / `github_code_search` / `sql_query` 大范围重复查同一证据源。只有缺少会改变
+结论的具体事实时，才追加少量、有明确目标的工具调用。
+
+当前 prompt 和工具描述已经覆盖 subagent 规则；不要主动加载 `references/subagent_guide.md`。
+
 ✅ 正确（聚焦"查什么"）：
 - `task: "SigNoz 查 workspace=70b5cf9a... 最近 7 天 webapp/site/embed/init 的错误"`
 - `task: "git_grep dify-saas/api/services 里所有 BillingPlan.refund_eligibility 的调用点"`

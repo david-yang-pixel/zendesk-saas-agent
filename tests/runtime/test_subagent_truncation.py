@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from zd_agent.runtime.subagent import (
     _MAX_SUBAGENT_OUTPUT_CHARS,
+    SUBAGENT_SYSTEM_PROMPT,
     _truncate_subagent_output,
 )
 
@@ -50,3 +51,10 @@ class TestTruncate:
         out, truncated = _truncate_subagent_output(text)
         assert truncated is True
         assert prefix in out
+
+
+def test_subagent_prompt_requires_structured_parent_handoff() -> None:
+    assert "Checked" in SUBAGENT_SYSTEM_PROMPT
+    assert "Evidence" in SUBAGENT_SYSTEM_PROMPT
+    assert "Gaps" in SUBAGENT_SYSTEM_PROMPT
+    assert "Parent next action" in SUBAGENT_SYSTEM_PROMPT

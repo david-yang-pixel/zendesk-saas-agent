@@ -73,6 +73,43 @@ async def test_report_tool_call_is_fire_and_forget(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_report_tool_call_merges_log_arguments_metadata(monkeypatch):
+    monkeypatch.setenv("HC_CLIENT_URL", "https://hc.example.com")
+    monkeypatch.setenv("HC_CLIENT_API_KEY", "agent-key")
+    captured = {}
+
+    async def fake_post(path, data):
+        captured["path"] = path
+        captured["data"] = data
+        return {"ok": True}
+
+    reporter = LogReporter()
+    monkeypatch.setattr(reporter, "_post", fake_post)
+
+    await reporter.report_tool_call(
+        123,
+        456,
+        ToolExecuted(
+            round=1,
+            tool_name="run_subagents_parallel",
+            success=True,
+            output_length=12,
+            elapsed=0.2,
+            arguments={"tasks": [{"task": "source", "tools": ["git_grep"]}]},
+            output="ok",
+            metadata={"log_arguments": {"batch_id": "subagents-abc123", "child_count": 1}},
+        ),
+    )
+
+    await reporter.close()
+
+    assert captured["path"] == "/api/agent/logs/runs/123/rounds/456/tool-calls"
+    assert captured["data"]["arguments"]["batch_id"] == "subagents-abc123"
+    assert captured["data"]["arguments"]["child_count"] == 1
+    assert captured["data"]["arguments"]["tasks"][0]["task"] == "source"
+
+
+@pytest.mark.asyncio
 async def test_report_run_finish_flushes_pending_tool_calls(monkeypatch):
     monkeypatch.setenv("HC_CLIENT_URL", "https://hc.example.com")
     monkeypatch.setenv("HC_CLIENT_API_KEY", "agent-key")

@@ -39,6 +39,14 @@ _CONNECTION_MAX_RETRIES = 2
 _CONNECTION_BASE_DELAY = 5  # 网络瞬时抖动通常 5s 内恢复
 _PROACTIVE_CONTEXT_SNIP_TOKEN_THRESHOLD = 12_000
 _TOOL_CALL_TIMEOUT_SECONDS = 180.0
+_SUBAGENT_BATCH_TOOL_NAME = "run_subagents_parallel"
+_SUBAGENT_CONVERGENCE_REMINDER = (
+    "[系统提醒] 并行证据收集已完成。请先基于当前已经拿到的 DB / 源码 / 日志 / "
+    "历史工单 / 文档证据判断是否足够回复。若关键证据已经覆盖结论，请进入最终"
+    "客户回复或内部分析，不要继续大范围 git_grep / github_code_search / SQL 扫描。"
+    "只有缺少会改变结论的具体事实时，才追加少量、有明确目标的工具调用，并说明"
+    "缺的是什么。"
+)
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -180,6 +188,26 @@ def _groom_context_for_retry(
     )
 
 
+def _inject_subagent_convergence_reminder(
+    session: AgentSession,
+    message_store: MessageStore,
+    *,
+    executed_tool_names: list[str],
+) -> None:
+    """After a parallel evidence batch, bias the next round toward synthesis."""
+    if _SUBAGENT_BATCH_TOOL_NAME not in executed_tool_names:
+        return
+    if getattr(session, "_subagent_convergence_reminder_injected", False):
+        return
+    message_store.append_user(_SUBAGENT_CONVERGENCE_REMINDER)
+    session._subagent_convergence_reminder_injected = True  # type: ignore[attr-defined]
+    logger.info(
+        "subagent_convergence_reminder_injected",
+        ticket_id=session.ticket_id,
+        round=session.round_count,
+    )
+
+
 def _assistant_message_dict(response: LLMResponse) -> dict[str, Any]:
     """将 assistant 轮次转为可存入 MessageStore 的 dict（优先使用 provider 的 raw）。"""
     if isinstance(response.raw, dict):
@@ -262,6 +290,7 @@ async def _run_tool_call(
         error=result.error,
         arguments=args_dict,
         output=output[:4000],
+        metadata=result.metadata,
     )
 
 
@@ -595,6 +624,7 @@ async def agent_loop(
                 )
                 return
 
+            successful_tool_names: list[str] = []
             async for event in _execute_tool_calls(
                 response.tool_calls,
                 registry,
@@ -602,12 +632,19 @@ async def agent_loop(
                 message_store,
                 guardrails.current_round,
             ):
+                if isinstance(event, ToolExecuted) and event.success:
+                    successful_tool_names.append(event.tool_name)
                 yield event
 
             if session.image_urls and not session.images_injected:
                 await _inject_images(session, message_store)
                 session.images_injected = True
 
+            _inject_subagent_convergence_reminder(
+                session,
+                message_store,
+                executed_tool_names=successful_tool_names,
+            )
             _inject_language_reminder(session, message_store)
 
     except GuardrailTriggered as e:

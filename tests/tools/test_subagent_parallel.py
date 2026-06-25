@@ -27,7 +27,7 @@ async def test_parallel_dispatch_runs_concurrently(fake_session):
     call_order: list[str] = []
     start_order: list[str] = []
 
-    async def fake_subagent(task, tools, context, session):
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
         start_order.append(task)
         await asyncio.sleep(0.02)
         call_order.append(task)
@@ -56,7 +56,7 @@ async def test_parallel_dispatch_allows_up_to_five_tasks(fake_session):
     tool = RunSubagentsParallel()
     started: list[str] = []
 
-    async def fake_subagent(task, tools, context, session):
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
         started.append(task)
         return ToolResult(output=f"ok {task}")
 
@@ -143,11 +143,44 @@ async def test_rejects_more_than_five_tasks(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_rejects_cumulative_subagent_count_over_five(fake_session):
+    tool = RunSubagentsParallel()
+    fake_session.subagent_dispatch_count = 4
+    tasks = [
+        {"task": "source", "tools": ["git_grep"]},
+        {"task": "logs", "tools": ["signoz_errors"]},
+    ]
+
+    result = await tool.execute({"tasks": tasks}, fake_session)
+
+    assert result.success is False
+    assert result.error == "cumulative subagent limit exceeded: 4 + 2 > 5"
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatch_increments_cumulative_subagent_count(fake_session):
+    tool = RunSubagentsParallel()
+    fake_session.subagent_dispatch_count = 4
+
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
+        return ToolResult(output=f"ok {task}")
+
+    with _make_subagent_patch(fake_subagent):
+        result = await tool.execute(
+            {"tasks": [{"task": "final focused check", "tools": ["git_grep"]}]},
+            fake_session,
+        )
+
+    assert result.success is True
+    assert fake_session.subagent_dispatch_count == 5
+
+
+@pytest.mark.asyncio
 async def test_parallel_dispatch_truncates_large_subagent_outputs(fake_session):
     tool = RunSubagentsParallel()
     huge = "TOKEN_BLOWUP_RISK\n" + ("x" * 50000)
 
-    async def fake_subagent(task, tools, context, session):
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
         return ToolResult(output=huge)
 
     tasks = [
@@ -170,7 +203,7 @@ async def test_one_failing_subagent_others_succeed(fake_session):
     aggregate others' successful outputs."""
     tool = RunSubagentsParallel()
 
-    async def fake_subagent(task, tools, context, session):
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
         if task == "fail":
             raise RuntimeError("boom")
         return ToolResult(output=f"ok for {task}")
@@ -194,8 +227,9 @@ async def test_one_failing_subagent_others_succeed(fake_session):
 @pytest.mark.asyncio
 async def test_all_subagents_fail(fake_session):
     tool = RunSubagentsParallel()
+    fake_session.subagent_dispatch_count = 0
 
-    async def fake_subagent(task, tools, context, session):
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
         return ToolResult(success=False, error=f"failed {task}")
 
     with _make_subagent_patch(fake_subagent):
@@ -208,6 +242,30 @@ async def test_all_subagents_fail(fake_session):
         )
     assert result.success is False
     assert "all subagents failed" in (result.error or "").lower()
+    assert fake_session.subagent_dispatch_count == 0
+
+
+@pytest.mark.asyncio
+async def test_only_successful_subagents_count_toward_cumulative_limit(fake_session):
+    tool = RunSubagentsParallel()
+    fake_session.subagent_dispatch_count = 3
+
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
+        if task == "fail":
+            return ToolResult(success=False, error="transient failure")
+        return ToolResult(output=f"ok {task}")
+
+    with _make_subagent_patch(fake_subagent):
+        result = await tool.execute(
+            {"tasks": [
+                {"task": "succeed", "tools": ["git_grep"]},
+                {"task": "fail", "tools": ["signoz_errors"]},
+            ]},
+            fake_session,
+        )
+
+    assert result.success is True
+    assert fake_session.subagent_dispatch_count == 4
 
 
 @pytest.mark.asyncio
@@ -216,7 +274,7 @@ async def test_tools_and_context_passed_through(fake_session):
 
     captured = []
 
-    async def fake_subagent(task, tools, context, session):
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
         captured.append({"task": task, "tools": tools, "context": context})
         return ToolResult(output="ok")
 
@@ -230,6 +288,35 @@ async def test_tools_and_context_passed_through(fake_session):
         )
     assert captured[0] == {"task": "t1", "tools": ["git_grep"], "context": "ctx1"}
     assert captured[1] == {"task": "t2", "tools": ["sandbox_read"], "context": ""}
+
+
+@pytest.mark.asyncio
+async def test_parallel_dispatch_attaches_log_metadata(fake_session):
+    tool = RunSubagentsParallel()
+    captured = []
+
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
+        captured.append(log_metadata)
+        return ToolResult(output=f"ok {task}")
+
+    with _make_subagent_patch(fake_subagent):
+        result = await tool.execute(
+            {"tasks": [
+                {"task": "search source code", "tools": ["git_grep"]},
+                {"task": "check production logs", "tools": ["signoz_errors"]},
+            ]},
+            fake_session,
+        )
+
+    assert result.success is True
+    assert result.metadata["log_arguments"]["batch_id"].startswith("subagents-")
+    assert result.metadata["log_arguments"]["child_count"] == 2
+    assert captured[0]["batch_id"] == result.metadata["log_arguments"]["batch_id"]
+    assert captured[0]["sibling_index"] == 0
+    assert captured[0]["worker_role"] == "source_investigator"
+    assert captured[1]["sibling_index"] == 1
+    assert captured[1]["worker_role"] == "log_investigator"
+    assert captured[1]["question_preview"] == "check production logs"
 
 
 @pytest.mark.asyncio

@@ -65,6 +65,7 @@ async def run_tool_loop(
             trigger_type=trigger_type,
             model=model_name,
         )
+        session.remote_log_run_id = run_id
 
     logger.info(
         "tool_loop_start",

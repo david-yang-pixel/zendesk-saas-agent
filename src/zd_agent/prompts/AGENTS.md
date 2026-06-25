@@ -34,7 +34,8 @@
    - 默认按证据源拆 2-3 个 subagent：源码、日志、文档/历史、GitHub PR；复杂 platform_issue / workflow / 多组件交互最多 5 个 subagent
    - 每个 subagent 只给 1-3 个工具；数据库查询若依赖 workspace_id / 前序 SQL，由主 agent 先跑，独立统计或大输出摘要再派 subagent
    - 简单 usage-howto / yes-no / 单一 SQL 可判定的问题不派，避免浪费 token
-   - 详细规则 → 看 `references/subagent_guide.md`（用 sandbox_read 加载）
+   - 完成判定：子 agent 返回后，若 DB / 源码 / 日志 / 历史/文档等关键证据已覆盖结论，父 agent 应进入汇总和回复；不要重复查同一证据源
+   - 子 agent 规则已浓缩在当前 prompt 与工具描述里；不要主动加载 `references/subagent_guide.md`，除非用户正在要求排查 subagent 规则本身
 6. **写 reply**（同时设 confidence + needs_human + summary）— 见下面"选哪个 reply 工具"
 7. **`archive_ticket`** — 存工单记录
 8. **`feishu_push`** — escalate 时通知 SE，**且 content 必含完整 draft**（refund 见 refund/REFUND_FLOW.md）

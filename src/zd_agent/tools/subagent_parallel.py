@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from typing import Any, TYPE_CHECKING
 
 from zd_agent.tools.base import Tool, ToolResult
@@ -11,6 +12,12 @@ if TYPE_CHECKING:
 
 
 _MAX_SUBAGENT_OUTPUT_CHARS = 4000
+_MAX_SUBAGENTS_PER_SESSION = 5
+
+_SOURCE_TOOLS = {"git_grep", "git_show", "git_log", "git_diff", "github_code_search", "github_search_prs", "github_get_pr"}
+_LOG_TOOLS = {"signoz_errors", "signoz_traceback", "signoz_query", "signoz_services"}
+_KNOWLEDGE_TOOLS = {"knowledge_search", "knowledge_read", "ticket_record_search", "ticket_record_read", "zendesk_search_articles", "zendesk_get_article", "zd_kb_cli_exec"}
+_DATA_TOOLS = {"sql_query", "inspector_exec"}
 
 
 def _truncate_subagent_output_for_parent(text: str) -> str:
@@ -23,6 +30,19 @@ def _truncate_subagent_output_for_parent(text: str) -> str:
         + f"\n\n[...subagent 输出已截断，原 {len(text)} 字符 → "
           f"{keep} 字符。若需细节请重新派一个更具体的 subagent 任务]"
     )
+
+
+def _subagent_worker_role(tools: list[str]) -> str:
+    tool_set = set(tools)
+    if tool_set & _LOG_TOOLS:
+        return "log_investigator"
+    if tool_set & _SOURCE_TOOLS:
+        return "source_investigator"
+    if tool_set & _KNOWLEDGE_TOOLS:
+        return "knowledge_investigator"
+    if tool_set & _DATA_TOOLS:
+        return "data_investigator"
+    return "subagent"
 
 
 class RunSubagentsParallel(Tool):
@@ -89,7 +109,7 @@ class RunSubagentsParallel(Tool):
         "required": ["tasks"],
     }
     group = "always"
-    concurrency_safe = True
+    concurrency_safe = False
 
     async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
         tasks = args.get("tasks") or []
@@ -97,7 +117,7 @@ class RunSubagentsParallel(Tool):
             return ToolResult(success=False, error="tasks must be a list")
         if not tasks:
             return ToolResult(success=False, error="tasks is empty")
-        if len(tasks) > 5:
+        if len(tasks) > _MAX_SUBAGENTS_PER_SESSION:
             return ToolResult(success=False, error="tasks must contain at most 5 items")
 
         # 招法 3: tools 是 required，没传就报错让 LLM 重写。避免 fallback
@@ -133,8 +153,23 @@ class RunSubagentsParallel(Tool):
                     error=f"task[{i}].tools must be a list of tool name strings",
                 )
 
+        current_count = getattr(session, "subagent_dispatch_count", 0)
+        if not isinstance(current_count, int):
+            current_count = 0
+        requested_count = len(tasks)
+        if current_count + requested_count > _MAX_SUBAGENTS_PER_SESSION:
+            return ToolResult(
+                success=False,
+                error=(
+                    "cumulative subagent limit exceeded: "
+                    f"{current_count} + {requested_count} > {_MAX_SUBAGENTS_PER_SESSION}"
+                ),
+            )
+
         # Late import to avoid circular dependency
         from zd_agent.runtime.subagent import run_subagent
+
+        batch_id = f"subagents-{uuid.uuid4().hex[:12]}"
 
         coros = [
             run_subagent(
@@ -142,14 +177,22 @@ class RunSubagentsParallel(Tool):
                 t.get("tools", []) or [],
                 t["context"],
                 session,
+                log_metadata={
+                    "batch_id": batch_id,
+                    "sibling_index": i,
+                    "worker_role": _subagent_worker_role(t.get("tools", []) or []),
+                    "question_preview": t["task"][:500],
+                    "task_preview": t["task"][:500],
+                },
             )
-            for t in tasks
+            for i, t in enumerate(tasks)
         ]
 
         results = await asyncio.gather(*coros, return_exceptions=True)
 
         lines: list[str] = []
         any_success = False
+        usable_count = 0
         for i, (spec, res) in enumerate(zip(tasks, results), start=1):
             title = str(spec.get("task", ""))[:80]
             lines.append(f"=== Subagent {i}: {title} ===")
@@ -158,6 +201,7 @@ class RunSubagentsParallel(Tool):
             elif isinstance(res, ToolResult):
                 if res.success:
                     any_success = True
+                    usable_count += 1
                     lines.append(
                         _truncate_subagent_output_for_parent(
                             res.output or "(empty output)"
@@ -167,12 +211,21 @@ class RunSubagentsParallel(Tool):
                     lines.append(f"[FAILED] {res.error}")
             else:
                 any_success = True
+                usable_count += 1
                 lines.append(str(res))
             lines.append("")
+
+        session.subagent_dispatch_count = current_count + usable_count
 
         # Success if at least one subagent returned a successful ToolResult
         return ToolResult(
             success=any_success,
             output="\n".join(lines).rstrip(),
             error=None if any_success else "all subagents failed",
+            metadata={
+                "log_arguments": {
+                    "batch_id": batch_id,
+                    "child_count": len(tasks),
+                }
+            },
         )

@@ -62,6 +62,8 @@ class AgentSession:
     tool_call_log: list[dict[str, Any]] = field(default_factory=list)
     round_count: int = 0
     token_usage: TokenUsage = field(default_factory=TokenUsage)
+    remote_log_run_id: int | None = None
+    subagent_dispatch_count: int = 0
 
     # 工单图片 URL（由 zendesk_get_ticket 收集，注入多模态消息供 LLM 查看）
     image_urls: list[dict[str, str]] = field(default_factory=list)

@@ -166,6 +166,8 @@ ANCHOR_TOOL_NAMES = {
     "classify_ticket",
     "zendesk_internal_reply",
 }
+SUBAGENT_PARALLEL_TOOL_NAME = "run_subagents_parallel"
+SUBAGENT_PARALLEL_SNIP_CHARS_PER_BLOCK = 600
 
 
 def is_anchor_message(msg: dict[str, Any]) -> bool:
@@ -175,6 +177,38 @@ def is_anchor_message(msg: dict[str, Any]) -> bool:
     if msg.get("role") == "tool" and msg.get("name") in ANCHOR_TOOL_NAMES:
         return True
     return False
+
+
+def _split_subagent_parallel_blocks(content: str) -> list[str]:
+    lines = content.splitlines(keepends=True)
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.startswith("=== Subagent ") and current:
+            blocks.append("".join(current).strip())
+            current = [line]
+            continue
+        current.append(line)
+    if current:
+        blocks.append("".join(current).strip())
+    if len(blocks) > 1:
+        return blocks
+    fallback_blocks = [block.strip() for block in content.split("\n\n") if block.strip()]
+    return fallback_blocks or [content]
+
+
+def _snip_subagent_parallel_output(content: str) -> str:
+    blocks = _split_subagent_parallel_blocks(content)
+    snipped_blocks: list[str] = []
+    for block in blocks:
+        if len(block) <= SUBAGENT_PARALLEL_SNIP_CHARS_PER_BLOCK:
+            snipped_blocks.append(block)
+            continue
+        snipped_blocks.append(
+            block[:SUBAGENT_PARALLEL_SNIP_CHARS_PER_BLOCK]
+            + "\n\n[... 此子 Agent 输出已精简 ...]"
+        )
+    return "\n\n".join(snipped_blocks)
 
 
 def history_snip(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -193,6 +227,10 @@ def history_snip(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             content = msg.get("content", "")
             if isinstance(content, str) and len(content) > 300:
                 snipped = dict(msg)
+                if msg.get("name") == SUBAGENT_PARALLEL_TOOL_NAME:
+                    snipped["content"] = _snip_subagent_parallel_output(content)
+                    result.append(snipped)
+                    continue
                 snipped["content"] = content[:200] + "\n\n[... 输出已精简 ...]"
                 result.append(snipped)
                 continue

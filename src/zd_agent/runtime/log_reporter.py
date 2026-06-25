@@ -116,6 +116,12 @@ class LogReporter:
         session_id: str,
         trigger_type: str,
         model: str,
+        parent_run_id: int | None = None,
+        task_preview: str | None = None,
+        worker_role: str | None = None,
+        question_preview: str | None = None,
+        batch_id: str | None = None,
+        sibling_index: int | None = None,
     ) -> int | None:
         """上报 agent 开始处理工单，返回远程 run_id"""
         result = await self._post(
@@ -126,6 +132,12 @@ class LogReporter:
                 "session_id": session_id,
                 "trigger_type": trigger_type,
                 "model": model,
+                "parent_run_id": parent_run_id,
+                "task_preview": task_preview,
+                "worker_role": worker_role,
+                "question_preview": question_preview,
+                "batch_id": batch_id,
+                "sibling_index": sibling_index,
                 "started_at": datetime.now(timezone.utc).isoformat(),
             },
         )
@@ -166,11 +178,15 @@ class LogReporter:
         event: ToolExecuted,
     ) -> None:
         """上报一次工具调用"""
+        arguments = dict(event.arguments or {})
+        log_arguments = event.metadata.get("log_arguments")
+        if isinstance(log_arguments, dict):
+            arguments.update(log_arguments)
         self._schedule_post(
             f"/api/agent/logs/runs/{run_id}/rounds/{round_id}/tool-calls",
             {
                 "tool_name": event.tool_name,
-                "arguments": event.arguments or None,
+                "arguments": arguments or None,
                 "result_preview": (event.output[:4000]) if event.output else None,
                 "success": event.success,
                 "error_message": event.error,
