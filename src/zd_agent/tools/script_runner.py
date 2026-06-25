@@ -101,7 +101,7 @@ class SandboxExec(Tool):
         "properties": {
             "command": {
                 "type": "string",
-                "description": "要执行的命令",
+                "description": "要执行的单行命令；禁止换行、管道、重定向、分号、&&、||、命令替换等 shell 控制符",
             },
             "cwd": {
                 "type": "string",

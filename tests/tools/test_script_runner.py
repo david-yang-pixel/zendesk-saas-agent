@@ -101,6 +101,14 @@ async def test_sandbox_exec_runs_allowed_command(sandbox_session):
     assert "退出码: 0" in (result.output or "")
 
 
+def test_sandbox_exec_schema_warns_about_single_line_commands():
+    schema = SandboxExec().to_openai_schema()
+    command_desc = schema["function"]["parameters"]["properties"]["command"]["description"]
+
+    assert "单行" in command_desc
+    assert "换行" in command_desc
+
+
 @pytest.mark.asyncio
 async def test_sandbox_exec_rejects_shell_control_operators(sandbox_session):
     result = await SandboxExec().execute(
