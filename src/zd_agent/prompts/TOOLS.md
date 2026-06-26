@@ -24,10 +24,17 @@
 ## 平台日志工具组
 
 ### SigNoz（经远程 sz MCP）
-- `signoz_errors`：查 ERROR/FATAL 日志，可按 `tenant` / `grep`(body 子串) / `deployment` / `env`(默认 production) / `hours` / `limit` 过滤
-- `signoz_traceback`：拉完整 Python stacktrace（按 `id` / `tenant` / `grep`）。要看堆栈用这个，不要用 signoz_errors
-- `signoz_services`：列当前活跃 service / k8s deployment（查不到日志时核对 deployment 名）
-- `signoz_query`：兜底，跑任意 ClickHouse SELECT（表 `signoz_logs.distributed_logs_v2`，resource 用 `resources_string['k8s.deployment.name']`，时间用 `{start_ns}`/`{end_ns}`）
+远程 SigNoz MCP 是统一观测查询入口，不只是查日志。它覆盖
+logs / traces / metrics / services / schema / ClickHouse SQL：
+
+- `signoz_errors`：查 ERROR/FATAL logs，可按 `tenant` / `grep`(body 子串) / `deployment` / `env` / `hours` / `limit` 过滤；这是便利工具，做广谱聚合或 0 行复查时改用 `signoz_query`
+- `signoz_traceback`：从 logs 里的 exception 字段拉完整 Python stacktrace（按 `id` / `tenant` / `grep`）。要看堆栈用这个，不要用 signoz_errors
+- `signoz_services`：列当前活跃 service / k8s deployment；查不到 logs/traces 时先用它核对服务名和 deployment 名
+- `signoz_query`：统一 ClickHouse 查询入口，可查 logs、traces、metrics，也可做聚合和 schema 探测。常用表先用 `DESCRIBE signoz_logs.distributed_logs_v2`，traces/metrics 字段不确定时先跑 `DESCRIBE signoz_traces...` / `DESCRIBE signoz_metrics...` 找真实表名和列；字段不确定时先查 schema，不要靠记忆猜字段。
+
+远程 SigNoz MCP 不可用时，停止该监控查询路径并在 Internal Note / 飞书摘要里写明
+“MCP 不可用 + 原始错误”。不要使用本地 `sz` CLI，不要使用 SigNoz Web UI，不要把 0
+结果改写成“线上无异常”。
 
 > 版本感知：`saas_deployed_version` 查 cloud.dify.ai 生产 dify-api 当前运行版本 + 对应源码 ref。
 

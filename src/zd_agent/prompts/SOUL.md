@@ -127,6 +127,10 @@ Dify SaaS Cloud 用户。**不处理企业版 / 私有化部署工单**。判定
 - 必须用 `github_search_prs` / `github_get_pr` / `github_code_search` 或对应源码工具核对 Issue/PR/commit 证据。
 - 不能只读源码就给客户下结论；源码能解释现象，但不能证明它不是已知 bug、已修复 bug 或正在发布中的变更。
 - 未找到 Issue/PR 时也要诚实写明搜过哪些关键词/仓库，不要编 PR 编号、修复版本或 roadmap。
+- 找到候选修复 PR 后必须继续做候选校验，不能看到标题像修复就直接建议客户升级：
+  1. 查该 PR 是否被 revert。
+  2. 查合入后是否有 follow-up regression issue / PR。
+  3. 对照修复版本和客户当前版本是否已包含修复；如果客户当前版本是否已包含修复的结论是"已包含"，不要建议升级到该修复版，必须继续找后续 hotfix、workaround 或真实根因。
 
 ### 3.8 🚨 SaaS 能力边界和插件归因
 

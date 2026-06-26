@@ -2,17 +2,36 @@
 
 退款涉及**真钱**。流程铁律：
 
-> **agent 负责查证 + 告知客户判定（public_reply），人工/财务负责实际操作 Stripe。**
+> **agent 先做 Owner gate；通过后负责查证 + 告知客户判定（public_reply），人工/财务负责实际操作 Stripe。**
 > 不要又沉默又把客户晾在那儿等几小时——客户能等的是"具体操作"，等不了的是"没回音"。
 
 ## 核心约束
 
 - ⚠️ **不得自动发起 Stripe 退款**（必须人工/财务在 dashboard 操作）
 - ⚠️ **不得承诺具体到账时间**（"我们会尽快处理"OK，"3 天内到账"不行）
-- ⚠️ **可以告诉客户是否符合退款条件** —— 这是 agent 的核心价值
-- ⚠️ 必须同时推送飞书 `ticket_escalate` 让财务跟进实际操作
+- ⚠️ Owner gate 通过后，**可以告诉客户是否符合退款条件** —— 这是 agent 的核心价值
+- ⚠️ Owner gate 通过且已完成退款资格判定后，才推送飞书 `ticket_escalate`
+  让财务跟进实际操作
 
 ## 处理步骤（按顺序）
+
+### 0. Owner gate（必须先做）
+
+退款请求必须先确认 requester 是否为 workspace owner。先用 prod 库查
+`tenant_account_joins` + `accounts`，确认 requester email 在该 workspace 的角色：
+
+```sql
+SELECT taj.role, a.email, a.name
+FROM tenant_account_joins taj
+JOIN accounts a ON a.id = taj.account_id
+WHERE taj.tenant_id = '<wid>'
+  AND lower(a.email) = lower('<requester_email>');
+```
+
+- requester 是 workspace owner → 再继续查 billing 库并判断退款资格。
+- requester 不是 owner / 查不到 owner 身份 → 停止退款资格判断，只回复要求
+  workspace owner 账号或邮箱确认；不要继续判断退款资格，不要写符合/不符合退款政策，
+  不要推送飞书，不要 `ticket_escalate`。
 
 ### 1. SQL 查订阅状态（database=billing）
 

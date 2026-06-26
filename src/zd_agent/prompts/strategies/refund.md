@@ -1,6 +1,6 @@
 # 退款工单处理策略
 
-> **流程铁律**：agent 查证 + public_reply 告知客户判定 + 飞书推财务实际操作。
+> **流程铁律**：agent 先做 Owner gate；通过后再查证 + public_reply 告知客户判定 + 飞书推财务实际操作。
 > 不再"内部备注全程沉默等 SE"——那样客户体验最差。
 
 ## ⚡ Subagent A 必查路径（如确实需要派 subagent）
@@ -22,17 +22,37 @@
 - `tenant_stripe_status WHERE tenant_id = '<wid>'` — Stripe 订阅状态
 - `subscriptions WHERE tenant_id = '<wid>' ORDER BY created_at DESC` — 历史订阅
 
+## Owner gate（必须先做）
+
+退款请求必须先确认 requester 是否为 workspace owner。先用 prod 库查
+`tenant_account_joins` + `accounts`，确认 requester email 在该 workspace 的角色：
+
+```sql
+SELECT taj.role, a.email, a.name
+FROM tenant_account_joins taj
+JOIN accounts a ON a.id = taj.account_id
+WHERE taj.tenant_id = '<wid>'
+  AND lower(a.email) = lower('<requester_email>');
+```
+
+- requester 是 workspace owner → 再继续查 billing 库并判断退款资格。
+- requester 不是 owner / 查不到 owner 身份 → 立即停止，回复要求 workspace owner
+  账号或邮箱确认；不要继续判断退款资格，不要写符合/不符合退款政策，
+  不要推送飞书，不要 `ticket_escalate`。
+
 ## 关键步骤
 
-1. **SQL 直查** 订阅状态（sql_query database=billing）
-2. **判定退款类型**：全额 / 按比例 / 拒绝（依据：申请时间 vs 订阅起始时间、是否真使用过）
-3. **ticket_record_search** 看 SE 历史先例
-4. **写 `zendesk_public_reply`**（reply_type="solution"）告诉客户：
+1. **Owner gate**：先确认 requester 是 workspace owner；不是 owner 就停止
+2. **SQL 直查** 订阅状态（sql_query database=billing）
+3. **判定退款类型**：全额 / 按比例 / 拒绝（依据：申请时间 vs 订阅起始时间、是否真使用过）
+4. **ticket_record_search** 看 SE 历史先例
+5. **写 `zendesk_public_reply`**（reply_type="solution"）告诉客户：
    - 是否符合退款条件 + 具体原因
    - 若符合：约略金额 + "财务会在 1-2 工作日内通过 Stripe 处理"
    - 若不符合：清晰原因 + alternative（暂停 / 切换 plan / credit）
-5. **同步 feishu_push ticket_escalate** 推财务（content 必含完整 REFUND REQUEST draft）
-6. `archive_ticket category=refund`
+6. **Owner gate 通过且已完成退款资格判定后**，同步 `feishu_push ticket_escalate`
+   推财务（content 必含完整 REFUND REQUEST draft）
+7. `archive_ticket category=refund`
 
 详见 `refund/REFUND_FLOW.md` 模板。
 
