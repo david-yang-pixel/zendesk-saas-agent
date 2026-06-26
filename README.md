@@ -248,12 +248,16 @@ llm:
 
 生产部署在 `<agent-server>`，Docker + systemd。`zd-agent` 只运行 Zendesk agent；同级 `db-gateway` 项目负责 Teleport、DB proxy、Teleport 续期和只读 SQL API。完整步骤、内存档位、健康检查见 **`deploy/RUNBOOK.md`**。
 
-更新代码:
+更新代码（镜像由 GitHub Actions 推送到 GHCR）:
 
 ```bash
-cd /opt/zd-agent/code && git pull \
-  && docker build --network host -f deploy/Dockerfile -t zd-agent:latest . \
-  && systemctl restart zd-agent
+/opt/zd-agent/code/deploy/deploy-ghcr.sh main
+```
+
+回滚到指定提交镜像:
+
+```bash
+/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>
 ```
 
 ## 归档与调试

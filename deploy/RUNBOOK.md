@@ -196,18 +196,42 @@ source /opt/db-gateway/.env
 curl -fsS -H "X-API-Key: $DB_GATEWAY_API_KEY" https://<agent-public-domain>/db-gateway/status
 ```
 
-### 11. Build Docker image
+### 11. Pull Docker image from GHCR
+
+```bash
+# First-time only for private packages. Use a PAT with read:packages only.
+read -rsp "GHCR PAT: " GHCR_PAT; echo
+GHCR_USERNAME=<github-user> GHCR_PAT="$GHCR_PAT" /opt/zd-agent/code/deploy/deploy-ghcr.sh main
+unset GHCR_PAT
+```
+
+After Docker has logged in to GHCR, daily deploys do not need the PAT:
+
+```bash
+/opt/zd-agent/code/deploy/deploy-ghcr.sh main
+```
+
+To deploy or roll back to an exact commit image:
+
+```bash
+/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>
+```
+
+`deploy-ghcr.sh` pulls `ghcr.io/yang-dify/zendesk-saas-agent:<tag>`, retags it
+as local `zd-agent:latest`, restarts `zd-agent`, and waits for
+`http://127.0.0.1:8080/healthz`.
+
+Fallback source build if GHCR is unavailable:
 
 ```bash
 cd /opt/zd-agent/code
 sudo docker build --network host -f deploy/Dockerfile -t zd-agent:latest .
+sudo systemctl restart zd-agent
+curl -fsS http://127.0.0.1:8080/healthz
 ```
 
-> ⚠️ **必须带 `--network host`**：本服务器 Docker 配了 clash 代理（`127.0.0.1:7890`，
-> 见 `~/.docker/config.json` + `/etc/systemd/system/docker.service.d/`）。默认 bridge
-> 构建网络访问不到宿主机 `127.0.0.1`，`apt-get update` 会 `Connection refused`
-> 导致 `Unable to locate package git/curl`。`--network host` 让构建容器共享宿主网络
-> 才能走通代理。
+> ⚠️ Fallback builds must keep `--network host`: this server's Docker uses the
+> host proxy, and the default bridge network may fail during `apt-get update`.
 
 ### 12. Install & start systemd services
 
@@ -241,7 +265,8 @@ sudo journalctl -u zd-agent -f
 | Force reprocess ticket | Feishu `/reprocess 12345` |
 | Check status | Feishu `/status` |
 | Update SaaS branch | Feishu `/branch dify hotfix/1.11.2-fix3` |
-| Update agent code | `cd /opt/zd-agent/code && git pull && sudo docker build --network host -f deploy/Dockerfile -t zd-agent:latest . && sudo systemctl restart zd-agent` |
+| Update agent code | `/opt/zd-agent/code/deploy/deploy-ghcr.sh main` |
+| Roll back agent image | `/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>` |
 | Restart only (改 config.yaml 后) | `sudo systemctl restart zd-agent`（config 挂载只读 volume，无需 rebuild）|
 | Refresh DB schema cheat sheet | `bash /opt/db-gateway/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
 
