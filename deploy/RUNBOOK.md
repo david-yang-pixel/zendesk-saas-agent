@@ -196,7 +196,47 @@ source /opt/db-gateway/.env
 curl -fsS -H "X-API-Key: $DB_GATEWAY_API_KEY" https://<agent-public-domain>/db-gateway/status
 ```
 
-### 11. Pull Docker image from GHCR
+### 11. GitHub Actions CI/CD
+
+Push to `main` runs `.github/workflows/docker-image.yml`:
+
+1. build `deploy/Dockerfile`
+2. push `ghcr.io/yang-dify/zendesk-saas-agent:main`
+3. push `ghcr.io/yang-dify/zendesk-saas-agent:sha-<commit-sha>`
+4. SSH to the server, fast-forward `/opt/zd-agent/code` to `origin/main`, and run `/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>`
+5. send a success email only after `deploy-ghcr.sh` finishes and `healthz` passes
+
+Required GitHub repository secrets or `production` environment secrets for
+deployment:
+
+| Secret | Purpose |
+|---|---|
+| `ZD_AGENT_DEPLOY_HOST` | Server host/IP, for example `180.76.243.249` |
+| `ZD_AGENT_DEPLOY_USER` | SSH user that can run Docker and `systemctl restart zd-agent`; current server uses root |
+| `ZD_AGENT_DEPLOY_PORT` | Optional SSH port; defaults to `22` when empty |
+| `ZD_AGENT_DEPLOY_SSH_KEY` | Private key for the deploy user |
+| `ZD_AGENT_DEPLOY_KNOWN_HOSTS` | Pinned SSH host key line for the server |
+
+Generate `ZD_AGENT_DEPLOY_KNOWN_HOSTS` from a trusted network and verify the
+fingerprint before saving it as a secret:
+
+```bash
+ssh-keyscan -p 22 180.76.243.249
+```
+
+Required GitHub repository secrets or `production` environment secrets for
+success email notification:
+
+| Secret | Purpose |
+|---|---|
+| `DEPLOY_NOTIFY_SMTP_HOST` | SMTP host, for example `smtp.gmail.com` |
+| `DEPLOY_NOTIFY_SMTP_PORT` | SMTP port; `465` uses SMTP SSL, other ports use STARTTLS |
+| `DEPLOY_NOTIFY_SMTP_USERNAME` | SMTP login username |
+| `DEPLOY_NOTIFY_SMTP_PASSWORD` | SMTP password or app password |
+| `DEPLOY_NOTIFY_EMAIL_FROM` | Sender address |
+| `DEPLOY_NOTIFY_EMAIL_TO` | Recipient address |
+
+### 12. Pull Docker image from GHCR
 
 ```bash
 # First-time only for private packages. Use a PAT with read:packages only.
@@ -205,7 +245,9 @@ GHCR_USERNAME=<github-user> GHCR_PAT="$GHCR_PAT" /opt/zd-agent/code/deploy/deplo
 unset GHCR_PAT
 ```
 
-After Docker has logged in to GHCR, daily deploys do not need the PAT:
+After Docker has logged in to GHCR, CI/CD and manual daily deploys do not need
+the PAT. CI/CD deploys the immutable `sha-<commit-sha>` tag built by that
+workflow run; manual daily deploys can use the moving `main` tag:
 
 ```bash
 /opt/zd-agent/code/deploy/deploy-ghcr.sh main
@@ -233,7 +275,7 @@ curl -fsS http://127.0.0.1:8080/healthz
 > ⚠️ Fallback builds must keep `--network host`: this server's Docker uses the
 > host proxy, and the default bridge network may fail during `apt-get update`.
 
-### 12. Install & start systemd services
+### 13. Install & start systemd services
 
 ```bash
 sudo useradd --system --home /opt/zd-agent --shell /bin/false zd-agent

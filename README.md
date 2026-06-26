@@ -248,7 +248,14 @@ llm:
 
 生产部署在 `<agent-server>`，Docker + systemd。`zd-agent` 只运行 Zendesk agent；同级 `db-gateway` 项目负责 Teleport、DB proxy、Teleport 续期和只读 SQL API。完整步骤、内存档位、健康检查见 **`deploy/RUNBOOK.md`**。
 
-更新代码（镜像由 GitHub Actions 推送到 GHCR）:
+推送到远端 `main` 后，GitHub Actions 会构建镜像、推送到 GHCR、通过 SSH
+部署本次提交对应的 `sha-<commit-sha>` 镜像，并在健康检查成功后发送邮件。
+
+服务器需要先完成一次 GHCR 登录；private package 使用只带 `read:packages`
+权限的 PAT。GitHub 仓库还需要配置部署 SSH 和 SMTP 通知 secrets，完整清单见
+`deploy/RUNBOOK.md`。
+
+手动更新到 `main` 最新镜像:
 
 ```bash
 /opt/zd-agent/code/deploy/deploy-ghcr.sh main

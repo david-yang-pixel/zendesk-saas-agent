@@ -1,4 +1,4 @@
-name: Build zd-agent image
+name: Build and deploy zd-agent image
 
 on:
   push:
@@ -7,14 +7,21 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 env:
   IMAGE_NAME: ghcr.io/yang-dify/zendesk-saas-agent
 
+concurrency:
+  group: zd-agent-production
+  cancel-in-progress: true
+
 jobs:
   build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Check out repository
@@ -42,3 +49,144 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    environment: production
+
+    steps:
+      - name: Deploy on server
+        env:
+          DEPLOY_HOST: ${{ secrets.ZD_AGENT_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.ZD_AGENT_DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.ZD_AGENT_DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.ZD_AGENT_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.ZD_AGENT_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+
+          missing=()
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+            if [[ -z "${!name:-}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required deployment secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+          DEPLOY_PORT="${DEPLOY_PORT:-22}"
+          DEPLOY_TAG="sha-${GITHUB_SHA}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          key_file=~/.ssh/zd_agent_deploy_key
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$key_file"
+          chmod 600 "$key_file"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          ssh -i "$key_file" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" "DEPLOY_TAG='$DEPLOY_TAG' bash -se" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/zd-agent/code
+          git fetch origin main
+          git switch main
+          git pull --ff-only origin main
+          ./deploy/deploy-ghcr.sh "$DEPLOY_TAG"
+          REMOTE
+
+  notify-success:
+    needs: deploy
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Send deployment success email
+        env:
+          SMTP_HOST: ${{ secrets.DEPLOY_NOTIFY_SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.DEPLOY_NOTIFY_SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.DEPLOY_NOTIFY_SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.DEPLOY_NOTIFY_SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.DEPLOY_NOTIFY_EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.DEPLOY_NOTIFY_EMAIL_TO }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import smtplib
+          import ssl
+          from email.message import EmailMessage
+
+          required = [
+              "SMTP_HOST",
+              "SMTP_PORT",
+              "SMTP_USERNAME",
+              "SMTP_PASSWORD",
+              "EMAIL_FROM",
+              "EMAIL_TO",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit(
+                  "Missing required mail notification secrets: " + ", ".join(missing)
+              )
+
+          smtp_host = os.environ["SMTP_HOST"]
+          smtp_port = int(os.environ["SMTP_PORT"])
+          smtp_username = os.environ["SMTP_USERNAME"]
+          smtp_password = os.environ["SMTP_PASSWORD"]
+          email_from = os.environ["EMAIL_FROM"]
+          email_to = os.environ["EMAIL_TO"]
+          repository = os.environ["REPOSITORY"]
+          sha = os.environ["SHA"]
+          short_sha = sha[:7]
+          image_name = os.environ["IMAGE_NAME"]
+          run_url = f"{os.environ['SERVER_URL']}/{repository}/actions/runs/{os.environ['RUN_ID']}"
+
+          msg = EmailMessage()
+          msg["Subject"] = f"zd-agent deployed successfully: {short_sha}"
+          msg["From"] = email_from
+          msg["To"] = email_to
+          msg.set_content(
+              "\n".join(
+                  [
+                      "zd-agent production deployment completed successfully.",
+                      "",
+                      f"Repository: {repository}",
+                      f"Commit: {sha}",
+                      f"Deployed image: {image_name}:sha-{sha}",
+                      f"Moving tag also pushed: {image_name}:main",
+                      f"Workflow run: {run_url}",
+                  ]
+              )
+          )
+
+          context = ssl.create_default_context()
+          if smtp_port == 465:
+              with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+                  server.login(smtp_username, smtp_password)
+                  server.send_message(msg)
+          else:
+              with smtplib.SMTP(smtp_host, smtp_port) as server:
+                  server.starttls(context=context)
+                  server.login(smtp_username, smtp_password)
+                  server.send_message(msg)
+          PY
