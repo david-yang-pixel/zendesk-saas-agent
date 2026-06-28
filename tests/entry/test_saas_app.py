@@ -112,6 +112,44 @@ def test_messaging_image_event_yields_image_url():
     assert "客户附图" in m["body"]
 
 
+def test_messaging_html_and_event_attachments_yield_image_urls():
+    from zd_agent.services.ticket_messages import _messaging_customer_messages
+
+    events = [
+        {
+            "id": "evt-html",
+            "created_at": "2026-06-27T10:11:18Z",
+            "author": {"type": "end-user", "zen:support:user_id": 999},
+            "content": {
+                "type": "html",
+                "body": '<p>see this</p><img src="https://img.example.com/a.png">',
+            },
+            "attachments": [
+                {
+                    "content_type": "image/png",
+                    "mapped_content_url": "https://zendesk.example.com/mapped.png",
+                    "file_name": "mapped.png",
+                },
+                {
+                    "type": "image",
+                    "media_url": "https://media.example.com/from-type.jpg",
+                    "file_name": "from-type.jpg",
+                },
+            ],
+        },
+    ]
+
+    msgs = _messaging_customer_messages(events)
+
+    assert len(msgs) == 1
+    assert msgs[0]["body"] == "see this"
+    assert msgs[0]["image_urls"] == [
+        "https://img.example.com/a.png",
+        "https://zendesk.example.com/mapped.png",
+        "https://media.example.com/from-type.jpg",
+    ]
+
+
 def test_customer_public_comments_extracts_image_attachments():
     """comments.json 里 author=requester 的 public 评论里的图片附件应被抽到 image_urls。"""
     from zd_agent.services.ticket_messages import _customer_public_comments
@@ -148,6 +186,60 @@ def test_customer_public_comments_extracts_image_attachments():
     out = _customer_public_comments(ticket, comments)
     assert len(out) == 1
     assert out[0]["image_urls"] == ["https://example.zendesk.com/abc.png"]
+
+
+def test_customer_public_comments_does_not_treat_unknown_attachment_url_as_image():
+    from zd_agent.services.ticket_messages import _customer_public_comments
+
+    ticket = {"requester_id": 42}
+    comments = [
+        {
+            "id": 1,
+            "author_id": 42,
+            "public": True,
+            "body": "attached report",
+            "created_at": "2026-06-27T10:11:18Z",
+            "attachments": [
+                {
+                    "content_url": "https://example.zendesk.com/report.pdf",
+                    "file_name": "report.pdf",
+                },
+            ],
+        },
+    ]
+
+    out = _customer_public_comments(ticket, comments)
+
+    assert out[0]["image_urls"] == []
+
+
+def test_customer_public_comments_extracts_inline_images_and_sc_upload_urls():
+    from zd_agent.services.ticket_messages import _customer_public_comments
+
+    ticket = {"requester_id": 42}
+    comments = [
+        {
+            "id": 1,
+            "author_id": 42,
+            "public": True,
+            "body": (
+                'Here is inline <img src="https://img.example.com/a.png"> '
+                "and markdown ![shot](https://img.example.com/b.webp) "
+                "User uploaded:\n"
+                "URL: https://langgenius.zendesk.com/sc/attachments/v2/01ABC/"
+            ),
+            "created_at": "2026-06-27T10:11:18Z",
+            "attachments": [],
+        },
+    ]
+
+    out = _customer_public_comments(ticket, comments)
+
+    assert out[0]["image_urls"] == [
+        "https://img.example.com/a.png",
+        "https://img.example.com/b.webp",
+        "https://langgenius.zendesk.com/sc/attachments/v2/01ABC/",
+    ]
 
 
 def test_customer_public_comments_handles_missing_created_at():

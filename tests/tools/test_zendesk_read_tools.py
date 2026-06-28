@@ -1,4 +1,5 @@
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -32,6 +33,43 @@ async def test_get_attachments_rejects_invalid_ticket_id_before_client(fake_sess
 
     assert result.success is False
     assert result.error == "ticket_id must be a positive integer"
+
+
+@pytest.mark.asyncio
+async def test_get_attachments_detects_native_html_inline_image(tmp_path, fake_session):
+    fake_session.sandbox_dir = tmp_path
+    client = MagicMock()
+    client.get_ticket.return_value = {
+        "ticket": {"id": 12345, "via": {"channel": "native_messaging"}},
+    }
+    events = [
+        {
+            "id": "evt-1",
+            "created_at": "2026-06-27T10:11:18Z",
+            "author": {"type": "end-user"},
+            "content": {
+                "type": "html",
+                "body": '<p>Screenshot</p><img src="https://img.example.com/a.png">',
+            },
+        },
+    ]
+    downloaded: dict[str, Path] = {
+        "https://img.example.com/a.png": tmp_path / "attachments" / "a.png",
+    }
+
+    async def _passthrough(fn, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    with patch("zd_agent.tools.zendesk._get_client", return_value=client), \
+         patch("zd_agent.tools.zendesk._call_with_rate_limit_retry", side_effect=_passthrough), \
+         patch("zd_agent.tools.zendesk._get_ticket_thread", return_value=("conversation_log", events)), \
+         patch("zd_agent.tools.zendesk._download_ticket_images", return_value=(downloaded, [], {})) as dl:
+        result = await ZendeskGetAttachments().execute({"ticket_id": 12345}, fake_session)
+
+    assert result.success is True
+    assert "该工单没有附件或图片" not in result.output
+    assert "已下载 1 个文件" in result.output
+    assert dl.call_args.args[1][0]["url"] == "https://img.example.com/a.png"
 
 
 @pytest.mark.asyncio

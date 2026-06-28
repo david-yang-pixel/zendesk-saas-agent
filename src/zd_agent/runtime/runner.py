@@ -11,6 +11,7 @@ from zd_agent.config import get_config
 from zd_agent.log import get_logger
 from zd_agent.runtime.archive_meta import build_archive_meta
 from zd_agent.runtime.guardrails import Guardrails
+from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 from zd_agent.runtime.llm_client import LLMClient
 from zd_agent.runtime.prompt_loader import build_system_prompt
 from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
@@ -247,9 +248,15 @@ def _ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
         )
         # 同时保存分析和回复草稿
         if session.analysis:
-            (archive_dir / "analysis.md").write_text(session.analysis, encoding="utf-8")
+            (archive_dir / "analysis.md").write_text(
+                guard_against_stale_no_image_claim(session.analysis, session),
+                encoding="utf-8",
+            )
         if session.reply_draft:
-            (archive_dir / "reply.md").write_text(session.reply_draft, encoding="utf-8")
+            (archive_dir / "reply.md").write_text(
+                guard_against_stale_no_image_claim(session.reply_draft, session),
+                encoding="utf-8",
+            )
 
         logger.info("auto_archive_created", ticket_id=session.ticket_id, path=str(archive_dir))
     except Exception as e:

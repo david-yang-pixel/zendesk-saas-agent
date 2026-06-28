@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from zd_agent.log import get_logger
+from zd_agent.services.ticket_images import (
+    collect_image_urls_from_attachments,
+    extract_inline_image_urls,
+)
 
 logger = get_logger(module="services.ticket_messages")
 
@@ -46,13 +50,9 @@ def _customer_public_comments(ticket: dict, comments: list[dict]) -> list[dict]:
             continue
         if c.get("author_id") != requester_id:
             continue
-        image_urls: list[str] = []
-        for att in c.get("attachments", []) or []:
-            ctype = (att.get("content_type") or "").lower()
-            if ctype.startswith("image/"):
-                url = att.get("content_url") or att.get("mapped_content_url")
-                if url:
-                    image_urls.append(url)
+        image_urls = collect_image_urls_from_attachments(c.get("attachments"))
+        for field in ("body", "html_body", "plain_body"):
+            image_urls.extend(extract_inline_image_urls(c.get(field)))
         c = {**c, "image_urls": image_urls}
         out.append(c)
     out.sort(key=_message_created_at_sort_key)
@@ -79,8 +79,11 @@ def _messaging_customer_messages(events: list[dict]) -> list[dict]:
         image_urls: list[str] = []
         if ctype == "text":
             body = content.get("text", "") or ""
+            image_urls.extend(extract_inline_image_urls(body))
         elif ctype == "html":
-            body = _strip_html(content.get("body", "") or "")
+            raw_body = content.get("body", "") or ""
+            body = _strip_html(raw_body)
+            image_urls.extend(extract_inline_image_urls(raw_body))
         elif ctype == "formResponse":
             body = content.get("text_fallback") or ""
             if not body:
@@ -92,6 +95,7 @@ def _messaging_customer_messages(events: list[dict]) -> list[dict]:
                     if label or value:
                         parts.append(f"{label}: {value}".strip(": "))
                 body = "\n".join(parts)
+            image_urls.extend(extract_inline_image_urls(body))
         elif ctype == "image":
             alt = content.get("alt_text") or "image"
             url = content.get("media_url", "")
@@ -107,7 +111,10 @@ def _messaging_customer_messages(events: list[dict]) -> list[dict]:
                 body += f"\nURL: {url}"
         else:
             body = f"[unsupported message content type: {ctype}]"
+        image_urls.extend(collect_image_urls_from_attachments(e.get("attachments")))
         body = body.strip()
+        if not body and image_urls:
+            body = "[客户附图 / Customer attached image]"
         if not body:
             continue
         out.append({

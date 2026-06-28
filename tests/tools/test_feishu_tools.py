@@ -35,6 +35,25 @@ async def test_push_ticket_done(fake_session, feishu_cfg):
 
 
 @pytest.mark.asyncio
+async def test_push_ticket_done_corrects_stale_no_attachment_claim(fake_session, feishu_cfg):
+    fake_session.images_injected = True
+    tool = FeishuPush()
+    content = "注意事项：客户说有示例图片，但 Zendesk 返回无附件或图片。"
+
+    with patch("zd_agent.tools.feishu_tools.FeishuClient") as m:
+        m.return_value.send_ticket_done = AsyncMock()
+        r = await tool.execute(
+            {"card_type": "ticket_done", "content": content},
+            fake_session,
+        )
+
+    assert r.success is True
+    summary = m.return_value.send_ticket_done.await_args.kwargs["summary"]
+    assert "Zendesk 返回无附件或图片" not in summary
+    assert "当前会话已有客户图片证据" in summary
+
+
+@pytest.mark.asyncio
 async def test_push_ticket_escalate(fake_session, feishu_cfg):
     tool = FeishuPush()
     with patch("zd_agent.tools.feishu_tools.FeishuClient") as m:

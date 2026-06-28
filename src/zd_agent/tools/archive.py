@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from zd_agent.config import get_config
+from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
 
@@ -83,6 +84,7 @@ class ArchiveTicket(Tool):
         analysis = analysis.strip()
         if not analysis:
             return ToolResult(success=False, error="analysis is empty")
+        analysis = guard_against_stale_no_image_claim(analysis, session)
 
         solution = args["solution"]
         if not isinstance(solution, str):
@@ -90,6 +92,7 @@ class ArchiveTicket(Tool):
         solution = solution.strip()
         if not solution:
             return ToolResult(success=False, error="solution is empty")
+        solution = guard_against_stale_no_image_claim(solution, session)
 
         category_arg = args.get("category")
         if category_arg is not None:
@@ -100,6 +103,7 @@ class ArchiveTicket(Tool):
             session_category = session.ticket_type
             category = session_category if isinstance(session_category, str) else ""
         reply_draft = session.reply_draft if isinstance(session.reply_draft, str) else ""
+        reply_draft = guard_against_stale_no_image_claim(reply_draft, session)
         now = _now_iso()
 
         path = _ticket_file(ticket_id)

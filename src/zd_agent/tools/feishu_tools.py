@@ -6,6 +6,7 @@ from typing import Any, TYPE_CHECKING
 from zd_agent.config import get_config
 from zd_agent.integrations.feishu.client import FeishuClient
 from zd_agent.log import get_logger
+from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 from zd_agent.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:
@@ -78,6 +79,7 @@ class FeishuPush(Tool):
         content = content.strip()
         if not content:
             return ToolResult(success=False, error="content is empty")
+        content = guard_against_stale_no_image_claim(content, session)
 
         title = args.get("title", "Alert")
         if not isinstance(title, str):

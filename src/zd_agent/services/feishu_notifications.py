@@ -7,6 +7,7 @@ from typing import Any
 from zd_agent.config import get_config
 from zd_agent.integrations.feishu.client import FeishuClient
 from zd_agent.log import get_logger
+from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 
 logger = get_logger(module="services.feishu_notifications")
 
@@ -71,14 +72,16 @@ def _reply_digest(reply_draft: str, *, max_sentences: int = 2) -> str:
 def _ticket_done_summary(session: Any) -> str:
     reply_draft = (getattr(session, "reply_draft", "") or "").strip()
     if reply_draft:
-        return (
+        summary = (
             "处理结果：已回复客户\n"
             f"客户回复：{_reply_digest(reply_draft)}"
         )[:1800]
-    return (
+        return guard_against_stale_no_image_claim(summary, session)
+    summary = (
         "处理结果：已完成\n"
         f"关键事实：Agent completed ticket #{getattr(session, 'ticket_id', '')}."
     )
+    return guard_against_stale_no_image_claim(summary, session)
 
 
 async def notify_ticket_done_best_effort(session: Any) -> bool:

@@ -23,7 +23,16 @@ from zd.cli import (
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
+from zd_agent.services.ticket_images import (
+    collect_image_urls_from_attachments,
+    extract_inline_image_urls,
+    filename_from_url,
+)
 from zd_agent.runtime.source_selector import suggest_sources
+from zd_agent.runtime.image_evidence import (
+    guard_against_stale_no_image_claim,
+    guard_text_values_against_stale_no_image_claim,
+)
 from zd_agent.runtime.retry import RetryPolicy, get_retry_policy, retry_async
 from zd_agent.session.agent_session import AgentSession, TicketContext
 from zd_agent.tools.base import Tool, ToolResult
@@ -393,6 +402,76 @@ def _coerce_optional_string_arg(
     return value
 
 
+def _image_record(url: str, *, source: str, index: int, file_name: str = "") -> dict[str, Any]:
+    return {
+        "url": url,
+        "file_name": file_name or filename_from_url(url),
+        "source": source,
+        "index": index,
+    }
+
+
+def _dedupe_image_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in records:
+        url = str(record.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append({**record, "url": url})
+    return out
+
+
+def _collect_additional_image_urls(
+    thread_type: str, thread_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if thread_type == "conversation_log":
+        for index, event in enumerate(thread_items, 1):
+            content = event.get("content") or {}
+            content_type = content.get("type", "")
+            if content_type == "image":
+                url = str(content.get("media_url") or "").strip()
+                if url:
+                    records.append(_image_record(
+                        url,
+                        source="conversation_image",
+                        index=index,
+                        file_name=content.get("alt_text") or "",
+                    ))
+            for field in ("body", "text", "text_fallback"):
+                for url in extract_inline_image_urls(content.get(field)):
+                    records.append(_image_record(
+                        url, source="conversation_inline_image", index=index,
+                    ))
+            for url in collect_image_urls_from_attachments(event.get("attachments")):
+                records.append(_image_record(
+                    url, source="conversation_attachment", index=index,
+                ))
+    else:
+        for index, comment in enumerate(thread_items, 1):
+            for field in ("body", "html_body", "plain_body"):
+                for url in extract_inline_image_urls(comment.get(field)):
+                    records.append(_image_record(
+                        url, source="comment_inline_image", index=index,
+                    ))
+            for url in collect_image_urls_from_attachments(comment.get("attachments")):
+                records.append(_image_record(
+                    url, source="comment_attachment", index=index,
+                ))
+    return _dedupe_image_records(records)
+
+
+def _collect_ticket_image_urls(
+    thread_type: str, thread_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return _dedupe_image_records(
+        list(_collect_all_image_urls(thread_type, thread_items))
+        + _collect_additional_image_urls(thread_type, thread_items)
+    )
+
+
 class ZendeskGetTicket(Tool):
     name = "zendesk_get_ticket"
     description = (
@@ -427,7 +506,7 @@ class ZendeskGetTicket(Tool):
             )
 
             # 收集图片 URL 供多模态输入
-            collected_images = _collect_all_image_urls(thread_type, thread_items)
+            collected_images = _collect_ticket_image_urls(thread_type, thread_items)
 
             lines = [
                 f"# 工单 #{tid}",
@@ -634,7 +713,7 @@ class ZendeskGetAttachments(Tool):
             )
 
             att_rows = _collect_attachment_rows(thread_type, thread_items)
-            all_images = _collect_all_image_urls(thread_type, thread_items)
+            all_images = _collect_ticket_image_urls(thread_type, thread_items)
             att_urls = {r.get("url") for r in att_rows if r.get("url")}
             extra_images = [img for img in all_images if img.get("url") not in att_urls]
 
@@ -962,6 +1041,8 @@ class ZendeskInternalReply(Tool):
             return ToolResult(success=False, error="body is empty")
         if not isinstance(summary, dict):
             return ToolResult(success=False, error="summary must be an object")
+        body_md = guard_against_stale_no_image_claim(body_md, session)
+        summary = guard_text_values_against_stale_no_image_claim(summary, session)
 
         if getattr(session, "reply_sent", False):
             logger.info(
