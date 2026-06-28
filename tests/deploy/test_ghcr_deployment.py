@@ -66,7 +66,8 @@ def test_github_action_deploys_main_image_over_ssh_after_build() -> None:
     assert "export GHCR_PAT=" in text
     assert "StrictHostKeyChecking=yes" in text
     assert "ssh-keyscan" not in text
-    assert "git pull --ff-only origin main" in text
+    assert "git merge --ff-only origin/main" in text
+    assert "git pull --ff-only origin main" not in text
     assert 'DEPLOY_TAG="sha-${GITHUB_SHA}"' in text
     assert './deploy/deploy-ghcr.sh "$DEPLOY_TAG"' in text
     assert "docker build" not in deploy_job["steps"][0]["run"]

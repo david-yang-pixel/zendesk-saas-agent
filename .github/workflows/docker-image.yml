@@ -103,7 +103,7 @@ jobs:
           cd /opt/zd-agent/code
           git fetch origin main
           git switch main
-          git pull --ff-only origin main
+          git merge --ff-only origin/main
           ./deploy/deploy-ghcr.sh "$DEPLOY_TAG"
           REMOTE
           } | ssh -i "$key_file" -p "$DEPLOY_PORT" \
