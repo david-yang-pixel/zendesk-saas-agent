@@ -1,6 +1,6 @@
 """P2-9 轻量版：Internal/Public reply 发送前的工具使用审计。
 
-**不调 LLM**，纯正则 + grep tool_call_log，零成本零延迟。
+**不调 LLM**，纯正则 + grep tool_call_log 的 args/result_preview，零成本零延迟。
 
 检测下列"具体声明"是否真的出现过在某个 tool 调用结果里：
 
@@ -9,15 +9,16 @@
 - 版本号 ``v1.14.1`` 这种 semver
 - 历史工单引用 ``#1234``（但当前工单号不算 hallucination，从豁免列表里去）
 
-如果 claim 在 reply 里出现但 tool_call_log 里没出现过 → 标记为 "potential
-hallucination"。**不 block 发送**，只在 Internal Note 加 warning section +
-emit metric（让 SE 决定是否复核）。
+如果 claim 在 reply 里出现但 tool_call_log 里没出现过 → 标记为
+"potential hallucination"。Internal Note 仍只加 warning section；Public Reply
+通过 ``public_reply_evidence_blockers`` 升级为发送前 hard gate。
 
 注意 result_preview 只有 500 字符，长 tool 结果里的引用可能被截断 → 这是
 "soft warning"，不当作绝对判断。
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -32,11 +33,25 @@ _VERSION_PATTERN = re.compile(r"\bv?(\d+\.\d+\.\d+)\b")
 
 
 def _join_tool_outputs(tool_call_log: list[dict[str, Any]]) -> str:
-    """把所有 tool result_preview 拼起来，用于 grep。"""
-    return "\n".join(
-        (item.get("result_preview") or "")
-        for item in (tool_call_log or [])
-    )
+    """把所有 tool evidence 拼起来，用于 grep。
+
+    不只看 result_preview：部分 evidence 只存在于 tool args（例如 git_show
+    的 path、sql_query 的 SQL），public reply hard gate 也应视为已查证。
+    """
+    chunks: list[str] = []
+    for item in tool_call_log or []:
+        if not isinstance(item, dict):
+            continue
+        chunks.append(str(item.get("tool") or ""))
+        args = item.get("args")
+        if args:
+            try:
+                chunks.append(json.dumps(args, ensure_ascii=False, sort_keys=True))
+            except Exception:
+                chunks.append(str(args))
+        chunks.append(str(item.get("error") or ""))
+        chunks.append(str(item.get("result_preview") or ""))
+    return "\n".join(chunks)
 
 
 def audit_reply_against_tools(
@@ -51,7 +66,7 @@ def audit_reply_against_tools(
         warning 字符串列表（每条描述一个可疑 claim）。
         空列表 = 通过审计 / 没找到可疑 claim。
     """
-    if not body or not tool_call_log:
+    if not body:
         return []
 
     tool_dump = _join_tool_outputs(tool_call_log)
@@ -112,3 +127,22 @@ def audit_reply_against_tools(
             )
 
     return warnings
+
+
+def public_reply_evidence_blockers(
+    *,
+    body: str,
+    tool_call_log: list[dict[str, Any]],
+    current_ticket_id: int | None = None,
+) -> list[str]:
+    """Return claims that should block a customer-visible public reply.
+
+    Internal notes keep the older soft-warning behavior. Public replies are
+    irreversible customer-visible actions, so concrete PR / Issue / file path /
+    version / historical-ticket claims must have appeared in tool evidence.
+    """
+    return audit_reply_against_tools(
+        body=body,
+        tool_call_log=tool_call_log,
+        current_ticket_id=current_ticket_id,
+    )

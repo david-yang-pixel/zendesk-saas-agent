@@ -189,6 +189,8 @@ def _make_session(dry_run: bool = False) -> MagicMock:
     s.dry_run = dry_run
     s.reply_draft = ""
     s.reply_sent = False
+    s.ticket_type = ""
+    s.tool_call_log = []
     # M5: pre_send_check 默认跳过（snapshot=0 表示"未挂 snapshot 直接发"）
     s.customer_msgs_snapshot_count = 0
     s.customer_msgs_snapshot_last_id = ""
@@ -385,6 +387,185 @@ class TestExecute:
         assert not r.success
         assert "already sent" in r.error
         mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_public_reply_blocks_unsupported_concrete_claims(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.tool_call_log = [
+            {
+                "tool": "github_search_prs",
+                "args": {"query": "timeout fix"},
+                "success": True,
+                "error": None,
+                "result_preview": "No matching PR found",
+            },
+        ]
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "This was fixed in PR #99999.",
+                    "reply_type": "solution",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert not r.success
+        assert "evidence hard gate" in r.error
+        assert "#99999" in r.error
+        assert sess.reply_sent is False
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_public_reply_allows_concrete_claims_seen_in_tools(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.tool_call_log = [
+            {
+                "tool": "github_search_prs",
+                "args": {"query": "timeout fix"},
+                "success": True,
+                "error": None,
+                "result_preview": "Found PR #33216 fixing the timeout regression",
+            },
+        ]
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "This was fixed in PR #33216.",
+                    "reply_type": "solution",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert r.success
+        mock_relay.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refund_reply_blocks_eligibility_without_owner_gate(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.ticket_type = "refund"
+        sess.tool_call_log = []
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "Good news — your request qualifies for a partial refund "
+                        "under our refund policy."
+                    ),
+                    "reply_type": "solution",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert not r.success
+        assert "Refund owner gate" in r.error
+        assert sess.reply_sent is False
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_refund_reply_allows_owner_confirmation_ask_without_gate(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.ticket_type = "refund"
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "Please ask the workspace owner account to confirm this "
+                        "refund request before we review eligibility."
+                    ),
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert r.success
+        mock_relay.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refund_reply_allows_eligibility_after_owner_gate(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.ticket_type = "refund"
+        sess.tool_call_log = [
+            {
+                "tool": "sql_query",
+                "args": {
+                    "database": "prod",
+                    "sql": (
+                        "SELECT taj.role, a.email FROM tenant_account_joins taj "
+                        "JOIN accounts a ON a.id = taj.account_id "
+                        "WHERE taj.tenant_id = 'wid'"
+                    ),
+                },
+                "success": True,
+                "error": None,
+                "result_preview": "Rows: 1\nrole,email\nowner,user@example.com",
+            },
+        ]
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Your request qualifies for a partial refund.",
+                    "reply_type": "solution",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert r.success
+        mock_relay.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_missing_conversation_id_does_not_fall_back_to_public_comment(self) -> None:

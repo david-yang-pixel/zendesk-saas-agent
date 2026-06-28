@@ -124,6 +124,17 @@ SigNoz MCP 的能力面包括 logs、traces、metrics、services、schema 和 Cl
 如果连续多个查询返回 `rowsScanned: 0` 且**全部** signoz 工具都查不到任何 service /
 log / trace / metric → 怀疑 ingest 端故障，参考之前 #2375 处理路径（不是 agent 自己能修，需要 SaaS observability 同事介入）。
 
+### 9. 固定排查配方
+
+按症状套配方，避免只查一条 logs 就结束：
+
+| 症状 | 必查顺序 |
+|---|---|
+| API 5xx / traceback | `signoz_services` 确认 service/deployment → `signoz_query` 聚合 `status_code` / `severity_text` / `k8s.deployment.name` → `signoz_errors` 找样本 → `signoz_traceback` 取 stack |
+| 慢请求 / endpoint 退化 | `signoz_query` 查 traces 或 ClickHouse 聚合，按 endpoint / deployment / hour 做 count + p50 / p90 / max，并找一个正常 endpoint 或相邻时间窗做 baseline |
+| worker / queue / pending | `signoz_query` 按 `k8s.deployment.name` 聚合 app-worker / dataset-worker logs，必要时查 traces；再查 metrics（pod restart、OOM、CPU/memory、queue lag） |
+| 字段不确定 / 0 行 | `signoz_services` → `signoz_query DESCRIBE ...` → 聚合 service/deployment/environment 分布；仍 0 行才写 MCP/ingest 证据缺口 |
+
 ---
 
 ## 关键步骤

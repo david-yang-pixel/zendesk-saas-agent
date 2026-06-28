@@ -33,6 +33,8 @@ from zd_agent.config import get_config
 from zd_agent.integrations.zendesk_browser_relay import send_browser_relay_reply
 from zd_agent.log import get_logger
 from zd_agent.runtime.pre_send_check import FreshnessResult, pre_send_check_or_abort
+from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
+from zd_agent.runtime.reply_audit import public_reply_evidence_blockers
 from zd_agent.services.messaging_context import get_messaging_context
 from zd_agent.tools.base import Tool, ToolResult
 
@@ -572,6 +574,37 @@ class ZendeskPublicReply(Tool):
                     "for the processing summary, or re-fetch the ticket before retrying."
                 ),
             )
+
+        blockers = public_reply_evidence_blockers(
+            body=body,
+            tool_call_log=getattr(session, "tool_call_log", []) or [],
+            current_ticket_id=ticket_id,
+        )
+        if blockers:
+            logger.warning(
+                "public_reply_evidence_hard_gate_blocked",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                warning_count=len(blockers),
+                warnings=blockers[:5],
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Public reply evidence hard gate blocked this reply. "
+                    "Verify the concrete claim with tools before replying: "
+                    + "; ".join(blockers[:5])
+                ),
+            )
+
+        refund_block = refund_owner_gate_block_reason(body=body, session=session)
+        if refund_block:
+            logger.warning(
+                "public_reply_refund_owner_gate_blocked",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+            )
+            return ToolResult(success=False, error=refund_block)
 
         # 3. Footer 强制追加（幂等）
         body_with_footer = _append_footer(body, reply_type)

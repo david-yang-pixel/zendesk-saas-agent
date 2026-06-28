@@ -42,3 +42,15 @@ def test_platform_issue_prompt_avoids_zero_rows_false_negative() -> None:
     assert "必要时用 `signoz_query` 跑 `DESCRIBE" in text
     assert "不要默认加 `--env production`" in text
     assert "只有确认字段存在且该窗口有环境标签时才加环境过滤" in text
+
+
+def test_platform_issue_prompt_has_signoz_investigation_recipes() -> None:
+    text = PLATFORM_PROMPT.read_text(encoding="utf-8")
+
+    assert "固定排查配方" in text
+    assert "API 5xx / traceback" in text
+    assert "慢请求 / endpoint 退化" in text
+    assert "worker / queue / pending" in text
+    assert "traces" in text
+    assert "metrics" in text
+    assert "p50 / p90 / max" in text
