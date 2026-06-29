@@ -4,8 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from zd_agent.config import get_config
-from zd_agent.integrations.feishu.client import FeishuClient
+from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.log import get_logger
 from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 
@@ -96,26 +95,18 @@ async def notify_ticket_done_best_effort(session: Any) -> bool:
         logger.info("feishu_ticket_done_skip_already_sent", ticket_id=ticket_id)
         return False
 
-    cfg = get_config().feishu
-    if not cfg.webhook_url:
-        logger.warning("feishu_ticket_done_skipped_no_webhook", ticket_id=ticket_id)
-        return False
-
-    client = FeishuClient(
-        webhook_url=cfg.webhook_url,
-        webhook_secret=cfg.webhook_secret,
+    payload = await push_notification_card(
+        card_type="ticket_done",
+        ticket_id=str(ticket_id),
+        content=_ticket_done_summary(session),
+        zendesk_url=f"https://langgenius.zendesk.com/agent/tickets/{ticket_id}",
     )
-    try:
-        await client.send_ticket_done(
-            ticket_id=str(ticket_id),
-            summary=_ticket_done_summary(session),
-            zendesk_url=f"https://langgenius.zendesk.com/agent/tickets/{ticket_id}",
-        )
-    except Exception as e:  # noqa: BLE001
+    if not payload.get("success"):
         logger.warning(
             "feishu_ticket_done_failed",
             ticket_id=ticket_id,
-            error=str(e),
+            error=str(payload.get("error") or "unknown error"),
+            code=payload.get("code"),
         )
         return False
 

@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -95,6 +95,45 @@ async def test_sandbox_write_rejects_invalid_string_args(sandbox_session):
 
     assert result.success is False
     assert result.error == "content must be a string"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_write_uses_remote_worker_without_local_write(sandbox_session):
+    target = sandbox_session.sandbox_dir / "src" / "app.py"
+    original = target.read_text(encoding="utf-8")
+
+    with patch(
+        "zd_agent.tools.sandbox_tools.call_sandbox_worker_tool",
+        new_callable=AsyncMock,
+        return_value={"success": True, "output": "已写入: src/app.py"},
+    ) as worker:
+        result = await SandboxWrite().execute(
+            {"filepath": "src/app.py", "content": "print('remote')"},
+            sandbox_session,
+        )
+
+    assert result.success is True
+    assert target.read_text(encoding="utf-8") == original
+    worker.assert_awaited_once()
+    assert worker.await_args.args[0] == "sandbox_write"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_read_uses_remote_worker(sandbox_session):
+    with patch(
+        "zd_agent.tools.sandbox_tools.call_sandbox_worker_tool",
+        new_callable=AsyncMock,
+        return_value={"success": True, "output": "文件: src/app.py\n1|remote"},
+    ) as worker:
+        result = await SandboxRead().execute(
+            {"filepath": "src/app.py", "start_line": 1},
+            sandbox_session,
+        )
+
+    assert result.success is True
+    assert "remote" in (result.output or "")
+    worker.assert_awaited_once()
+    assert worker.await_args.args[0] == "sandbox_read"
 
 
 @pytest.mark.asyncio

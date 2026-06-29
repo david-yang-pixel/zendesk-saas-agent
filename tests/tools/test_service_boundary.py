@@ -73,28 +73,38 @@ def test_source_tools_are_partial_until_local_fallback_is_removed() -> None:
         assert boundary.migration_status == "partial"
 
 
-def test_unisolated_high_risk_tools_are_migration_candidates() -> None:
+def test_remaining_unisolated_high_risk_tools_are_migration_candidates() -> None:
     inspector = get_tool_service_boundary("inspector_exec")
     assert inspector.execution_boundary == "local_process"
     assert inspector.service_backed is False
     assert inspector.fully_isolated is False
     assert inspector.migration_target == "tool-service/db-gateway"
 
+
+def test_next_batch_tools_are_fully_isolated_mcp_services() -> None:
     github_pr = get_tool_service_boundary("github_search_prs")
-    assert github_pr.execution_boundary == "direct_external_api"
-    assert github_pr.migration_target == "tool-service/github-mcp"
+    assert github_pr.execution_boundary == "remote_mcp"
+    assert github_pr.service == "github-mcp"
+    assert github_pr.service_backed is True
+    assert github_pr.fully_isolated is True
 
     official_docs = get_tool_service_boundary("official_docs_search")
-    assert official_docs.execution_boundary == "direct_external_api"
-    assert official_docs.migration_target == "tool-service/docs-tool-service"
+    assert official_docs.execution_boundary == "remote_mcp"
+    assert official_docs.service == "docs-tool-service"
+    assert official_docs.service_backed is True
+    assert official_docs.fully_isolated is True
 
     feishu = get_tool_service_boundary("feishu_push")
-    assert feishu.execution_boundary == "direct_external_api"
-    assert feishu.migration_target == "tool-service/notification-service"
+    assert feishu.execution_boundary == "remote_mcp"
+    assert feishu.service == "notification-service"
+    assert feishu.service_backed is True
+    assert feishu.fully_isolated is True
 
     sandbox = get_tool_service_boundary("sandbox_exec")
-    assert sandbox.execution_boundary == "local_process"
-    assert sandbox.migration_target == "tool-service/sandbox-worker"
+    assert sandbox.execution_boundary == "remote_mcp"
+    assert sandbox.service == "sandbox-worker"
+    assert sandbox.service_backed is True
+    assert sandbox.fully_isolated is True
 
 
 def test_boundary_summary_exposes_rollup_counts() -> None:

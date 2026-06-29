@@ -1,9 +1,9 @@
 """Tests for silence-window expiry side-effect helpers."""
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from zd_agent.config import AppConfig, FeishuConfig
+from zd_agent.config import AppConfig
 from zd_agent.services.silence_notifications import (
     send_silence_expired_alert_best_effort,
     send_public_nudge_best_effort,
@@ -11,10 +11,8 @@ from zd_agent.services.silence_notifications import (
 from zd_agent.services.ticket_tags import AGENT_ASKED_TAG
 
 
-def _make_cfg(*, feishu_url: str = "") -> AppConfig:
-    cfg = AppConfig()
-    cfg.feishu = FeishuConfig(webhook_url=feishu_url, webhook_secret="secret")
-    return cfg
+def _make_cfg() -> AppConfig:
+    return AppConfig()
 
 
 @pytest.mark.asyncio
@@ -85,18 +83,12 @@ async def test_public_nudge_reply_failure_is_retryable_failure() -> None:
 
 
 @pytest.mark.asyncio
-async def test_silence_expired_alert_sends_when_webhook_configured() -> None:
-    feishu_instance = MagicMock()
-    feishu_instance.send_alert = AsyncMock()
+async def test_silence_expired_alert_sends_via_notification_service() -> None:
+    push = AsyncMock(return_value={"success": True, "output": "pushed (alert)"})
 
     with (
-        patch("zd_agent.config.get_config", return_value=_make_cfg(
-            feishu_url="https://example.com/hook",
-        )),
-        patch(
-            "zd_agent.integrations.feishu.client.FeishuClient",
-            return_value=feishu_instance,
-        ),
+        patch("zd_agent.config.get_config", return_value=_make_cfg()),
+        patch("zd_agent.services.silence_notifications.push_notification_card", push),
     ):
         sent = await send_silence_expired_alert_best_effort(
             ticket_id=9999,
@@ -104,25 +96,26 @@ async def test_silence_expired_alert_sends_when_webhook_configured() -> None:
         )
 
     assert sent is True
-    feishu_instance.send_alert.assert_called_once()
-    kwargs = feishu_instance.send_alert.await_args.kwargs
+    push.assert_awaited_once()
+    kwargs = push.await_args.kwargs
     assert kwargs["title"] == "Ticket #9999 信息不足等待处理"
-    assert "insufficient_info" in kwargs["message"]
+    assert "insufficient_info" in kwargs["content"]
     assert kwargs["urgent"] is False
 
 
 @pytest.mark.asyncio
-async def test_silence_expired_alert_skips_when_webhook_empty() -> None:
-    mock_feishu_cls = MagicMock()
+async def test_silence_expired_alert_returns_false_when_notification_mcp_missing() -> None:
+    push = AsyncMock(
+        return_value={
+            "success": False,
+            "code": "NOTIFICATION_SERVICE_URL_MISSING",
+            "error": "not configured",
+        }
+    )
 
     with (
-        patch("zd_agent.config.get_config", return_value=_make_cfg(
-            feishu_url="",
-        )),
-        patch(
-            "zd_agent.integrations.feishu.client.FeishuClient",
-            mock_feishu_cls,
-        ),
+        patch("zd_agent.config.get_config", return_value=_make_cfg()),
+        patch("zd_agent.services.silence_notifications.push_notification_card", push),
     ):
         sent = await send_silence_expired_alert_best_effort(
             ticket_id=9999,
@@ -130,22 +123,18 @@ async def test_silence_expired_alert_skips_when_webhook_empty() -> None:
         )
 
     assert sent is False
-    mock_feishu_cls.assert_not_called()
+    push.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_silence_expired_alert_failure_is_best_effort() -> None:
-    feishu_instance = MagicMock()
-    feishu_instance.send_alert = AsyncMock(side_effect=RuntimeError("feishu err"))
+    push = AsyncMock(
+        return_value={"success": False, "code": "FEISHU_API_ERROR", "error": "feishu err"}
+    )
 
     with (
-        patch("zd_agent.config.get_config", return_value=_make_cfg(
-            feishu_url="https://example.com/hook",
-        )),
-        patch(
-            "zd_agent.integrations.feishu.client.FeishuClient",
-            return_value=feishu_instance,
-        ),
+        patch("zd_agent.config.get_config", return_value=_make_cfg()),
+        patch("zd_agent.services.silence_notifications.push_notification_card", push),
     ):
         sent = await send_silence_expired_alert_best_effort(
             ticket_id=9999,

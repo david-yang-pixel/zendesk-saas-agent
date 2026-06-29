@@ -60,11 +60,6 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
 async def test_ticket_done_fallback_retries_after_failed_llm_feishu(monkeypatch):
     from zd_agent.services import feishu_notifications
 
-    cfg = MagicMock()
-    cfg.feishu.webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/test"
-    cfg.feishu.webhook_secret = ""
-    monkeypatch.setattr(feishu_notifications, "get_config", lambda: cfg)
-
     session = AgentSession(ticket_id=2809)
     session.reply_sent = True
     session.log_tool_call(
@@ -75,14 +70,14 @@ async def test_ticket_done_fallback_retries_after_failed_llm_feishu(monkeypatch)
         error="Feishu webhook error code=11232",
     )
 
-    client_cls = MagicMock()
-    client_cls.return_value.send_ticket_done = AsyncMock()
-    monkeypatch.setattr(feishu_notifications, "FeishuClient", client_cls)
+    push = AsyncMock(return_value={"success": True, "output": "pushed (ticket_done)"})
+    monkeypatch.setattr(feishu_notifications, "push_notification_card", push)
 
     pushed = await feishu_notifications.notify_ticket_done_best_effort(session)
 
     assert pushed is True
-    client_cls.return_value.send_ticket_done.assert_awaited_once()
+    push.assert_awaited_once()
+    assert push.await_args.kwargs["card_type"] == "ticket_done"
 
 
 def test_ticket_done_fallback_summary_formats_customer_reply_digest():
@@ -137,10 +132,10 @@ async def test_ticket_done_fallback_skips_if_llm_already_pushed(monkeypatch):
         error=None,
     )
 
-    client_cls = MagicMock()
-    monkeypatch.setattr(feishu_notifications, "FeishuClient", client_cls)
+    push = AsyncMock()
+    monkeypatch.setattr(feishu_notifications, "push_notification_card", push)
 
     pushed = await feishu_notifications.notify_ticket_done_best_effort(session)
 
     assert pushed is False
-    client_cls.assert_not_called()
+    push.assert_not_awaited()

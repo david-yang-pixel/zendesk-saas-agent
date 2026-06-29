@@ -2,7 +2,7 @@
 
 M7 在 set_escalated_to_human_action 加了 3 个对外动作（best-effort，互相隔离）：
 1. 发 public handoff 模板 E 给客户（kill switch 受 send_public_reply 内部门控）
-2. 飞书推送 ticket_escalate 卡片（cfg.feishu.webhook_url 空时跳过）
+2. 通过 notification-service MCP 推送 ticket_escalate 卡片
 3. Zendesk 工单加 tag escalated-to-human（best-effort）
 
 外加 trigger_consumer 队列消费 loop 顶部：
@@ -12,7 +12,7 @@ M7 在 set_escalated_to_human_action 加了 3 个对外动作（best-effort，�
 测试覆盖：
 - state 写入是强制的（哪怕全部副作用挂了 state 也得在）
 - 3 个副作用相互隔离（任一抛 exception 不影响其它 + 不影响 state）
-- 飞书 webhook_url 空时正确 short-circuit（不调 client）
+- notification-service MCP 失败时不会影响其它动作
 - handoff 模板带客户名 + 不含 footer 标记（footer 工具层加）
 - 4 个 source 一律 skip
 - log_decision 在 skip 时被记录
@@ -103,7 +103,7 @@ class TestStateAlwaysWritten:
                 AsyncMock(side_effect=RuntimeError("send err")),
             ),
             patch(
-                "zd_agent.integrations.feishu.client.FeishuClient",
+                "zd_agent.services.escalation_notifications.push_notification_card",
                 side_effect=RuntimeError("feishu err"),
             ),
             patch(
@@ -242,8 +242,7 @@ class TestHandoffReply:
     async def test_handoff_send_exception_isolated(self, tmp_path) -> None:
         """send_public_reply 抛 exception → 飞书 + tag 仍然执行 + state 写入"""
         state = _make_state(tmp_path)
-        feishu_instance = MagicMock()
-        feishu_instance.send_ticket_escalate = AsyncMock()
+        mock_push = AsyncMock(return_value={"success": True})
         mock_mcp = AsyncMock(return_value={"success": True})
 
         with (
@@ -252,8 +251,8 @@ class TestHandoffReply:
                 AsyncMock(side_effect=RuntimeError("send err")),
             ),
             patch(
-                "zd_agent.integrations.feishu.client.FeishuClient",
-                return_value=feishu_instance,
+                "zd_agent.services.escalation_notifications.push_notification_card",
+                mock_push,
             ),
             patch(
                 "zd_agent.services.escalation_notifications.call_zendesk_tool",
@@ -272,7 +271,7 @@ class TestHandoffReply:
         # state 写入
         assert state.get(9999).state == "escalated_to_human"
         # 飞书仍被调用
-        feishu_instance.send_ticket_escalate.assert_called_once()
+        mock_push.assert_awaited_once()
         # tag 仍被调用
         mock_mcp.assert_awaited_once()
 
@@ -283,15 +282,21 @@ class TestHandoffReply:
 
 class TestFeishuEscalate:
     @pytest.mark.asyncio
-    async def test_feishu_skipped_when_webhook_empty(self, tmp_path) -> None:
-        """cfg.feishu.webhook_url 空 → 不构造 FeishuClient"""
+    async def test_notification_service_failure_isolated(self, tmp_path) -> None:
+        """notification-service MCP 未配置/失败 → 不影响 state"""
         state = _make_state(tmp_path)
-        mock_feishu_cls = MagicMock()
+        mock_push = AsyncMock(
+            return_value={
+                "success": False,
+                "code": "NOTIFICATION_SERVICE_URL_MISSING",
+                "error": "notification-service MCP URL is not configured",
+            }
+        )
 
         with (
             patch(
-                "zd_agent.integrations.feishu.client.FeishuClient",
-                mock_feishu_cls,
+                "zd_agent.services.escalation_notifications.push_notification_card",
+                mock_push,
             ),
             patch(
                 "zd_agent.config.get_config",
@@ -300,7 +305,7 @@ class TestFeishuEscalate:
         ):
             await _call_escalate(state=state, tmp_path=tmp_path)
 
-        mock_feishu_cls.assert_not_called()
+        mock_push.assert_awaited_once()
         # state 仍写入
         assert state.get(9999).state == "escalated_to_human"
 
@@ -308,13 +313,12 @@ class TestFeishuEscalate:
     async def test_feishu_called_with_reason_and_phrase(self, tmp_path) -> None:
         """飞书 reason 内容含升级原因 / 客户原话 / source"""
         state = _make_state(tmp_path)
-        feishu_instance = MagicMock()
-        feishu_instance.send_ticket_escalate = AsyncMock()
+        mock_push = AsyncMock(return_value={"success": True})
 
         with (
             patch(
-                "zd_agent.integrations.feishu.client.FeishuClient",
-                return_value=feishu_instance,
+                "zd_agent.services.escalation_notifications.push_notification_card",
+                mock_push,
             ),
             patch(
                 "zd_agent.config.get_config",
@@ -331,10 +335,10 @@ class TestFeishuEscalate:
                 source="zendesk_webhook",
             )
 
-        feishu_instance.send_ticket_escalate.assert_called_once()
-        kwargs = feishu_instance.send_ticket_escalate.call_args.kwargs
+        mock_push.assert_awaited_once()
+        kwargs = mock_push.await_args.kwargs
         assert kwargs["ticket_id"] == "9999"
-        reason_text = kwargs["reason"]
+        reason_text = kwargs["content"]
         assert "high_risk_refund" in reason_text
         assert "退款" in reason_text
         assert "zendesk_webhook" in reason_text
@@ -350,7 +354,7 @@ class TestFeishuEscalate:
 
         with (
             patch(
-                "zd_agent.integrations.feishu.client.FeishuClient",
+                "zd_agent.services.escalation_notifications.push_notification_card",
                 side_effect=RuntimeError("feishu err"),
             ),
             patch(

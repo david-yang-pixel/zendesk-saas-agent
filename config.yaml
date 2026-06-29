@@ -64,6 +64,11 @@ public_reply:
   abandoned_hours: 24
   browser_relay_url: http://127.0.0.1:8097/mcp
   browser_relay_timeout_seconds: 90
+sandbox:
+  type: local
+  base_dir: /opt/zd-agent/resources/sandbox
+  cleanup_on_success: true
+  cleanup_on_failure: false
 zendesk_mcp:
   # Zendesk 读取 / Internal Note / 标签 / 关注走独立 Zendesk MCP。
   # public reply 仍走 zendesk-browser-relay。
@@ -115,6 +120,26 @@ source_mcp:
   # 由环境变量 SOURCE_MCP_API_KEY 注入，不要写入仓库。
   mcp_api_key: ''
   request_timeout_seconds: 45
+github_mcp:
+  # GitHub PR / Code Search 只调用独立 github-mcp；GITHUB_TOKEN 属于该服务。
+  mcp_url: ''
+  mcp_api_key: ''
+  request_timeout_seconds: 35
+docs_tool_service:
+  # 官方文档 llms.txt 缓存、限域读取只调用独立 docs-tool-service。
+  mcp_url: ''
+  mcp_api_key: ''
+  request_timeout_seconds: 35
+notification_service:
+  # 飞书 webhook 凭据、签名和重试只属于独立 notification-service。
+  mcp_url: ''
+  mcp_api_key: ''
+  request_timeout_seconds: 35
+sandbox_worker:
+  # sandbox 文件读写/搜索/执行只调用独立 sandbox-worker。
+  mcp_url: ''
+  mcp_api_key: ''
+  request_timeout_seconds: 65
 repos:
   base_dir: ''
   repositories:

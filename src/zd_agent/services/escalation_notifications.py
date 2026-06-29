@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from zd_agent import config as config_module
-from zd_agent.integrations.feishu import client as feishu_client
+from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.prompts.public_reply.templates import handoff_template
@@ -67,7 +67,7 @@ async def send_feishu_escalation_best_effort(
     customer_phrase: str = "",
     agent_last_reply: str = "",
 ) -> bool:
-    """Push the internal Feishu escalation card when webhook is configured."""
+    """Push the internal escalation card through notification-service MCP."""
     if reason == "human_takeover_detected":
         logger.info(
             "escalated_feishu_skipped_human_takeover",
@@ -78,13 +78,6 @@ async def send_feishu_escalation_best_effort(
 
     try:
         cfg = config_module.get_config()
-        if not cfg.feishu.webhook_url:
-            logger.debug(
-                "escalated_feishu_skipped_no_webhook",
-                ticket_id=ticket_id,
-            )
-            return False
-
         zendesk_url = (
             f"https://{cfg.zendesk.subdomain}.zendesk.com"
             f"/agent/tickets/{ticket_id}"
@@ -97,15 +90,15 @@ async def send_feishu_escalation_best_effort(
             reason_lines.append(f"**Agent 上次回复**: {agent_last_reply[:200]}")
         reason_lines.append(f"**source**: {source}")
 
-        client = feishu_client.FeishuClient(
-            webhook_url=cfg.feishu.webhook_url,
-            webhook_secret=cfg.feishu.webhook_secret,
-        )
-        await client.send_ticket_escalate(
+        payload = await push_notification_card(
+            card_type="ticket_escalate",
             ticket_id=str(ticket_id),
-            reason="\n".join(reason_lines),
+            content="\n".join(reason_lines),
             zendesk_url=zendesk_url,
+            cfg=cfg,
         )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "escalated_feishu_failed",

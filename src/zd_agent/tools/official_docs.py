@@ -8,8 +8,7 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
-
+from zd_agent.integrations.docs_tool_service import call_docs_tool
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
 
@@ -24,7 +23,6 @@ ALLOWED_HOSTS = {
 }
 
 MAX_READ_CHARS = 18000
-_INDEX_CACHE: dict[str, list["OfficialDocEntry"]] = {}
 
 
 def _coerce_limit(value: Any, *, default: int = 5, maximum: int = 10) -> int | ToolResult:
@@ -108,6 +106,67 @@ def search_doc_entries(
     return [entry for _, entry in scored[:limit]]
 
 
+def _mcp_failure(payload: dict[str, Any]) -> ToolResult:
+    code = payload.get("code") or "UNKNOWN"
+    error = payload.get("error") or "unknown error"
+    return ToolResult(
+        success=False,
+        error=f"Docs tool service failed [{code}]: {error}",
+    )
+
+
+def _payload_output(payload: dict[str, Any]) -> str:
+    output = payload.get("output")
+    if isinstance(output, str) and output.strip():
+        return output
+    text = payload.get("text")
+    if isinstance(text, str) and text.strip():
+        return text
+    return ""
+
+
+def _entries_from_payload(payload: dict[str, Any]) -> list[OfficialDocEntry]:
+    data = payload.get("data")
+    if isinstance(data, dict):
+        raw_entries = data.get("results") or data.get("entries") or []
+    else:
+        raw_entries = data if isinstance(data, list) else []
+
+    entries: list[OfficialDocEntry] = []
+    for raw in raw_entries:
+        if not isinstance(raw, dict):
+            continue
+        title = str(raw.get("title") or "").strip()
+        url = str(raw.get("url") or "").strip()
+        if not title or not url:
+            continue
+        entries.append(
+            OfficialDocEntry(
+                title=title,
+                url=url,
+                description=str(raw.get("description") or raw.get("summary") or "").strip(),
+                source=str(raw.get("source") or "").strip(),
+            )
+        )
+    return entries
+
+
+def _read_text_from_payload(payload: dict[str, Any], *, url: str) -> str:
+    data = payload.get("data")
+    if isinstance(data, str):
+        text = data
+    elif isinstance(data, dict):
+        text = str(data.get("content") or data.get("text") or data.get("markdown") or "")
+        url = str(data.get("url") or url)
+    else:
+        text = ""
+
+    text = text.strip()
+    if len(text) > MAX_READ_CHARS:
+        text = text[:MAX_READ_CHARS] + "\n\n... (内容过长，已截断)"
+    return f"# 官方文档\nURL: {url}\n\n{text}"
+
+
 class OfficialDocsSearch(Tool):
     name = "official_docs_search"
     description = (
@@ -153,23 +212,20 @@ class OfficialDocsSearch(Tool):
         if isinstance(limit, ToolResult):
             return limit
 
-        sources = _resolve_sources(source)
-        results: list[OfficialDocEntry] = []
-        for item in sources:
-            entries = await _load_index(item)
-            results.extend(search_doc_entries(entries, query=query, limit=limit))
-
-        deduped = _dedupe_entries(results)
-        if not deduped:
-            return ToolResult(output=f"未在官方文档索引中找到与「{query}」相关的内容")
-
-        lines = [f"# 官方文档搜索结果", f"查询: {query}", ""]
-        for idx, entry in enumerate(deduped[:limit], start=1):
-            lines.append(f"{idx}. [{entry.title}]({entry.url})")
-            lines.append(f"   - 来源: {entry.source}")
-            if entry.description:
-                lines.append(f"   - 摘要: {entry.description}")
-        return ToolResult(output="\n".join(lines))
+        payload = await call_docs_tool(
+            self.name,
+            {"query": query, "source": source, "limit": limit},
+        )
+        if not payload.get("success"):
+            return _mcp_failure(payload)
+        if output := _payload_output(payload):
+            return ToolResult(output=output)
+        entries = _entries_from_payload(payload)
+        if not entries:
+            return ToolResult(
+                output=f"未在官方文档索引中找到与「{query}」相关的内容"
+            )
+        return ToolResult(output=_format_search_results(query, entries[:limit]))
 
 
 class OfficialDocsRead(Tool):
@@ -201,32 +257,22 @@ class OfficialDocsRead(Tool):
         if not _is_allowed_url(url):
             return ToolResult(success=False, error="仅允许读取 Dify 官方文档站点")
 
-        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            content_type = response.headers.get("content-type", "")
-            text = response.text
-
-        if "html" in content_type.lower():
-            text = _strip_html(text)
-
-        text = text.strip()
-        if len(text) > MAX_READ_CHARS:
-            text = text[:MAX_READ_CHARS] + "\n\n... (内容过长，已截断)"
-
-        return ToolResult(output=f"# 官方文档\nURL: {url}\n\n{text}")
+        payload = await call_docs_tool(self.name, {"url": url})
+        if not payload.get("success"):
+            return _mcp_failure(payload)
+        if output := _payload_output(payload):
+            return ToolResult(output=output)
+        return ToolResult(output=_read_text_from_payload(payload, url=url))
 
 
-async def _load_index(source: str) -> list[OfficialDocEntry]:
-    if source in _INDEX_CACHE:
-        return _INDEX_CACHE[source]
-
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-        response = await client.get(INDEX_URLS[source])
-        response.raise_for_status()
-        entries = parse_llms_index(response.text, source=source)
-        _INDEX_CACHE[source] = entries
-        return entries
+def _format_search_results(query: str, entries: list[OfficialDocEntry]) -> str:
+    lines = [f"# 官方文档搜索结果", f"查询: {query}", ""]
+    for idx, entry in enumerate(entries, start=1):
+        lines.append(f"{idx}. [{entry.title}]({entry.url})")
+        lines.append(f"   - 来源: {entry.source}")
+        if entry.description:
+            lines.append(f"   - 摘要: {entry.description}")
+    return "\n".join(lines)
 
 
 def _resolve_sources(source: str) -> list[str]:

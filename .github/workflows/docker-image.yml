@@ -104,6 +104,7 @@ jobs:
           git fetch origin main
           git switch main
           git merge --ff-only origin/main
+          ./deploy/deploy-tool-services.sh
           ./deploy/deploy-ghcr.sh "$DEPLOY_TAG"
           REMOTE
           } | ssh -i "$key_file" -p "$DEPLOY_PORT" \

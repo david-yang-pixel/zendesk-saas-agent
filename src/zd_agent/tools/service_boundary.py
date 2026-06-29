@@ -79,11 +79,12 @@ _LOCAL_KNOWLEDGE = _boundary(
     "agent-local-files",
     migration_target="tool-service/knowledge",
 )
-_OFFICIAL_DOCS_DIRECT = _boundary(
-    "direct_external_api",
-    "dify-docs-http",
-    migration_target="tool-service/docs-tool-service",
-    notes="Official docs fetches llms.txt and pages over HTTP from Dify docs hosts.",
+_OFFICIAL_DOCS_MCP = _boundary(
+    "remote_mcp",
+    "docs-tool-service",
+    service_backed=True,
+    fully_isolated=True,
+    notes="Official docs search/read executes through docs-tool-service MCP.",
 )
 _SOURCE_PARTIAL = _boundary(
     "mixed_remote_local",
@@ -121,8 +122,8 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     # Knowledge and local records
     "knowledge_search": _LOCAL_KNOWLEDGE,
     "knowledge_read": _LOCAL_KNOWLEDGE,
-    "official_docs_search": _OFFICIAL_DOCS_DIRECT,
-    "official_docs_read": _OFFICIAL_DOCS_DIRECT,
+    "official_docs_search": _OFFICIAL_DOCS_MCP,
+    "official_docs_read": _OFFICIAL_DOCS_MCP,
     "ticket_record_search": _LOCAL_KNOWLEDGE,
     "ticket_record_read": _LOCAL_KNOWLEDGE,
     "zd_kb_cli_exec": _boundary(
@@ -145,19 +146,25 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
         notes="Uses Source MCP when configured, then falls back to local deployment data.",
     ),
     "github_search_prs": _boundary(
-        "direct_external_api",
-        "github-api",
-        migration_target="tool-service/github-mcp",
+        "remote_mcp",
+        "github-mcp",
+        service_backed=True,
+        fully_isolated=True,
+        notes="GitHub PR search executes through github-mcp.",
     ),
     "github_get_pr": _boundary(
-        "direct_external_api",
-        "github-api",
-        migration_target="tool-service/github-mcp",
+        "remote_mcp",
+        "github-mcp",
+        service_backed=True,
+        fully_isolated=True,
+        notes="GitHub PR reads execute through github-mcp.",
     ),
     "github_code_search": _boundary(
-        "direct_external_api",
-        "github-api",
-        migration_target="tool-service/github-mcp",
+        "remote_mcp",
+        "github-mcp",
+        service_backed=True,
+        fully_isolated=True,
+        notes="GitHub code search executes through github-mcp.",
     ),
     "saas_branch_switch": _boundary(
         "local_process",
@@ -184,34 +191,46 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     "signoz_query": _SIGNOZ_MCP,
     # Local environment and sandbox tools
     "run_script": _boundary(
-        "local_process",
-        "agent-container",
-        migration_target="tool-service/sandbox-worker",
+        "remote_mcp",
+        "sandbox-worker",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Diagnostic scripts execute through sandbox-worker MCP.",
     ),
     "sandbox_exec": _boundary(
-        "local_process",
-        "agent-container",
-        migration_target="tool-service/sandbox-worker",
+        "remote_mcp",
+        "sandbox-worker",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Sandbox commands execute through sandbox-worker MCP.",
     ),
     "sandbox_list": _boundary(
-        "local_files",
-        "agent-sandbox",
-        migration_target="tool-service/sandbox-worker",
+        "remote_mcp",
+        "sandbox-worker",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Sandbox listing executes through sandbox-worker MCP.",
     ),
     "sandbox_search": _boundary(
-        "local_files",
-        "agent-sandbox",
-        migration_target="tool-service/sandbox-worker",
+        "remote_mcp",
+        "sandbox-worker",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Sandbox search executes through sandbox-worker MCP.",
     ),
     "sandbox_write": _boundary(
-        "local_files",
-        "agent-sandbox",
-        migration_target="tool-service/sandbox-worker",
+        "remote_mcp",
+        "sandbox-worker",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Sandbox writes execute through sandbox-worker MCP.",
     ),
     "sandbox_read": _boundary(
-        "local_files",
-        "agent-sandbox",
-        migration_target="tool-service/sandbox-worker",
+        "remote_mcp",
+        "sandbox-worker",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Sandbox reads execute through sandbox-worker MCP.",
     ),
     # Workflow/orchestration tools
     "classify_ticket": _boundary(
@@ -236,9 +255,11 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     ),
     # Notifications
     "feishu_push": _boundary(
-        "direct_external_api",
-        "feishu-api",
-        migration_target="tool-service/notification-service",
+        "remote_mcp",
+        "notification-service",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Feishu credentials and retry logic live in notification-service MCP.",
     ),
 }
 

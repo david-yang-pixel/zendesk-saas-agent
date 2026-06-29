@@ -212,6 +212,26 @@ class SourceMcpConfig(BaseModel):
     request_timeout_seconds: int = 45
 
 
+class GithubMcpConfig(BaseModel):
+    """Remote GitHub MCP client config.
+
+    The GitHub PAT and rate-limit handling belong to github-mcp. The agent
+    keeps this URL/API-key pair only for the narrow tool-service boundary.
+    """
+
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 35
+
+
+class DocsToolServiceConfig(BaseModel):
+    """Remote official-docs MCP client config."""
+
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 35
+
+
 class ZendeskMcpConfig(BaseModel):
     """Remote Zendesk MCP client config.
 
@@ -223,6 +243,27 @@ class ZendeskMcpConfig(BaseModel):
     mcp_url: str = ""
     mcp_api_key: str = ""
     request_timeout_seconds: int = 35
+
+
+class NotificationServiceConfig(BaseModel):
+    """Remote notification-service MCP client config.
+
+    Feishu webhook credentials and retry policy should live in the sibling
+    notification-service. The legacy ``feishu`` block remains as a local
+    compatibility fallback until the service is deployed everywhere.
+    """
+
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 35
+
+
+class SandboxWorkerConfig(BaseModel):
+    """Remote sandbox-worker MCP client config."""
+
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 65
 
 
 class FeishuConfig(BaseModel):
@@ -311,7 +352,13 @@ class AppConfig(BaseModel):
     db_gateway: DbGatewayConfig = Field(default_factory=DbGatewayConfig)
     signoz: SignozConfig = Field(default_factory=SignozConfig)
     source_mcp: SourceMcpConfig = Field(default_factory=SourceMcpConfig)
+    github_mcp: GithubMcpConfig = Field(default_factory=GithubMcpConfig)
+    docs_tool_service: DocsToolServiceConfig = Field(default_factory=DocsToolServiceConfig)
     zendesk_mcp: ZendeskMcpConfig = Field(default_factory=ZendeskMcpConfig)
+    notification_service: NotificationServiceConfig = Field(
+        default_factory=NotificationServiceConfig,
+    )
+    sandbox_worker: SandboxWorkerConfig = Field(default_factory=SandboxWorkerConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
@@ -355,9 +402,21 @@ class EnvSettings(BaseSettings):
     source_mcp_url: str = ""
     source_mcp_api_key: str = ""
     source_mcp_timeout_seconds: int | None = None
+    github_mcp_url: str = ""
+    github_mcp_api_key: str = ""
+    github_mcp_timeout_seconds: int | None = None
+    docs_tool_service_url: str = ""
+    docs_tool_service_api_key: str = ""
+    docs_tool_service_timeout_seconds: int | None = None
     zendesk_mcp_url: str = ""
     zendesk_mcp_api_key: str = ""
     zendesk_mcp_timeout_seconds: int | None = None
+    notification_service_url: str = ""
+    notification_service_api_key: str = ""
+    notification_service_timeout_seconds: int | None = None
+    sandbox_worker_url: str = ""
+    sandbox_worker_api_key: str = ""
+    sandbox_worker_timeout_seconds: int | None = None
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
@@ -435,6 +494,22 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.source_mcp.mcp_api_key = env.source_mcp_api_key
     if env.source_mcp_timeout_seconds is not None:
         cfg.source_mcp.request_timeout_seconds = env.source_mcp_timeout_seconds
+    # GitHub remote MCP
+    if env.github_mcp_url:
+        cfg.github_mcp.mcp_url = env.github_mcp_url.rstrip("/")
+    if env.github_mcp_api_key:
+        cfg.github_mcp.mcp_api_key = env.github_mcp_api_key
+    if env.github_mcp_timeout_seconds is not None:
+        cfg.github_mcp.request_timeout_seconds = env.github_mcp_timeout_seconds
+    # Official docs tool service
+    if env.docs_tool_service_url:
+        cfg.docs_tool_service.mcp_url = env.docs_tool_service_url.rstrip("/")
+    if env.docs_tool_service_api_key:
+        cfg.docs_tool_service.mcp_api_key = env.docs_tool_service_api_key
+    if env.docs_tool_service_timeout_seconds is not None:
+        cfg.docs_tool_service.request_timeout_seconds = (
+            env.docs_tool_service_timeout_seconds
+        )
     # Zendesk remote MCP
     if env.zendesk_mcp_url:
         cfg.zendesk_mcp.mcp_url = env.zendesk_mcp_url.rstrip("/")
@@ -442,6 +517,22 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.zendesk_mcp.mcp_api_key = env.zendesk_mcp_api_key
     if env.zendesk_mcp_timeout_seconds is not None:
         cfg.zendesk_mcp.request_timeout_seconds = env.zendesk_mcp_timeout_seconds
+    # Notification service
+    if env.notification_service_url:
+        cfg.notification_service.mcp_url = env.notification_service_url.rstrip("/")
+    if env.notification_service_api_key:
+        cfg.notification_service.mcp_api_key = env.notification_service_api_key
+    if env.notification_service_timeout_seconds is not None:
+        cfg.notification_service.request_timeout_seconds = (
+            env.notification_service_timeout_seconds
+        )
+    # Sandbox worker
+    if env.sandbox_worker_url:
+        cfg.sandbox_worker.mcp_url = env.sandbox_worker_url.rstrip("/")
+    if env.sandbox_worker_api_key:
+        cfg.sandbox_worker.mcp_api_key = env.sandbox_worker_api_key
+    if env.sandbox_worker_timeout_seconds is not None:
+        cfg.sandbox_worker.request_timeout_seconds = env.sandbox_worker_timeout_seconds
     # Feishu
     if env.feishu_webhook_url:
         cfg.feishu.webhook_url = env.feishu_webhook_url

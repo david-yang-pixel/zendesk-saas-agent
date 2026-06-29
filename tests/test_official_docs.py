@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.official_docs import (
@@ -76,7 +76,7 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
     async def test_search_rejects_blank_query(self) -> None:
         tool = OfficialDocsSearch()
 
-        with patch("zd_agent.tools.official_docs._load_index") as load_index:
+        with patch("zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock) as call_docs:
             result = await tool.execute(
                 {"query": "   "},
                 AgentSession(ticket_id=1),
@@ -84,7 +84,7 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.error, "query is empty")
-        load_index.assert_not_called()
+        call_docs.assert_not_called()
 
     async def test_search_rejects_invalid_limit(self) -> None:
         tool = OfficialDocsSearch()
@@ -100,17 +100,7 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
     async def test_search_rejects_non_string_query(self) -> None:
         tool = OfficialDocsSearch()
 
-        with patch(
-            "zd_agent.tools.official_docs._load_index",
-            return_value=[
-                OfficialDocEntry(
-                    title="Dify Helm Chart",
-                    url="https://enterprise-docs.dify.ai/helm.md",
-                    description="Helm 部署说明",
-                    source="official_docs_enterprise",
-                )
-            ],
-        ):
+        with patch("zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock):
             result = await tool.execute(
                 {"query": {"text": "helm"}},
                 AgentSession(ticket_id=1),
@@ -129,6 +119,57 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.error, "source must be a string")
+
+    @patch("zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock)
+    async def test_search_uses_docs_tool_service_and_formats_results(
+        self,
+        call_docs: AsyncMock,
+    ) -> None:
+        call_docs.return_value = {
+            "success": True,
+            "data": {
+                "results": [
+                    {
+                        "title": "Dify Helm Chart",
+                        "url": "https://enterprise-docs.dify.ai/helm.md",
+                        "description": "Helm 部署说明",
+                        "source": "official_docs_enterprise",
+                    }
+                ]
+            },
+        }
+
+        result = await OfficialDocsSearch().execute(
+            {"query": "helm", "source": "official_docs_enterprise", "limit": 3},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn("# 官方文档搜索结果", result.output)
+        self.assertIn("Dify Helm Chart", result.output)
+        call_docs.assert_awaited_once_with(
+            "official_docs_search",
+            {"query": "helm", "source": "official_docs_enterprise", "limit": 3},
+        )
+
+    @patch("zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock)
+    async def test_search_surfaces_docs_tool_service_failure(
+        self,
+        call_docs: AsyncMock,
+    ) -> None:
+        call_docs.return_value = {
+            "success": False,
+            "code": "DOCS_TOOL_SERVICE_URL_MISSING",
+            "error": "not configured",
+        }
+
+        result = await OfficialDocsSearch().execute(
+            {"query": "helm"},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("DOCS_TOOL_SERVICE_URL_MISSING", result.error or "")
 
 
 class OfficialDocsReadTest(unittest.IsolatedAsyncioTestCase):
@@ -164,6 +205,35 @@ class OfficialDocsReadTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result.success)
         self.assertEqual(result.error, "url must be a string")
+
+    async def test_read_rejects_non_dify_docs_url(self) -> None:
+        result = await OfficialDocsRead().execute(
+            {"url": "https://example.com/page"},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "仅允许读取 Dify 官方文档站点")
+
+    @patch("zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock)
+    async def test_read_uses_docs_tool_service(self, call_docs: AsyncMock) -> None:
+        call_docs.return_value = {
+            "success": True,
+            "data": {"url": "https://docs.dify.ai/hello", "content": "hello docs"},
+        }
+
+        result = await OfficialDocsRead().execute(
+            {"url": "https://docs.dify.ai/hello"},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn("# 官方文档", result.output)
+        self.assertIn("hello docs", result.output)
+        call_docs.assert_awaited_once_with(
+            "official_docs_read",
+            {"url": "https://docs.dify.ai/hello"},
+        )
 
 
 if __name__ == "__main__":

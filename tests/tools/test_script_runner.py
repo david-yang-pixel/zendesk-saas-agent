@@ -1,9 +1,8 @@
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-import zd_agent.tools.script_runner as sr
 from zd_agent.tools.script_runner import RunScript, SandboxExec
 
 
@@ -14,18 +13,8 @@ def sandbox_session(tmp_path: Path):
     return session
 
 
-@pytest.fixture
-def script_dir(tmp_path: Path, monkeypatch):
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    script = scripts / "check-plugin-runtime.sh"
-    script.write_text("#!/usr/bin/env bash\necho ok\n", encoding="utf-8")
-    monkeypatch.setattr(sr, "SCRIPTS_DIR", scripts)
-    return scripts
-
-
 @pytest.mark.asyncio
-async def test_run_script_rejects_missing_or_blank_script_name(sandbox_session, script_dir):
+async def test_run_script_rejects_missing_or_blank_script_name(sandbox_session):
     result = await RunScript().execute({}, sandbox_session)
 
     assert result.success is False
@@ -38,7 +27,7 @@ async def test_run_script_rejects_missing_or_blank_script_name(sandbox_session, 
 
 
 @pytest.mark.asyncio
-async def test_run_script_args_must_be_string_list(sandbox_session, script_dir):
+async def test_run_script_args_must_be_string_list(sandbox_session):
     result = await RunScript().execute(
         {"script_name": "check-plugin-runtime.sh", "args": "--bad"},
         sandbox_session,
@@ -57,14 +46,21 @@ async def test_run_script_args_must_be_string_list(sandbox_session, script_dir):
 
 
 @pytest.mark.asyncio
-async def test_run_script_executes_allowed_script(sandbox_session, script_dir):
-    result = await RunScript().execute(
-        {"script_name": "check-plugin-runtime.sh", "args": ["one"]},
-        sandbox_session,
-    )
+async def test_run_script_executes_allowed_script(sandbox_session):
+    with patch(
+        "zd_agent.tools.script_runner.call_sandbox_worker_tool",
+        new_callable=AsyncMock,
+        return_value={"success": True, "output": "退出码: 0\n\nok\n"},
+    ) as worker:
+        result = await RunScript().execute(
+            {"script_name": "check-plugin-runtime.sh", "args": ["one"]},
+            sandbox_session,
+        )
 
     assert result.success is True
     assert "ok" in (result.output or "")
+    worker.assert_awaited_once()
+    assert worker.await_args.args[0] == "run_script"
 
 
 @pytest.mark.asyncio
@@ -95,10 +91,17 @@ async def test_sandbox_exec_command_and_cwd_must_be_strings(sandbox_session):
 
 @pytest.mark.asyncio
 async def test_sandbox_exec_runs_allowed_command(sandbox_session):
-    result = await SandboxExec().execute({"command": "pwd"}, sandbox_session)
+    with patch(
+        "zd_agent.tools.script_runner.call_sandbox_worker_tool",
+        new_callable=AsyncMock,
+        return_value={"success": True, "output": "退出码: 0\n/tmp/sandbox\n"},
+    ) as worker:
+        result = await SandboxExec().execute({"command": "pwd"}, sandbox_session)
 
     assert result.success is True
     assert "退出码: 0" in (result.output or "")
+    worker.assert_awaited_once()
+    assert worker.await_args.args[0] == "sandbox_exec"
 
 
 def test_sandbox_exec_schema_warns_about_single_line_commands():

@@ -19,3 +19,5 @@ def _disable_real_feishu_notifications(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("FEISHU_WEBHOOK_URL", "")
     monkeypatch.setenv("FEISHU_WEBHOOK_SECRET", "")
+    monkeypatch.setenv("NOTIFICATION_SERVICE_URL", "")
+    monkeypatch.setenv("NOTIFICATION_SERVICE_API_KEY", "")

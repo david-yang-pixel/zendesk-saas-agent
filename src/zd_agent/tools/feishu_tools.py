@@ -3,8 +3,7 @@ from __future__ import annotations
 
 from typing import Any, TYPE_CHECKING
 
-from zd_agent.config import get_config
-from zd_agent.integrations.feishu.client import FeishuClient
+from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.log import get_logger
 from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 from zd_agent.tools.base import Tool, ToolResult
@@ -91,56 +90,33 @@ class FeishuPush(Tool):
         if not isinstance(urgent, bool):
             return ToolResult(success=False, error="urgent must be a boolean")
 
-        cfg = get_config().feishu
-        if not cfg.webhook_url:
-            return ToolResult(
-                success=False,
-                error="Feishu not configured (missing FEISHU_WEBHOOK_URL)",
-            )
-
-        client = FeishuClient(
-            webhook_url=cfg.webhook_url,
-            webhook_secret=cfg.webhook_secret,
-        )
         logger.info(
             "feishu_push_start",
             ticket_id=session.ticket_id,
             card_type=card_type,
         )
-        try:
-            if card_type == "ticket_done":
-                await client.send_ticket_done(
-                    ticket_id=str(session.ticket_id),
-                    summary=content,
-                    zendesk_url=zendesk_url,
-                )
-            elif card_type == "ticket_escalate":
-                await client.send_ticket_escalate(
-                    ticket_id=str(session.ticket_id),
-                    reason=content,
-                    zendesk_url=zendesk_url,
-                )
-            elif card_type == "alert":
-                await client.send_alert(
-                    title=title,
-                    message=content,
-                    urgent=urgent,
-                )
-            else:
-                return ToolResult(
-                    success=False, error=f"unknown card_type: {card_type}",
-                )
-        except Exception as e:
+        payload = await push_notification_card(
+            card_type=card_type,
+            ticket_id=str(session.ticket_id),
+            content=content,
+            title=title,
+            zendesk_url=zendesk_url,
+            urgent=urgent,
+        )
+        if not payload.get("success"):
+            error = payload.get("error") or "unknown error"
             logger.warning(
                 "feishu_push_failed",
                 ticket_id=session.ticket_id,
                 card_type=card_type,
-                error=str(e),
+                error=str(error),
+                code=payload.get("code"),
             )
-            return ToolResult(success=False, error=f"Feishu push failed: {e}")
+            return ToolResult(success=False, error=f"Feishu push failed: {error}")
         logger.info(
             "feishu_push_pushed",
             ticket_id=session.ticket_id,
             card_type=card_type,
         )
-        return ToolResult(output=f"pushed ({card_type})")
+        output = payload.get("output")
+        return ToolResult(output=output if isinstance(output, str) else f"pushed ({card_type})")

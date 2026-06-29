@@ -32,6 +32,7 @@ import asyncio
 from datetime import datetime, timezone
 
 from zd_agent.config import get_config
+from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.log import get_logger
 from zd_agent.services.assignee import is_human_assignee
 from zd_agent.services.trigger_state_machine import (
@@ -57,17 +58,23 @@ def _now() -> datetime:
 
 async def _alert_feishu(*, title: str, message: str, urgent: bool = False) -> None:
     """Best-effort Feishu alert. Failures are swallowed (just logged)."""
-    cfg = get_config().feishu
-    if not cfg.webhook_url:
-        logger.warning("feishu_alert_skipped_no_url", title=title)
-        return
     try:
-        from zd_agent.integrations.feishu.client import FeishuClient
-        client = FeishuClient(
-            webhook_url=cfg.webhook_url, webhook_secret=cfg.webhook_secret,
+        payload = await push_notification_card(
+            card_type="alert",
+            ticket_id="",
+            title=title,
+            content=message,
+            urgent=urgent,
+            cfg=get_config(),
         )
-        await client.send_alert(title=title, message=message, urgent=urgent)
-    except Exception as e:
+        if not payload.get("success"):
+            logger.warning(
+                "feishu_alert_failed",
+                title=title,
+                error=str(payload.get("error") or "unknown error"),
+                code=payload.get("code"),
+            )
+    except Exception as e:  # noqa: BLE001
         logger.warning("feishu_alert_failed", title=title, error=str(e))
 
 

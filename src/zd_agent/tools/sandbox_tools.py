@@ -3,21 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 from zd_agent.repos import resolve_repo
+from zd_agent.integrations.sandbox_worker import call_sandbox_worker_tool
 from zd_agent.runtime.retry import get_retry_policy, retry_async
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
-
-READ_MAX_CHARS = 12000
-READ_MAX_LINES = 220
-SEARCH_MAX_MATCHES = 40
-SEARCH_MAX_OUTPUT_CHARS = 12000
-SEARCH_CONTEXT_LINES = 1
 
 
 def _coerce_int_arg(
@@ -52,6 +46,27 @@ def _coerce_optional_string_arg(args: dict[str, Any], name: str) -> str | ToolRe
     if not isinstance(value, str):
         return ToolResult(success=False, error=f"{name} must be a string")
     return value
+
+
+def _worker_result(payload: dict[str, Any]) -> ToolResult:
+    if payload.get("success"):
+        output = payload.get("output")
+        if isinstance(output, str):
+            return ToolResult(output=output)
+        data = payload.get("data")
+        return ToolResult(output=data if isinstance(data, str) else str(data or "ok"))
+    code = payload.get("code") or "UNKNOWN"
+    error = payload.get("error") or "unknown error"
+    return ToolResult(success=False, error=f"Sandbox worker failed [{code}]: {error}")
+
+
+async def _call_worker(
+    name: str,
+    args: dict[str, Any],
+    session: AgentSession,
+) -> ToolResult:
+    payload = await call_sandbox_worker_tool(name, args, session=session)
+    return _worker_result(payload)
 
 
 class SandboxCreateWorktree(Tool):
@@ -175,12 +190,7 @@ class SandboxWrite(Tool):
         if not _is_within(target, sandbox_root):
             return ToolResult(success=False, error="路径超出 sandbox 范围")
 
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
-            return ToolResult(output=f"已写入: {filepath}")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+        return await _call_worker(self.name, args, session)
 
 
 class SandboxRead(Tool):
@@ -221,48 +231,28 @@ class SandboxRead(Tool):
         if not _is_within(target, sandbox_root):
             return ToolResult(success=False, error="路径超出 sandbox 范围")
 
-        if not target.exists():
-            return ToolResult(success=False, error=f"文件不存在: {filepath}")
-
-        try:
-            content = target.read_text(encoding="utf-8")
-            lines = content.splitlines()
-
-            max_start_line = max(len(lines), 1)
-            start_line = _coerce_int_arg(
+        if "start_line" in args:
+            start_line_check = _coerce_int_arg(
                 args,
                 "start_line",
                 1,
                 minimum=1,
-                maximum=max_start_line,
+                maximum=1_000_000_000,
             )
-            if isinstance(start_line, ToolResult):
-                return start_line
-
-            max_end_line = max(len(lines), start_line)
-            end_line = _coerce_int_arg(
+            if isinstance(start_line_check, ToolResult):
+                return start_line_check
+        if "end_line" in args:
+            end_line_check = _coerce_int_arg(
                 args,
                 "end_line",
-                start_line + READ_MAX_LINES - 1,
-                minimum=start_line,
-                maximum=max_end_line,
+                1,
+                minimum=1,
+                maximum=1_000_000_000,
             )
-            if isinstance(end_line, ToolResult):
-                return end_line
+            if isinstance(end_line_check, ToolResult):
+                return end_line_check
 
-            selected = lines[start_line - 1:end_line]
-            numbered = [f"{idx}|{line}" for idx, line in enumerate(selected, start=start_line)]
-            output = "\n".join(numbered)
-
-            if len(output) > READ_MAX_CHARS:
-                output = output[:READ_MAX_CHARS] + "\n\n... (片段过长，已截断)"
-
-            header = f"文件: {filepath}\n行号: {start_line}-{end_line}/{len(lines)}\n"
-            if end_line < len(lines):
-                header += "提示: 文件未完整返回；如需更多内容，请继续读取相邻行号区间。\n"
-            return ToolResult(output=f"{header}\n{output}")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+        return await _call_worker(self.name, args, session)
 
 
 class SandboxList(Tool):
@@ -297,9 +287,6 @@ class SandboxList(Tool):
         if isinstance(target, ToolResult):
             return target
 
-        if not target.exists():
-            return ToolResult(success=False, error=f"路径不存在: {raw_path or '.'}")
-
         max_depth = _coerce_int_arg(args, "max_depth", 2, minimum=0, maximum=6)
         if isinstance(max_depth, ToolResult):
             return max_depth
@@ -307,39 +294,15 @@ class SandboxList(Tool):
         if isinstance(limit, ToolResult):
             return limit
 
-        lines: list[str] = [f"目录树: {target.relative_to(_sandbox_root(session))}"]
-        count = 0
-
-        def walk(path: Path, depth: int) -> None:
-            nonlocal count
-            if count >= limit or depth > max_depth:
-                return
-
-            try:
-                entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
-            except OSError as e:
-                lines.append(f"[无法读取] {path.name}: {e}")
-                return
-
-            for entry in entries:
-                if count >= limit:
-                    return
-                rel = entry.relative_to(target)
-                indent = "  " * len(rel.parts[:-1])
-                suffix = "/" if entry.is_dir() else ""
-                lines.append(f"{indent}- {entry.name}{suffix}")
-                count += 1
-                if entry.is_dir() and depth < max_depth:
-                    walk(entry, depth + 1)
-
-        if target.is_file():
-            lines.append(f"- {target.name}")
-        else:
-            walk(target, 0)
-
-        if count >= limit:
-            lines.append(f"... 已截断，最多显示 {limit} 个条目")
-        return ToolResult(output="\n".join(lines))
+        return await _call_worker(
+            self.name,
+            {
+                "path": raw_path or "",
+                "max_depth": max_depth,
+                "limit": limit,
+            },
+            session,
+        )
 
 
 class SandboxSearch(Tool):
@@ -383,19 +346,11 @@ class SandboxSearch(Tool):
         if isinstance(target, ToolResult):
             return target
 
-        if not target.exists():
-            return ToolResult(success=False, error=f"路径不存在: {raw_path or '.'}")
-
-        output = await _search_with_rg(target, pattern, glob)
-        if output is None:
-            output = await asyncio.to_thread(
-                _search_with_python, target, pattern, glob
-            )
-
-        if not output:
-            return ToolResult(output=f"未找到匹配「{pattern}」的内容")
-        trimmed = _trim_search_output(output, pattern)
-        return ToolResult(output=trimmed)
+        return await _call_worker(
+            self.name,
+            {"pattern": pattern, "path": raw_path or "", "glob": glob},
+            session,
+        )
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -424,39 +379,6 @@ def _sandbox_root(session: AgentSession) -> Path:
     if not session.sandbox_dir:
         raise ValueError("Sandbox 未初始化")
     return session.sandbox_dir.resolve()
-
-
-async def _search_with_rg(target: Path, pattern: str, glob: str | None) -> str | None:
-    """优先使用 rg 搜索；若 rg 不可用则返回 None 走 Python fallback"""
-    cmd = [
-        "rg",
-        "-n",
-        "--hidden",
-        "--glob",
-        "!.git",
-        pattern,
-        str(target),
-    ]
-    if glob:
-        cmd[4:4] = ["--glob", glob]
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-    except FileNotFoundError:
-        return None
-
-    output = stdout.decode("utf-8", errors="replace")
-    err = stderr.decode("utf-8", errors="replace").strip()
-    if proc.returncode == 1:
-        return ""
-    if proc.returncode != 0:
-        raise RuntimeError(f"sandbox_search 失败: {err}")
-    return output
 
 
 async def _prune_and_cleanup_worktree(repo_dir: str, worktree_path: Path) -> None:
@@ -507,51 +429,3 @@ async def _run_git(repo_dir: str, *args: str) -> tuple[int, str, str]:
         stdout.decode("utf-8", errors="replace"),
         stderr.decode("utf-8", errors="replace"),
     )
-
-
-def _search_with_python(target: Path, pattern: str, glob: str | None) -> str:
-    """在无 rg 的环境下，使用 Python 递归搜索文本文件"""
-    regex = re.compile(pattern, re.IGNORECASE)
-    results: list[str] = []
-    max_matches = 400
-
-    if target.is_file():
-        paths = [target]
-    else:
-        paths = [p for p in target.rglob("*") if p.is_file() and ".git" not in p.parts]
-
-    for path in paths:
-        if glob and not path.match(glob):
-            continue
-        try:
-            content = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-
-        for lineno, line in enumerate(content.splitlines(), 1):
-            if regex.search(line):
-                results.append(f"{path}:{lineno}:{line}")
-                if len(results) >= max_matches:
-                    results.append(f"... 已截断，最多显示 {max_matches} 条匹配")
-                    return "\n".join(results)
-
-    return "\n".join(results)
-
-
-def _trim_search_output(output: str, pattern: str) -> str:
-    """裁剪搜索输出：限制命中数量和总字符数，逼迫后续用 sandbox_read 精读"""
-    lines = [line for line in output.splitlines() if line.strip()]
-    shown = lines[:SEARCH_MAX_MATCHES]
-    text = "\n".join(shown)
-    if len(text) > SEARCH_MAX_OUTPUT_CHARS:
-        text = text[:SEARCH_MAX_OUTPUT_CHARS].rstrip() + "\n... (搜索结果过长，已截断)"
-
-    result = (
-        f"搜索模式: {pattern}\n"
-        f"返回命中: {min(len(lines), SEARCH_MAX_MATCHES)} / {len(lines)}\n"
-        "提示: 先挑最相关的文件，再用 sandbox_read 按行号读取局部片段，不要一次性读取整文件。\n\n"
-        f"{text}"
-    )
-    if len(lines) > SEARCH_MAX_MATCHES:
-        result += f"\n\n... 还有 {len(lines) - SEARCH_MAX_MATCHES} 条命中未显示"
-    return result

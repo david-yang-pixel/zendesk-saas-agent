@@ -34,9 +34,21 @@ signoz:
 source_mcp:
   mcp_url: https://ops.example.com/source-mcp
   request_timeout_seconds: 45
+github_mcp:
+  mcp_url: https://ops.example.com/github-mcp
+  request_timeout_seconds: 35
+docs_tool_service:
+  mcp_url: https://ops.example.com/docs-tool-service
+  request_timeout_seconds: 35
 zendesk_mcp:
   mcp_url: https://ops.example.com/zendesk-mcp
   request_timeout_seconds: 35
+notification_service:
+  mcp_url: https://ops.example.com/notification-service
+  request_timeout_seconds: 35
+sandbox_worker:
+  mcp_url: https://ops.example.com/sandbox-worker
+  request_timeout_seconds: 65
 feishu:
   daily_summary_time: "09:00"
 repos:
@@ -69,17 +81,27 @@ def saas_env(monkeypatch):
         "ZENDESK_API_TOKEN": "tok",
         "ZENDESK_WEBHOOK_SECRET": "wsec",
         "OPENAI_API_KEY": "sk-xxx",
-        "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/open-apis/bot/v2/hook/test",
-        "FEISHU_WEBHOOK_SECRET": "fs_sign_xxx",
         "SIGNOZ_MCP_URL": "https://ops.example.com/signoz-mcp/",
         "SIGNOZ_MCP_API_KEY": "signoz_mcp_xxx",
         "SIGNOZ_MCP_TIMEOUT_SECONDS": "45",
         "SOURCE_MCP_URL": "https://ops.example.com/source-mcp/",
         "SOURCE_MCP_API_KEY": "source_mcp_xxx",
         "SOURCE_MCP_TIMEOUT_SECONDS": "55",
+        "GITHUB_MCP_URL": "https://ops.example.com/github-mcp/",
+        "GITHUB_MCP_API_KEY": "github_mcp_xxx",
+        "GITHUB_MCP_TIMEOUT_SECONDS": "45",
+        "DOCS_TOOL_SERVICE_URL": "https://ops.example.com/docs-tool-service/",
+        "DOCS_TOOL_SERVICE_API_KEY": "docs_mcp_xxx",
+        "DOCS_TOOL_SERVICE_TIMEOUT_SECONDS": "45",
         "ZENDESK_MCP_URL": "https://ops.example.com/zendesk-mcp/",
         "ZENDESK_MCP_API_KEY": "zendesk_mcp_xxx",
         "ZENDESK_MCP_TIMEOUT_SECONDS": "45",
+        "NOTIFICATION_SERVICE_URL": "https://ops.example.com/notification-service/",
+        "NOTIFICATION_SERVICE_API_KEY": "notification_mcp_xxx",
+        "NOTIFICATION_SERVICE_TIMEOUT_SECONDS": "45",
+        "SANDBOX_WORKER_URL": "https://ops.example.com/sandbox-worker/",
+        "SANDBOX_WORKER_API_KEY": "sandbox_worker_xxx",
+        "SANDBOX_WORKER_TIMEOUT_SECONDS": "75",
         "GITHUB_TOKEN": "gh_xxx",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
@@ -130,6 +152,22 @@ def test_config_loads_source_mcp_section(saas_env, saas_config_file):
     assert cfg.source_mcp.request_timeout_seconds == 55
 
 
+def test_config_loads_next_batch_mcp_sections(saas_env, saas_config_file):
+    cfg = load_config(saas_config_file)
+    assert cfg.github_mcp.mcp_url == "https://ops.example.com/github-mcp"
+    assert cfg.github_mcp.mcp_api_key == "github_mcp_xxx"
+    assert cfg.github_mcp.request_timeout_seconds == 45
+    assert cfg.docs_tool_service.mcp_url == "https://ops.example.com/docs-tool-service"
+    assert cfg.docs_tool_service.mcp_api_key == "docs_mcp_xxx"
+    assert cfg.docs_tool_service.request_timeout_seconds == 45
+    assert cfg.notification_service.mcp_url == "https://ops.example.com/notification-service"
+    assert cfg.notification_service.mcp_api_key == "notification_mcp_xxx"
+    assert cfg.notification_service.request_timeout_seconds == 45
+    assert cfg.sandbox_worker.mcp_url == "https://ops.example.com/sandbox-worker"
+    assert cfg.sandbox_worker.mcp_api_key == "sandbox_worker_xxx"
+    assert cfg.sandbox_worker.request_timeout_seconds == 75
+
+
 def test_config_loads_zendesk_mcp_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.zendesk_mcp.mcp_url == "https://ops.example.com/zendesk-mcp"
@@ -154,8 +192,8 @@ def test_config_loads_zendesk_browser_relay_env(saas_env, saas_config_file):
 def test_config_loads_feishu_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.feishu.daily_summary_time == "09:00"
-    assert cfg.feishu.webhook_url == "https://open.feishu.cn/open-apis/bot/v2/hook/test"
-    assert cfg.feishu.webhook_secret == "fs_sign_xxx"
+    assert cfg.feishu.webhook_url == ""
+    assert cfg.feishu.webhook_secret == ""
 
 
 def test_config_loads_repos_aliases(saas_env, saas_config_file):

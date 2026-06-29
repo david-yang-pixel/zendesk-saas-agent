@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from zd_agent import config as config_module
-from zd_agent.integrations.feishu import client as feishu_client
+from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.ticket_tags import AGENT_ASKED_TAG
@@ -71,29 +71,22 @@ async def send_silence_expired_alert_best_effort(
 ) -> bool:
     """Send the internal alert used when public nudge is disabled."""
     try:
-        fcfg = config_module.get_config().feishu
-        if not fcfg.webhook_url:
-            logger.info(
-                "silence_expired_ask_feishu_alert",
-                ticket_id=ticket_id,
-                verdict=verdict,
-            )
-            return False
-
-        client = feishu_client.FeishuClient(
-            webhook_url=fcfg.webhook_url,
-            webhook_secret=fcfg.webhook_secret,
-        )
-        await client.send_alert(
+        cfg = config_module.get_config()
+        payload = await push_notification_card(
+            card_type="alert",
+            ticket_id=str(ticket_id),
             title=f"Ticket #{ticket_id} 信息不足等待处理",
-            message=(
+            content=(
                 f"工单 #{ticket_id} 静默期已结束，但客户消息判为 "
                 f"`{verdict or 'unknown'}`，"
                 "未达到处理标准。enable_public_nudge=false，"
                 "未给客户发 ask 消息。请人工介入或确认是否打开 nudge。"
             ),
             urgent=False,
+            cfg=cfg,
         )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "silence_expired_ask_feishu_failed",

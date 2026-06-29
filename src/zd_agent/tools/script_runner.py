@@ -2,19 +2,41 @@
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
+import re
+import shlex
 from typing import Any
 
+from zd_agent.integrations.sandbox_worker import (
+    call_sandbox_worker_tool,
+)
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
-
-SCRIPTS_DIR = Path("scripts")
 
 # 允许执行的脚本白名单（文件名）
 ALLOWED_SCRIPTS: set[str] = {
     "check-plugin-runtime.sh",
 }
+
+
+def _worker_result(payload: dict[str, Any]) -> ToolResult:
+    if payload.get("success"):
+        output = payload.get("output")
+        if isinstance(output, str):
+            return ToolResult(output=output)
+        data = payload.get("data")
+        return ToolResult(output=data if isinstance(data, str) else str(data or "ok"))
+    code = payload.get("code") or "UNKNOWN"
+    error = payload.get("error") or "unknown error"
+    return ToolResult(success=False, error=f"Sandbox worker failed [{code}]: {error}")
+
+
+async def _call_worker(
+    name: str,
+    args: dict[str, Any],
+    session: AgentSession,
+) -> ToolResult:
+    payload = await call_sandbox_worker_tool(name, args, session=session)
+    return _worker_result(payload)
 
 
 class RunScript(Tool):
@@ -55,42 +77,15 @@ class RunScript(Tool):
                 error=f"脚本不在白名单中: {script_name}。允许的脚本: {', '.join(sorted(ALLOWED_SCRIPTS))}",
             )
 
-        script_path = SCRIPTS_DIR / script_name
-        if not script_path.exists():
-            return ToolResult(success=False, error=f"脚本文件不存在: {script_path}")
-
         script_args = args.get("args") or []
         if not isinstance(script_args, list) or not all(isinstance(a, str) for a in script_args):
             return ToolResult(success=False, error="args must be a list of strings")
-        cmd_args = ["bash", str(script_path)] + script_args
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(session.sandbox_dir) if session.sandbox_dir else None,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-
-            output = stdout.decode("utf-8", errors="replace")
-            err_output = stderr.decode("utf-8", errors="replace")
-
-            result_text = f"退出码: {proc.returncode}\n\n"
-            if output:
-                result_text += f"--- stdout ---\n{output}\n"
-            if err_output:
-                result_text += f"--- stderr ---\n{err_output}\n"
-
-            return ToolResult(
-                success=proc.returncode == 0,
-                output=result_text[:10000],
-                error=None if proc.returncode == 0 else f"脚本退出码: {proc.returncode}",
-            )
-        except asyncio.TimeoutError:
-            return ToolResult(success=False, error="脚本执行超时（120 秒）")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+        return await _call_worker(
+            self.name,
+            {"script_name": script_name, "args": script_args},
+            session,
+        )
 
 
 class SandboxExec(Tool):
@@ -182,32 +177,22 @@ class SandboxExec(Tool):
             if not _is_within(work_dir, session.sandbox_dir):
                 return ToolResult(success=False, error="工作目录超出 sandbox 范围")
 
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(work_dir),
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-
-            output = stdout.decode("utf-8", errors="replace")
-            err_output = stderr.decode("utf-8", errors="replace")
-
-            result_text = f"退出码: {proc.returncode}\n"
-            if output:
-                result_text += f"\n{output}"
-            if err_output:
-                result_text += f"\n--- stderr ---\n{err_output}"
-
+        external_path = _first_external_path_reference(
+            command,
+            work_dir=work_dir,
+            sandbox_dir=session.sandbox_dir,
+        )
+        if external_path:
             return ToolResult(
-                success=proc.returncode == 0,
-                output=result_text[:10000],
+                success=False,
+                error=f"命令引用了 sandbox 外路径: {external_path}",
             )
-        except asyncio.TimeoutError:
-            return ToolResult(success=False, error="命令执行超时（60 秒）")
-        except Exception as e:
-            return ToolResult(success=False, error=str(e))
+
+        return await _call_worker(
+            self.name,
+            {"command": command, "cwd": cwd or ""},
+            session,
+        )
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -217,3 +202,33 @@ def _is_within(child: Path, parent: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+_ABS_PATH_RE = re.compile(r"(?<![\w.-])/(?:[^\s'\";|&<>`$()]+)")
+
+
+def _first_external_path_reference(
+    command: str,
+    *,
+    work_dir: Path,
+    sandbox_dir: Path,
+) -> str:
+    """Reject obvious path references outside the sandbox root."""
+    candidates: set[str] = set(_ABS_PATH_RE.findall(command))
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return "invalid shell quoting"
+
+    for token in tokens[1:]:
+        value = token.split("=", 1)[1] if token.startswith("--") and "=" in token else token
+        if value.startswith("-"):
+            continue
+        if value.startswith("/") or value.startswith("..") or "../" in value:
+            candidates.add(value)
+
+    for candidate in sorted(candidates):
+        path = Path(candidate) if candidate.startswith("/") else work_dir / candidate
+        if not _is_within(path, sandbox_dir):
+            return candidate
+    return ""

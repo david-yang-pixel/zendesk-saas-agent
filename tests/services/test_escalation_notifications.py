@@ -1,9 +1,9 @@
 """Tests for escalation side-effect helpers."""
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from zd_agent.config import AppConfig, FeishuConfig, ZendeskConfig
+from zd_agent.config import AppConfig, ZendeskConfig
 from zd_agent.services.escalation_notifications import (
     add_zendesk_escalation_tag_best_effort,
     send_feishu_escalation_best_effort,
@@ -11,9 +11,8 @@ from zd_agent.services.escalation_notifications import (
 )
 
 
-def _make_cfg(*, feishu_url: str = "", subdomain: str = "dify-test") -> AppConfig:
+def _make_cfg(*, subdomain: str = "dify-test") -> AppConfig:
     cfg = AppConfig()
-    cfg.feishu = FeishuConfig(webhook_url=feishu_url, webhook_secret="secret")
     cfg.zendesk = ZendeskConfig(
         subdomain=subdomain,
         email="x@y.com",
@@ -71,18 +70,21 @@ async def test_handoff_reply_failure_is_best_effort() -> None:
 
 
 @pytest.mark.asyncio
-async def test_feishu_escalation_skips_when_webhook_empty() -> None:
-    mock_feishu_cls = MagicMock()
+async def test_feishu_escalation_returns_false_when_notification_mcp_missing() -> None:
+    push = AsyncMock(
+        return_value={
+            "success": False,
+            "code": "NOTIFICATION_SERVICE_URL_MISSING",
+            "error": "not configured",
+        }
+    )
 
     with (
         patch(
             "zd_agent.config.get_config",
-            return_value=_make_cfg(feishu_url=""),
+            return_value=_make_cfg(),
         ),
-        patch(
-            "zd_agent.integrations.feishu.client.FeishuClient",
-            mock_feishu_cls,
-        ),
+        patch("zd_agent.services.escalation_notifications.push_notification_card", push),
     ):
         sent = await send_feishu_escalation_best_effort(
             ticket_id=9999,
@@ -91,22 +93,19 @@ async def test_feishu_escalation_skips_when_webhook_empty() -> None:
         )
 
     assert sent is False
-    mock_feishu_cls.assert_not_called()
+    push.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_feishu_escalation_skips_human_takeover() -> None:
-    mock_feishu_cls = MagicMock()
+    push = AsyncMock()
 
     with (
         patch(
             "zd_agent.config.get_config",
-            return_value=_make_cfg(feishu_url="https://example.com/hook"),
+            return_value=_make_cfg(),
         ),
-        patch(
-            "zd_agent.integrations.feishu.client.FeishuClient",
-            mock_feishu_cls,
-        ),
+        patch("zd_agent.services.escalation_notifications.push_notification_card", push),
     ):
         sent = await send_feishu_escalation_best_effort(
             ticket_id=9999,
@@ -115,26 +114,21 @@ async def test_feishu_escalation_skips_human_takeover() -> None:
         )
 
     assert sent is False
-    mock_feishu_cls.assert_not_called()
+    push.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_feishu_escalation_sends_reason_context() -> None:
-    feishu_instance = MagicMock()
-    feishu_instance.send_ticket_escalate = AsyncMock()
+    push = AsyncMock(return_value={"success": True, "output": "pushed"})
 
     with (
         patch(
             "zd_agent.config.get_config",
             return_value=_make_cfg(
-                feishu_url="https://example.com/hook",
                 subdomain="dify-test",
             ),
         ),
-        patch(
-            "zd_agent.integrations.feishu.client.FeishuClient",
-            return_value=feishu_instance,
-        ),
+        patch("zd_agent.services.escalation_notifications.push_notification_card", push),
     ):
         sent = await send_feishu_escalation_best_effort(
             ticket_id=9999,
@@ -145,12 +139,12 @@ async def test_feishu_escalation_sends_reason_context() -> None:
         )
 
     assert sent is True
-    feishu_instance.send_ticket_escalate.assert_called_once()
-    kwargs = feishu_instance.send_ticket_escalate.call_args.kwargs
+    push.assert_awaited_once()
+    kwargs = push.await_args.kwargs
     assert kwargs["ticket_id"] == "9999"
     assert "dify-test" in kwargs["zendesk_url"]
     assert "9999" in kwargs["zendesk_url"]
-    reason_text = kwargs["reason"]
+    reason_text = kwargs["content"]
     assert "high_risk_refund" in reason_text
     assert "退款" in reason_text
     assert "I will check this." in reason_text
@@ -159,20 +153,16 @@ async def test_feishu_escalation_sends_reason_context() -> None:
 
 @pytest.mark.asyncio
 async def test_feishu_escalation_failure_is_best_effort() -> None:
-    feishu_instance = MagicMock()
-    feishu_instance.send_ticket_escalate = AsyncMock(
-        side_effect=RuntimeError("feishu err"),
+    push = AsyncMock(
+        return_value={"success": False, "code": "FEISHU_API_ERROR", "error": "feishu err"},
     )
 
     with (
         patch(
             "zd_agent.config.get_config",
-            return_value=_make_cfg(feishu_url="https://example.com/hook"),
+            return_value=_make_cfg(),
         ),
-        patch(
-            "zd_agent.integrations.feishu.client.FeishuClient",
-            return_value=feishu_instance,
-        ),
+        patch("zd_agent.services.escalation_notifications.push_notification_card", push),
     ):
         sent = await send_feishu_escalation_best_effort(
             ticket_id=9999,
