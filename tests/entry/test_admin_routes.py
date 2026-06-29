@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+from importlib import resources
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
@@ -83,6 +85,90 @@ def test_admin_static_assets_are_split_from_html_shell() -> None:
     assert '/admin/static/styles.css' in html
     assert '/admin/static/app.js' in html
     assert "最近运行事件" not in html
+
+
+def test_admin_table_layout_keeps_rows_as_vertical_items() -> None:
+    css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("styles.css")
+        .read_text(encoding="utf-8")
+    )
+    table_grid_block = re.search(r"\.table-grid\s*\{(?P<body>[^}]*)\}", css)
+    row_block = re.search(r"\.table-header,\s*\.table-row\s*\{(?P<body>[^}]*)\}", css)
+
+    assert table_grid_block is not None
+    assert row_block is not None
+    assert "display: grid" not in table_grid_block.group("body")
+    assert "display: grid" in row_block.group("body")
+
+
+def test_admin_shell_uses_chinese_management_navigation_and_sso_login() -> None:
+    html = _load_index_html()
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+
+    for label in [
+        "总览",
+        "运行记录",
+        "触发配置",
+        "回复策略",
+        "模型与运行",
+        "工具与集成",
+        "存储配置",
+        "部署状态",
+        "审计日志",
+    ]:
+        assert label in app_js
+    assert "管理后台" in html
+    assert "生产环境管理后台" not in html
+    assert "使用 Google 登录" in html
+    assert "使用飞书登录" in html
+    assert "admin123" in html
+    assert "Storage Configuration" not in app_js
+    assert "Deployment Status" not in app_js
+    assert "Operations" not in html
+
+
+def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+    css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("styles.css")
+        .read_text(encoding="utf-8")
+    )
+
+    for text in ["总处理数", "成功率", "平均耗时", "Token 消耗", "轮次", "触发方式"]:
+        assert text in app_js
+    for symbol in ["run-record-card", "record-expand", "round-timeline", "tool-call-row"]:
+        assert symbol in app_js
+        assert symbol in css
+    assert ".run-record-row" in css
+    assert "grid-template-columns" in css
+
+
+def test_admin_storage_config_page_is_not_blank() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+
+    for text in [
+        "运行记录存储",
+        "审计日志存储",
+        "附件与截图缓存",
+        "配置持久化",
+        "存储检查结果",
+        "配置运行记录、审计日志、附件缓存和配置持久化路径",
+    ]:
+        assert text in app_js
 
 
 @pytest.mark.asyncio
@@ -185,6 +271,8 @@ async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_
                 "event": "agent_failed",
                 "ticket_id": 3135,
                 "module": "runtime",
+                "input_tokens": 1234,
+                "output_tokens": 56,
                 "api_key": "sk-test-secret",
                 "nested": {"token": "secret-token"},
                 "error": "boom",
@@ -230,6 +318,8 @@ async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_
     assert body["items"][0]["event"] == "agent_failed"
     assert body["items"][0]["ticket_id"] == 3135
     assert body["items"][0]["_source_file"] == "events-2026-06-29.jsonl"
+    assert body["items"][0]["input_tokens"] == 1234
+    assert body["items"][0]["output_tokens"] == 56
     assert body["items"][0]["api_key"] == "[REDACTED]"
     assert body["items"][0]["nested"]["token"] == "[REDACTED]"
     assert body["summary"]["total"] == 3

@@ -33,6 +33,18 @@ SENSITIVE_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 ERROR_TOKEN_RE = re.compile(r"error|failed|failure|exception|traceback", re.IGNORECASE)
+TOKEN_COUNT_KEYS = {
+    "input_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "token_count",
+    "tokens_in",
+    "tokens_out",
+    "tokens",
+    "max_tokens",
+}
 INTEGRATION_SPECS: dict[str, dict[str, str]] = {
     "zendesk_mcp": {
         "label": "Zendesk MCP",
@@ -211,6 +223,13 @@ def _redact_value(value: Any, key: str = "") -> Any:
         }
     if isinstance(value, list):
         return [_redact_value(item, key) for item in value]
+    key_normalized = key.lower().replace("-", "_")
+    if (
+        key_normalized in TOKEN_COUNT_KEYS
+        and isinstance(value, int | float)
+        and not isinstance(value, bool)
+    ):
+        return value
     if SENSITIVE_KEY_RE.search(key):
         return "[REDACTED]" if value else value
     return value

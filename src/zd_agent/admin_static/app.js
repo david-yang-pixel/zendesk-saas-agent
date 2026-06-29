@@ -16,13 +16,14 @@ const SUBTITLES = {
   "触发配置": "webhook、轮询、@mention 和触发判定规则",
   "回复策略": "自动 public reply、ask、handoff 和等待策略",
   "模型与运行": "模型、Base URL、API key、并发和运行护栏",
-  "工具与集成": "Zendesk、DB、SigNoz、GitHub、Docs、Sandbox 等服务",
-  "存储配置": "目录、附件缓存、状态文件和清理策略",
+  "工具与集成": "Zendesk、DB、SigNoz、GitHub、Docs、Sandbox 等远程服务",
+  "存储配置": "配置运行记录、审计日志、附件缓存和配置持久化路径",
   "部署状态": "镜像、服务状态、重载状态和后台访问方式",
   "审计日志": "所有配置、密钥、登录方式和部署变更记录"
 };
 
 const INTEGRATIONS = [
+  ["public_reply_browser_relay", "Browser Relay", "客户可见 public reply"],
   ["zendesk_mcp", "Zendesk MCP", "工单读取、内部评论、标签和关注"],
   ["db_gateway", "DB Gateway", "生产库只读查询"],
   ["signoz", "SigNoz MCP", "日志、指标、trace 和 ClickHouse 查询"],
@@ -30,8 +31,7 @@ const INTEGRATIONS = [
   ["github_mcp", "GitHub MCP", "PR、Issue、revert 和 follow-up 校验"],
   ["docs_tool_service", "Docs Service", "官方文档缓存和限域读取"],
   ["notification_service", "Notification Service", "飞书通知和重试"],
-  ["sandbox_worker", "Sandbox Worker", "隔离文件读写、搜索和执行"],
-  ["public_reply_browser_relay", "Browser Relay", "客户可见 public reply"]
+  ["sandbox_worker", "Sandbox Worker", "隔离文件读写、搜索和执行"]
 ];
 
 const state = {
@@ -39,6 +39,9 @@ const state = {
   schema: { fields: [], groups: [] },
   values: {},
   runRecords: [],
+  runRecordsPayload: null,
+  runDisplayRecords: [],
+  expandedRuns: new Set(),
   auditLogs: [],
   deployStatus: null,
   runFilters: {},
@@ -83,6 +86,11 @@ function showApp() {
   document.getElementById("login").classList.add("hidden");
   document.getElementById("password-change").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
+}
+
+function showSsoHint(provider) {
+  const msg = document.getElementById("login-msg");
+  msg.textContent = `${provider} SSO 需要先在「部署状态」里配置并启用。`;
 }
 
 async function login() {
@@ -209,6 +217,8 @@ async function render() {
       await renderDeployStatus();
     } else if (state.activeMenu === "工具与集成") {
       renderIntegrations();
+    } else if (state.activeMenu === "存储配置") {
+      await renderStorageConfig();
     } else {
       renderConfigPage(state.activeMenu);
     }
@@ -240,34 +250,66 @@ async function renderOverview() {
     loadDeployStatus()
   ]);
   const summary = runs.summary || {};
-  const latest = (runs.items || []).slice(0, 6);
-  const errorRate = summary.filtered
-    ? `${Math.round((summary.error_events || 0) * 100 / summary.filtered)}%`
-    : "--";
+  const latest = buildRunDisplayRecords(runs.items || []).slice(0, 5);
+  const total = summary.today_tickets || latest.length || summary.filtered || 0;
+  const errors = summary.error_events || 0;
+  const successRate = total ? `${Math.max(0, Math.round((1 - errors / total) * 100))}%` : "--";
   setContent(`
-    <div class="stat-grid">
-      ${statCard("Agent 服务", deploy.agent?.status === "running" ? "运行中" : "异常", deploy.agent?.status === "running" ? "success-text" : "warn-text")}
-      ${statCard("今日工单", summary.today_tickets || "--")}
-      ${statCard("运行事件", summary.today_events || "--")}
-      ${statCard("错误事件", summary.error_events || 0, summary.error_events ? "warn-text" : "success-text")}
-      ${statCard("失败率", errorRate)}
+    <div class="metric-grid">
+      ${metricCard("Agent 服务", deploy.agent?.status === "running" ? "运行中" : "异常", "当前进程", deploy.agent?.status === "running" ? "success-text" : "warn-text")}
+      ${metricCard("今日处理", total || "--", `${summary.today_events || 0} 个事件`)}
+      ${metricCard("成功率", successRate, `${errors} 个错误事件`, errors ? "warn-text" : "success-text")}
+      ${metricCard("配置状态", deploy.pending_restart ? "待重启" : "已同步", deploy.pending_restart ? "存在需重启配置" : "当前配置已生效", deploy.pending_restart ? "warn-text" : "success-text")}
     </div>
-    <section class="card">
-      <div class="card-header">
-        <span>最近运行事件</span>
-        <span class="chip">点击查看详情</span>
-      </div>
-      <div class="card-body mini-list">
-        ${latest.length ? latest.map((item, index) => `
-          <button class="mini-row" onclick="openLogDetail(${index})">
-            <span>${escapeHtml(formatTime(item.timestamp || item.ts))}</span>
-            <span class="event-name">${escapeHtml(item.event || "未知事件")}</span>
-            <span>${escapeHtml(logSummary(item) || item.module || item._source_file || "查看完整日志")}</span>
-          </button>
-        `).join("") : emptyHtml(runRecordsEmptyText(runs))}
-      </div>
-    </section>
+    <div class="overview-grid">
+      <section class="card">
+        <div class="card-header">
+          <span>最近运行</span>
+          <button class="btn secondary" onclick="goMenu('运行记录')">查看全部</button>
+        </div>
+        <div class="card-body mini-list">
+          ${latest.length ? latest.map((record, index) => `
+            <button class="mini-row" onclick="goRunDetail(${index})">
+              <span class="event-name">${escapeHtml(record.ticketLabel)}</span>
+              <span>${renderStatusBadge(record.status)}</span>
+              <span class="truncate">${escapeHtml(record.summary || "查看完整日志")}</span>
+            </button>
+          `).join("") : emptyHtml(runRecordsEmptyText(runs))}
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-header">
+          <span>关键配置</span>
+          <span class="chip">${deploy.pending_restart ? "待重启" : "已同步"}</span>
+        </div>
+        <div class="card-body kv-grid">
+          <strong>镜像标签</strong><span>${escapeHtml(deploy.image?.tag || "latest")}</span>
+          <strong>提交</strong><span>${escapeHtml(shortSha(deploy.image?.commit_sha) || "--")}</span>
+          <strong>账号密码登录</strong><span>${deploy.admin_auth?.password_login?.enabled ? "开启" : "关闭"}</span>
+          <strong>Google SSO</strong><span>${authStatus(deploy.admin_auth?.google_sso)}</span>
+          <strong>飞书 SSO</strong><span>${authStatus(deploy.admin_auth?.feishu_sso)}</span>
+        </div>
+      </section>
+    </div>
   `);
+  state.runDisplayRecords = latest;
+}
+
+function goMenu(menu) {
+  state.activeMenu = menu;
+  renderNav();
+  void render();
+}
+
+function goRunDetail(index) {
+  const key = state.runDisplayRecords[index]?.key;
+  if (!key) return;
+  state.activeMenu = "运行记录";
+  renderNav();
+  void renderRunRecords().then(() => {
+    const targetIndex = state.runDisplayRecords.findIndex(record => record.key === key);
+    openRunRecordDetail(targetIndex >= 0 ? targetIndex : 0);
+  });
 }
 
 async function loadRunRecords(limit = 100, filters = state.runFilters) {
@@ -279,91 +321,275 @@ async function loadRunRecords(limit = 100, filters = state.runFilters) {
   });
   const data = await api(`/admin/api/run-records?${params.toString()}`);
   state.runRecords = data.items || [];
+  state.runRecordsPayload = data;
   return data;
 }
 
-async function renderRunRecords() {
-  const data = await loadRunRecords(200);
+async function renderRunRecords(options = {}) {
+  const data = options.reload === false && state.runRecordsPayload
+    ? state.runRecordsPayload
+    : await loadRunRecords(200);
   const items = data.items || [];
-  const summary = data.summary || {};
+  let records = buildRunDisplayRecords(items);
+  if (state.runFilters.status === "success") {
+    records = records.filter(record => record.status === "success");
+  } else if (state.runFilters.status === "failed") {
+    records = records.filter(record => record.status !== "success");
+  }
+  state.runDisplayRecords = records;
+  const summary = buildRunSummary(data, records);
   setContent(`
-    <div class="stat-grid">
-      ${statCard("匹配事件", summary.filtered ?? 0)}
-      ${statCard("全部事件", summary.total ?? 0)}
-      ${statCard("今日工单", summary.today_tickets ?? "--")}
-      ${statCard("错误事件", summary.error_events ?? 0, summary.error_events ? "warn-text" : "success-text")}
-      ${statCard("JSONL", data.jsonl_enabled ? "已开启" : "未开启", data.jsonl_enabled ? "success-text" : "warn-text")}
+    <div class="metric-grid run-metrics">
+      ${metricCard("总处理数", summary.totalRuns, `运行中 ${summary.running}`)}
+      ${metricCard("成功率", summary.successRate, `失败 ${summary.failed} / 超时 ${summary.timeout}`, summary.failed ? "warn-text" : "success-text")}
+      ${metricCard("平均耗时", summary.avgDuration, "最近匹配记录")}
+      ${metricCard("Token 消耗", summary.totalTokens, `入 ${summary.inputTokens} / 出 ${summary.outputTokens}`)}
     </div>
-    <section class="card">
-      <div class="card-header">
-        <span>筛选</span>
-        <button class="btn secondary" onclick="resetRunFilters()">重置</button>
-      </div>
-      <div class="card-body">
-        <div class="filter-grid">
-          ${filterInput("run-ticket", "工单 ID", "ticket_id")}
-          ${filterInput("run-event", "事件", "event")}
-          ${filterInput("run-module", "模块", "module")}
-          ${filterInput("run-level", "级别", "level")}
-          <label>错误事件
-            <select id="run-errors">
-              <option value="">全部</option>
-              <option value="true" ${state.runFilters.errors_only === "true" ? "selected" : ""}>只看错误</option>
-            </select>
-          </label>
-        </div>
-        <div class="button-row" style="margin-top:12px">
-          <button class="btn primary" onclick="applyRunFilters()">查询</button>
-        </div>
-      </div>
+    <section class="filter-panel">
+      <input id="run-ticket" placeholder="工单号筛选" value="${escapeHtml(state.runFilters.ticket_id || "")}">
+      <select id="run-status">
+        <option value="">全部状态</option>
+        <option value="success" ${state.runFilters.status === "success" ? "selected" : ""}>成功</option>
+        <option value="failed" ${state.runFilters.status === "failed" ? "selected" : ""}>失败</option>
+      </select>
+      <input id="run-event" placeholder="事件" value="${escapeHtml(state.runFilters.event || "")}">
+      <input id="run-module" placeholder="模块" value="${escapeHtml(state.runFilters.module || "")}">
+      <button class="btn primary" onclick="applyRunFilters()">查询</button>
+      <button class="btn secondary" onclick="resetRunFilters()">重置</button>
     </section>
-    <section class="card">
+    <section class="card run-record-card">
       <div class="card-header">
         <span>运行记录</span>
-        <span class="chip">点击行查看完整日志</span>
+        <span class="chip">JSONL ${data.jsonl_enabled ? "已开启" : "未开启"}</span>
       </div>
-      <div class="card-body table">
-        <div class="table-grid records-table">
-          <div class="table-header records-table">
-            <span>时间</span><span>工单</span><span>事件</span><span>模块</span><span>摘要</span>
-          </div>
-          ${items.map((item, index) => `
-            <button class="table-row row-button records-table" onclick="openLogDetail(${index})">
-              <span class="cell">${escapeHtml(formatTime(item.timestamp || item.ts))}</span>
-              <span class="cell">${escapeHtml(item.ticket_id || item.ticket || "-")}</span>
-              <span class="cell event-name">${escapeHtml(item.event || "未知事件")}</span>
-              <span class="cell">${escapeHtml(item.module || "-")}</span>
-              <span class="cell">${escapeHtml(logSummary(item) || "点击查看完整日志")}</span>
-            </button>
-          `).join("") || emptyHtml(runRecordsEmptyText(data))}
+      <div class="run-table">
+        <div class="run-table-header">
+          <span></span>
+          <span>工单</span>
+          <span>状态</span>
+          <span>模型</span>
+          <span>轮次</span>
+          <span>Token</span>
+          <span>耗时</span>
+          <span>触发方式</span>
+          <span>时间</span>
+          <span>操作</span>
         </div>
+        ${records.length ? records.map((record, index) => renderRunRecordRow(record, index)).join("") : emptyHtml(runRecordsEmptyText(data))}
       </div>
     </section>
   `);
 }
 
+function buildRunDisplayRecords(items) {
+  return items.map((item, index) => {
+    const status = runStatus(item);
+    const rounds = extractRounds(item);
+    const inputTokens = numberFromKeys(item, ["input_tokens", "prompt_tokens", "tokens_in"]);
+    const outputTokens = numberFromKeys(item, ["output_tokens", "completion_tokens", "tokens_out"]);
+    const totalTokens = numberFromKeys(item, ["total_tokens", "tokens", "token_count"]) || inputTokens + outputTokens;
+    const durationMs = durationMsFromItem(item);
+    const ticket = item.ticket_id || item.ticket || "";
+    const key = [
+      item._source_file || "events",
+      item.timestamp || item.ts || index,
+      item.event || "event",
+      ticket || index
+    ].join(":");
+    return {
+      key,
+      raw: item,
+      ticketLabel: ticket ? `#${ticket}` : "-",
+      status,
+      model: item.model || item.llm_model || item.provider_model || item.provider || "-",
+      rounds,
+      roundsCount: rounds.length || numberFromKeys(item, ["rounds", "round_count"]) || 1,
+      inputTokens,
+      outputTokens,
+      totalTokens,
+      durationMs,
+      trigger: item.trigger || item.trigger_type || item.source || item.event || "-",
+      time: item.timestamp || item.ts || item.time || item.created_at,
+      summary: logSummary(item),
+      isExpanded: state.expandedRuns.has(key)
+    };
+  });
+}
+
+function buildRunSummary(data, records) {
+  const totalRuns = records.length || data.summary?.filtered || 0;
+  const failed = records.filter(record => record.status === "failed").length;
+  const timeout = records.filter(record => record.status === "timeout").length;
+  const running = records.filter(record => record.status === "running").length;
+  const completed = Math.max(0, totalRuns - failed - timeout - running);
+  const successRate = totalRuns ? `${((completed * 100) / totalRuns).toFixed(1)}%` : "--";
+  const durations = records.map(record => record.durationMs).filter(value => value > 0);
+  const avgMs = durations.length
+    ? durations.reduce((sum, value) => sum + value, 0) / durations.length
+    : 0;
+  const inputTokens = records.reduce((sum, record) => sum + record.inputTokens, 0);
+  const outputTokens = records.reduce((sum, record) => sum + record.outputTokens, 0);
+  const totalTokens = records.reduce((sum, record) => sum + record.totalTokens, 0);
+  return {
+    totalRuns,
+    failed,
+    timeout,
+    running,
+    successRate,
+    avgDuration: avgMs ? formatDuration(avgMs) : "--",
+    inputTokens: formatTokenCount(inputTokens),
+    outputTokens: formatTokenCount(outputTokens),
+    totalTokens: formatTokenCount(totalTokens)
+  };
+}
+
+function renderRunRecordRow(record, index) {
+  const expanded = record.isExpanded;
+  return `
+    <div class="run-record-item">
+      <div class="run-record-row">
+        <button class="record-expand" aria-label="${expanded ? "收起" : "展开"}" onclick="toggleRunRecord(${index})">${expanded ? "⌄" : "›"}</button>
+        <span class="ticket-cell">${escapeHtml(record.ticketLabel)}</span>
+        <span>${renderStatusBadge(record.status)}</span>
+        <span class="truncate muted">${escapeHtml(record.model)}</span>
+        <span>${escapeHtml(record.roundsCount)}</span>
+        <span class="truncate">${escapeHtml(formatTokenPair(record))}</span>
+        <span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "--")}</span>
+        <span><span class="trigger-chip">${escapeHtml(record.trigger)}</span></span>
+        <span class="muted">${escapeHtml(relativeTime(record.time))}</span>
+        <button class="btn secondary compact" onclick="openRunRecordDetail(${index})">日志</button>
+      </div>
+      ${expanded ? renderRunRecordDetail(record, index) : ""}
+    </div>
+  `;
+}
+
+function renderRunRecordDetail(record, index) {
+  return `
+    <div class="run-record-detail">
+      <div class="detail-summary">
+        <span class="chip">${escapeHtml(record.model)}</span>
+        <span>${escapeHtml(formatTokenPair(record))}</span>
+        <span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "耗时未知")}</span>
+        <button class="btn secondary compact" onclick="openRunRecordDetail(${index})">查看完整日志</button>
+      </div>
+      <div class="round-timeline">
+        ${record.rounds.map((round, roundIndex) => renderRound(round, roundIndex)).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderRound(round, index) {
+  const tools = round.tools || [];
+  return `
+    <div class="round-block">
+      <div class="round-meta">
+        <span class="round-badge">R${index + 1}</span>
+        <span>${escapeHtml(round.model || "-")}</span>
+        <span>${escapeHtml(formatRoundTokens(round))}</span>
+        <span>${escapeHtml(round.durationMs ? formatDuration(round.durationMs) : "--")}</span>
+        <span class="chip">${escapeHtml(round.type || "tool_calls")}</span>
+        <span class="chip">${tools.length} 工具</span>
+      </div>
+      <div class="tool-call-list">
+        <div class="tool-call-title">工具调用</div>
+        ${tools.length ? tools.map(tool => renderToolCall(tool)).join("") : `<div class="tool-call-row muted"><span>暂无工具调用</span><span></span><span></span><span></span></div>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderToolCall(tool) {
+  const ok = tool.status !== "failed";
+  return `
+    <div class="tool-call-row">
+      <span class="truncate"><span class="${ok ? "success-text" : "danger-text"}">${ok ? "✓" : "×"}</span> ${escapeHtml(tool.name || "unknown_tool")}</span>
+      <span>${escapeHtml(tool.duration || "--")}</span>
+      <span class="${ok ? "muted" : "danger-text"} truncate">${escapeHtml(tool.message || tool.error || "")}</span>
+      <span>›</span>
+    </div>
+  `;
+}
+
+function extractRounds(item) {
+  const directRounds = Array.isArray(item.rounds)
+    ? item.rounds
+    : Array.isArray(item.llm_rounds)
+      ? item.llm_rounds
+      : [];
+  if (directRounds.length) {
+    return directRounds.map(round => normalizeRound(round, item));
+  }
+  return [normalizeRound(item, item)];
+}
+
+function normalizeRound(round, parent) {
+  const tools = extractToolCalls(round);
+  if (!tools.length) {
+    const name = round.tool || round.tool_name || parent.tool || parent.event;
+    if (name) {
+      tools.push({
+        name,
+        status: runStatus(round),
+        duration: formatDuration(durationMsFromItem(round)),
+        message: round.error || round.reason || round.status || ""
+      });
+    }
+  }
+  return {
+    model: round.model || round.llm_model || parent.model || parent.llm_model || "-",
+    inputTokens: numberFromKeys(round, ["input_tokens", "prompt_tokens", "tokens_in"]),
+    outputTokens: numberFromKeys(round, ["output_tokens", "completion_tokens", "tokens_out"]),
+    totalTokens: numberFromKeys(round, ["total_tokens", "tokens", "token_count"]),
+    durationMs: durationMsFromItem(round),
+    type: round.type || round.finish_reason || (tools.length ? "tool_calls" : parent.event || "event"),
+    tools
+  };
+}
+
+function extractToolCalls(item) {
+  const rawTools = Array.isArray(item.tool_calls)
+    ? item.tool_calls
+    : Array.isArray(item.tools)
+      ? item.tools
+      : [];
+  return rawTools.map(tool => ({
+    name: tool.name || tool.tool || tool.tool_name || tool.function?.name || "unknown_tool",
+    status: runStatus(tool),
+    duration: tool.duration || tool.elapsed || formatDuration(durationMsFromItem(tool)),
+    message: tool.error || tool.message || tool.summary || ""
+  }));
+}
+
+function toggleRunRecord(index) {
+  const record = state.runDisplayRecords[index];
+  if (!record) return;
+  if (state.expandedRuns.has(record.key)) {
+    state.expandedRuns.delete(record.key);
+  } else {
+    state.expandedRuns.add(record.key);
+  }
+  void renderRunRecords({ reload: false });
+}
+
 function applyRunFilters() {
+  const status = document.getElementById("run-status").value;
   state.runFilters = {
     ticket_id: document.getElementById("run-ticket").value.trim(),
     event: document.getElementById("run-event").value.trim(),
     module: document.getElementById("run-module").value.trim(),
-    level: document.getElementById("run-level").value.trim(),
-    errors_only: document.getElementById("run-errors").value
+    errors_only: status === "failed" ? "true" : "",
+    status
   };
+  state.expandedRuns.clear();
   void renderRunRecords();
 }
 
 function resetRunFilters() {
   state.runFilters = {};
+  state.expandedRuns.clear();
   void renderRunRecords();
-}
-
-function filterInput(id, label, key) {
-  return `
-    <label>${escapeHtml(label)}
-      <input id="${id}" value="${escapeHtml(state.runFilters[key] || "")}">
-    </label>
-  `;
 }
 
 function renderConfigPage(menu) {
@@ -375,12 +601,73 @@ function renderConfigPage(menu) {
   setContent(renderForm(menu, fields));
 }
 
+async function renderStorageConfig() {
+  const deploy = await loadDeployStatus().catch(() => null);
+  const fields = fieldsFor("存储配置");
+  const baseDir = fieldValue("resources.base_dir") || deploy?.storage?.base_dir || "-";
+  const attachmentsDir = fieldValue("resources.attachments_dir") || "-";
+  const stateDir = fieldValue("resources.state_dir") || deploy?.storage?.state_dir || "-";
+  const logDir = deploy?.storage?.log_dir || "-";
+  setContent(`
+    <div class="metric-grid storage-metrics">
+      ${metricCard("运行记录 JSONL", "已启用", "单次处理日志", "success-text")}
+      ${metricCard("审计日志", "已启用", "配置和密钥变更", "success-text")}
+      ${metricCard("附件缓存", "30 天", "按策略清理")}
+      ${metricCard("配置存储", "已同步", "overrides / secrets", "success-text")}
+    </div>
+    <div class="storage-grid">
+      ${storageCard("运行记录存储", "保存 agent 每次处理工单的事件、轮次和工具调用摘要。", logDir, "JSONL")}
+      ${storageCard("审计日志存储", "记录所有配置保存、密钥替换、登录方式和连通性检测。", `${stateDir}/admin_audit.jsonl`, "JSONL")}
+      ${storageCard("附件与截图缓存", "保存 Zendesk 附件、图片和处理过程中的临时截图。", attachmentsDir, "缓存")}
+      ${storageCard("配置持久化", "保存非密钥覆盖配置和单独加权限的密钥文件。", `${stateDir}/admin_overrides.yaml`, "YAML")}
+    </div>
+    ${renderForm("存储配置", fields)}
+    <section class="card">
+      <div class="card-header">
+        <span>存储检查结果</span>
+        <span class="chip">读取当前配置</span>
+      </div>
+      <div class="card-body">
+        <div class="storage-check-list">
+          ${storageCheck("资源根目录", baseDir, "可配置")}
+          ${storageCheck("运行日志目录", logDir, "只读展示")}
+          ${storageCheck("状态目录", stateDir, "需重启生效")}
+          ${storageCheck("附件目录", attachmentsDir, "立即生效")}
+        </div>
+      </div>
+    </section>
+  `);
+}
+
+function storageCard(title, description, path, type) {
+  return `
+    <section class="storage-card">
+      <div class="storage-card-head">
+        <strong>${escapeHtml(title)}</strong>
+        <span class="chip">${escapeHtml(type)}</span>
+      </div>
+      <p>${escapeHtml(description)}</p>
+      <code>${escapeHtml(path || "-")}</code>
+    </section>
+  `;
+}
+
+function storageCheck(label, value, status) {
+  return `
+    <div class="storage-check-row">
+      <span>${escapeHtml(label)}</span>
+      <code>${escapeHtml(value || "-")}</code>
+      <span class="muted">${escapeHtml(status)}</span>
+    </div>
+  `;
+}
+
 function renderIntegrations() {
   const fields = fieldsFor("工具与集成");
   setContent(`
     <section class="card">
       <div class="card-header">
-        <span>工具连通性</span>
+        <span>工具与集成</span>
         <span class="chip">检测会写入审计日志</span>
       </div>
       <div class="card-body integration-grid">
@@ -434,7 +721,7 @@ function fieldsFor(menu) {
 
 function renderForm(title, fields) {
   return `
-    <section class="card">
+    <section class="card config-card">
       <div class="card-header">
         <span>${escapeHtml(title)}</span>
         <span class="chip">保存前会生成审计记录</span>
@@ -598,25 +885,39 @@ function renderDiff(diff, restartRequired) {
 async function renderDeployStatus() {
   const deploy = await loadDeployStatus();
   setContent(`
-    <div class="stat-grid">
-      ${statCard("Agent 服务", deploy.agent?.status || "unknown", deploy.agent?.status === "running" ? "success-text" : "warn-text")}
-      ${statCard("镜像标签", deploy.image?.tag || "latest")}
-      ${statCard("提交", shortSha(deploy.image?.commit_sha) || "--")}
-      ${statCard("待重启", deploy.pending_restart ? "有" : "无", deploy.pending_restart ? "warn-text" : "success-text")}
-      ${statCard("密码登录", deploy.admin_auth?.password_login?.enabled ? "开启" : "关闭")}
+    <div class="metric-grid">
+      ${metricCard("Agent 服务", deploy.agent?.status || "unknown", "当前进程", deploy.agent?.status === "running" ? "success-text" : "warn-text")}
+      ${metricCard("镜像标签", deploy.image?.tag || "latest", deploy.image?.name || "zd-agent")}
+      ${metricCard("提交", shortSha(deploy.image?.commit_sha) || "--", "当前部署版本")}
+      ${metricCard("待重启", deploy.pending_restart ? "有" : "无", deploy.pending_restart ? "存在需重启配置" : "配置已生效", deploy.pending_restart ? "warn-text" : "success-text")}
+    </div>
+    <div class="auth-method-grid">
+      ${authMethodCard("账号密码登录", deploy.admin_auth?.password_login?.enabled, "默认账号 admin，初始密码 admin123")}
+      ${authMethodCard("Google SSO", deploy.admin_auth?.google_sso?.enabled, authStatus(deploy.admin_auth?.google_sso))}
+      ${authMethodCard("飞书 SSO", deploy.admin_auth?.feishu_sso?.enabled, authStatus(deploy.admin_auth?.feishu_sso))}
     </div>
     <section class="card">
-      <div class="card-header">运行路径</div>
+      <div class="card-header">部署路径</div>
       <div class="card-body kv-grid">
         <strong>资源目录</strong><span>${escapeHtml(deploy.storage?.base_dir || "-")}</span>
         <strong>状态目录</strong><span>${escapeHtml(deploy.storage?.state_dir || "-")}</span>
         <strong>日志目录</strong><span>${escapeHtml(deploy.storage?.log_dir || "-")}</span>
-        <strong>Google SSO</strong><span>${authStatus(deploy.admin_auth?.google_sso)}</span>
-        <strong>飞书 SSO</strong><span>${authStatus(deploy.admin_auth?.feishu_sso)}</span>
       </div>
     </section>
     ${renderForm("部署状态", fieldsFor("部署状态"))}
   `);
+}
+
+function authMethodCard(label, enabled, description) {
+  return `
+    <section class="auth-method-card">
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <p>${escapeHtml(description || "-")}</p>
+      </div>
+      <span class="chip ${enabled ? "enabled" : ""}">${enabled ? "已开启" : "未开启"}</span>
+    </section>
+  `;
 }
 
 function authStatus(item) {
@@ -634,31 +935,17 @@ async function renderAuditLogs() {
   state.auditLogs = data.items || [];
   const summary = data.summary || {};
   setContent(`
-    <div class="stat-grid">
-      ${statCard("匹配记录", summary.filtered ?? 0)}
-      ${statCard("全部记录", summary.total ?? 0)}
-      ${statCard("最近操作", state.auditLogs[0]?.action || "--")}
-      ${statCard("最近操作人", state.auditLogs[0]?.actor || "--")}
-      ${statCard("结果", "success", "success-text")}
+    <div class="metric-grid">
+      ${metricCard("匹配记录", summary.filtered ?? 0, "当前筛选")}
+      ${metricCard("全部记录", summary.total ?? 0, "审计总量")}
+      ${metricCard("最近操作", state.auditLogs[0]?.action || "--", "最新变更")}
+      ${metricCard("最近操作人", state.auditLogs[0]?.actor || "--", "admin")}
     </div>
-    <section class="card">
-      <div class="card-header">
-        <span>筛选</span>
-        <button class="btn secondary" onclick="resetAuditFilters()">重置</button>
-      </div>
-      <div class="card-body">
-        <div class="filter-grid">
-          <label>动作
-            <input id="audit-action" value="${escapeHtml(state.auditFilters.action || "")}">
-          </label>
-          <label>操作人
-            <input id="audit-actor" value="${escapeHtml(state.auditFilters.actor || "")}">
-          </label>
-        </div>
-        <div class="button-row" style="margin-top:12px">
-          <button class="btn primary" onclick="applyAuditFilters()">查询</button>
-        </div>
-      </div>
+    <section class="filter-panel">
+      <input id="audit-action" placeholder="动作" value="${escapeHtml(state.auditFilters.action || "")}">
+      <input id="audit-actor" placeholder="操作人" value="${escapeHtml(state.auditFilters.actor || "")}">
+      <button class="btn primary" onclick="applyAuditFilters()">查询</button>
+      <button class="btn secondary" onclick="resetAuditFilters()">重置</button>
     </section>
     <section class="card">
       <div class="card-header">
@@ -698,8 +985,8 @@ function resetAuditFilters() {
   void renderAuditLogs();
 }
 
-function openLogDetail(index) {
-  const item = state.runRecords[index];
+function openRunRecordDetail(index) {
+  const item = state.runDisplayRecords[index]?.raw;
   if (!item) return;
   openDrawer(
     item.event || "日志详情",
@@ -763,11 +1050,12 @@ function closeModal() {
   document.getElementById("modal-backdrop").classList.add("hidden");
 }
 
-function statCard(label, value, className = "") {
+function metricCard(label, value, description = "", className = "") {
   return `
-    <div class="stat">
-      <div class="stat-label">${escapeHtml(label)}</div>
-      <div class="stat-value ${className}">${escapeHtml(value)}</div>
+    <div class="metric-card">
+      <div class="metric-label">${escapeHtml(label)}</div>
+      <div class="metric-value ${className}">${escapeHtml(value)}</div>
+      <div class="metric-description">${escapeHtml(description)}</div>
     </div>
   `;
 }
@@ -790,7 +1078,7 @@ function runRecordsEmptyText(data) {
     : `日志目录不存在：${data.log_dir || ""}`;
 }
 
-function isErrorEvent(item) {
+function runStatus(item) {
   const text = [
     item.event,
     item.status,
@@ -799,7 +1087,22 @@ function isErrorEvent(item) {
     item.exception,
     item.traceback
   ].filter(Boolean).join(" ").toLowerCase();
-  return ["error", "failed", "failure", "exception", "traceback"].some(token => text.includes(token));
+  if (text.includes("timeout")) return "timeout";
+  if (["error", "failed", "failure", "exception", "traceback"].some(token => text.includes(token))) {
+    return "failed";
+  }
+  if (text.includes("running") || text.includes("started") || text.includes("processing")) return "running";
+  return "success";
+}
+
+function renderStatusBadge(status) {
+  const labels = {
+    success: "成功",
+    failed: "失败",
+    timeout: "超时",
+    running: "运行中"
+  };
+  return `<span class="status-badge ${status}">${labels[status] || status}</span>`;
 }
 
 function formatTime(value) {
@@ -809,6 +1112,19 @@ function formatTime(value) {
     return date.toLocaleString();
   }
   return String(value).replace("T", " ");
+}
+
+function relativeTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return formatTime(value);
+  const diffMs = Date.now() - date.getTime();
+  if (diffMs < 0) return formatTime(value);
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `大约 ${hours} 小时前`;
+  return formatTime(value);
 }
 
 function formatAuditTime(value) {
@@ -828,7 +1144,14 @@ function logSummary(item) {
   const parts = [];
   ["status", "reason", "error", "reply_type", "tool", "rounds", "_source_file"].forEach(key => {
     if (item[key] !== undefined && item[key] !== null && item[key] !== "") {
-      parts.push(`${key}: ${item[key]}`);
+      const value = item[key];
+      if (Array.isArray(value)) {
+        parts.push(`${key}: ${value.length}`);
+      } else if (value && typeof value === "object") {
+        parts.push(`${key}: ${Object.keys(value).length}`);
+      } else {
+        parts.push(`${key}: ${formatValue(value)}`);
+      }
     }
   });
   return parts.join(" · ");
@@ -841,6 +1164,48 @@ function auditSummary(item) {
 
 function shortSha(value) {
   return value ? String(value).slice(0, 7) : "";
+}
+
+function numberFromKeys(item, keys) {
+  for (const key of keys) {
+    const value = Number(item[key]);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+  return 0;
+}
+
+function durationMsFromItem(item) {
+  const ms = numberFromKeys(item, ["duration_ms", "elapsed_ms", "latency_ms"]);
+  if (ms) return ms;
+  const seconds = numberFromKeys(item, ["duration_seconds", "elapsed_seconds", "latency_seconds"]);
+  if (seconds) return seconds * 1000;
+  return 0;
+}
+
+function formatDuration(ms) {
+  if (!ms) return "--";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  return `${(seconds / 60).toFixed(1)}min`;
+}
+
+function formatTokenCount(value) {
+  if (!value) return "--";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`;
+  return String(value);
+}
+
+function formatTokenPair(record) {
+  const total = record.totalTokens || record.inputTokens + record.outputTokens;
+  if (!total && !record.inputTokens && !record.outputTokens) return "--";
+  return `${formatTokenCount(total)} / ${formatTokenCount(record.outputTokens || total)}`;
+}
+
+function formatRoundTokens(round) {
+  const total = round.totalTokens || round.inputTokens + round.outputTokens;
+  if (!total && !round.inputTokens && !round.outputTokens) return "--";
+  return `${formatTokenCount(round.inputTokens)} / ${formatTokenCount(round.outputTokens || total)} tokens`;
 }
 
 function redactLogValue(value, key = "") {

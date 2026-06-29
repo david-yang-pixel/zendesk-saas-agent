@@ -18,6 +18,16 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["openai.api_key"]["editable"] is True
 
 
+def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:
+    store = AdminConfigStore(tmp_path)
+
+    schema = store.schema()
+    by_path = {field["path"]: field for field in schema["fields"]}
+
+    assert by_path["public_reply.browser_relay_url"]["group"] == "工具与集成"
+    assert by_path["public_reply.browser_relay_api_key"]["group"] == "工具与集成"
+
+
 def test_effective_config_redacts_secrets(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cfg = AppConfig()
