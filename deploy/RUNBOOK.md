@@ -1,10 +1,10 @@
 # Deployment Runbook — zd-agent (Dify SaaS Support)
 
-当前服务器上拆成三个同级项目：
+当前服务器上拆成多个独立项目：
 
 - `/opt/zd-agent/code`: 只运行 Zendesk 工单处理 agent。
 - `/opt/db-gateway/code`: 独立维护 Teleport DB proxy、Teleport 证书续期、续期页面、只读 DB Gateway API 和 MCP server。
-- `/opt/tool-services/code`: GitHub、official docs、notification、sandbox worker 四个远程 MCP 服务；四个 systemd unit 独立运行，共用一份源码。
+- `/opt/mcp/code`: GitHub、official docs、notification、sandbox worker 四个远程 MCP 服务源码；独立管理、独立部署，agent CI/CD 不重启它们。
 
 ## One-time Setup (~2 hours)
 
@@ -105,11 +105,9 @@ chmod 600 /opt/zd-agent/.env
 # ZENDESK_MCP_URL=http://127.0.0.1:8099
 # ZENDESK_MCP_API_KEY=<from /etc/zendesk-mcp/env>
 
-# Tool Services env lives outside the agent process. Deploy/update it with:
-# /opt/zd-agent/code/deploy/deploy-tool-services.sh
-# The script creates /etc/github-mcp/env, /etc/docs-tool-service/env,
-# /etc/notification-service/env, and /etc/sandbox-worker/env, then writes only
-# remote MCP URLs/API keys into /opt/zd-agent/.env:
+# Tool Services env lives outside the agent process and is managed from
+# /opt/mcp/code, not from this repo's CI/CD. Copy only the remote MCP URLs/API
+# keys into /opt/zd-agent/.env:
 # GITHUB_MCP_URL=https://zendesk.smlershou.top/github-mcp/mcp
 # DOCS_TOOL_SERVICE_URL=https://zendesk.smlershou.top/docs-tool-service/mcp
 # NOTIFICATION_SERVICE_URL=https://zendesk.smlershou.top/notification-service/mcp
@@ -129,8 +127,9 @@ Required variables for `/opt/zd-agent/.env` (see `.env.example`):
 - DB_GATEWAY_URL / DB_GATEWAY_API_KEY
 
 `GITHUB_TOKEN` is optional in the agent env for legacy repo clone and branch
-switch flows only. GitHub PR/code search uses `/etc/github-mcp/env` via the
-remote `github-mcp` service.
+switch flows only. GitHub PR/code search uses the remote `github-mcp` service;
+the PAT, rate limit handling, and service env are owned by the independent MCP
+deployment.
 
 Required variables for `/opt/db-gateway/.env` are documented in `/opt/db-gateway/code/.env.example`:
 - DB_GATEWAY_API_KEY（must match `/opt/zd-agent/.env`）
@@ -150,17 +149,15 @@ Required variables for `/opt/zendesk-mcp/.env` are documented in `/opt/zendesk-m
 - ZENDESK_EMAIL
 - ZENDESK_API_TOKEN
 
-Required variables for Tool Services:
+Required variables for the independent Tool Services deployment:
 - `/etc/github-mcp/env`: `GITHUB_MCP_API_KEY`, `GITHUB_MCP_GITHUB_TOKEN`
 - `/etc/docs-tool-service/env`: `DOCS_TOOL_SERVICE_API_KEY`
 - `/etc/notification-service/env`: `NOTIFICATION_SERVICE_API_KEY`, `FEISHU_WEBHOOK_URL`, optional `FEISHU_WEBHOOK_SECRET`
 - `/etc/sandbox-worker/env`: `SANDBOX_WORKER_API_KEY`, `SANDBOX_WORKER_BASE_DIR`
 
-Normally do not edit those files by hand. Run
-`/opt/zd-agent/code/deploy/deploy-tool-services.sh`; it preserves existing
-keys, migrates `GITHUB_TOKEN` / `FEISHU_WEBHOOK_URL` from the agent env when
-needed, installs four systemd services, and verifies the public remote MCP
-endpoints.
+Do not manage those files from `zd-agent` CI/CD. Update/restart Tool Services
+from `/opt/mcp/code`, then update `/opt/zd-agent/.env` only if a remote URL or
+API key changes.
 
 **可选**：
 - `/opt/zendesk-mcp/.env`: `ZENDESK_MCP_DOWNLOAD_MAX_BYTES` — caps `download_attachment` responses returned to the agent as base64; default is 10 MiB.
@@ -221,6 +218,12 @@ sudo certbot certonly --webroot -w /var/www/html -d <agent-public-domain>
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+This `zd-agent` nginx template exposes only agent endpoints (`/webhook/`,
+`/healthz`) and intentionally does not define routes for remote MCP services.
+Routes such as `/github-mcp/`, `/docs-tool-service/`, `/notification-service/`,
+`/sandbox-worker/`, `/zendesk-mcp/`, `/signoz-mcp/`, and
+`/zendesk-reply-mcp` are owned by their independent service configs.
+
 ### 10. Install and start DB Gateway sibling project
 
 Follow `/opt/db-gateway/code/README.md` for:
@@ -247,9 +250,8 @@ Push to `main` runs `.github/workflows/docker-image.yml`:
 2. push `ghcr.io/yang-dify/zendesk-saas-agent:main`
 3. push `ghcr.io/yang-dify/zendesk-saas-agent:sha-<commit-sha>`
 4. SSH to the server, fast-forward `/opt/zd-agent/code` to `origin/main`
-5. run `/opt/zd-agent/code/deploy/deploy-tool-services.sh` to install/verify the four remote MCP services
-6. run `/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>`
-7. send a success email only after `deploy-ghcr.sh` finishes and `healthz` passes,
+5. run `/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>`
+6. send a success email only after `deploy-ghcr.sh` finishes and `healthz` passes,
    when SMTP notification secrets are configured
 
 Required GitHub repository secrets or `production` environment secrets for
@@ -348,7 +350,7 @@ sudo journalctl -u zd-agent -f
 |------|-----|
 | Restart agent | `sudo systemctl restart zd-agent` |
 | Restart DB Gateway | `sudo systemctl restart db-gateway`（DB Gateway 项目负责） |
-| Restart Tool Services | `sudo systemctl restart github-mcp docs-tool-service notification-service sandbox-worker` |
+| Restart Tool Services | 通过 `/opt/mcp/code` 的独立 MCP 运维流程处理；agent 部署不会重启它们 |
 | View live logs | `sudo docker logs -f zd-agent` (or `journalctl -u zd-agent -f`) |
 | Manual Teleport renew | Feishu `/relogin` or `sudo systemctl restart tsh-auth-watchdog` |
 | Pause processing | Feishu `/pause` (doesn't restart process, just suspends polling) |

@@ -118,12 +118,11 @@ Sandbox:  sandbox_list / search / read / write
 > 通过远程 Zendesk MCP endpoint 调用同级项目 `../zendesk-mcp`；`zendesk_public_reply`
 > 继续走 `zendesk-browser-relay`。附件发现和二进制下载都走 Zendesk MCP
 > `download_attachment`，agent 只负责把 base64 内容落到 sandbox。
-> 当前工具隔离边界以 `src/zd_agent/tools/service_boundary.py` 为准：`sql_query`、
-> SigNoz 工具、`zendesk_public_reply`、Zendesk 读写路径已经走独立服务；
-> Source 工具仍有本地 git fallback，属于 partial。下一批 Tool Service 迁移候选：
-> `github-mcp` / `source-tool-service`（GitHub token、rate limit、PR revert/follow-up 校验）、
-> `docs-tool-service`（llms.txt 缓存、限域访问）、`notification-service`（Feishu 凭据和发送重试）、
-> `sandbox-worker`（读写/搜索/执行隔离到独立进程或容器）。
+> GitHub PR/code search、官方文档、Feishu 通知、sandbox 读写/搜索/执行
+> 也只通过远程 MCP 服务调用：`github-mcp`、`docs-tool-service`、
+> `notification-service`、`sandbox-worker`。这些 MCP 的源码放在同级
+> `../mcp`，独立管理、独立部署；agent 仓库只保存客户端配置和调用边界。
+> 当前工具隔离边界以 `src/zd_agent/tools/service_boundary.py` 为准。
 
 ## 目录结构
 
