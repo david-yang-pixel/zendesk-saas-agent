@@ -16,7 +16,16 @@ _MAX_SUBAGENTS_PER_SESSION = 5
 
 _SOURCE_TOOLS = {"git_grep", "git_show", "git_log", "git_diff", "github_code_search", "github_search_prs", "github_get_pr"}
 _LOG_TOOLS = {"signoz_errors", "signoz_traceback", "signoz_query", "signoz_services"}
-_KNOWLEDGE_TOOLS = {"knowledge_search", "knowledge_read", "ticket_record_search", "ticket_record_read", "zendesk_search_articles", "zendesk_get_article", "zd_kb_cli_exec"}
+_KNOWLEDGE_TOOLS = {
+    "knowledge_search",
+    "knowledge_read",
+    "ticket_record_search",
+    "ticket_record_read",
+    "zendesk_search_articles",
+    "zendesk_get_article",
+    "official_docs_search",
+    "official_docs_read",
+}
 _DATA_TOOLS = {"sql_query", "inspector_exec"}
 
 

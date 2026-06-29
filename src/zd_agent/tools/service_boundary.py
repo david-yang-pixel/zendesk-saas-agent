@@ -126,11 +126,6 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     "official_docs_read": _OFFICIAL_DOCS_MCP,
     "ticket_record_search": _LOCAL_KNOWLEDGE,
     "ticket_record_read": _LOCAL_KNOWLEDGE,
-    "zd_kb_cli_exec": _boundary(
-        "local_process",
-        "zendesk-cli",
-        migration_target="tool-service/zendesk-mcp",
-    ),
     # Source tools
     "git_show": _SOURCE_PARTIAL,
     "git_grep": _SOURCE_PARTIAL,

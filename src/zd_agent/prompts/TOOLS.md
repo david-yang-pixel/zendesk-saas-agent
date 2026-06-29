@@ -1,5 +1,15 @@
 # 工具使用指南（SaaS 版）
 
+## MCP-only 外部工具边界
+
+外部系统工具统一走远程 MCP：Zendesk / Help Center 走 Zendesk MCP，
+客户可见 public reply 走 zendesk-browser-relay MCP，数据库走 DB Gateway MCP，
+SigNoz 走 SigNoz MCP，GitHub 走 GitHub MCP，官方文档走 Docs Tool Service MCP，
+飞书通知走 Notification Service MCP，sandbox 读写/搜索/执行走 Sandbox Worker MCP。
+
+如果某个远程 MCP 不可用，记录“MCP 不可用 + 原始错误”，停止该工具路径并升级人工；
+不要尝试任何非 MCP 命令行、shell 兜底、浏览器后台或直接外网替代路径。
+
 ## Zendesk 工具组
 
 | 工具 | 用途 |
@@ -7,7 +17,7 @@
 | `zendesk_get_ticket` | Step 1 起手，拉工单详情 + 对话 |
 | `zendesk_get_attachments` | Step 7，有附件时下载（截图 / 文件） |
 | `zendesk_search` | 按语法搜工单（如 `requester:xxx status:solved`） |
-| `zendesk_search_articles` / `zendesk_get_article` | Help Center 查询（API 版，zd_kb_cli_exec 是 CLI 备选） |
+| `zendesk_search_articles` / `zendesk_get_article` | Help Center 查询（经 Zendesk MCP） |
 | `zendesk_internal_reply` | 只写 Internal Note（客户不可见）。不要分多次调用；一次写完三段式 |
 | `zendesk_public_reply` | **客户可见最终回复**。SaaS messaging 工单要回复客户时直接调用它 |
 | `zendesk_add_tags` | 酌情打标（如确认退款 tag） |
@@ -40,8 +50,7 @@ logs / traces / metrics / services / schema / ClickHouse SQL：
 - `signoz_query`：统一 ClickHouse 查询入口，可查 logs、traces、metrics，也可做聚合和 schema 探测。常用表先用 `DESCRIBE signoz_logs.distributed_logs_v2`，traces/metrics 字段不确定时先跑 `DESCRIBE signoz_traces...` / `DESCRIBE signoz_metrics...` 找真实表名和列；字段不确定时先查 schema，不要靠记忆猜字段。
 
 远程 SigNoz MCP 不可用时，停止该监控查询路径并在 Internal Note / 飞书摘要里写明
-“MCP 不可用 + 原始错误”。不要使用本地 `sz` CLI，不要使用 SigNoz Web UI，不要把 0
-结果改写成“线上无异常”。
+“MCP 不可用 + 原始错误”。不要使用任何非 MCP 观测路径，不要把 0 结果改写成“线上无异常”。
 
 > 版本感知：`saas_deployed_version` 查 cloud.dify.ai 生产 dify-api 当前运行版本 + 对应源码 ref。
 
@@ -49,7 +58,8 @@ logs / traces / metrics / services / schema / ClickHouse SQL：
 
 - `ticket_record_search`：在本地 1200+ 历史工单记录中 grep（多关键词 AND）
 - `ticket_record_read`：按 ticket_id 读历史分析
-- `zd_kb_cli_exec`：执行 `zd kb search/article/list/categories/sections`
+- `zendesk_search_articles` / `zendesk_get_article`：查 Help Center 文章（经 Zendesk MCP）
+- `official_docs_search` / `official_docs_read`：查 Dify 官方文档（经 Docs Tool Service MCP）
 
 ## 源码工具组
 
@@ -124,7 +134,7 @@ Subagent 返回后先读它的 `Conclusion / Checked / Evidence / Gaps / Parent 
 ## 归档工具
 
 ### `archive_ticket`
-- 写入 `zendesk-cli/工单记录/<ticket_id>.md`
+- 写入配置的 `ticket_records_dir/<ticket_id>.md`
 - 首次处理 → 建新文件（带 frontmatter）
 - 跟进 → 追加 `## 跟进 <ts>` 段
 
@@ -149,7 +159,7 @@ Step 4: classify_ticket → 决定激活哪些工具组
 ├─ refund         → sql_query (billing 库) + ticket_record_*
 ├─ api            → ticket_record_* (sql 通常不需要)
 ├─ insufficient_info → 尽量少调工具，直接输出"需客户补充"
-├─ product_usage  → zd_kb_cli_exec / zendesk_search_articles 为主
+├─ product_usage  → zendesk_search_articles / zendesk_get_article / official_docs_* 为主
 └─ general        → 广谱
   ↓
 Step 10-14: 单一证据源直接工具排查；多证据源默认 run_subagents_parallel (根因)

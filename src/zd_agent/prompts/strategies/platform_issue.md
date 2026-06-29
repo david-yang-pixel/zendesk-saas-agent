@@ -98,8 +98,8 @@ service / deployment / env / 字段 / 时间窗其中一个条件错了。
 3. 必要时用 `signoz_query` 跑 `DESCRIBE signoz_logs.distributed_logs_v2`；如果查
    traces 或 metrics，也先 DESCRIBE 对应 signoz_traces / signoz_metrics 表，确认真实列名。
 4. 对照客户描述调整 service / deployment / 时间窗后再下钻。
-5. 所有 MCP 查询都失败，才写"SigNoz MCP 不可用，未拿到监控数据"；不要使用本地
-   `sz` CLI 或 SigNoz Web UI 兜底。
+5. 所有 MCP 查询都失败，才写"SigNoz MCP 不可用，未拿到监控数据"；不要改走任何
+   非 MCP 观测路径。
 
 ### 7. 镜像版本确认
 

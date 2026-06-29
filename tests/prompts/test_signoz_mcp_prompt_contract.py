@@ -12,8 +12,7 @@ def test_signoz_prompt_declares_remote_mcp_as_observability_path() -> None:
     assert "远程 SigNoz MCP 是统一观测查询入口" in text
     assert "不只是查日志" in text
     assert "logs / traces / metrics / services / schema / ClickHouse SQL" in text
-    assert "不要使用本地 `sz` CLI" in text
-    assert "不要使用 SigNoz Web UI" in text
+    assert "不要使用任何非 MCP 观测路径" in text
     assert "MCP 不可用" in text
     assert "停止该监控查询路径" in text
 

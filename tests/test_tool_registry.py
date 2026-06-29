@@ -8,3 +8,8 @@ class TestToolRegistry(unittest.TestCase):
         registry = create_tool_registry()
         self.assertIn("github_search_prs", registry)
         self.assertIn("github_get_pr", registry)
+
+    def test_does_not_register_local_cli_tools(self) -> None:
+        registry = create_tool_registry()
+
+        self.assertNotIn("zd_kb_cli_exec", registry)

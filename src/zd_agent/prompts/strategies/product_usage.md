@@ -4,8 +4,8 @@
 
 ## 关键步骤
 1. 识别具体功能点
-2. **优先搜 Help Center**（zd_kb_cli_exec subcommand=search）
-3. 找到匹配文章 → `zd_kb_cli_exec subcommand=article id=<id> url_only=true` 取链接
+2. **优先搜 Help Center**：`zendesk_search_articles`
+3. 找到匹配文章 → `zendesk_get_article` 取标题、正文和 URL
 4. 本地知识库 `saas版知识库/07-product-usage.md` + `11-feature-quick-reference.md`
 
 ## 回复原则

@@ -28,7 +28,7 @@
    - 源码：`git_grep` / `git_show`（默认经 Source MCP 查 `runtime`，即线上正在运行的代码）/ `github_code_search`（未接入仓库或 PR/Issue 证据）
    - 数据：`inspector_exec` / `sql_query`（数据库查询唯一入口，底层经 DB Gateway MCP）
    - 日志：`signoz_errors` / `signoz_traceback`（堆栈）/ `signoz_query`（raw SQL）
-   - 历史：`ticket_record_search` / `zd_kb_cli_exec`
+   - 历史/文档：`ticket_record_search` / `zendesk_search_articles` / `official_docs_search`
 5. **多证据源工单默认派 subagent**（用 `run_subagents_parallel`）：
    - 只要一个工单需要查看 **代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR** 中任意 ≥2 类证据源，就默认派 subagent，而不是主 agent 串行硬查到底
    - 默认按证据源拆 2-3 个 subagent：源码、日志、文档/历史、GitHub PR；复杂 platform_issue / workflow / 多组件交互最多 5 个 subagent

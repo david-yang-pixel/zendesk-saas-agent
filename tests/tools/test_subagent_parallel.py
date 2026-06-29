@@ -320,6 +320,27 @@ async def test_parallel_dispatch_attaches_log_metadata(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_docs_tools_are_classified_as_knowledge_work(fake_session):
+    tool = RunSubagentsParallel()
+    captured = []
+
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
+        captured.append(log_metadata)
+        return ToolResult(output=f"ok {task}")
+
+    with _make_subagent_patch(fake_subagent):
+        result = await tool.execute(
+            {"tasks": [
+                {"task": "check official docs", "tools": ["official_docs_search"]},
+            ]},
+            fake_session,
+        )
+
+    assert result.success is True
+    assert captured[0]["worker_role"] == "knowledge_investigator"
+
+
+@pytest.mark.asyncio
 async def test_missing_tools_field_rejected(fake_session):
     """招法 3: tools 是 required，没传应该报错"""
     tool = RunSubagentsParallel()

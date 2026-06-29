@@ -46,7 +46,6 @@ from zd_agent.tools.zendesk import (
     ZendeskSearchArticles,
 )
 from zd_agent.tools.zendesk_public_reply import ZendeskPublicReply
-from zd_agent.tools.zd_kb_cli import ZdKbCliExec
 from zd_agent.tools.saas_version import SaasDeployedVersion
 from zd_agent.tools.signoz_tools import (
     SignozErrors,
@@ -73,14 +72,10 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ZendeskFollowTicket())
 
     # 知识库工具组
-    # ZendeskKgSearch 不再注册：依赖独立 zendesk-kg-cli（github.com/sorphwer/...）
-    # 该 CLI 未安装在生产容器内，且 zd_kb_cli_exec / zendesk_search_articles
-    # 已完全覆盖 Help Center 文章查询能力。让 LLM 看不到它，避免选错。
     registry.register(KnowledgeSearch())
     registry.register(KnowledgeRead())
     registry.register(OfficialDocsSearch())
     registry.register(OfficialDocsRead())
-    registry.register(ZdKbCliExec())
 
     # 源码工具组
     registry.register(GitShow())

@@ -60,7 +60,7 @@
 ┌──────────────────────────────▼────────────────────────────────────────┐
 │                  输出: reply + 归档 + escalate                         │
 │  zendesk_public_reply(solution/ask/closed) 或 zendesk_internal_reply   │
-│  archive_ticket → resources/zendesk-cli/工单记录/<id>.md               │
+│  archive_ticket → resources/<ticket_records_dir>/<id>.md              │
 │  feishu_push(escalate 场景, content 必含完整 draft)                  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -94,7 +94,7 @@ Zendesk:  zendesk_get_ticket / get_attachments / search / search_articles
           zendesk_public_reply          ← 直接回客户(受 public_reply.enabled 门控)
 知识库:    knowledge_search / knowledge_read          ← 本地 saas版知识库
           official_docs_search / official_docs_read   ← 官方在线文档
-          zd_kb_cli_exec                              ← Help Center 文章
+          zendesk_search_articles / zendesk_get_article ← Help Center 文章（Zendesk MCP）
 历史工单:  ticket_record_search / ticket_record_read  ← grep 工单记录/*.md
 数据库:    sql_query(prod/billing/plugin,只读,经 DB Gateway)
           inspector_exec(跨 main+billing+TiDB 自动聚合,quota/run 类首选)
@@ -162,7 +162,7 @@ src/zd_agent/
 resources/(运行时数据,base_dir=/opt/zd-agent/resources)
   saas源代码/          6 个 SaaS 仓库 clone
   saas版知识库/        本地知识库 md
-  zendesk-cli/工单记录/ 工单归档 <id>.md
+  <ticket_records_dir>/ 工单归档 <id>.md
   .state/              工单状态 / dedup / mention 记录
 
 config.yaml            主配置
@@ -287,7 +287,7 @@ private package 时，服务器需要先完成一次 GHCR 登录，使用只带 
 
 ## 归档与调试
 
-每次处理后归档到 `resources/zendesk-cli/工单记录/<id>.md`,含内部分析、回复草稿、关键证据。`--dry-run` 模式适合先看归档再决定是否正式投递。
+每次处理后归档到配置的 `resources/<ticket_records_dir>/<id>.md`,含内部分析、回复草稿、关键证据。`--dry-run` 模式适合先看归档再决定是否正式投递。
 
 ## 相关文档
 
