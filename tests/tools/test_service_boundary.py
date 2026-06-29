@@ -29,7 +29,7 @@ def test_existing_split_services_are_marked_service_backed() -> None:
     assert signoz_query.fully_isolated is True
 
     public_reply = get_tool_service_boundary("zendesk_public_reply")
-    assert public_reply.execution_boundary == "remote_http_relay"
+    assert public_reply.execution_boundary == "remote_mcp"
     assert public_reply.service == "zendesk-browser-relay"
     assert public_reply.service_backed is True
     assert public_reply.fully_isolated is True

@@ -113,11 +113,11 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     "zendesk_add_tags": _ZENDESK_MCP,
     "zendesk_follow_ticket": _ZENDESK_MCP,
     "zendesk_public_reply": _boundary(
-        "remote_http_relay",
+        "remote_mcp",
         "zendesk-browser-relay",
         service_backed=True,
         fully_isolated=True,
-        notes="Customer-visible browser reply is executed by the browser relay service.",
+        notes="Customer-visible browser reply executes through the zendesk-browser-relay MCP endpoint.",
     ),
     # Knowledge and local records
     "knowledge_search": _LOCAL_KNOWLEDGE,

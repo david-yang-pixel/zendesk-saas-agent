@@ -105,7 +105,7 @@ def saas_env(monkeypatch):
         "GITHUB_TOKEN": "gh_xxx",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
-        "ZENDESK_BROWSER_RELAY_URL": "http://127.0.0.1:8097/",
+        "ZENDESK_BROWSER_RELAY_URL": "https://zendesk.smlershou.top/zendesk-reply-mcp/",
         "ZENDESK_BROWSER_RELAY_API_KEY": "relay_xxx",
         "ZENDESK_BROWSER_RELAY_TIMEOUT_SECONDS": "55",
     }
@@ -184,7 +184,7 @@ def test_config_loads_db_gateway_env(saas_env, saas_config_file):
 
 def test_config_loads_zendesk_browser_relay_env(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
-    assert cfg.public_reply.browser_relay_url == "http://127.0.0.1:8097"
+    assert cfg.public_reply.browser_relay_url == "https://zendesk.smlershou.top/zendesk-reply-mcp"
     assert cfg.public_reply.browser_relay_api_key == "relay_xxx"
     assert cfg.public_reply.browser_relay_timeout_seconds == 55
 

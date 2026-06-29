@@ -62,7 +62,7 @@ public_reply:
   silence_window_seconds: 30
   ask_followup_alert_minutes: 30
   abandoned_hours: 24
-  browser_relay_url: http://127.0.0.1:8097/mcp
+  browser_relay_url: https://zendesk.smlershou.top/zendesk-reply-mcp
   browser_relay_timeout_seconds: 90
 sandbox:
   type: local
