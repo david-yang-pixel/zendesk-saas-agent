@@ -64,6 +64,13 @@ public_reply:
   abandoned_hours: 24
   browser_relay_url: http://127.0.0.1:8097/mcp
   browser_relay_timeout_seconds: 90
+zendesk_mcp:
+  # Zendesk 读取 / Internal Note / 标签 / 关注走独立 Zendesk MCP。
+  # public reply 仍走 zendesk-browser-relay。
+  mcp_url: ''
+  # 由环境变量 ZENDESK_MCP_API_KEY 注入，不要写入仓库。
+  mcp_api_key: ''
+  request_timeout_seconds: 35
 feishu:
   webhook_url: ''
   daily_summary_time: 09:00

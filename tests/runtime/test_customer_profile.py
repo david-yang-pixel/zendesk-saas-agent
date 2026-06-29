@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -20,27 +20,34 @@ from zd_agent.runtime.customer_profile import (
 )
 
 
-def _make_client(
+def _make_mcp_call(
     *,
     ticket_resp: dict | None = None,
     user_resp: dict | None = None,
     search_resp: dict | None = None,
     raise_on_search: bool = False,
-) -> MagicMock:
-    client = MagicMock()
-    client.get_ticket = MagicMock(return_value=ticket_resp)
-    client.get_user = MagicMock(return_value=user_resp)
-    if raise_on_search:
-        client.search_tickets = MagicMock(side_effect=RuntimeError("zd 500"))
-    else:
-        client.search_tickets = MagicMock(return_value=search_resp or {"results": []})
-    return client
+    raise_on_ticket: bool = False,
+):
+    async def fake_call(name: str, arguments: dict):
+        if name == "get_ticket":
+            if raise_on_ticket:
+                return {"success": False, "code": "ZENDESK_API_ERROR", "error": "network"}
+            return {"success": True, "data": ticket_resp}
+        if name == "get_user":
+            return {"success": True, "data": user_resp}
+        if name == "search_tickets":
+            if raise_on_search:
+                return {"success": False, "code": "ZENDESK_API_ERROR", "error": "zd 500"}
+            return {"success": True, "data": search_resp or {"results": []}}
+        raise AssertionError(f"unexpected Zendesk MCP tool: {name}")
+
+    return fake_call
 
 
 class TestPrefetchHappyPath:
     @pytest.mark.asyncio
     async def test_returns_email_and_recent_tickets(self) -> None:
-        client = _make_client(
+        mcp_call = _make_mcp_call(
             ticket_resp={"id": 9999, "requester_id": 12345},
             user_resp={"id": 12345, "email": "alice@example.com"},
             search_resp={"results": [
@@ -50,7 +57,8 @@ class TestPrefetchHappyPath:
             ]},
         )
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             profile = await prefetch_customer_profile(9999)
 
@@ -63,13 +71,14 @@ class TestPrefetchHappyPath:
     @pytest.mark.asyncio
     async def test_truncates_to_max(self) -> None:
         many = [{"id": 3000 + i} for i in range(20)]
-        client = _make_client(
+        mcp_call = _make_mcp_call(
             ticket_resp={"id": 9999, "requester_id": 12345},
             user_resp={"id": 12345, "email": "x@y.com"},
             search_resp={"results": many},
         )
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             profile = await prefetch_customer_profile(9999)
         assert len(profile["recent_ticket_ids"]) == _MAX_RECENT_TICKETS
@@ -78,30 +87,33 @@ class TestPrefetchHappyPath:
 class TestPrefetchFailures:
     @pytest.mark.asyncio
     async def test_get_ticket_returns_none_empty_profile(self) -> None:
-        client = _make_client(ticket_resp=None)
+        mcp_call = _make_mcp_call(ticket_resp=None)
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             profile = await prefetch_customer_profile(9999)
         assert profile == {}
 
     @pytest.mark.asyncio
     async def test_no_requester_id_empty_profile(self) -> None:
-        client = _make_client(ticket_resp={"id": 9999})  # no requester_id
+        mcp_call = _make_mcp_call(ticket_resp={"id": 9999})  # no requester_id
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             profile = await prefetch_customer_profile(9999)
         assert profile == {}
 
     @pytest.mark.asyncio
     async def test_no_email_empty_profile(self) -> None:
-        client = _make_client(
+        mcp_call = _make_mcp_call(
             ticket_resp={"id": 9999, "requester_id": 12345},
             user_resp={"id": 12345, "email": ""},  # 空 email
         )
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             profile = await prefetch_customer_profile(9999)
         assert profile == {}
@@ -109,13 +121,14 @@ class TestPrefetchFailures:
     @pytest.mark.asyncio
     async def test_search_failure_returns_empty_recent_list(self) -> None:
         """search 失败 → 仍返回 email + 空 recent list（不影响主流程）"""
-        client = _make_client(
+        mcp_call = _make_mcp_call(
             ticket_resp={"id": 9999, "requester_id": 12345},
             user_resp={"id": 12345, "email": "x@y.com"},
             raise_on_search=True,
         )
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             profile = await prefetch_customer_profile(9999)
         # email 拿到了，但 recent_ids 空
@@ -126,10 +139,10 @@ class TestPrefetchFailures:
     @pytest.mark.asyncio
     async def test_get_ticket_raises_returns_empty(self) -> None:
         """任何顶层异常都被吞掉，返回 {}"""
-        client = MagicMock()
-        client.get_ticket = MagicMock(side_effect=RuntimeError("network"))
+        mcp_call = _make_mcp_call(raise_on_ticket=True)
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             profile = await prefetch_customer_profile(9999)
         assert profile == {}
@@ -139,17 +152,13 @@ class TestPrefetchTimeout:
     @pytest.mark.asyncio
     async def test_timeout_returns_empty(self) -> None:
         """to_thread 跑超时（slow Zendesk） → 返回 {}"""
-        import time
+        async def slow_call(name: str, arguments: dict):
+            await asyncio.sleep(10)
+            return {"success": True, "data": {"id": 9999, "requester_id": 1}}
 
-        client = MagicMock()
-
-        def _slow_get_ticket(*_a, **_k):
-            time.sleep(10)  # 远超 _PROFILE_TIMEOUT_SECONDS=5
-            return {"id": 9999, "requester_id": 1}
-
-        client.get_ticket = _slow_get_ticket
         with patch(
-            "zd_agent.runtime.customer_profile._get_client", return_value=client,
+            "zd_agent.runtime.customer_profile.call_zendesk_tool",
+            side_effect=slow_call,
         ):
             # 用更短的 timeout 测试（patch _PROFILE_TIMEOUT_SECONDS = 0.3）
             with patch(

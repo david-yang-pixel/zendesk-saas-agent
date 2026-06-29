@@ -12,15 +12,15 @@ Agent 看到 system prompt 里的 ``recent_ticket_ids`` 后可以决定要不要
 
 实现保守：
 - 全程 try/except + 5s timeout，拉不到画像不影响主流程（agent 仍能跑）
-- 只用 Zendesk 标准 API（不依赖 inspector binary，避免容器内 binary 缺失）
+- 只通过远程 Zendesk MCP 读取（不在 agent 进程内直连 Zendesk API）
 """
 from __future__ import annotations
 
 import asyncio
 from typing import Any
 
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
-from zd_agent.tools.zendesk import _get_client
 
 logger = get_logger(module="runtime.customer_profile")
 
@@ -57,10 +57,18 @@ async def prefetch_customer_profile(ticket_id: int) -> dict[str, Any]:
 
 async def _do_prefetch(ticket_id: int) -> dict[str, Any]:
     """实际预拉逻辑（被 prefetch_customer_profile timeout/exception 包裹）。"""
-    client = _get_client()
-
     # 1. 拉工单 → 拿 requester_id
-    ticket = await asyncio.to_thread(client.get_ticket, ticket_id)
+    ticket_payload = await call_zendesk_tool("get_ticket", {"ticket_id": ticket_id})
+    if not ticket_payload.get("success"):
+        logger.warning(
+            "customer_profile_ticket_fetch_failed",
+            ticket_id=ticket_id,
+            error=ticket_payload.get("error"),
+            code=ticket_payload.get("code"),
+        )
+        return {}
+    ticket_data = ticket_payload.get("data") or {}
+    ticket = ticket_data.get("ticket", ticket_data)
     if not ticket:
         return {}
     requester_id = ticket.get("requester_id")
@@ -68,7 +76,18 @@ async def _do_prefetch(ticket_id: int) -> dict[str, Any]:
         return {}
 
     # 2. 拉 requester → 拿 email
-    user = await asyncio.to_thread(client.get_user, requester_id)
+    user_payload = await call_zendesk_tool("get_user", {"user_id": requester_id})
+    if not user_payload.get("success"):
+        logger.warning(
+            "customer_profile_user_fetch_failed",
+            ticket_id=ticket_id,
+            requester_id=requester_id,
+            error=user_payload.get("error"),
+            code=user_payload.get("code"),
+        )
+        return {}
+    user_data = user_payload.get("data") or {}
+    user = user_data.get("user", user_data)
     if not user:
         return {}
     email = user.get("email") or ""
@@ -85,11 +104,21 @@ async def _do_prefetch(ticket_id: int) -> dict[str, Any]:
         f"requester:{email} tags:saas created>{since}"
     )
     try:
-        # client.search_tickets 是同步的，用 to_thread；返回
-        # {"results": [...], "count": ...} 的标准 search payload
-        search_resp = await asyncio.to_thread(
-            client.search_tickets, query, "updated_at", "desc", 1, _MAX_RECENT_TICKETS + 1,
+        search_payload = await call_zendesk_tool(
+            "search_tickets",
+            {
+                "query": query,
+                "sort_by": "updated_at",
+                "sort_order": "desc",
+                "page": 1,
+                "per_page": _MAX_RECENT_TICKETS + 1,
+            },
         )
+        if not search_payload.get("success"):
+            raise RuntimeError(
+                f"{search_payload.get('code')}: {search_payload.get('error')}"
+            )
+        search_resp = search_payload.get("data") or {}
     except Exception as e:
         logger.warning(
             "customer_profile_search_failed",

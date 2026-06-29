@@ -49,7 +49,7 @@
 ┌──────────────────────────────▼────────────────────────────────────────┐
 │                       会话 / 运行层 Session + Runtime                   │
 │  SessionManager → AgentSession(并发隔离)                             │
-│  AgentLoop(AsyncGenerator 事件流) 驱动 LLM ↔ 44 个工具循环           │
+│  AgentLoop(AsyncGenerator 事件流) 驱动 LLM ↔ 45 个工具循环           │
 │  ┌───────────┐ ┌───────────┐ ┌──────────────┐ ┌──────────────────┐  │
 │  │ LLMProvider│ │ Guardrails│ │ Compaction   │ │ Subagent 编排    │  │
 │  │ OpenAI/Anth│ │ 轮/Token/ │ │ 锚点+snip+   │ │ 串行优先,mini   │  │
@@ -84,12 +84,13 @@
 
 verdict / 高风险定义见 `src/zd_agent/trigger/decider.py`,Agent 工作流见 `src/zd_agent/prompts/AGENTS.md`。
 
-## 工具层(44 个)
+## 工具层(45 个)
 
 ```text
 Zendesk:  zendesk_get_ticket / get_attachments / search / search_articles
           get_article / get_user / add_tags
           zendesk_internal_reply        ← 写 Internal Note(给 SE)
+          zendesk_follow_ticket         ← 关注工单(经 Zendesk MCP)
           zendesk_public_reply          ← 直接回客户(受 public_reply.enabled 门控)
 知识库:    knowledge_search / knowledge_read          ← 本地 saas版知识库
           official_docs_search / official_docs_read   ← 官方在线文档
@@ -112,6 +113,17 @@ Sandbox:  sandbox_list / search / read / write
 > MCP 只配置 `DB_GATEWAY_URL` 和 `DB_GATEWAY_API_KEY`，不持有 Teleport / DB 凭据。
 > SigNoz 工具通过远程 Signoz MCP endpoint 调用同级项目 `../signoz-mcp`；
 > agent 只配置 `SIGNOZ_MCP_URL` 和 `SIGNOZ_MCP_API_KEY`，不持有原始 `SIGNOZ_API_KEY`。
+> Zendesk 读取 / 搜索 / Help Center / Internal Note / 标签 / 关注（包括工具层、
+> trigger 拉消息、客户画像、mention poller、human-takeover 检测、ACK/error note）
+> 通过远程 Zendesk MCP endpoint 调用同级项目 `../zendesk-mcp`；`zendesk_public_reply`
+> 继续走 `zendesk-browser-relay`。附件发现和二进制下载都走 Zendesk MCP
+> `download_attachment`，agent 只负责把 base64 内容落到 sandbox。
+> 当前工具隔离边界以 `src/zd_agent/tools/service_boundary.py` 为准：`sql_query`、
+> SigNoz 工具、`zendesk_public_reply`、Zendesk 读写路径已经走独立服务；
+> Source 工具仍有本地 git fallback，属于 partial。下一批 Tool Service 迁移候选：
+> `github-mcp` / `source-tool-service`（GitHub token、rate limit、PR revert/follow-up 校验）、
+> `docs-tool-service`（llms.txt 缓存、限域访问）、`notification-service`（Feishu 凭据和发送重试）、
+> `sandbox-worker`（读写/搜索/执行隔离到独立进程或容器）。
 
 ## 目录结构
 
@@ -136,7 +148,8 @@ src/zd_agent/
     compaction.py       上下文压缩(锚点保护 + history snip + LLM 多级摘要)
     guardrails.py       护栏(轮次 / Token / 超时)
     customer_profile.py 客户画像预拉
-  tools/              43 个工具(见上)
+  tools/              45 个工具(见上)
+    service_boundary.py 当前工具运行边界和 Tool Service 迁移状态
   prompts/            Prompt 文件
     SOUL.md             身份与行为准则
     AGENTS.md           工作流总览(skeleton 风格)
@@ -171,6 +184,7 @@ deploy/                Dockerfile / systemd / nginx / RUNBOOK.md
 | `agent.max_concurrent_sessions` | `2` | 2G 服务器档位;4G 可调到 5 |
 | `public_reply.enabled` | `true` | **总开关**:false = 全部走 Internal Note |
 | `public_reply.max_ask_count` | `10` | 累计 ask 上限,超过转人工 |
+| `zendesk_mcp.mcp_url` | `''` | Zendesk 读取/Internal Note/标签/关注 MCP endpoint |
 | `zendesk.min_ticket_id` | `2624` | **灰度边界**:只处理 ID ≥ 此值的工单,0 = 全量 |
 | `zendesk.search_query` | `status:new tags:saas` | 处理范围 |
 
@@ -206,6 +220,8 @@ ZENDESK_EMAIL=you@example.com
 ZENDESK_API_TOKEN=your-api-token
 ZENDESK_WEBHOOK_SECRET=...           # 经典 webhook 签名
 ZENDESK_MESSAGING_WEBHOOK_SECRET=... # messaging webhook 签名
+ZENDESK_MCP_URL=https://<agent-public-domain>/zendesk-mcp
+ZENDESK_MCP_API_KEY=<shared-secret>
 FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_BOT_CHAT_ID
 SIGNOZ_MCP_URL=https://<agent-public-domain>/signoz-mcp
 SIGNOZ_MCP_API_KEY=<shared-secret>
@@ -216,6 +232,7 @@ DB_GATEWAY_API_KEY=<shared-secret>
 
 `db-gateway` 的配置、部署和 Teleport 凭据在同级项目 `../db-gateway`，不属于本仓库。
 `signoz-mcp` 的配置、部署和 SigNoz 原始凭据在同级项目 `../signoz-mcp`，不属于本仓库。
+`zendesk-mcp` 的配置、部署和 Zendesk 原始 API 凭据在同级项目 `../zendesk-mcp`，不属于本仓库。
 
 ### 常用 CLI
 

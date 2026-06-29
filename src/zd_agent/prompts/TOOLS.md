@@ -11,7 +11,14 @@
 | `zendesk_internal_reply` | 只写 Internal Note（客户不可见）。不要分多次调用；一次写完三段式 |
 | `zendesk_public_reply` | **客户可见最终回复**。SaaS messaging 工单要回复客户时直接调用它 |
 | `zendesk_add_tags` | 酌情打标（如确认退款 tag） |
+| `zendesk_follow_ticket` | 关注工单（默认用 MCP 配置的 Zendesk agent 账号） |
 | `zendesk_get_user` | 查工单请求者信息 |
+
+除 `zendesk_public_reply` 继续走 `zendesk-browser-relay` 外，Zendesk 读取、搜索、
+Help Center、Internal Note、标签和关注都通过远程 Zendesk MCP 执行。附件发现也走
+MCP；实际下载通过 `download_attachment` 返回 base64，agent 只写入 sandbox。后台
+trigger 拉消息、requester profile prefetch、mention poller、human takeover 检测和
+ACK/error note 也走 Zendesk MCP。
 
 ## 数据查询工具组
 

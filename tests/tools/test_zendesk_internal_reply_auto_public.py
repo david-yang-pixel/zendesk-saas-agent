@@ -173,17 +173,7 @@ class TestIntegration:
         )
         mock_send_pr = AsyncMock(return_value=(True, "ok"))
 
-        async def _passthrough(fn, *args, **kw):
-            return fn(*args, **kw)
-
         with (
-            patch(
-                "zd_agent.tools.zendesk._get_client", return_value=_mock_client,
-            ),
-            patch(
-                "zd_agent.tools.zendesk._call_with_rate_limit_retry",
-                side_effect=_passthrough,
-            ),
             patch(
                 "zd_agent.tools.zendesk.get_config",
                 return_value=_make_cfg(public_reply_enabled=True),
@@ -191,6 +181,10 @@ class TestIntegration:
             patch(
                 "zd_agent.tools.zendesk_public_reply.send_public_reply",
                 mock_send_pr,
+            ),
+            patch(
+                "zd_agent.tools.zendesk.call_zendesk_tool",
+                AsyncMock(return_value={"success": True, "audit_id": "audit-1"}),
             ),
         ):
             tool = ZendeskInternalReply()
@@ -216,15 +210,7 @@ class TestIntegration:
         )
         mock_send_pr = AsyncMock(return_value=(True, "ok"))
 
-        async def _passthrough(fn, *args, **kw):
-            return fn(*args, **kw)
-
         with (
-            patch("zd_agent.tools.zendesk._get_client", return_value=_mock_client),
-            patch(
-                "zd_agent.tools.zendesk._call_with_rate_limit_retry",
-                side_effect=_passthrough,
-            ),
             patch(
                 "zd_agent.tools.zendesk.get_config",
                 return_value=_make_cfg(public_reply_enabled=True),
@@ -232,6 +218,10 @@ class TestIntegration:
             patch(
                 "zd_agent.tools.zendesk_public_reply.send_public_reply",
                 mock_send_pr,
+            ),
+            patch(
+                "zd_agent.tools.zendesk.call_zendesk_tool",
+                AsyncMock(return_value={"success": True, "audit_id": "audit-1"}),
             ),
         ):
             tool = ZendeskInternalReply()
@@ -248,15 +238,7 @@ class TestIntegration:
         body = "## Internal Analysis\n\nFull analysis without reply section.\n"
         mock_send_pr = AsyncMock(return_value=(True, "ok"))
 
-        async def _passthrough(fn, *args, **kw):
-            return fn(*args, **kw)
-
         with (
-            patch("zd_agent.tools.zendesk._get_client", return_value=_mock_client),
-            patch(
-                "zd_agent.tools.zendesk._call_with_rate_limit_retry",
-                side_effect=_passthrough,
-            ),
             patch(
                 "zd_agent.tools.zendesk.get_config",
                 return_value=_make_cfg(public_reply_enabled=True),
@@ -264,6 +246,10 @@ class TestIntegration:
             patch(
                 "zd_agent.tools.zendesk_public_reply.send_public_reply",
                 mock_send_pr,
+            ),
+            patch(
+                "zd_agent.tools.zendesk.call_zendesk_tool",
+                AsyncMock(return_value={"success": True, "audit_id": "audit-1"}),
             ),
         ):
             tool = ZendeskInternalReply()

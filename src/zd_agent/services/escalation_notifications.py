@@ -1,10 +1,9 @@
 """Best-effort escalation notification helpers."""
 from __future__ import annotations
 
-import asyncio
-
 from zd_agent import config as config_module
 from zd_agent.integrations.feishu import client as feishu_client
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.prompts.public_reply.templates import handoff_template
 
@@ -127,15 +126,19 @@ async def send_feishu_escalation_best_effort(
 async def add_zendesk_escalation_tag_best_effort(*, ticket_id: int) -> bool:
     """Add the Zendesk escalation tag without blocking other handoff effects."""
     try:
-        from zd.client import ZendeskClient
-
-        def _add_tag() -> None:
-            ZendeskClient().add_ticket_tags(
-                ticket_id,
-                ["escalated-to-human"],
-            )
-
-        await asyncio.to_thread(_add_tag)
+        payload = await call_zendesk_tool(
+            "update_ticket_metadata",
+            {
+                "ticket_id": ticket_id,
+                "add_tags": ["escalated-to-human"],
+                "explicit_user_metadata_request": "agent escalation tag",
+                "dry_run": False,
+                "confirm": True,
+                "actor": "zd-agent",
+            },
+        )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
     except Exception as e:  # noqa: BLE001
         logger.warning(
             "escalated_zendesk_tag_failed",

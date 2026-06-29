@@ -244,7 +244,7 @@ class TestHandoffReply:
         state = _make_state(tmp_path)
         feishu_instance = MagicMock()
         feishu_instance.send_ticket_escalate = AsyncMock()
-        zd_instance = MagicMock()
+        mock_mcp = AsyncMock(return_value={"success": True})
 
         with (
             patch(
@@ -255,7 +255,10 @@ class TestHandoffReply:
                 "zd_agent.integrations.feishu.client.FeishuClient",
                 return_value=feishu_instance,
             ),
-            patch("zd.client.ZendeskClient", return_value=zd_instance),
+            patch(
+                "zd_agent.services.escalation_notifications.call_zendesk_tool",
+                mock_mcp,
+            ),
             patch(
                 "zd_agent.config.get_config",
                 return_value=_make_cfg(
@@ -271,7 +274,7 @@ class TestHandoffReply:
         # 飞书仍被调用
         feishu_instance.send_ticket_escalate.assert_called_once()
         # tag 仍被调用
-        zd_instance.add_ticket_tags.assert_called_once()
+        mock_mcp.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -343,14 +346,17 @@ class TestFeishuEscalate:
     async def test_feishu_exception_isolated(self, tmp_path) -> None:
         """飞书抛 exception → tag 仍执行 + state 仍写入"""
         state = _make_state(tmp_path)
-        zd_instance = MagicMock()
+        mock_mcp = AsyncMock(return_value={"success": True})
 
         with (
             patch(
                 "zd_agent.integrations.feishu.client.FeishuClient",
                 side_effect=RuntimeError("feishu err"),
             ),
-            patch("zd.client.ZendeskClient", return_value=zd_instance),
+            patch(
+                "zd_agent.services.escalation_notifications.call_zendesk_tool",
+                mock_mcp,
+            ),
             patch(
                 "zd_agent.config.get_config",
                 return_value=_make_cfg(
@@ -361,7 +367,7 @@ class TestFeishuEscalate:
             await _call_escalate(state=state, tmp_path=tmp_path)
 
         # tag 仍被调用
-        zd_instance.add_ticket_tags.assert_called_once()
+        mock_mcp.assert_awaited_once()
         # state 仍写入
         assert state.get(9999).state == "escalated_to_human"
 
@@ -373,12 +379,15 @@ class TestFeishuEscalate:
 class TestZendeskTag:
     @pytest.mark.asyncio
     async def test_zendesk_tag_added(self, tmp_path) -> None:
-        """Zendesk client.add_ticket_tags 被传入正确的参数"""
+        """Zendesk MCP update_ticket_metadata 被传入正确的参数"""
         state = _make_state(tmp_path)
-        zd_instance = MagicMock()
+        mock_mcp = AsyncMock(return_value={"success": True})
 
         with (
-            patch("zd.client.ZendeskClient", return_value=zd_instance),
+            patch(
+                "zd_agent.services.escalation_notifications.call_zendesk_tool",
+                mock_mcp,
+            ),
             patch(
                 "zd_agent.config.get_config",
                 return_value=_make_cfg(),
@@ -386,18 +395,22 @@ class TestZendeskTag:
         ):
             await _call_escalate(state=state, tmp_path=tmp_path)
 
-        zd_instance.add_ticket_tags.assert_called_once_with(
-            9999, ["escalated-to-human"],
-        )
+        mock_mcp.assert_awaited_once()
+        assert mock_mcp.await_args.args[0] == "update_ticket_metadata"
+        assert mock_mcp.await_args.args[1]["ticket_id"] == 9999
+        assert mock_mcp.await_args.args[1]["add_tags"] == ["escalated-to-human"]
 
     @pytest.mark.asyncio
     async def test_zendesk_tag_exception_isolated(self, tmp_path) -> None:
-        """ZendeskClient 抛 exception → state 仍写入"""
+        """Zendesk MCP 写 tag 失败 → state 仍写入"""
         state = _make_state(tmp_path)
+        mock_mcp = AsyncMock(
+            return_value={"success": False, "code": "ZENDESK_API_ERROR", "error": "zd err"}
+        )
         with (
             patch(
-                "zd.client.ZendeskClient",
-                side_effect=RuntimeError("zd err"),
+                "zd_agent.services.escalation_notifications.call_zendesk_tool",
+                mock_mcp,
             ),
             patch(
                 "zd_agent.config.get_config",

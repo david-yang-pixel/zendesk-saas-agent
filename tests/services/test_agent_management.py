@@ -104,6 +104,7 @@ def test_build_agent_tools_manifest_includes_metadata() -> None:
     manifest = build_agent_tools_manifest()
 
     assert manifest["count"] > 0
+    assert manifest["tool_service_summary"]["total_tools"] == manifest["count"]
     first = manifest["tools"][0]
     assert {"name", "description", "parameters", "metadata"} <= set(first)
     assert {
@@ -114,7 +115,16 @@ def test_build_agent_tools_manifest_includes_metadata() -> None:
         "is_write_operation",
         "risk_level",
         "source_path",
+        "tool_service",
     } <= set(first["metadata"])
+    assert {
+        "execution_boundary",
+        "service",
+        "service_backed",
+        "fully_isolated",
+        "migration_status",
+        "migration_target",
+    } <= set(first["metadata"]["tool_service"])
 
 
 @pytest.mark.asyncio

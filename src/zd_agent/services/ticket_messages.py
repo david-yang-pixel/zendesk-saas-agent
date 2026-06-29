@@ -262,35 +262,30 @@ async def _fetch_customer_messages(
     log_success: bool = True,
 ) -> tuple[list[dict], dict | None]:
     """拉工单 + 客户消息（含 messaging 渠道）。"""
-    from zd.client import ZendeskClient
-    from zd_agent.tools.zendesk import _call_with_rate_limit_retry
-
-    client = ZendeskClient()
+    from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 
     try:
-        ticket_resp = await _call_with_rate_limit_retry(
-            client.get_ticket, ticket_id,
+        payload = await call_zendesk_tool(
+            "get_ticket",
+            {
+                "ticket_id": ticket_id,
+                "include_comments": True,
+                "include_conversation_log": True,
+                "conversation_page_size": 100,
+                "force_refresh": True,
+            },
         )
-        t = ticket_resp.get("ticket", {})
-        comments_resp = await _call_with_rate_limit_retry(
-            client.get_ticket_comments, ticket_id,
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        data = payload.get("data") or {}
+        t = data.get("ticket", data)
+        c = data.get("comments", [])
+        conversation = data.get("conversation_log") or {}
+        events = (
+            conversation.get("events")
+            or (conversation.get("conversation_log") or {}).get("events")
+            or []
         )
-        c = comments_resp.get("comments", [])
-        events: list[dict] = []
-        via_channel = (t.get("via") or {}).get("channel", "")
-        if via_channel == "native_messaging":
-            try:
-                log = await _call_with_rate_limit_retry(
-                    client.get_ticket_conversation_log,
-                    ticket_id,
-                    page_size=100,
-                )
-                events = log.get("events", []) or []
-            except Exception as e:
-                logger.warning(
-                    "conversation_log_fetch_failed",
-                    ticket_id=ticket_id, error=str(e),
-                )
     except Exception as e:
         logger.error(
             "trigger_fetch_ticket_failed",

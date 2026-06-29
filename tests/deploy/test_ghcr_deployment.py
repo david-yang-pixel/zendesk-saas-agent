@@ -9,6 +9,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "docker-image.yml"
 DEPLOY_SCRIPT = ROOT / "deploy" / "deploy-ghcr.sh"
+RUNBOOK = ROOT / "deploy" / "RUNBOOK.md"
 
 
 def test_github_action_builds_and_pushes_main_and_sha_tags() -> None:
@@ -94,3 +95,11 @@ def test_github_action_sends_success_email_only_after_deploy() -> None:
     assert "send_message(msg)" in text
     assert "zd-agent deployed successfully" in text
     assert "Skipping deployment success email" in text
+
+
+def test_runbook_documents_zendesk_mcp_attachment_download_limit() -> None:
+    text = RUNBOOK.read_text()
+
+    assert "ZENDESK_MCP_DOWNLOAD_MAX_BYTES" in text
+    assert "download_attachment" in text
+    assert "/opt/zendesk-mcp/.env" in text

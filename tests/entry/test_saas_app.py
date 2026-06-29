@@ -3,9 +3,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from zd.client import ZendeskError
-
-from zd_agent.runtime.retry import RetryPolicy
 
 
 def test_create_saas_app_has_expected_routes(tmp_path):
@@ -296,43 +293,41 @@ async def test_collect_recent_image_data_urls_downloads_and_filters_failures():
 
 
 @pytest.mark.asyncio
-async def test_fetch_customer_messages_retries_transient_zendesk_network_error():
+async def test_fetch_customer_messages_uses_zendesk_mcp_ticket_payload():
     from zd_agent.services.ticket_messages import _fetch_customer_messages
 
-    client = MagicMock()
-    client.get_ticket = MagicMock(side_effect=[
-        ZendeskError(0, "网络连接失败，请检查 ZENDESK_SUBDOMAIN 是否正确"),
-        {"ticket": {
-            "id": 2808,
-            "requester_id": 42,
-            "via": {"channel": "web"},
-        }},
-    ])
-    client.get_ticket_comments = MagicMock(return_value={
-        "comments": [
-            {
-                "id": "c1",
-                "author_id": 42,
-                "public": True,
-                "body": "I cannot change my email",
-                "created_at": "2026-06-04T15:52:00Z",
-            },
-        ],
-    })
+    calls: list[tuple[str, dict]] = []
 
-    with patch("zd.client.ZendeskClient", return_value=client), \
-         patch(
-             "zd_agent.tools.zendesk.get_retry_policy",
-             return_value=RetryPolicy(
-                 name="zendesk",
-                 max_attempts=2,
-                 base_delay_seconds=0,
-                 max_delay_seconds=0,
-                 jitter=False,
-             ),
-         ):
+    async def fake_call(name: str, arguments: dict):
+        calls.append((name, arguments))
+        assert name == "get_ticket"
+        return {
+            "success": True,
+            "data": {
+                "ticket": {
+                    "id": 2808,
+                    "requester_id": 42,
+                    "via": {"channel": "web"},
+                },
+                "comments": [
+                    {
+                        "id": "c1",
+                        "author_id": 42,
+                        "public": True,
+                        "body": "I cannot change my email",
+                        "created_at": "2026-06-04T15:52:00Z",
+                    },
+                ],
+            },
+        }
+
+    with patch(
+        "zd_agent.integrations.zendesk_mcp.call_zendesk_tool",
+        side_effect=fake_call,
+    ):
         msgs, ticket = await _fetch_customer_messages(2808)
 
     assert ticket["id"] == 2808
     assert [m["id"] for m in msgs] == ["c1"]
-    assert client.get_ticket.call_count == 2
+    assert calls[0][1]["include_comments"] is True
+    assert calls[0][1]["include_conversation_log"] is True

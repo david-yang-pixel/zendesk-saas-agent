@@ -1,10 +1,9 @@
 """Best-effort side effects for silence-window expiry handling."""
 from __future__ import annotations
 
-import asyncio
-
 from zd_agent import config as config_module
 from zd_agent.integrations.feishu import client as feishu_client
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.ticket_tags import AGENT_ASKED_TAG
 
@@ -19,21 +18,34 @@ async def send_public_nudge_best_effort(
 ) -> bool:
     """Send the public nudge and preserve poller visibility with a tag."""
     try:
-        from zd.client import ZendeskClient
+        from zd_agent.tools.zendesk_public_reply import send_public_reply
 
-        def _send_reply_and_tag() -> None:
-            client = ZendeskClient()
-            client.reply_ticket(ticket_id, body=body, public=True)
-            try:
-                client.add_ticket_tags(ticket_id, [AGENT_ASKED_TAG])
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "agent_asked_tag_add_failed",
-                    ticket_id=ticket_id,
-                    error=str(e),
-                )
+        success, message = await send_public_reply(
+            ticket_id=ticket_id,
+            body=body,
+            reply_type="ask",
+        )
+        if not success:
+            raise RuntimeError(message)
 
-        await asyncio.to_thread(_send_reply_and_tag)
+        tag_payload = await call_zendesk_tool(
+            "update_ticket_metadata",
+            {
+                "ticket_id": ticket_id,
+                "add_tags": [AGENT_ASKED_TAG],
+                "explicit_user_metadata_request": "agent asked customer tag",
+                "dry_run": False,
+                "confirm": True,
+                "actor": "zd-agent",
+            },
+        )
+        if not tag_payload.get("success"):
+            logger.warning(
+                "agent_asked_tag_add_failed",
+                ticket_id=ticket_id,
+                error=tag_payload.get("error"),
+                code=tag_payload.get("code"),
+            )
     except Exception as e:  # noqa: BLE001
         logger.error(
             "public_nudge_send_failed",

@@ -34,6 +34,9 @@ signoz:
 source_mcp:
   mcp_url: https://ops.example.com/source-mcp
   request_timeout_seconds: 45
+zendesk_mcp:
+  mcp_url: https://ops.example.com/zendesk-mcp
+  request_timeout_seconds: 35
 feishu:
   daily_summary_time: "09:00"
 repos:
@@ -74,6 +77,9 @@ def saas_env(monkeypatch):
         "SOURCE_MCP_URL": "https://ops.example.com/source-mcp/",
         "SOURCE_MCP_API_KEY": "source_mcp_xxx",
         "SOURCE_MCP_TIMEOUT_SECONDS": "55",
+        "ZENDESK_MCP_URL": "https://ops.example.com/zendesk-mcp/",
+        "ZENDESK_MCP_API_KEY": "zendesk_mcp_xxx",
+        "ZENDESK_MCP_TIMEOUT_SECONDS": "45",
         "GITHUB_TOKEN": "gh_xxx",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
@@ -122,6 +128,13 @@ def test_config_loads_source_mcp_section(saas_env, saas_config_file):
     assert cfg.source_mcp.mcp_url == "https://ops.example.com/source-mcp"
     assert cfg.source_mcp.mcp_api_key == "source_mcp_xxx"
     assert cfg.source_mcp.request_timeout_seconds == 55
+
+
+def test_config_loads_zendesk_mcp_section(saas_env, saas_config_file):
+    cfg = load_config(saas_config_file)
+    assert cfg.zendesk_mcp.mcp_url == "https://ops.example.com/zendesk-mcp"
+    assert cfg.zendesk_mcp.mcp_api_key == "zendesk_mcp_xxx"
+    assert cfg.zendesk_mcp.request_timeout_seconds == 45
 
 
 def test_config_loads_db_gateway_env(saas_env, saas_config_file):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from zd_agent.config import get_config
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.assignee import is_human_assignee
 
@@ -29,12 +30,13 @@ async def detect_human_takeover(
         return False, ""
 
     try:
-        from zd.client import ZendeskClient
-        import asyncio as _asyncio
-
-        comments_resp = await _asyncio.to_thread(
-            lambda: ZendeskClient().get_ticket_comments(ticket_id),
+        payload = await call_zendesk_tool(
+            "get_ticket_comments",
+            {"ticket_id": ticket_id, "page": 1, "per_page": 100},
         )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        comments_resp = payload.get("data") or {}
     except Exception as e:
         logger.warning(
             "takeover_fetch_comments_failed",

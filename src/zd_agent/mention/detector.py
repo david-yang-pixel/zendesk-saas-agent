@@ -49,15 +49,14 @@ def _contains_raw_mention(body: str, trigger: str) -> bool:
 
 
 def get_self_user_id() -> int | None:
-    """获取 agent 自身的 Zendesk user_id（首次调用时查询并缓存）。"""
+    """获取 agent 自身的 Zendesk user_id（来自配置，首次调用时缓存）。"""
     global _self_user_id
     if _self_user_id is not None:
         return _self_user_id
     try:
-        from zd_agent.tools.zendesk import _get_client
-        client = _get_client()
-        resp = client.get_current_user()
-        _self_user_id = resp.get("user", {}).get("id")
+        from zd_agent.config import get_config
+        configured_id = int(get_config().zendesk.agent_user_id or 0)
+        _self_user_id = configured_id or None
         logger.info("self_user_id_resolved", user_id=_self_user_id)
         return _self_user_id
     except Exception as e:

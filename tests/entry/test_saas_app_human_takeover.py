@@ -12,7 +12,7 @@
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -25,18 +25,14 @@ OTHER_SE_UID = 99999999
 CUSTOMER_UID = 12345678
 
 
-def _make_client(comments_resp: dict | None = None,
-                 raise_on_fetch: bool = False) -> MagicMock:
-    client = MagicMock()
-    if raise_on_fetch:
-        client.get_ticket_comments = MagicMock(
-            side_effect=RuntimeError("zd 500"),
-        )
-    else:
-        client.get_ticket_comments = MagicMock(
-            return_value=comments_resp or {"comments": []},
-        )
-    return client
+def _make_mcp_call(comments_resp: dict | None = None, raise_on_fetch: bool = False):
+    async def fake_call(name: str, arguments: dict):
+        assert name == "get_ticket_comments"
+        if raise_on_fetch:
+            return {"success": False, "code": "ZENDESK_API_ERROR", "error": "zd 500"}
+        return {"success": True, "data": comments_resp or {"comments": []}}
+
+    return fake_call
 
 
 def _ticket(assignee_id: int | None = None,
@@ -52,12 +48,11 @@ class TestDetected:
     @pytest.mark.asyncio
     async def test_assignee_is_other_se(self) -> None:
         """assignee 非空 → 视为已有受托人，触发"""
-        with patch("zd.client.ZendeskClient") as _ZD:
-            detected, reason = await detect_human_takeover(
-                ticket_id=1234,
-                ticket_info=_ticket(assignee_id=OTHER_SE_UID),
-                agent_user_id=AGENT_UID,
-            )
+        detected, reason = await detect_human_takeover(
+            ticket_id=1234,
+            ticket_info=_ticket(assignee_id=OTHER_SE_UID),
+            agent_user_id=AGENT_UID,
+        )
         assert detected is True
         assert str(OTHER_SE_UID) in reason
 
@@ -71,7 +66,8 @@ class TestDetected:
             ]
         }
         with patch(
-            "zd.client.ZendeskClient", return_value=_make_client(comments),
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=_make_mcp_call(comments),
         ):
             detected, reason = await detect_human_takeover(
                 ticket_id=1234,
@@ -94,7 +90,8 @@ class TestDetected:
             ]
         }
         with patch(
-            "zd.client.ZendeskClient", return_value=_make_client(comments),
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=_make_mcp_call(comments),
         ):
             detected, reason = await detect_human_takeover(
                 ticket_id=1234,
@@ -126,7 +123,8 @@ class TestNotDetected:
             ]
         }
         with patch(
-            "zd.client.ZendeskClient", return_value=_make_client(comments),
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=_make_mcp_call(comments),
         ):
             detected, reason = await detect_human_takeover(
                 ticket_id=1234,
@@ -153,8 +151,8 @@ class TestNotDetected:
         cfg = AppConfig()
         cfg.zendesk = ZendeskConfig(non_human_assignee_ids=[AI_AGENT_UID])
         with patch("zd_agent.services.human_takeover.get_config", return_value=cfg), patch(
-            "zd.client.ZendeskClient",
-            return_value=_make_client({"comments": []}),
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=_make_mcp_call({"comments": []}),
         ):
             detected, reason = await detect_human_takeover(
                 ticket_id=1234,
@@ -173,7 +171,8 @@ class TestNotDetected:
             ]
         }
         with patch(
-            "zd.client.ZendeskClient", return_value=_make_client(comments),
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=_make_mcp_call(comments),
         ):
             detected, _ = await detect_human_takeover(
                 ticket_id=1234,
@@ -194,7 +193,8 @@ class TestNotDetected:
             ]
         }
         with patch(
-            "zd.client.ZendeskClient", return_value=_make_client(comments),
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=_make_mcp_call(comments),
         ):
             detected, _ = await detect_human_takeover(
                 ticket_id=1234,
@@ -207,8 +207,8 @@ class TestNotDetected:
     async def test_fetch_failure_conservative(self) -> None:
         """fetch comments 抛异常 → 保守放过（不触发误判）"""
         with patch(
-            "zd.client.ZendeskClient",
-            return_value=_make_client(raise_on_fetch=True),
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=_make_mcp_call(raise_on_fetch=True),
         ):
             detected, _ = await detect_human_takeover(
                 ticket_id=1234,

@@ -19,9 +19,13 @@ def _make_cfg(*, feishu_url: str = "") -> AppConfig:
 
 @pytest.mark.asyncio
 async def test_public_nudge_replies_and_tags_ticket() -> None:
-    zd_instance = MagicMock()
+    mock_send = AsyncMock(return_value=(True, "ok"))
+    mock_mcp = AsyncMock(return_value={"success": True})
 
-    with patch("zd.client.ZendeskClient", return_value=zd_instance):
+    with (
+        patch("zd_agent.tools.zendesk_public_reply.send_public_reply", mock_send),
+        patch("zd_agent.services.silence_notifications.call_zendesk_tool", mock_mcp),
+    ):
         sent = await send_public_nudge_best_effort(
             ticket_id=9999,
             body="Could you share more details?",
@@ -29,23 +33,27 @@ async def test_public_nudge_replies_and_tags_ticket() -> None:
         )
 
     assert sent is True
-    zd_instance.reply_ticket.assert_called_once_with(
-        9999,
+    mock_send.assert_awaited_once_with(
+        ticket_id=9999,
         body="Could you share more details?",
-        public=True,
+        reply_type="ask",
     )
-    zd_instance.add_ticket_tags.assert_called_once_with(
-        9999,
-        [AGENT_ASKED_TAG],
-    )
+    mock_mcp.assert_awaited_once()
+    assert mock_mcp.await_args.args[0] == "update_ticket_metadata"
+    assert mock_mcp.await_args.args[1]["add_tags"] == [AGENT_ASKED_TAG]
 
 
 @pytest.mark.asyncio
 async def test_public_nudge_tag_failure_still_counts_as_sent() -> None:
-    zd_instance = MagicMock()
-    zd_instance.add_ticket_tags.side_effect = RuntimeError("tag err")
+    mock_send = AsyncMock(return_value=(True, "ok"))
+    mock_mcp = AsyncMock(
+        return_value={"success": False, "code": "ZENDESK_API_ERROR", "error": "tag err"}
+    )
 
-    with patch("zd.client.ZendeskClient", return_value=zd_instance):
+    with (
+        patch("zd_agent.tools.zendesk_public_reply.send_public_reply", mock_send),
+        patch("zd_agent.services.silence_notifications.call_zendesk_tool", mock_mcp),
+    ):
         sent = await send_public_nudge_best_effort(
             ticket_id=9999,
             body="Could you share more details?",
@@ -53,16 +61,19 @@ async def test_public_nudge_tag_failure_still_counts_as_sent() -> None:
         )
 
     assert sent is True
-    zd_instance.reply_ticket.assert_called_once()
-    zd_instance.add_ticket_tags.assert_called_once()
+    mock_send.assert_awaited_once()
+    mock_mcp.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_public_nudge_reply_failure_is_retryable_failure() -> None:
-    zd_instance = MagicMock()
-    zd_instance.reply_ticket.side_effect = RuntimeError("reply err")
+    mock_send = AsyncMock(return_value=(False, "reply err"))
+    mock_mcp = AsyncMock(return_value={"success": True})
 
-    with patch("zd.client.ZendeskClient", return_value=zd_instance):
+    with (
+        patch("zd_agent.tools.zendesk_public_reply.send_public_reply", mock_send),
+        patch("zd_agent.services.silence_notifications.call_zendesk_tool", mock_mcp),
+    ):
         sent = await send_public_nudge_best_effort(
             ticket_id=9999,
             body="Could you share more details?",
@@ -70,6 +81,7 @@ async def test_public_nudge_reply_failure_is_retryable_failure() -> None:
         )
 
     assert sent is False
+    mock_mcp.assert_not_awaited()
 
 
 @pytest.mark.asyncio

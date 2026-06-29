@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from zd_agent.config import get_config
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.archive_meta import build_archive_meta
 from zd_agent.runtime.guardrails import Guardrails
@@ -19,7 +20,6 @@ from zd_agent.runtime.tool_loop import run_tool_loop
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.session.sandbox import create_sandbox
 from zd_agent.tools.registry import create_tool_registry
-from zd_agent.tools.zendesk import _call_with_rate_limit_retry, _get_client
 
 logger = get_logger(module="runner")
 
@@ -37,8 +37,19 @@ _FAILURE_NOTE_TEMPLATE = (
 async def _send_ack_note(ticket_id: int) -> None:
     """发送 ACK 内部备注，告知客服 AI 已开始处理。"""
     try:
-        client = _get_client()
-        await _call_with_rate_limit_retry(client.reply_ticket, ticket_id, _ACK_NOTE, False)
+        payload = await call_zendesk_tool(
+            "add_internal_note",
+            {
+                "ticket_id": ticket_id,
+                "body": _ACK_NOTE,
+                "explicit_user_internal_note_request": "agent processing ack",
+                "dry_run": False,
+                "confirm": True,
+                "actor": "zd-agent",
+            },
+        )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
         logger.info("ack_note_sent", ticket_id=ticket_id)
     except Exception as e:
         logger.warning("ack_note_failed", ticket_id=ticket_id, error=str(e))
@@ -50,8 +61,19 @@ async def _send_error_note(ticket_id: int, reason: str) -> None:
     mention = get_config().zendesk.mention_trigger or "@agent"
     body = _FAILURE_NOTE_TEMPLATE.format(reason=reason, mention=mention)
     try:
-        client = _get_client()
-        await _call_with_rate_limit_retry(client.reply_ticket, ticket_id, body, False)
+        payload = await call_zendesk_tool(
+            "add_internal_note",
+            {
+                "ticket_id": ticket_id,
+                "body": body,
+                "explicit_user_internal_note_request": "agent failure notice",
+                "dry_run": False,
+                "confirm": True,
+                "actor": "zd-agent",
+            },
+        )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
         logger.info("error_note_sent", ticket_id=ticket_id)
     except Exception as e:
         logger.warning("error_note_failed", ticket_id=ticket_id, error=str(e))

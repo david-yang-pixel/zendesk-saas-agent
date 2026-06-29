@@ -25,8 +25,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
 
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
-from zd_agent.tools.zendesk import _get_client
 
 logger = get_logger(module="observability.modify_rate")
 
@@ -107,10 +107,13 @@ async def measure_ticket_modify_rate(
     上层可以聚合不需要捕获异常。
     """
     try:
-        client = _get_client()
-        comments_resp = await asyncio.to_thread(
-            client.get_ticket_comments, ticket_id,
+        payload = await call_zendesk_tool(
+            "get_ticket_comments",
+            {"ticket_id": ticket_id, "page": 1, "per_page": 100},
         )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        comments_resp = payload.get("data") or {}
     except Exception as e:
         logger.warning(
             "modify_rate_fetch_failed", ticket_id=ticket_id, error=str(e)[:200],

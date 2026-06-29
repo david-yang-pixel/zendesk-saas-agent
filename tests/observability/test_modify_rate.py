@@ -1,7 +1,7 @@
 """Tests for observability.modify_rate."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -80,34 +80,38 @@ def _draft_body(reply_text: str = "Hi, the answer is X.") -> str:
     )
 
 
-def _mock_client(comments: list[dict]) -> MagicMock:
-    client = MagicMock()
-    client.get_ticket_comments = MagicMock(
-        return_value={"comments": comments}
-    )
-    return client
+def _mock_mcp_call(comments: list[dict] | None = None, *, fail: bool = False):
+    async def fake_call(name: str, arguments: dict):
+        assert name == "get_ticket_comments"
+        if fail:
+            return {"success": False, "code": "ZENDESK_API_ERROR", "error": "zd 500"}
+        return {"success": True, "data": {"comments": comments or []}}
+
+    return fake_call
 
 
 class TestMeasureTicketModifyRate:
     @pytest.mark.asyncio
     async def test_no_draft(self) -> None:
-        client = _mock_client([
+        mcp_call = _mock_mcp_call([
             {"id": 1, "author_id": AGENT_UID, "public": False, "body": "no marker"},
         ])
         with patch(
-            "zd_agent.observability.modify_rate._get_client", return_value=client,
+            "zd_agent.observability.modify_rate.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             s = await measure_ticket_modify_rate(9999, AGENT_UID)
         assert s.classification == "no_draft"
 
     @pytest.mark.asyncio
     async def test_no_reply_after_draft(self) -> None:
-        client = _mock_client([
+        mcp_call = _mock_mcp_call([
             {"id": 1, "author_id": AGENT_UID, "public": False,
              "body": _draft_body()},
         ])
         with patch(
-            "zd_agent.observability.modify_rate._get_client", return_value=client,
+            "zd_agent.observability.modify_rate.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             s = await measure_ticket_modify_rate(9999, AGENT_UID)
         assert s.classification == "no_reply"
@@ -117,13 +121,14 @@ class TestMeasureTicketModifyRate:
     async def test_as_is_forward(self) -> None:
         """SE 原文 forward draft → similarity = 1.0 → as_is"""
         reply = "Hi, the answer is X."
-        client = _mock_client([
+        mcp_call = _mock_mcp_call([
             {"id": 1, "author_id": AGENT_UID, "public": False,
              "body": _draft_body(reply)},
             {"id": 2, "author_id": AGENT_UID, "public": True, "body": reply},
         ])
         with patch(
-            "zd_agent.observability.modify_rate._get_client", return_value=client,
+            "zd_agent.observability.modify_rate.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             s = await measure_ticket_modify_rate(9999, AGENT_UID)
         assert s.classification == "as_is"
@@ -144,13 +149,14 @@ class TestMeasureTicketModifyRate:
             "to another provider in the workspace settings. Let me know if "
             "you keep seeing this and we can look further."
         )
-        client = _mock_client([
+        mcp_call = _mock_mcp_call([
             {"id": 1, "author_id": AGENT_UID, "public": False,
              "body": _draft_body(draft_reply)},
             {"id": 2, "author_id": AGENT_UID, "public": True, "body": se_reply},
         ])
         with patch(
-            "zd_agent.observability.modify_rate._get_client", return_value=client,
+            "zd_agent.observability.modify_rate.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             s = await measure_ticket_modify_rate(9999, AGENT_UID)
         # 该案例 similarity 应落在 [0.5, 0.85] 范围 → minor
@@ -165,13 +171,14 @@ class TestMeasureTicketModifyRate:
             "Hi Alice, audit logs can be exported via Settings → Audit Logs → "
             "Export CSV. Conversation logs need API access via /conversations."
         )
-        client = _mock_client([
+        mcp_call = _mock_mcp_call([
             {"id": 1, "author_id": AGENT_UID, "public": False,
              "body": _draft_body(draft_reply)},
             {"id": 2, "author_id": AGENT_UID, "public": True, "body": se_reply},
         ])
         with patch(
-            "zd_agent.observability.modify_rate._get_client", return_value=client,
+            "zd_agent.observability.modify_rate.call_zendesk_tool",
+            side_effect=mcp_call,
         ):
             s = await measure_ticket_modify_rate(9999, AGENT_UID)
         assert s.classification == "major"
@@ -179,12 +186,9 @@ class TestMeasureTicketModifyRate:
 
     @pytest.mark.asyncio
     async def test_fetch_failure_returns_no_draft(self) -> None:
-        client = MagicMock()
-        client.get_ticket_comments = MagicMock(
-            side_effect=RuntimeError("zd 500"),
-        )
         with patch(
-            "zd_agent.observability.modify_rate._get_client", return_value=client,
+            "zd_agent.observability.modify_rate.call_zendesk_tool",
+            side_effect=_mock_mcp_call(fail=True),
         ):
             s = await measure_ticket_modify_rate(9999, AGENT_UID)
         assert s.classification == "no_draft"

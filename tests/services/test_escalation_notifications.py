@@ -185,21 +185,23 @@ async def test_feishu_escalation_failure_is_best_effort() -> None:
 
 @pytest.mark.asyncio
 async def test_zendesk_escalation_tag_added() -> None:
-    zd_instance = MagicMock()
+    mock_mcp = AsyncMock(return_value={"success": True})
 
-    with patch("zd.client.ZendeskClient", return_value=zd_instance):
+    with patch("zd_agent.services.escalation_notifications.call_zendesk_tool", mock_mcp):
         tagged = await add_zendesk_escalation_tag_best_effort(ticket_id=9999)
 
     assert tagged is True
-    zd_instance.add_ticket_tags.assert_called_once_with(
-        9999,
-        ["escalated-to-human"],
-    )
+    mock_mcp.assert_awaited_once()
+    assert mock_mcp.await_args.args[0] == "update_ticket_metadata"
+    assert mock_mcp.await_args.args[1]["add_tags"] == ["escalated-to-human"]
 
 
 @pytest.mark.asyncio
 async def test_zendesk_escalation_tag_failure_is_best_effort() -> None:
-    with patch("zd.client.ZendeskClient", side_effect=RuntimeError("zd err")):
+    mock_mcp = AsyncMock(
+        return_value={"success": False, "code": "ZENDESK_API_ERROR", "error": "zd err"}
+    )
+    with patch("zd_agent.services.escalation_notifications.call_zendesk_tool", mock_mcp):
         tagged = await add_zendesk_escalation_tag_best_effort(ticket_id=9999)
 
     assert tagged is False

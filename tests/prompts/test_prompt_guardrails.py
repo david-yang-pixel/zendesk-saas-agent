@@ -33,6 +33,15 @@ def test_prompt_keeps_zendesk_as_followup_source_of_truth():
     assert "本地工单记录只作为参考" in prompt
 
 
+def test_prompt_requires_attachment_download_for_image_or_file_claims():
+    prompt = _build()
+
+    assert "客户提到截图、图片、文件或附件" in prompt
+    assert "必须调用 `zendesk_get_attachments`" in prompt
+    assert "再用 `sandbox_read`" in prompt
+    assert "不能只看 `zendesk_get_ticket` 的附件列表就断言没有图片或文件" in prompt
+
+
 def test_prompt_dispatches_subagents_for_multi_source_investigations():
     prompt = _build()
 

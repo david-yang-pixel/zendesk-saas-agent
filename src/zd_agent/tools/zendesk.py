@@ -1,27 +1,19 @@
-"""Zendesk 工具组：复用 zendesk-cli 的 ZendeskClient
-
-zendesk-cli 是同步库（基于 requests），通过 asyncio.to_thread 桥接到异步环境。
-包含 429 限流自动重试（指数退避 + Retry-After 头支持）。
-"""
+"""Zendesk 工具组：通过远程 Zendesk MCP 执行读写操作。"""
 
 from __future__ import annotations
 
-import asyncio
-import json
+import base64
+import binascii
 import re
-import time
-from collections.abc import Callable
-from typing import Any, TypeVar
+from pathlib import Path
+from typing import Any
 
-from zd.client import ZendeskClient, ZendeskError
 from zd.cli import (
     _collect_all_image_urls,
-    _collect_attachment_rows,
-    _download_ticket_images,
-    _get_ticket_thread,
 )
 
 from zd_agent.config import get_config
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.ticket_images import (
     collect_image_urls_from_attachments,
@@ -33,13 +25,11 @@ from zd_agent.runtime.image_evidence import (
     guard_against_stale_no_image_claim,
     guard_text_values_against_stale_no_image_claim,
 )
-from zd_agent.runtime.retry import RetryPolicy, get_retry_policy, retry_async
 from zd_agent.session.agent_session import AgentSession, TicketContext
 from zd_agent.tools.base import Tool, ToolResult
 
 logger = get_logger(module="tools.zendesk")
 
-_client: ZendeskClient | None = None
 _INTERNAL_REPLY_BANNER = (
     "> **AI-generated reply for reference only.**"
 )
@@ -51,8 +41,6 @@ def _mention_footer() -> str:
         trigger = "@agent"
     return f"\n\n---\n*You can follow up by mentioning {trigger} in an internal note.*"
 
-# 字段 ID → 元数据缓存：{field_id: {"title": ..., "type": ..., "options": {value: label}}}
-_field_map: dict[int, dict[str, Any]] | None = None
 _JA_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 _LATIN_RE = re.compile(r"[A-Za-z]")
@@ -186,47 +174,6 @@ def _extract_reply_language_hint(
     return None
 
 
-def _get_client() -> ZendeskClient:
-    global _client
-    if _client is None:
-        _client = ZendeskClient()
-    return _client
-
-
-def _load_field_map(client: ZendeskClient) -> dict[int, dict[str, Any]]:
-    """从 Zendesk Ticket Fields API 加载字段定义并构建映射表（同步调用）"""
-    global _field_map
-    if _field_map is not None:
-        return _field_map
-
-    try:
-        resp = client.session.get(f"{client.base_url}/ticket_fields.json")
-        resp.raise_for_status()
-        fields = resp.json().get("ticket_fields", [])
-    except Exception:
-        logger.warning("ticket_fields_load_failed", exc_info=True)
-        _field_map = {}
-        return _field_map
-
-    mapping: dict[int, dict[str, Any]] = {}
-    for f in fields:
-        fid = f.get("id")
-        if not fid:
-            continue
-        options: dict[str, str] = {}
-        for opt in f.get("custom_field_options", []):
-            options[str(opt.get("value", ""))] = opt.get("name", opt.get("value", ""))
-        mapping[fid] = {
-            "title": f.get("title", f.get("title_in_portal", f"field_{fid}")),
-            "type": f.get("type", "unknown"),
-            "options": options,
-        }
-
-    _field_map = mapping
-    logger.info("ticket_fields_loaded", count=len(mapping))
-    return _field_map
-
-
 def _format_custom_fields(
     custom_fields: list[dict[str, Any]], field_map: dict[int, dict[str, Any]],
 ) -> list[str]:
@@ -262,11 +209,10 @@ def _format_custom_fields(
     return lines
 
 
-def _format_error(e: ZendeskError) -> str:
-    msg = f"Zendesk API [{e.status_code}]: {e.message}"
-    if e.detail:
-        msg += f" — {e.detail}"
-    return msg
+def _format_mcp_error(tool_name: str, payload: dict[str, Any]) -> str:
+    code = payload.get("code") or "ZENDESK_MCP_ERROR"
+    error = payload.get("error") or "unknown error"
+    return f"Zendesk MCP {tool_name} failed [{code}]: {error}"
 
 
 def _extract_custom_field_values(
@@ -328,49 +274,6 @@ def _format_source_recommendations(custom_fields: dict[str, str], ticket: dict[s
             lines.append(f"  - 建议工具：`{hint}`")
     lines.append("")
     return lines
-
-
-T = TypeVar("T")
-
-
-async def _call_with_rate_limit_retry(
-    fn: Callable[..., T], *args: Any, **kwargs: Any,
-) -> T:
-    """封装 Zendesk API 调用，按全局配置执行重试"""
-
-    async def _call() -> T:
-        return await asyncio.to_thread(fn, *args, **kwargs)
-
-    return await retry_async(
-        operation=getattr(fn, "__name__", "zendesk_call"),
-        policy=get_retry_policy("zendesk"),
-        func=_call,
-        should_retry=_should_retry_zendesk_error,
-        get_delay=_zendesk_retry_delay,
-    )
-
-
-def _should_retry_zendesk_error(error: Exception) -> bool:
-    """Zendesk 重试条件：429、网络失败（0）以及常见 5xx"""
-    if not isinstance(error, ZendeskError):
-        return False
-    return error.status_code in {0, 429, 500, 502, 503, 504}
-
-
-def _zendesk_retry_delay(
-    error: Exception, attempt: int, policy: RetryPolicy,
-) -> float | None:
-    """Zendesk 重试延迟：优先尊重 Retry-After，其次走默认指数退避"""
-    if isinstance(error, ZendeskError) and error.detail and error.detail.isdigit():
-        delay = max(float(error.detail), policy.base_delay_seconds)
-        logger.warning(
-            "zendesk_retry_after_detected",
-            attempt=attempt,
-            retry_after=delay,
-            status_code=error.status_code,
-        )
-        return delay
-    return None
 
 
 # ── 工具定义 ──────────────────────────────────────────────────
@@ -472,6 +375,130 @@ def _collect_ticket_image_urls(
     )
 
 
+def _mcp_ticket_thread(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    conversation = data.get("conversation_log") or {}
+    if isinstance(conversation, dict):
+        events = conversation.get("events")
+        if isinstance(events, list):
+            return "conversation_log", [e for e in events if isinstance(e, dict)]
+        nested = conversation.get("conversation_log")
+        if isinstance(nested, dict) and isinstance(nested.get("events"), list):
+            return "conversation_log", [
+                e for e in nested["events"] if isinstance(e, dict)
+            ]
+    comments = data.get("comments")
+    if isinstance(comments, list):
+        return "comments", [c for c in comments if isinstance(c, dict)]
+    return "comments", []
+
+
+def _mcp_attachment_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    attachments = data.get("attachments") or []
+    rows: list[dict[str, Any]] = []
+    if not isinstance(attachments, list):
+        return rows
+    for index, attachment in enumerate(attachments, 1):
+        if not isinstance(attachment, dict):
+            continue
+        url = str(attachment.get("content_url") or attachment.get("url") or "").strip()
+        if not url:
+            continue
+        rows.append(
+            {
+                "url": url,
+                "file_name": attachment.get("file_name")
+                or attachment.get("filename")
+                or attachment.get("name")
+                or filename_from_url(url),
+                "content_type": attachment.get("content_type")
+                or attachment.get("mime_type")
+                or "",
+                "source": attachment.get("source") or "zendesk_mcp",
+                "index": attachment.get("comment_id")
+                or attachment.get("event_id")
+                or index,
+            }
+        )
+    return rows
+
+
+def _safe_attachment_name(name: str, url: str, index: int) -> str:
+    candidate = str(name or filename_from_url(url) or f"attachment-{index}").strip()
+    candidate = candidate.replace("\x00", "")
+    candidate = Path(candidate).name
+    if not candidate or candidate in {".", ".."}:
+        candidate = f"attachment-{index}"
+    return candidate
+
+
+def _dedupe_attachment_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in records:
+        url = str(record.get("url") or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append({**record, "url": url})
+    return out
+
+
+async def _download_attachment_records_via_mcp(
+    records: list[dict[str, Any]],
+    out_dir: Path,
+) -> tuple[dict[str, Path], list[dict[str, Any]], dict[str, Path]]:
+    downloaded: dict[str, Path] = {}
+    failed: list[dict[str, Any]] = []
+    skipped: dict[str, Path] = {}
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for index, record in enumerate(records, 1):
+        url = str(record.get("url") or "").strip()
+        if not url:
+            continue
+        file_name = _safe_attachment_name(str(record.get("file_name") or ""), url, index)
+        save_path = out_dir / file_name
+        if save_path.exists():
+            skipped[url] = save_path
+            continue
+
+        payload = await call_zendesk_tool(
+            "download_attachment",
+            {"content_url": url, "file_name": file_name},
+        )
+        if not payload.get("success"):
+            failed.append({
+                **record,
+                "file_name": file_name,
+                "reason": _format_mcp_error("download_attachment", payload),
+            })
+            continue
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            failed.append({**record, "file_name": file_name, "reason": "invalid MCP payload"})
+            continue
+        encoded = data.get("data_base64")
+        if not isinstance(encoded, str) or not encoded:
+            failed.append({**record, "file_name": file_name, "reason": "missing data_base64"})
+            continue
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as e:
+            failed.append({**record, "file_name": file_name, "reason": str(e)[:80]})
+            continue
+
+        response_name = _safe_attachment_name(
+            str(data.get("file_name") or file_name),
+            url,
+            index,
+        )
+        save_path = out_dir / response_name
+        save_path.write_bytes(content)
+        downloaded[url] = save_path
+
+    return downloaded, failed, skipped
+
+
 class ZendeskGetTicket(Tool):
     name = "zendesk_get_ticket"
     description = (
@@ -495,15 +522,29 @@ class ZendeskGetTicket(Tool):
         tid = _coerce_positive_int_arg(args, "ticket_id")
         if isinstance(tid, ToolResult):
             return tid
-        client = _get_client()
-
         try:
-            tdata = await _call_with_rate_limit_retry(client.get_ticket, tid)
-            ticket = tdata.get("ticket", tdata)
-
-            thread_type, thread_items = await _call_with_rate_limit_retry(
-                _get_ticket_thread, tid, ticket
+            payload = await call_zendesk_tool(
+                "get_ticket",
+                {
+                    "ticket_id": tid,
+                    "include_comments": True,
+                    "include_conversation_log": True,
+                    "force_refresh": True,
+                },
             )
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("get_ticket", payload),
+                )
+            tdata = payload.get("data") or {}
+            ticket = tdata.get("ticket", tdata)
+            if not isinstance(ticket, dict):
+                return ToolResult(
+                    success=False,
+                    error="Zendesk MCP get_ticket returned invalid ticket payload",
+                )
+            thread_type, thread_items = _mcp_ticket_thread(tdata)
 
             # 收集图片 URL 供多模态输入
             collected_images = _collect_ticket_image_urls(thread_type, thread_items)
@@ -528,7 +569,9 @@ class ZendeskGetTicket(Tool):
             # 解析自定义字段（Product / Version / Environment / Plan 等）
             raw_custom = ticket.get("custom_fields") or ticket.get("fields") or []
             if raw_custom:
-                field_map = await asyncio.to_thread(_load_field_map, client)
+                # Field metadata stays inside Zendesk MCP. Until that service exposes
+                # readable field labels, preserve raw field_id/value rows here.
+                field_map = {}
                 custom_fields = _extract_custom_field_values(raw_custom, field_map)
                 cf_lines = _format_custom_fields(raw_custom, field_map)
                 if cf_lines:
@@ -669,8 +712,6 @@ class ZendeskGetTicket(Tool):
 
             return ToolResult(output="\n".join(lines))
 
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
@@ -702,53 +743,63 @@ class ZendeskGetAttachments(Tool):
         if not session.sandbox_dir:
             return ToolResult(success=False, error="Sandbox 未初始化")
 
-        client = _get_client()
-
         try:
-            tdata = await _call_with_rate_limit_retry(client.get_ticket, tid)
-            ticket = tdata.get("ticket", tdata)
-
-            thread_type, thread_items = await _call_with_rate_limit_retry(
-                _get_ticket_thread, tid, ticket
+            payload = await call_zendesk_tool(
+                "list_attachments",
+                {
+                    "ticket_id": tid,
+                    "include_conversation_log": True,
+                    "force_refresh": True,
+                },
             )
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("list_attachments", payload),
+                )
+            data = payload.get("data") or {}
+            if not isinstance(data, dict):
+                return ToolResult(
+                    success=False,
+                    error="Zendesk MCP list_attachments returned invalid payload",
+            )
+            att_rows = _mcp_attachment_rows(data)
+            ticket_payload = await call_zendesk_tool(
+                "get_ticket",
+                {
+                    "ticket_id": tid,
+                    "include_comments": True,
+                    "include_conversation_log": True,
+                    "force_refresh": True,
+                },
+            )
+            thread_images: list[dict[str, Any]] = []
+            if ticket_payload.get("success"):
+                ticket_data = ticket_payload.get("data") or {}
+                if isinstance(ticket_data, dict):
+                    thread_type, thread_items = _mcp_ticket_thread(ticket_data)
+                    thread_images = _collect_ticket_image_urls(thread_type, thread_items)
+            else:
+                logger.warning(
+                    "zendesk_mcp_attachment_thread_image_probe_failed",
+                    ticket_id=tid,
+                    error=ticket_payload.get("error"),
+                    code=ticket_payload.get("code"),
+                )
 
-            att_rows = _collect_attachment_rows(thread_type, thread_items)
-            all_images = _collect_ticket_image_urls(thread_type, thread_items)
             att_urls = {r.get("url") for r in att_rows if r.get("url")}
-            extra_images = [img for img in all_images if img.get("url") not in att_urls]
+            extra_images = [img for img in thread_images if img.get("url") not in att_urls]
 
             total = len(att_rows) + len(extra_images)
             if total == 0:
                 return ToolResult(output="该工单没有附件或图片")
 
             out_dir = session.sandbox_dir / "attachments"
-
-            downloaded, failed, skipped = await asyncio.to_thread(
-                _download_ticket_images, tid, all_images, out_dir
+            download_records = _dedupe_attachment_records(att_rows + extra_images)
+            downloaded, failed, skipped = await _download_attachment_records_via_mcp(
+                download_records,
+                out_dir,
             )
-
-            # 单独下载非图片附件
-            non_image_atts = [a for a in att_rows if not a.get("content_type", "").startswith("image/")]
-            for att in non_image_atts:
-                url = att.get("url", "")
-                fname = att.get("file_name", "unknown")
-                if not url:
-                    continue
-                save_path = out_dir / fname
-                if save_path.exists():
-                    continue
-                try:
-                    import requests
-                    from zd.config import config
-                    resp = await asyncio.to_thread(
-                        lambda: requests.get(url, auth=config.auth, timeout=60)
-                    )
-                    if resp.ok:
-                        save_path.parent.mkdir(parents=True, exist_ok=True)
-                        save_path.write_bytes(resp.content)
-                        downloaded[url] = save_path
-                except Exception as e:
-                    failed.append({**att, "reason": str(e)[:80]})
 
             lines = [f"附件下载目录: {out_dir}"]
             if downloaded:
@@ -766,8 +817,6 @@ class ZendeskGetAttachments(Tool):
 
             return ToolResult(output="\n".join(lines))
 
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
@@ -793,9 +842,14 @@ class ZendeskSearch(Tool):
         query = _coerce_required_string_arg(args, "query")
         if isinstance(query, ToolResult):
             return query
-        client = _get_client()
         try:
-            data = await _call_with_rate_limit_retry(client.search_tickets, query)
+            payload = await call_zendesk_tool("search_tickets", {"query": query})
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("search_tickets", payload),
+                )
+            data = payload.get("data") or {}
             results = data.get("results", [])
             if not results:
                 return ToolResult(output="未找到匹配的历史工单")
@@ -811,8 +865,6 @@ class ZendeskSearch(Tool):
                 lines.append(f"\n... 共 {total} 条，仅显示前 10 条")
             return ToolResult(output="\n".join(lines))
 
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
@@ -845,9 +897,17 @@ class ZendeskSearchArticles(Tool):
         locale = _coerce_optional_string_arg(args, "locale", default="zh-cn")
         if isinstance(locale, ToolResult):
             return locale
-        client = _get_client()
         try:
-            data = await _call_with_rate_limit_retry(client.search_articles, query, locale)
+            payload = await call_zendesk_tool(
+                "search_help_center",
+                {"query": query, "locale": locale},
+            )
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("search_help_center", payload),
+                )
+            data = payload.get("data") or {}
             results = data.get("results", [])
             if not results:
                 return ToolResult(output="未找到匹配的知识库文章")
@@ -861,8 +921,6 @@ class ZendeskSearchArticles(Tool):
                     lines.append(f"  链接: {a['html_url']}")
             return ToolResult(output="\n".join(lines))
 
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
@@ -894,9 +952,17 @@ class ZendeskGetArticle(Tool):
         locale = _coerce_optional_string_arg(args, "locale", default="zh-cn")
         if isinstance(locale, ToolResult):
             return locale
-        client = _get_client()
         try:
-            data = await _call_with_rate_limit_retry(client.get_article, article_id, locale)
+            payload = await call_zendesk_tool(
+                "get_article",
+                {"article_id": article_id, "locale": locale},
+            )
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("get_article", payload),
+                )
+            data = payload.get("data") or {}
             article = data.get("article", data)
 
             import re
@@ -915,8 +981,6 @@ class ZendeskGetArticle(Tool):
             ]
             return ToolResult(output="\n".join(lines))
 
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
@@ -1113,17 +1177,23 @@ class ZendeskInternalReply(Tool):
         if session.dry_run:
             return ToolResult(output="[Dry Run] 回复已保存到草稿，未实际发送")
 
-        client = _get_client()
         try:
-            await _call_with_rate_limit_retry(
-                client.reply_ticket,
-                ticket_id,
-                plain_body,
-                False,
-                html_body=html_body,
+            payload = await call_zendesk_tool(
+                "add_internal_note",
+                {
+                    "ticket_id": ticket_id,
+                    "body": plain_body,
+                    "explicit_user_internal_note_request": "agent internal escalation",
+                    "dry_run": False,
+                    "confirm": True,
+                    "actor": "zd-agent",
+                },
             )
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("add_internal_note", payload),
+                )
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
@@ -1283,15 +1353,97 @@ class ZendeskAddTags(Tool):
         if session.dry_run:
             return ToolResult(output=f"[Dry Run] 将为工单 #{ticket_id} 添加标签: {', '.join(tags)}")
 
-        client = _get_client()
         try:
-            result = await _call_with_rate_limit_retry(
-                client.add_ticket_tags, ticket_id, tags
+            payload = await call_zendesk_tool(
+                "update_ticket_metadata",
+                {
+                    "ticket_id": ticket_id,
+                    "add_tags": tags,
+                    "explicit_user_metadata_request": "agent add tags",
+                    "dry_run": False,
+                    "confirm": True,
+                    "actor": "zd-agent",
+                },
             )
-            updated = result.get("tags", [])
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("update_ticket_metadata", payload),
+                )
+            after = payload.get("after") or {}
+            updated = after.get("tags", [])
+            if not updated:
+                updated = tags
             return ToolResult(output=f"工单 #{ticket_id} 标签已更新: {', '.join(updated)}")
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
+        except Exception as e:
+            return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
+
+
+class ZendeskFollowTicket(Tool):
+    name = "zendesk_follow_ticket"
+    description = (
+        "关注 Zendesk 工单。默认让当前 MCP 配置的 Zendesk agent 账号关注该工单；"
+        "可选指定 user_id 或 user_email。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "ticket_id": {
+                "type": "integer",
+                "description": "工单 ID",
+            },
+            "user_id": {
+                "type": "integer",
+                "description": "可选：要添加为 follower 的 Zendesk user_id",
+            },
+            "user_email": {
+                "type": "string",
+                "description": "可选：要添加为 follower 的邮箱；不填则使用 MCP 配置的 ZENDESK_EMAIL",
+            },
+        },
+        "required": ["ticket_id"],
+    }
+
+    group = "zendesk"
+    concurrency_safe = False
+    is_write_operation = True
+
+    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        ticket_id = _coerce_positive_int_arg(args, "ticket_id")
+        if isinstance(ticket_id, ToolResult):
+            return ticket_id
+        if "user_id" in args and "user_email" in args:
+            return ToolResult(success=False, error="provide either user_id or user_email, not both")
+        payload_args: dict[str, Any] = {
+            "ticket_id": ticket_id,
+            "explicit_user_follow_request": "agent follow ticket",
+            "dry_run": bool(session.dry_run),
+            "confirm": not bool(session.dry_run),
+            "actor": "zd-agent",
+        }
+        if args.get("user_id") is not None:
+            user_id = _coerce_positive_int_arg(args, "user_id")
+            if isinstance(user_id, ToolResult):
+                return user_id
+            payload_args["user_id"] = user_id
+        if args.get("user_email") is not None:
+            user_email = _coerce_optional_string_arg(args, "user_email", default="")
+            if isinstance(user_email, ToolResult):
+                return user_email
+            if not user_email.strip():
+                return ToolResult(success=False, error="user_email is empty")
+            payload_args["user_email"] = user_email.strip()
+
+        try:
+            payload = await call_zendesk_tool("follow_ticket", payload_args)
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("follow_ticket", payload),
+                )
+            if session.dry_run:
+                return ToolResult(output=f"[Dry Run] 将关注工单 #{ticket_id}")
+            return ToolResult(output=f"已关注工单 #{ticket_id}")
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 
@@ -1316,9 +1468,14 @@ class ZendeskGetUser(Tool):
         user_id = _coerce_positive_int_arg(args, "user_id")
         if isinstance(user_id, ToolResult):
             return user_id
-        client = _get_client()
         try:
-            data = await _call_with_rate_limit_retry(client.get_user, user_id)
+            payload = await call_zendesk_tool("get_user", {"user_id": user_id})
+            if not payload.get("success"):
+                return ToolResult(
+                    success=False,
+                    error=_format_mcp_error("get_user", payload),
+                )
+            data = payload.get("data") or {}
             user = data.get("user", data)
             lines = [
                 f"**姓名**: {user.get('name', 'N/A')}",
@@ -1329,7 +1486,5 @@ class ZendeskGetUser(Tool):
             ]
             return ToolResult(output="\n".join(lines))
 
-        except ZendeskError as e:
-            return ToolResult(success=False, error=_format_error(e))
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")

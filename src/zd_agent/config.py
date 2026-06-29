@@ -212,6 +212,19 @@ class SourceMcpConfig(BaseModel):
     request_timeout_seconds: int = 45
 
 
+class ZendeskMcpConfig(BaseModel):
+    """Remote Zendesk MCP client config.
+
+    Public customer replies intentionally stay on the browser relay. This MCP
+    handles ticket reads, internal notes, metadata writes, and guarded support
+    operations only.
+    """
+
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 35
+
+
 class FeishuConfig(BaseModel):
     # Custom bot (incoming webhook) mode
     webhook_url: str = ""       # from env FEISHU_WEBHOOK_URL
@@ -298,6 +311,7 @@ class AppConfig(BaseModel):
     db_gateway: DbGatewayConfig = Field(default_factory=DbGatewayConfig)
     signoz: SignozConfig = Field(default_factory=SignozConfig)
     source_mcp: SourceMcpConfig = Field(default_factory=SourceMcpConfig)
+    zendesk_mcp: ZendeskMcpConfig = Field(default_factory=ZendeskMcpConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
@@ -341,6 +355,9 @@ class EnvSettings(BaseSettings):
     source_mcp_url: str = ""
     source_mcp_api_key: str = ""
     source_mcp_timeout_seconds: int | None = None
+    zendesk_mcp_url: str = ""
+    zendesk_mcp_api_key: str = ""
+    zendesk_mcp_timeout_seconds: int | None = None
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
@@ -418,6 +435,13 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.source_mcp.mcp_api_key = env.source_mcp_api_key
     if env.source_mcp_timeout_seconds is not None:
         cfg.source_mcp.request_timeout_seconds = env.source_mcp_timeout_seconds
+    # Zendesk remote MCP
+    if env.zendesk_mcp_url:
+        cfg.zendesk_mcp.mcp_url = env.zendesk_mcp_url.rstrip("/")
+    if env.zendesk_mcp_api_key:
+        cfg.zendesk_mcp.mcp_api_key = env.zendesk_mcp_api_key
+    if env.zendesk_mcp_timeout_seconds is not None:
+        cfg.zendesk_mcp.request_timeout_seconds = env.zendesk_mcp_timeout_seconds
     # Feishu
     if env.feishu_webhook_url:
         cfg.feishu.webhook_url = env.feishu_webhook_url

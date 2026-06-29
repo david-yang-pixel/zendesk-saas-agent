@@ -12,6 +12,10 @@ import httpx
 
 from zd_agent.config import AppConfig, EnvSettings
 from zd_agent.tools.registry import create_tool_registry
+from zd_agent.tools.service_boundary import (
+    get_tool_service_boundary,
+    summarize_tool_service_boundaries,
+)
 
 ModelFetcher = Callable[[str | None, str], Awaitable[list[str]]]
 
@@ -405,6 +409,7 @@ def build_agent_tools_manifest() -> dict[str, Any]:
     tools = []
     for tool in registry.list_tools():
         schema = tool.to_openai_schema().get("function", {})
+        tool_service = get_tool_service_boundary(tool.name).to_metadata()
         tools.append(
             {
                 "name": tool.name,
@@ -418,7 +423,12 @@ def build_agent_tools_manifest() -> dict[str, Any]:
                     "is_write_operation": bool(getattr(tool, "is_write_operation", False)),
                     "risk_level": _risk_level(tool),
                     "source_path": f"{tool.__class__.__module__}.{tool.__class__.__name__}",
+                    "tool_service": tool_service,
                 },
             }
         )
-    return {"count": len(tools), "tools": tools}
+    return {
+        "count": len(tools),
+        "tool_service_summary": summarize_tool_service_boundaries(registry.list_tools()),
+        "tools": tools,
+    }

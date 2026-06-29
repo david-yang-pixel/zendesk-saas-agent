@@ -22,6 +22,7 @@ import time
 from datetime import datetime, timezone
 
 from zd_agent.config import get_config
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.mention.detector import configured_mention_triggers, is_any_mention
 from zd_agent.mention.tracker import MentionTracker
@@ -39,7 +40,7 @@ def _now_unix() -> float:
     return time.time()
 
 
-def _fetch_ticket_comments_for_mentions(client: object, ticket_id: int) -> list[dict]:
+async def _fetch_ticket_comments_for_mentions(ticket_id: int) -> list[dict]:
     """Fetch enough ticket comments to see recent internal @mentions.
 
     Zendesk returns comments oldest-first for page 1. Fetching only page 1 with
@@ -47,11 +48,13 @@ def _fetch_ticket_comments_for_mentions(client: object, ticket_id: int) -> list[
     """
     comments: list[dict] = []
     for page in range(1, _COMMENT_MAX_PAGES + 1):
-        data = client.get_ticket_comments(  # type: ignore[attr-defined]
-            ticket_id,
-            page,
-            _COMMENT_PAGE_SIZE,
+        payload = await call_zendesk_tool(
+            "get_ticket_comments",
+            {"ticket_id": ticket_id, "page": page, "per_page": _COMMENT_PAGE_SIZE},
         )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        data = payload.get("data") or {}
         page_comments = data.get("comments", []) or []
         comments.extend(page_comments)
         if not page_comments or not data.get("next_page"):
@@ -69,8 +72,6 @@ async def scan_once(
 
     Returns (mentions_dispatched, new_last_poll_unix).
     """
-    from zd.client import ZendeskClient
-
     cfg = get_config()
     triggers = configured_mention_triggers(cfg.zendesk)
     if not triggers:
@@ -88,8 +89,10 @@ async def scan_once(
 
     query = f"status<solved updated>{since_iso}"
     try:
-        client = ZendeskClient()
-        data = await asyncio.to_thread(client.search_tickets, query)
+        payload = await call_zendesk_tool("search_tickets", {"query": query})
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        data = payload.get("data") or {}
     except Exception as e:
         logger.warning("mention_poller_search_failed", error=str(e))
         return 0, last_poll_unix  # don't advance cursor on failure
@@ -103,9 +106,7 @@ async def scan_once(
             continue
 
         try:
-            comments = await asyncio.to_thread(
-                _fetch_ticket_comments_for_mentions, client, tid,
-            )
+            comments = await _fetch_ticket_comments_for_mentions(int(tid))
         except Exception as e:
             logger.warning(
                 "mention_poller_comments_failed",

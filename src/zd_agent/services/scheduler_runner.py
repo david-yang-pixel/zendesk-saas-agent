@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from rich.console import Console
 
 from zd_agent.config import get_config
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.repos import fetch_repo
 
@@ -31,8 +32,6 @@ _last_mention_poll_time: float = 0.0
 
 async def poll_zendesk_task() -> None:
     """定时任务：轮询 Zendesk 搜索新工单（APScheduler 注册用，必须是模块级函数）"""
-    from zd.client import ZendeskClient
-
     if _manager is None:
         return
 
@@ -41,8 +40,10 @@ async def poll_zendesk_task() -> None:
     query = cfg.zendesk.search_query or cfg.zendesk.poll_query
 
     try:
-        client = ZendeskClient()
-        data = await asyncio.to_thread(client.search_tickets, query)
+        payload = await call_zendesk_tool("search_tickets", {"query": query})
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        data = payload.get("data") or {}
         results = data.get("results", [])
 
         new_tickets = []
@@ -101,7 +102,6 @@ async def fetch_repos_task() -> None:
 
 async def poll_mention_task() -> None:
     """定时任务：轮询最近更新的工单，检测 @mention 并派发（APScheduler 注册用）"""
-    from zd.client import ZendeskClient
     from zd_agent.mention.detector import configured_mention_triggers, is_any_mention
 
     global _last_mention_poll_time
@@ -122,8 +122,10 @@ async def poll_mention_task() -> None:
     _last_mention_poll_time = time.time()
 
     try:
-        client = ZendeskClient()
-        data = await asyncio.to_thread(client.search_tickets, query)
+        payload = await call_zendesk_tool("search_tickets", {"query": query})
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        data = payload.get("data") or {}
         results = data.get("results", [])
 
         for ticket in results:
@@ -135,9 +137,7 @@ async def poll_mention_task() -> None:
                 _fetch_ticket_comments_for_mentions,
             )
 
-            comments = await asyncio.to_thread(
-                _fetch_ticket_comments_for_mentions, client, tid,
-            )
+            comments = await _fetch_ticket_comments_for_mentions(int(tid))
 
             # 倒序遍历（最新评论优先）
             for comment in reversed(comments):

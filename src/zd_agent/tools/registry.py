@@ -36,6 +36,7 @@ from zd_agent.tools.subagent import RunSubagent
 from zd_agent.tools.subagent_parallel import RunSubagentsParallel
 from zd_agent.tools.zendesk import (
     ZendeskAddTags,
+    ZendeskFollowTicket,
     ZendeskGetArticle,
     ZendeskGetAttachments,
     ZendeskGetTicket,
@@ -69,6 +70,7 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ZendeskInternalReply())
     registry.register(ZendeskPublicReply())  # ⚠️ 受 cfg.public_reply.enabled 门控
     registry.register(ZendeskAddTags())
+    registry.register(ZendeskFollowTicket())
 
     # 知识库工具组
     # ZendeskKgSearch 不再注册：依赖独立 zendesk-kg-cli（github.com/sorphwer/...）

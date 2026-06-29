@@ -98,10 +98,16 @@ chmod 600 /opt/zd-agent/.env
 # into /opt/zd-agent/.env:
 # SIGNOZ_MCP_URL=http://127.0.0.1:8098
 # SIGNOZ_MCP_API_KEY=<from /etc/signoz-mcp/env>
+
+# Zendesk MCP env lives outside the agent repo. Copy only the MCP URL/key
+# into /opt/zd-agent/.env:
+# ZENDESK_MCP_URL=http://127.0.0.1:8099
+# ZENDESK_MCP_API_KEY=<from /etc/zendesk-mcp/env>
 ```
 
 Required variables for `/opt/zd-agent/.env` (see `.env.example`):
 - ZENDESK_SUBDOMAIN / ZENDESK_EMAIL (`<zendesk-agent-email>`) / ZENDESK_API_TOKEN / ZENDESK_WEBHOOK_SECRET
+- ZENDESK_MCP_URL / ZENDESK_MCP_API_KEY
 - OPENAI_API_KEY
 - FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
 - SIGNOZ_MCP_URL / SIGNOZ_MCP_API_KEY
@@ -120,7 +126,14 @@ Required variables for `/opt/signoz-mcp/.env` are documented in `/opt/signoz-mcp
 - SIGNOZ_API_KEY
 - FEISHU_WEBHOOK_URL / FEISHU_WEBHOOK_SECRET（watchdog alerting）
 
+Required variables for `/opt/zendesk-mcp/.env` are documented in `/opt/zendesk-mcp/code/.env.example`:
+- ZENDESK_MCP_API_KEY（must match `/opt/zd-agent/.env`）
+- ZENDESK_SUBDOMAIN
+- ZENDESK_EMAIL
+- ZENDESK_API_TOKEN
+
 **可选**：
+- `/opt/zendesk-mcp/.env`: `ZENDESK_MCP_DOWNLOAD_MAX_BYTES` — caps `download_attachment` responses returned to the agent as base64; default is 10 MiB.
 - `/opt/db-gateway/.env`: `PG_PASSWORD` — 默认走 Teleport 证书认证不需要；仅在直连 DB 或双重认证时填
 - `/opt/db-gateway/.env`: `TELEPORT_PASSWORD` / `TELEPORT_TOTP_SECRET` — 填了才自动续期；不填则退回飞书手动续期卡片
 
