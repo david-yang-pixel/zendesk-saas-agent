@@ -7,6 +7,7 @@ from aiohttp import web
 
 from zd_agent.config import get_config
 from zd_agent.services.app_bootstrap import prepare_saas_app_runtime
+from zd_agent.services.admin_routes import register_admin_routes
 from zd_agent.services.app_lifecycle import (
     register_background_lifecycle,
 )
@@ -22,6 +23,7 @@ def create_saas_app(manager: Any) -> web.Application:
     runtime = prepare_saas_app_runtime(app=app, cfg=cfg, manager=manager)
 
     register_saas_routes(app=app, cfg=cfg)
+    register_admin_routes(app=app, cfg=cfg, state_dir=runtime.state_dir)
 
     register_background_lifecycle(
         app=app,

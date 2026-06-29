@@ -10,6 +10,7 @@ from aiohttp import web
 
 from zd_agent.services.app_context import install_saas_app_context
 from zd_agent.services.app_lifecycle import wire_session_finished_callback
+from zd_agent.services.admin_config import AdminConfigStore
 from zd_agent.services.webhook_dedup import WebhookDedup
 from zd_agent.trigger.state_store import TicketStateTracker
 
@@ -30,6 +31,7 @@ def prepare_saas_app_runtime(
     """Create shared runtime dependencies and install them into the app."""
     state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
     state_dir.mkdir(parents=True, exist_ok=True)
+    AdminConfigStore(state_dir).apply_saved(cfg)
 
     trigger_queue: asyncio.Queue = asyncio.Queue()
     state = TicketStateTracker(state_dir / "tickets.json")
