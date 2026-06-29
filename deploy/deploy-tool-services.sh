@@ -297,7 +297,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.request
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 
 public_base = os.environ.get("TOOL_SERVICES_PUBLIC_BASE_URL", "https://zendesk.smlershou.top").rstrip("/")
@@ -322,20 +324,30 @@ def read_env(path: str) -> dict[str, str]:
 
 for service, key_name, path in services:
     env = read_env(f"/etc/{service}/env")
-    req = urllib.request.Request(
-        f"{public_base}/{path}/mcp",
-        data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode(),
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {env[key_name]}",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode())
-    tools = data["result"]["tools"]
-    print(f"{service}: remote-ok ({len(tools)} tools)")
+    url = f"{public_base}/{path}/mcp"
+    last_error = ""
+    for attempt in range(1, 46):
+        req = urllib.request.Request(
+            url,
+            data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Authorization": f"Bearer {env[key_name]}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+            tools = data["result"]["tools"]
+            print(f"{service}: remote-ok ({len(tools)} tools)")
+            break
+        except (HTTPError, URLError, TimeoutError) as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            if attempt == 45:
+                raise RuntimeError(f"{service} remote MCP verification failed: {last_error}") from exc
+            time.sleep(1)
 PY
 
 log "Deployment complete"
