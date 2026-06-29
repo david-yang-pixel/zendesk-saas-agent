@@ -164,8 +164,112 @@
       grid-template-columns: 130px 100px 1fr 108px 84px;
       overflow-x: auto;
     }
-    .run-table {
+    .records-table {
+      display: grid;
+      gap: 0;
       grid-template-columns: 170px 90px 180px 150px 1fr;
+      overflow-x: auto;
+    }
+    .records-table.header,
+    .record-row {
+      align-items: start;
+      border-bottom: 1px solid #edf3fb;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 170px 90px 180px 150px 1fr;
+      min-width: 930px;
+      padding: 10px 0;
+    }
+    .records-table.header {
+      border-bottom-color: #dbe7f6;
+      color: #405675;
+      font-weight: 750;
+      padding-top: 0;
+    }
+    .record-row {
+      background: transparent;
+      border-left: 0;
+      border-right: 0;
+      border-top: 0;
+      color: var(--text);
+      cursor: pointer;
+      text-align: left;
+      width: 100%;
+    }
+    .record-row:hover { background: #f7fbff; }
+    .record-cell {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      white-space: normal;
+    }
+    .record-event { color: #12315f; font-weight: 650; }
+    .record-summary { color: #405675; }
+    .mini-list { display: grid; gap: 8px; }
+    .mini-row {
+      align-items: center;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      cursor: pointer;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 170px 160px 1fr;
+      padding: 9px 10px;
+      text-align: left;
+      width: 100%;
+    }
+    .mini-row:hover { background: #f7fbff; }
+    .drawer-backdrop {
+      align-items: stretch;
+      background: rgba(12, 31, 56, .35);
+      bottom: 0;
+      display: flex;
+      justify-content: flex-end;
+      left: 0;
+      position: fixed;
+      right: 0;
+      top: 0;
+      z-index: 20;
+    }
+    .drawer {
+      background: #fff;
+      border-left: 1px solid var(--border);
+      box-shadow: -12px 0 28px rgba(16, 35, 63, .18);
+      display: flex;
+      flex-direction: column;
+      width: min(760px, 100%);
+    }
+    .drawer-header {
+      align-items: center;
+      border-bottom: 1px solid #e5edf8;
+      display: flex;
+      justify-content: space-between;
+      padding: 14px 16px;
+    }
+    .drawer-title { font-size: 16px; font-weight: 760; }
+    .drawer-body {
+      display: grid;
+      gap: 12px;
+      overflow: auto;
+      padding: 14px 16px;
+    }
+    .kv-grid {
+      display: grid;
+      gap: 8px 10px;
+      grid-template-columns: 120px 1fr;
+    }
+    .kv-grid strong { color: #405675; }
+    pre {
+      background: #f7fbff;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: #10233f;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      margin: 0;
+      overflow: auto;
+      padding: 12px;
+      white-space: pre-wrap;
     }
     .table strong { color: #405675; }
     code {
@@ -249,6 +353,22 @@
     </main>
   </div>
 
+  <div id="log-drawer" class="drawer-backdrop hidden" onclick="closeLogDetail()">
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="log-drawer-title" onclick="event.stopPropagation()">
+      <div class="drawer-header">
+        <div>
+          <div id="log-drawer-title" class="drawer-title">日志详情</div>
+          <div id="log-drawer-subtitle" class="subtitle"></div>
+        </div>
+        <button class="btn" onclick="closeLogDetail()">关闭</button>
+      </div>
+      <div class="drawer-body">
+        <div id="log-drawer-meta" class="kv-grid"></div>
+        <pre id="log-drawer-json"></pre>
+      </div>
+    </aside>
+  </div>
+
   <script>
     const MENUS = ["总览", "运行记录", "触发配置", "回复策略", "模型与运行", "工具与集成", "存储配置", "部署状态", "审计日志"];
     const SUBTITLES = {
@@ -265,6 +385,7 @@
     let activeMenu = "总览";
     let schema = { fields: [], groups: [] };
     let values = {};
+    let runRecords = [];
 
     async function api(path, options = {}) {
       const response = await fetch(path, {
@@ -459,27 +580,56 @@
       return `<input data-path="${field.path}" value="${escapeHtml(value)}">`;
     }
 
-    function renderOverview() {
-      return `
+    async function loadRunRecords(limit = 100) {
+      const data = await api(`/admin/api/run-records?limit=${limit}`);
+      runRecords = data.items || [];
+      return data;
+    }
+
+    async function renderOverview() {
+      const data = await loadRunRecords(100);
+      const items = data.items || [];
+      const todayItems = items.filter(item => isToday(item.timestamp || item.ts));
+      const errorItems = todayItems.filter(isErrorEvent);
+      const latest = items.slice(0, 6);
+      const todayTicketIds = new Set(
+        todayItems.map(item => item.ticket_id || item.ticket).filter(Boolean)
+      );
+      const todayValue = todayTicketIds.size
+        ? `${todayTicketIds.size} 个工单`
+        : `${todayItems.length} 条事件`;
+      const failureRate = todayItems.length
+        ? `${Math.round(errorItems.length * 100 / todayItems.length)}%`
+        : "--";
+      document.getElementById("content").innerHTML = `
         <div class="grid-4">
           <div class="stat"><div class="stat-label">Agent 服务</div><div class="stat-value success">运行中</div></div>
-          <div class="stat"><div class="stat-label">今日运行</div><div class="stat-value">--</div></div>
-          <div class="stat"><div class="stat-label">失败率</div><div class="stat-value">--</div></div>
+          <div class="stat"><div class="stat-label">今日处理</div><div class="stat-value">${escapeHtml(todayValue)}</div></div>
+          <div class="stat"><div class="stat-label">错误事件</div><div class="stat-value ${errorItems.length ? "warn" : "success"}">${escapeHtml(errorItems.length)}</div></div>
+          <div class="stat"><div class="stat-label">失败率</div><div class="stat-value">${escapeHtml(failureRate)}</div></div>
           <div class="stat"><div class="stat-label">配置状态</div><div class="stat-value success">已同步</div></div>
         </div>
         <section class="card" style="margin-top:14px">
-          <div class="card-header">系统摘要</div>
-          <div class="card-body">运行记录保存单次处理日志；审计日志保存所有配置和密钥变更。</div>
+          <div class="card-header">
+            <span>最近运行事件</span>
+            <span class="chip">点击查看详情</span>
+          </div>
+          <div class="card-body mini-list">
+            ${latest.map((item, index) => `
+              <button class="mini-row" onclick="openLogDetail(${index})">
+                <span>${escapeHtml(formatTime(item.timestamp || item.ts))}</span>
+                <span class="record-event">${escapeHtml(item.event || "未知事件")}</span>
+                <span>${escapeHtml(logSummary(item) || item.module || item._source_file || "查看完整日志")}</span>
+              </button>
+            `).join("") || `<div class="muted">${escapeHtml(runRecordsEmptyText(data))}</div>`}
+          </div>
         </section>
       `;
     }
 
     async function renderRuns() {
-      const data = await api("/admin/api/run-records?limit=100");
+      const data = await loadRunRecords(200);
       const items = data.items || [];
-      const emptyText = data.exists
-        ? "当前日志目录暂无 JSONL 运行事件"
-        : `日志目录不存在：${data.log_dir || ""}`;
       document.getElementById("content").innerHTML = `
         <section class="card">
           <div class="card-header">
@@ -487,19 +637,95 @@
             <span class="chip">${data.jsonl_enabled ? "JSONL 已开启" : "JSONL 未开启"}</span>
           </div>
           <div class="card-body">
-            <div class="table run-table">
-              <strong>时间</strong><strong>工单</strong><strong>事件</strong><strong>模块</strong><strong>摘要</strong>
-              ${items.map(item => `
-                <span>${escapeHtml(item.timestamp || item.ts || "")}</span>
-                <span>${escapeHtml(item.ticket_id || item.ticket || "")}</span>
-                <span>${escapeHtml(item.event || "")}</span>
-                <span>${escapeHtml(item.module || "")}</span>
-                <span>${escapeHtml(logSummary(item))}</span>
-              `).join("") || `<span class="muted">${escapeHtml(emptyText)}</span>`}
+            <div class="records-table header">
+              <span>时间</span><span>工单</span><span>事件</span><span>模块</span><span>摘要</span>
+            </div>
+            <div>
+              ${items.map((item, index) => `
+                <button class="record-row" onclick="openLogDetail(${index})" title="查看完整日志">
+                  <span class="record-cell">${escapeHtml(formatTime(item.timestamp || item.ts))}</span>
+                  <span class="record-cell">${escapeHtml(item.ticket_id || item.ticket || "-")}</span>
+                  <span class="record-cell record-event">${escapeHtml(item.event || "未知事件")}</span>
+                  <span class="record-cell">${escapeHtml(item.module || "-")}</span>
+                  <span class="record-cell record-summary">${escapeHtml(logSummary(item) || "点击查看完整日志")}</span>
+                </button>
+              `).join("") || `<div class="muted" style="padding:12px 0">${escapeHtml(runRecordsEmptyText(data))}</div>`}
             </div>
           </div>
         </section>
       `;
+    }
+
+    function runRecordsEmptyText(data) {
+      return data.exists
+        ? "当前日志目录暂无 JSONL 运行事件"
+        : `日志目录不存在：${data.log_dir || ""}`;
+    }
+
+    function isToday(value) {
+      if (!value) return false;
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return false;
+      const now = new Date();
+      return date.getFullYear() === now.getFullYear()
+        && date.getMonth() === now.getMonth()
+        && date.getDate() === now.getDate();
+    }
+
+    function isErrorEvent(item) {
+      const text = [
+        item.event,
+        item.status,
+        item.level,
+        item.error,
+        item.exception,
+        item.traceback
+      ].filter(Boolean).join(" ").toLowerCase();
+      return ["error", "failed", "failure", "exception", "traceback"].some(token => text.includes(token));
+    }
+
+    function formatTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) {
+        return date.toLocaleString();
+      }
+      return String(value).replace("T", " ");
+    }
+
+    function openLogDetail(index) {
+      const item = runRecords[index];
+      if (!item) return;
+      document.getElementById("log-drawer-title").textContent = item.event || "日志详情";
+      document.getElementById("log-drawer-subtitle").textContent = formatTime(item.timestamp || item.ts);
+      document.getElementById("log-drawer-meta").innerHTML = `
+        <strong>工单</strong><span>${escapeHtml(item.ticket_id || item.ticket || "-")}</span>
+        <strong>模块</strong><span>${escapeHtml(item.module || "-")}</span>
+        <strong>来源文件</strong><span>${escapeHtml(item._source_file || "-")}</span>
+      `;
+      document.getElementById("log-drawer-json").textContent = JSON.stringify(redactLogValue(item), null, 2);
+      document.getElementById("log-drawer").classList.remove("hidden");
+    }
+
+    function closeLogDetail() {
+      document.getElementById("log-drawer").classList.add("hidden");
+    }
+
+    function redactLogValue(value, key = "") {
+      if (Array.isArray(value)) {
+        return value.map(item => redactLogValue(item));
+      }
+      if (value && typeof value === "object") {
+        const out = {};
+        Object.entries(value).forEach(([entryKey, entryValue]) => {
+          out[entryKey] = redactLogValue(entryValue, entryKey);
+        });
+        return out;
+      }
+      if (/password|token|secret|api[_-]?key|authorization/i.test(key)) {
+        return value ? "[REDACTED]" : value;
+      }
+      return value;
     }
 
     function logSummary(item) {
@@ -557,7 +783,7 @@
       document.getElementById("preview-btn").classList.toggle("hidden", !canEdit);
       document.getElementById("save-btn").classList.toggle("hidden", !canEdit);
       if (activeMenu === "总览") {
-        document.getElementById("content").innerHTML = renderOverview();
+        renderOverview();
       } else if (activeMenu === "运行记录") {
         renderRuns();
       } else if (activeMenu === "审计日志") {

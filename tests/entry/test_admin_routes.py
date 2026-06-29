@@ -7,7 +7,11 @@ import pytest
 from aiohttp import web
 
 from zd_agent.config import AppConfig
-from zd_agent.services.admin_routes import ADMIN_HANDLERS_KEY, register_admin_routes
+from zd_agent.services.admin_routes import (
+    ADMIN_HANDLERS_KEY,
+    _load_index_html,
+    register_admin_routes,
+)
 from zd_agent.services.app_context import app_config, install_saas_app_context
 
 
@@ -51,6 +55,17 @@ def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
     assert "/admin/api/config/schema" in route_paths
     assert "/admin/api/run-records" in route_paths
     assert "/admin/api/audit-logs" in route_paths
+
+
+def test_admin_index_replaces_placeholder_summary_with_clickable_log_details() -> None:
+    html = _load_index_html()
+
+    assert "系统摘要" not in html
+    assert "最近运行事件" in html
+    assert "record-row" in html
+    assert "openLogDetail" in html
+    assert "log-drawer" in html
+    assert "redactLogValue" in html
 
 
 @pytest.mark.asyncio
