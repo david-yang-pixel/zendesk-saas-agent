@@ -171,19 +171,19 @@ jobs:
           run_url = f"{os.environ['SERVER_URL']}/{repository}/actions/runs/{os.environ['RUN_ID']}"
 
           msg = EmailMessage()
-          msg["Subject"] = f"zd-agent deployed successfully: {short_sha}"
+          msg["Subject"] = f"zd-agent 部署成功：{short_sha}"
           msg["From"] = email_from
           msg["To"] = email_to
           msg.set_content(
               "\n".join(
                   [
-                      "zd-agent production deployment completed successfully.",
+                      "zd-agent 生产环境部署已成功完成。",
                       "",
-                      f"Repository: {repository}",
-                      f"Commit: {sha}",
-                      f"Deployed image: {image_name}:sha-{sha}",
-                      f"Moving tag also pushed: {image_name}:main",
-                      f"Workflow run: {run_url}",
+                      f"仓库：{repository}",
+                      f"提交：{sha}",
+                      f"已部署镜像：{image_name}:sha-{sha}",
+                      f"同步更新标签：{image_name}:main",
+                      f"工作流运行：{run_url}",
                   ]
               )
           )

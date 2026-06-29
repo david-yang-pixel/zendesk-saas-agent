@@ -93,7 +93,13 @@ def test_github_action_sends_success_email_only_after_deploy() -> None:
     assert "${{ secrets.DEPLOY_NOTIFY_EMAIL_TO }}" in text
     assert "smtplib.SMTP_SSL" in text
     assert "send_message(msg)" in text
-    assert "zd-agent deployed successfully" in text
+    assert "zd-agent 部署成功" in text
+    assert "zd-agent 生产环境部署已成功完成。" in text
+    assert "仓库：" in text
+    assert "提交：" in text
+    assert "已部署镜像：" in text
+    assert "同步更新标签：" in text
+    assert "工作流运行：" in text
     assert "Skipping deployment success email" in text
 
 
