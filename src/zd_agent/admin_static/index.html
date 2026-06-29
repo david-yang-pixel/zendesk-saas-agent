@@ -4,842 +4,93 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>zd-agent 管理后台</title>
-  <style>
-    :root {
-      --blue: #155eef;
-      --blue-50: #eaf3ff;
-      --blue-100: #dbeafe;
-      --border: #d6e2f2;
-      --text: #10233f;
-      --muted: #60728f;
-      --bg: #f5f8fd;
-      --success: #166534;
-      --warn: #92400e;
-      --danger: #991b1b;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      color: var(--text);
-      background: var(--bg);
-      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 14px;
-    }
-    button, input, select, textarea { font: inherit; }
-    .shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
-    .sidebar {
-      background: var(--blue-50);
-      border-right: 1px solid #c7dcfb;
-      padding: 16px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-    .brand { padding: 2px 8px 12px; border-bottom: 1px solid #c7dcfb; }
-    .brand-title { color: #12315f; font-size: 15px; font-weight: 760; }
-    .brand-sub { color: #58769f; font-size: 12px; margin-top: 4px; }
-    .nav { display: grid; gap: 4px; }
-    .nav button {
-      border: 0;
-      background: transparent;
-      border-radius: 6px;
-      color: #315278;
-      cursor: pointer;
-      padding: 9px 10px;
-      text-align: left;
-      width: 100%;
-    }
-    .nav button.active {
-      background: var(--blue);
-      box-shadow: 0 1px 2px rgba(21, 94, 239, .18);
-      color: #fff;
-      font-weight: 760;
-    }
-    .sidebar-bottom {
-      border-top: 1px solid #c7dcfb;
-      color: #58769f;
-      display: grid;
-      font-size: 12px;
-      gap: 10px;
-      margin-top: auto;
-      padding: 10px 8px;
-    }
-    .health-dot {
-      background: #16a34a;
-      border-radius: 99px;
-      display: inline-block;
-      height: 7px;
-      margin-right: 6px;
-      width: 7px;
-    }
-    .logout {
-      background: #fff;
-      border: 1px solid #b7cdec;
-      border-radius: 6px;
-      color: #24476f;
-      cursor: pointer;
-      padding: 8px 10px;
-      text-align: left;
-      width: 100%;
-    }
-    main { padding: 18px 20px; }
-    .page-header {
-      align-items: center;
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 16px;
-    }
-    h1 { font-size: 21px; line-height: 1.2; margin: 0; }
-    .subtitle { color: var(--muted); font-size: 12px; margin-top: 4px; }
-    .actions { display: flex; gap: 8px; }
-    .btn {
-      background: #fff;
-      border: 1px solid #b9c9df;
-      border-radius: 6px;
-      color: #2f4666;
-      cursor: pointer;
-      font-size: 12px;
-      padding: 7px 10px;
-    }
-    .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; font-weight: 650; }
-    .btn.danger { color: var(--danger); }
-    .card {
-      background: #fff;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      margin-bottom: 14px;
-    }
-    .card-header {
-      align-items: center;
-      border-bottom: 1px solid #e5edf8;
-      display: flex;
-      font-weight: 750;
-      justify-content: space-between;
-      padding: 13px 14px;
-    }
-    .card-body { padding: 14px; }
-    .grid-4 { display: grid; gap: 10px; grid-template-columns: repeat(4, 1fr); }
-    .stat { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-    .stat-label { color: var(--muted); font-size: 12px; }
-    .stat-value { color: var(--text); font-size: 17px; font-weight: 750; margin-top: 4px; }
-    .form-grid {
-      display: grid;
-      gap: 11px 12px;
-      grid-template-columns: 170px 1fr 96px;
-      align-items: center;
-    }
-    label { color: #405675; font-weight: 650; }
-    input, select, textarea {
-      border: 1px solid #b9c9df;
-      border-radius: 6px;
-      color: var(--text);
-      padding: 8px 9px;
-      width: 100%;
-    }
-    input[disabled] { background: #f8fbff; color: var(--muted); }
-    .chip {
-      background: #eef5ff;
-      border: 1px solid #c7ddff;
-      border-radius: 999px;
-      color: var(--blue);
-      font-size: 12px;
-      padding: 4px 8px;
-    }
-    .warn { color: var(--warn); }
-    .success { color: var(--success); }
-    .muted { color: var(--muted); }
-    .login-wrap {
-      align-items: center;
-      display: flex;
-      justify-content: center;
-      min-height: 100vh;
-      padding: 24px;
-    }
-    .login-card { width: min(420px, 100%); }
-    .login-card h1 { margin-bottom: 4px; }
-    .stack { display: grid; gap: 10px; }
-    .table {
-      display: grid;
-      gap: 8px;
-      grid-template-columns: 130px 100px 1fr 108px 84px;
-      overflow-x: auto;
-    }
-    .records-table {
-      display: grid;
-      gap: 0;
-      grid-template-columns: 170px 90px 180px 150px 1fr;
-      overflow-x: auto;
-    }
-    .records-table.header,
-    .record-row {
-      align-items: start;
-      border-bottom: 1px solid #edf3fb;
-      display: grid;
-      gap: 12px;
-      grid-template-columns: 170px 90px 180px 150px 1fr;
-      min-width: 930px;
-      padding: 10px 0;
-    }
-    .records-table.header {
-      border-bottom-color: #dbe7f6;
-      color: #405675;
-      font-weight: 750;
-      padding-top: 0;
-    }
-    .record-row {
-      background: transparent;
-      border-left: 0;
-      border-right: 0;
-      border-top: 0;
-      color: var(--text);
-      cursor: pointer;
-      text-align: left;
-      width: 100%;
-    }
-    .record-row:hover { background: #f7fbff; }
-    .record-cell {
-      min-width: 0;
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-    .record-event { color: #12315f; font-weight: 650; }
-    .record-summary { color: #405675; }
-    .mini-list { display: grid; gap: 8px; }
-    .mini-row {
-      align-items: center;
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      cursor: pointer;
-      display: grid;
-      gap: 10px;
-      grid-template-columns: 170px 160px 1fr;
-      padding: 9px 10px;
-      text-align: left;
-      width: 100%;
-    }
-    .mini-row:hover { background: #f7fbff; }
-    .drawer-backdrop {
-      align-items: stretch;
-      background: rgba(12, 31, 56, .35);
-      bottom: 0;
-      display: flex;
-      justify-content: flex-end;
-      left: 0;
-      position: fixed;
-      right: 0;
-      top: 0;
-      z-index: 20;
-    }
-    .drawer {
-      background: #fff;
-      border-left: 1px solid var(--border);
-      box-shadow: -12px 0 28px rgba(16, 35, 63, .18);
-      display: flex;
-      flex-direction: column;
-      width: min(760px, 100%);
-    }
-    .drawer-header {
-      align-items: center;
-      border-bottom: 1px solid #e5edf8;
-      display: flex;
-      justify-content: space-between;
-      padding: 14px 16px;
-    }
-    .drawer-title { font-size: 16px; font-weight: 760; }
-    .drawer-body {
-      display: grid;
-      gap: 12px;
-      overflow: auto;
-      padding: 14px 16px;
-    }
-    .kv-grid {
-      display: grid;
-      gap: 8px 10px;
-      grid-template-columns: 120px 1fr;
-    }
-    .kv-grid strong { color: #405675; }
-    pre {
-      background: #f7fbff;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      color: #10233f;
-      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      margin: 0;
-      overflow: auto;
-      padding: 12px;
-      white-space: pre-wrap;
-    }
-    .table strong { color: #405675; }
-    code {
-      background: #eef5ff;
-      border: 1px solid #c7ddff;
-      border-radius: 4px;
-      padding: 1px 4px;
-    }
-    .hidden { display: none !important; }
-    @media (max-width: 900px) {
-      .shell { grid-template-columns: 1fr; }
-      .sidebar { min-height: auto; }
-      .grid-4 { grid-template-columns: repeat(2, 1fr); }
-      .form-grid { grid-template-columns: 1fr; }
-      .page-header { align-items: flex-start; flex-direction: column; gap: 10px; }
-    }
-  </style>
+  <link rel="stylesheet" href="/admin/static/styles.css">
 </head>
 <body>
   <div id="login" class="login-wrap">
-    <section class="card login-card">
-      <div class="card-body stack">
-        <div>
-          <h1>zd-agent 管理后台</h1>
-          <div class="subtitle">默认账号 <code>admin</code>，默认初始密码 <code>admin123</code></div>
-        </div>
-        <input id="login-user" value="admin" autocomplete="username">
-        <input id="login-pass" type="password" value="admin123" autocomplete="current-password">
-        <button class="btn primary" onclick="login()">登录</button>
-        <div id="login-msg" class="warn"></div>
-      </div>
+    <section class="auth-card">
+      <div class="brand-mark">zd</div>
+      <h1>zd-agent 管理后台</h1>
+      <p>默认账号 <code>admin</code>，默认初始密码 <code>admin123</code></p>
+      <label for="login-user">账号</label>
+      <input id="login-user" value="admin" autocomplete="username">
+      <label for="login-pass">密码</label>
+      <input id="login-pass" type="password" value="admin123" autocomplete="current-password">
+      <button class="btn primary full" onclick="login()">登录</button>
+      <div id="login-msg" class="form-message danger-text" role="alert"></div>
     </section>
   </div>
 
   <div id="password-change" class="login-wrap hidden">
-    <section class="card login-card">
-      <div class="card-body stack">
-        <div>
-          <h1>修改初始密码</h1>
-          <div class="subtitle">当前账号仍在使用默认密码，修改后才能进入管理后台。</div>
-        </div>
-        <input id="change-current" type="password" placeholder="当前密码" autocomplete="current-password">
-        <input id="change-new" type="password" placeholder="新密码，至少 8 位" autocomplete="new-password">
-        <input id="change-confirm" type="password" placeholder="再次输入新密码" autocomplete="new-password">
-        <div class="actions">
-          <button class="btn primary" onclick="completePasswordChange()">保存新密码</button>
-          <button class="btn" onclick="logout()">退出登录</button>
-        </div>
-        <div id="change-msg" class="warn"></div>
+    <section class="auth-card">
+      <div class="brand-mark">zd</div>
+      <h1>修改初始密码</h1>
+      <p>当前账号仍在使用默认密码，修改后才能进入管理后台。</p>
+      <label for="change-current">当前密码</label>
+      <input id="change-current" type="password" autocomplete="current-password">
+      <label for="change-new">新密码</label>
+      <input id="change-new" type="password" placeholder="至少 8 位" autocomplete="new-password">
+      <label for="change-confirm">确认新密码</label>
+      <input id="change-confirm" type="password" autocomplete="new-password">
+      <div class="button-row">
+        <button class="btn primary" onclick="completePasswordChange()">保存新密码</button>
+        <button class="btn" onclick="logout()">退出登录</button>
       </div>
+      <div id="change-msg" class="form-message danger-text" role="alert"></div>
     </section>
   </div>
 
   <div id="app" class="shell hidden">
     <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-title">zd-agent</div>
-        <div class="brand-sub">生产环境管理后台</div>
+      <div class="sidebar-brand">
+        <div class="sidebar-title">zd-agent</div>
+        <div class="sidebar-subtitle">生产环境管理后台</div>
       </div>
-      <nav id="nav" class="nav"></nav>
-      <div class="sidebar-bottom">
+      <nav id="nav" class="nav" aria-label="主菜单"></nav>
+      <div class="sidebar-footer">
         <div>
-          <div><span class="health-dot"></span>Agent 健康</div>
-          <div style="margin-top:6px">zd-agent:latest</div>
+          <div><span class="status-dot"></span>Agent 健康</div>
+          <div id="side-image-tag" class="side-meta">zd-agent:latest</div>
         </div>
-        <button class="logout" onclick="logout()">退出登录</button>
+        <button class="btn secondary full" onclick="logout()">退出登录</button>
       </div>
     </aside>
-    <main>
-      <div class="page-header">
+    <main class="main">
+      <header class="page-header">
         <div>
           <h1 id="page-title">总览</h1>
-          <div id="page-subtitle" class="subtitle"></div>
+          <p id="page-subtitle"></p>
         </div>
-        <div class="actions">
-          <button id="preview-btn" class="btn" onclick="previewChanges()">预览变更</button>
-          <button id="save-btn" class="btn primary" onclick="saveChanges()">保存配置</button>
-        </div>
-      </div>
-      <div id="content"></div>
+        <div id="page-actions" class="button-row"></div>
+      </header>
+      <section id="content" class="content" aria-live="polite"></section>
     </main>
   </div>
 
-  <div id="log-drawer" class="drawer-backdrop hidden" onclick="closeLogDetail()">
-    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="log-drawer-title" onclick="event.stopPropagation()">
-      <div class="drawer-header">
+  <div id="detail-drawer" class="drawer-backdrop hidden" onclick="closeDrawer()">
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" onclick="event.stopPropagation()">
+      <header class="drawer-header">
         <div>
-          <div id="log-drawer-title" class="drawer-title">日志详情</div>
-          <div id="log-drawer-subtitle" class="subtitle"></div>
+          <h2 id="drawer-title">详情</h2>
+          <p id="drawer-subtitle"></p>
         </div>
-        <button class="btn" onclick="closeLogDetail()">关闭</button>
-      </div>
-      <div class="drawer-body">
-        <div id="log-drawer-meta" class="kv-grid"></div>
-        <pre id="log-drawer-json"></pre>
-      </div>
+        <button class="btn secondary" onclick="closeDrawer()">关闭</button>
+      </header>
+      <div id="drawer-body" class="drawer-body"></div>
     </aside>
   </div>
 
-  <script>
-    const MENUS = ["总览", "运行记录", "触发配置", "回复策略", "模型与运行", "工具与集成", "存储配置", "部署状态", "审计日志"];
-    const SUBTITLES = {
-      "总览": "服务健康、今日处理和关键状态摘要",
-      "运行记录": "每次 agent 处理工单的完整日志中心",
-      "触发配置": "webhook、轮询、@mention 和触发判定规则",
-      "回复策略": "自动 public reply、ask、handoff 和等待策略",
-      "模型与运行": "模型、Base URL、API key、并发和运行护栏",
-      "工具与集成": "Zendesk、DB、SigNoz、GitHub、Docs、Sandbox 等服务",
-      "存储配置": "目录、附件缓存、状态文件和清理策略",
-      "部署状态": "镜像、服务状态、重载状态和后台访问方式",
-      "审计日志": "所有配置、密钥、登录方式和部署变更记录"
-    };
-    let activeMenu = "总览";
-    let schema = { fields: [], groups: [] };
-    let values = {};
-    let runRecords = [];
+  <div id="modal-backdrop" class="modal-backdrop hidden" onclick="closeModal()">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">
+      <header class="modal-header">
+        <h2 id="modal-title">确认</h2>
+        <button class="icon-btn" aria-label="关闭" onclick="closeModal()">×</button>
+      </header>
+      <div id="modal-body" class="modal-body"></div>
+      <footer id="modal-actions" class="modal-actions"></footer>
+    </section>
+  </div>
 
-    async function api(path, options = {}) {
-      const response = await fetch(path, {
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-        credentials: "same-origin",
-        ...options
-      });
-      const data = await response.json();
-      if (response.status === 401) {
-        showLogin();
-        throw new Error("unauthorized");
-      }
-      if (response.status === 403 && data.error === "password_change_required") {
-        showPasswordChange();
-        throw new Error("password_change_required");
-      }
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error || "request_failed");
-      }
-      return data;
-    }
-
-    function showLogin() {
-      document.getElementById("login").classList.remove("hidden");
-      document.getElementById("password-change").classList.add("hidden");
-      document.getElementById("app").classList.add("hidden");
-    }
-
-    function showPasswordChange() {
-      document.getElementById("login").classList.add("hidden");
-      document.getElementById("password-change").classList.remove("hidden");
-      document.getElementById("app").classList.add("hidden");
-    }
-
-    function showApp() {
-      document.getElementById("login").classList.add("hidden");
-      document.getElementById("password-change").classList.add("hidden");
-      document.getElementById("app").classList.remove("hidden");
-    }
-
-    async function login() {
-      const msg = document.getElementById("login-msg");
-      msg.textContent = "";
-      try {
-        const result = await api("/admin/api/auth/login", {
-          method: "POST",
-          body: JSON.stringify({
-            username: document.getElementById("login-user").value,
-            password: document.getElementById("login-pass").value
-          })
-        });
-        if (!result.ok) throw new Error(result.error || "login failed");
-        if (result.force_password_change) {
-          document.getElementById("change-current").value = document.getElementById("login-pass").value;
-          showPasswordChange();
-          return;
-        }
-        await init();
-      } catch (err) {
-        msg.textContent = "登录失败";
-      }
-    }
-
-    async function completePasswordChange() {
-      const msg = document.getElementById("change-msg");
-      const currentPassword = document.getElementById("change-current").value;
-      const newPassword = document.getElementById("change-new").value;
-      const confirmPassword = document.getElementById("change-confirm").value;
-      msg.textContent = "";
-      if (newPassword.length < 8) {
-        msg.textContent = "新密码至少需要 8 位";
-        return;
-      }
-      if (newPassword !== confirmPassword) {
-        msg.textContent = "两次输入的新密码不一致";
-        return;
-      }
-      try {
-        await api("/admin/api/auth/password", {
-          method: "POST",
-          body: JSON.stringify({
-            current_password: currentPassword,
-            new_password: newPassword
-          })
-        });
-        document.getElementById("login-pass").value = "";
-        document.getElementById("change-current").value = "";
-        document.getElementById("change-new").value = "";
-        document.getElementById("change-confirm").value = "";
-        await init();
-      } catch (err) {
-        msg.textContent = "密码修改失败，请确认当前密码是否正确";
-      }
-    }
-
-    async function logout() {
-      await api("/admin/api/auth/logout", { method: "POST", body: "{}" }).catch(() => null);
-      showLogin();
-    }
-
-    async function init() {
-      let me;
-      try {
-        me = await api("/admin/api/auth/me");
-      } catch {
-        return;
-      }
-      if (me.force_password_change) {
-        showPasswordChange();
-        return;
-      }
-      showApp();
-      renderNav();
-      await loadConfig();
-      render();
-    }
-
-    function renderNav() {
-      const nav = document.getElementById("nav");
-      nav.innerHTML = "";
-      MENUS.forEach(menu => {
-        const btn = document.createElement("button");
-        btn.textContent = menu;
-        btn.className = menu === activeMenu ? "active" : "";
-        btn.onclick = () => { activeMenu = menu; renderNav(); render(); };
-        nav.appendChild(btn);
-      });
-    }
-
-    async function loadConfig() {
-      const schemaResponse = await api("/admin/api/config/schema");
-      const effectiveResponse = await api("/admin/api/config/effective");
-      schema = schemaResponse;
-      values = effectiveResponse.values || {};
-    }
-
-    function fieldsFor(menu) {
-      if (menu === "部署状态") {
-        return schema.fields.filter(f => f.group === "部署状态");
-      }
-      return schema.fields.filter(f => f.group === menu);
-    }
-
-    function fieldValue(path) {
-      const value = values[path];
-      if (value && typeof value === "object" && "configured" in value) {
-        return value.configured ? `已配置 · ${value.fingerprint || ""}` : "未配置";
-      }
-      if (value === null || value === undefined) return "";
-      return value;
-    }
-
-    function renderForm(menu) {
-      const fields = fieldsFor(menu);
-      if (!fields.length) return "";
-      return `
-        <section class="card">
-          <div class="card-header">
-            <span>${menu}</span>
-            <span class="chip">字段默认可编辑</span>
-          </div>
-          <div class="card-body form-grid">
-            ${fields.map(field => `
-              <label>${field.label}</label>
-              ${renderInput(field)}
-              <span class="${field.restart_required ? "warn" : "muted"}">${field.secret ? "可替换" : field.restart_required ? "需重启" : "可编辑"}</span>
-            `).join("")}
-          </div>
-        </section>
-      `;
-    }
-
-    function renderInput(field) {
-      const value = fieldValue(field.path);
-      if (field.secret) {
-        return `
-          <div style="display:flex;gap:8px">
-            <input disabled value="${escapeHtml(value)}">
-            <input data-path="${field.path}" type="password" placeholder="输入新密钥后保存">
-          </div>
-        `;
-      }
-      if (field.input === "boolean") {
-        const checked = values[field.path] === true || values[field.path] === "true";
-        return `
-          <select data-path="${field.path}">
-            <option value="true" ${checked ? "selected" : ""}>开启</option>
-            <option value="false" ${!checked ? "selected" : ""}>关闭</option>
-          </select>
-        `;
-      }
-      return `<input data-path="${field.path}" value="${escapeHtml(value)}">`;
-    }
-
-    async function loadRunRecords(limit = 100) {
-      const data = await api(`/admin/api/run-records?limit=${limit}`);
-      runRecords = data.items || [];
-      return data;
-    }
-
-    async function renderOverview() {
-      const data = await loadRunRecords(100);
-      const items = data.items || [];
-      const todayItems = items.filter(item => isToday(item.timestamp || item.ts));
-      const errorItems = todayItems.filter(isErrorEvent);
-      const latest = items.slice(0, 6);
-      const todayTicketIds = new Set(
-        todayItems.map(item => item.ticket_id || item.ticket).filter(Boolean)
-      );
-      const todayValue = todayTicketIds.size
-        ? `${todayTicketIds.size} 个工单`
-        : `${todayItems.length} 条事件`;
-      const failureRate = todayItems.length
-        ? `${Math.round(errorItems.length * 100 / todayItems.length)}%`
-        : "--";
-      document.getElementById("content").innerHTML = `
-        <div class="grid-4">
-          <div class="stat"><div class="stat-label">Agent 服务</div><div class="stat-value success">运行中</div></div>
-          <div class="stat"><div class="stat-label">今日处理</div><div class="stat-value">${escapeHtml(todayValue)}</div></div>
-          <div class="stat"><div class="stat-label">错误事件</div><div class="stat-value ${errorItems.length ? "warn" : "success"}">${escapeHtml(errorItems.length)}</div></div>
-          <div class="stat"><div class="stat-label">失败率</div><div class="stat-value">${escapeHtml(failureRate)}</div></div>
-          <div class="stat"><div class="stat-label">配置状态</div><div class="stat-value success">已同步</div></div>
-        </div>
-        <section class="card" style="margin-top:14px">
-          <div class="card-header">
-            <span>最近运行事件</span>
-            <span class="chip">点击查看详情</span>
-          </div>
-          <div class="card-body mini-list">
-            ${latest.map((item, index) => `
-              <button class="mini-row" onclick="openLogDetail(${index})">
-                <span>${escapeHtml(formatTime(item.timestamp || item.ts))}</span>
-                <span class="record-event">${escapeHtml(item.event || "未知事件")}</span>
-                <span>${escapeHtml(logSummary(item) || item.module || item._source_file || "查看完整日志")}</span>
-              </button>
-            `).join("") || `<div class="muted">${escapeHtml(runRecordsEmptyText(data))}</div>`}
-          </div>
-        </section>
-      `;
-    }
-
-    async function renderRuns() {
-      const data = await loadRunRecords(200);
-      const items = data.items || [];
-      document.getElementById("content").innerHTML = `
-        <section class="card">
-          <div class="card-header">
-            <span>运行记录</span>
-            <span class="chip">${data.jsonl_enabled ? "JSONL 已开启" : "JSONL 未开启"}</span>
-          </div>
-          <div class="card-body">
-            <div class="records-table header">
-              <span>时间</span><span>工单</span><span>事件</span><span>模块</span><span>摘要</span>
-            </div>
-            <div>
-              ${items.map((item, index) => `
-                <button class="record-row" onclick="openLogDetail(${index})" title="查看完整日志">
-                  <span class="record-cell">${escapeHtml(formatTime(item.timestamp || item.ts))}</span>
-                  <span class="record-cell">${escapeHtml(item.ticket_id || item.ticket || "-")}</span>
-                  <span class="record-cell record-event">${escapeHtml(item.event || "未知事件")}</span>
-                  <span class="record-cell">${escapeHtml(item.module || "-")}</span>
-                  <span class="record-cell record-summary">${escapeHtml(logSummary(item) || "点击查看完整日志")}</span>
-                </button>
-              `).join("") || `<div class="muted" style="padding:12px 0">${escapeHtml(runRecordsEmptyText(data))}</div>`}
-            </div>
-          </div>
-        </section>
-      `;
-    }
-
-    function runRecordsEmptyText(data) {
-      return data.exists
-        ? "当前日志目录暂无 JSONL 运行事件"
-        : `日志目录不存在：${data.log_dir || ""}`;
-    }
-
-    function isToday(value) {
-      if (!value) return false;
-      const date = new Date(value);
-      if (Number.isNaN(date.getTime())) return false;
-      const now = new Date();
-      return date.getFullYear() === now.getFullYear()
-        && date.getMonth() === now.getMonth()
-        && date.getDate() === now.getDate();
-    }
-
-    function isErrorEvent(item) {
-      const text = [
-        item.event,
-        item.status,
-        item.level,
-        item.error,
-        item.exception,
-        item.traceback
-      ].filter(Boolean).join(" ").toLowerCase();
-      return ["error", "failed", "failure", "exception", "traceback"].some(token => text.includes(token));
-    }
-
-    function formatTime(value) {
-      if (!value) return "-";
-      const date = new Date(value);
-      if (!Number.isNaN(date.getTime())) {
-        return date.toLocaleString();
-      }
-      return String(value).replace("T", " ");
-    }
-
-    function openLogDetail(index) {
-      const item = runRecords[index];
-      if (!item) return;
-      document.getElementById("log-drawer-title").textContent = item.event || "日志详情";
-      document.getElementById("log-drawer-subtitle").textContent = formatTime(item.timestamp || item.ts);
-      document.getElementById("log-drawer-meta").innerHTML = `
-        <strong>工单</strong><span>${escapeHtml(item.ticket_id || item.ticket || "-")}</span>
-        <strong>模块</strong><span>${escapeHtml(item.module || "-")}</span>
-        <strong>来源文件</strong><span>${escapeHtml(item._source_file || "-")}</span>
-      `;
-      document.getElementById("log-drawer-json").textContent = JSON.stringify(redactLogValue(item), null, 2);
-      document.getElementById("log-drawer").classList.remove("hidden");
-    }
-
-    function closeLogDetail() {
-      document.getElementById("log-drawer").classList.add("hidden");
-    }
-
-    function redactLogValue(value, key = "") {
-      if (Array.isArray(value)) {
-        return value.map(item => redactLogValue(item));
-      }
-      if (value && typeof value === "object") {
-        const out = {};
-        Object.entries(value).forEach(([entryKey, entryValue]) => {
-          out[entryKey] = redactLogValue(entryValue, entryKey);
-        });
-        return out;
-      }
-      if (/password|token|secret|api[_-]?key|authorization/i.test(key)) {
-        return value ? "[REDACTED]" : value;
-      }
-      return value;
-    }
-
-    function logSummary(item) {
-      const parts = [];
-      ["status", "reason", "error", "reply_type", "tool", "rounds", "_source_file"].forEach(key => {
-        if (item[key] !== undefined && item[key] !== null && item[key] !== "") {
-          parts.push(`${key}: ${item[key]}`);
-        }
-      });
-      return parts.join(" · ");
-    }
-
-    async function renderAudit() {
-      const data = await api("/admin/api/audit-logs");
-      const items = data.items || [];
-      document.getElementById("content").innerHTML = `
-        <section class="card">
-          <div class="card-header">审计日志</div>
-          <div class="card-body table">
-            <strong>时间</strong><strong>操作人</strong><strong>动作</strong><strong>摘要</strong><strong>结果</strong>
-            ${items.map(item => `
-              <span>${new Date((item.ts || 0) * 1000).toLocaleString()}</span>
-              <span>${escapeHtml(item.actor || "")}</span>
-              <span>${escapeHtml(item.action || "")}</span>
-              <span>${escapeHtml((item.diff || []).map(d => d.path).join(", ") || item.reason || "")}</span>
-              <span class="success">${escapeHtml(item.status || "success")}</span>
-            `).join("") || "<span class='muted'>暂无审计记录</span>"}
-          </div>
-        </section>
-      `;
-    }
-
-    function renderDeploy() {
-      return `
-        <div class="grid-4">
-          <div class="stat"><div class="stat-label">Agent 服务</div><div class="stat-value success">运行中</div></div>
-          <div class="stat"><div class="stat-label">当前镜像</div><div class="stat-value">latest</div></div>
-          <div class="stat"><div class="stat-label">后台登录</div><div class="stat-value">密码 + SSO</div></div>
-          <div class="stat"><div class="stat-label">Pending Reload</div><div class="stat-value success">无</div></div>
-        </div>
-        <section class="card" style="margin-top:14px">
-          <div class="card-header">后台访问</div>
-          <div class="card-body">
-            <p>默认账号 <code>admin</code>，默认初始密码 <code>admin123</code>。首次登录后请修改密码。</p>
-          </div>
-        </section>
-        ${renderForm("部署状态")}
-      `;
-    }
-
-    function render() {
-      document.getElementById("page-title").textContent = activeMenu;
-      document.getElementById("page-subtitle").textContent = SUBTITLES[activeMenu] || "";
-      const canEdit = !["总览", "运行记录", "审计日志"].includes(activeMenu);
-      document.getElementById("preview-btn").classList.toggle("hidden", !canEdit);
-      document.getElementById("save-btn").classList.toggle("hidden", !canEdit);
-      if (activeMenu === "总览") {
-        renderOverview();
-      } else if (activeMenu === "运行记录") {
-        renderRuns();
-      } else if (activeMenu === "审计日志") {
-        renderAudit();
-      } else if (activeMenu === "部署状态") {
-        document.getElementById("content").innerHTML = renderDeploy();
-      } else {
-        document.getElementById("content").innerHTML = renderForm(activeMenu);
-      }
-    }
-
-    function collectChanges() {
-      const changes = {};
-      document.querySelectorAll("[data-path]").forEach(input => {
-        const path = input.getAttribute("data-path");
-        if (!path) return;
-        if (input.type === "password" && !input.value) return;
-        const oldValue = values[path];
-        const nextValue = input.value;
-        if (typeof oldValue === "object" && oldValue && "configured" in oldValue) {
-          if (nextValue) changes[path] = nextValue;
-        } else if (String(oldValue ?? "") !== String(nextValue)) {
-          changes[path] = nextValue;
-        }
-      });
-      return changes;
-    }
-
-    async function previewChanges() {
-      const result = await api("/admin/api/config/preview", {
-        method: "POST",
-        body: JSON.stringify({ changes: collectChanges(), reason: "admin console preview" })
-      });
-      alert(`变更数量：${(result.diff || []).length}${result.restart_required ? "\\n包含需要重启的配置" : ""}`);
-    }
-
-    async function saveChanges() {
-      const reason = prompt("请输入变更原因", "admin console change") || "";
-      const result = await api("/admin/api/config/apply", {
-        method: "POST",
-        body: JSON.stringify({ changes: collectChanges(), reason })
-      });
-      await loadConfig();
-      render();
-      alert(`保存成功，Audit ID: ${result.audit_id}`);
-    }
-
-    function escapeHtml(value) {
-      return String(value)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;");
-    }
-
-    init();
-  </script>
+  <script src="/admin/static/app.js"></script>
 </body>
 </html>

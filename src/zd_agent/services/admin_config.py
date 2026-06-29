@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -150,8 +151,25 @@ def _coerce_value(spec: FieldSpec, value: Any) -> Any:
         return ""
     raw = str(value)
     if spec.path.endswith(("base_url", "mcp_url", "url")):
-        return raw.rstrip("/")
+        raw = raw.rstrip("/")
+        if raw:
+            parsed = urlparse(raw)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError(f"{spec.path} must be an http(s) URL")
+        return raw
     return raw
+
+
+def _validate_normalized_value(spec: FieldSpec, value: Any) -> None:
+    if spec.input == "number":
+        if not isinstance(value, int | float):
+            raise ValueError(f"{spec.path} must be a number")
+        if spec.path.endswith(("seconds", "minutes", "hours")) and value < 0:
+            raise ValueError(f"{spec.path} must be greater than or equal to 0")
+        if any(token in spec.path for token in ("max_", "threshold", "limit")) and value < 0:
+            raise ValueError(f"{spec.path} must be greater than or equal to 0")
+        if "concurrent" in spec.path and value < 1:
+            raise ValueError(f"{spec.path} must be greater than or equal to 1")
 
 
 def _deep_set(data: dict[str, Any], path: str, value: Any) -> None:
@@ -213,10 +231,15 @@ class AdminConfigStore:
             except OSError:
                 pass
 
-    def _secret_status(self, path: str) -> dict[str, Any]:
+    def _secret_status(self, path: str, cfg: AppConfig | None = None) -> dict[str, Any]:
         secrets_data = self._read_yaml(self.secrets_path)
         flat = _flatten(secrets_data)
         value = flat.get(path) or os.environ.get(SECRET_ENV_MAP.get(path, ""), "")
+        if not value and cfg is not None and not path.startswith("admin_auth."):
+            try:
+                value = _get_attr(cfg, path)
+            except AttributeError:
+                value = ""
         return {
             "configured": bool(value),
             "fingerprint": _fingerprint(str(value)) if value else "",
@@ -235,7 +258,7 @@ class AdminConfigStore:
         values: dict[str, Any] = {}
         for spec in FIELD_SPECS:
             if spec.secret:
-                values[spec.path] = self._secret_status(spec.path)
+                values[spec.path] = self._secret_status(spec.path, cfg)
             elif spec.path.startswith("admin_auth."):
                 values[spec.path] = self._virtual_value(spec.path)
             elif spec.path.startswith(("openai.", "anthropic.")):
@@ -258,7 +281,9 @@ class AdminConfigStore:
                 continue
             if spec.secret and (value is None or str(value) == ""):
                 continue
-            normalized[spec.path] = _coerce_value(spec, value)
+            normalized_value = _coerce_value(spec, value)
+            _validate_normalized_value(spec, normalized_value)
+            normalized[spec.path] = normalized_value
         return normalized
 
     def preview(self, cfg: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
@@ -269,7 +294,7 @@ class AdminConfigStore:
             spec = self._specs[path]
             restart_required = restart_required or spec.restart_required
             if spec.secret:
-                old_value = self._secret_status(path)
+                old_value = self._secret_status(path, cfg)
                 shown_new = {
                     "configured": True,
                     "fingerprint": _fingerprint(str(new_value)),
@@ -305,6 +330,8 @@ class AdminConfigStore:
         actor: str,
         ip: str,
     ) -> dict[str, Any]:
+        if not str(payload.get("reason") or "").strip():
+            raise ValueError("reason is required")
         preview = self.preview(cfg, payload)
         changes = self._normalized_changes(payload)
         overrides = self._read_yaml(self.overrides_path)
@@ -396,14 +423,64 @@ class AdminConfigStore:
             restart_required=restart_required,
         )
 
-    def list_audit_logs(self, *, limit: int = 100) -> dict[str, Any]:
-        if not self.audit_path.exists():
-            return {"items": []}
-        lines = self.audit_path.read_text().splitlines()
-        items = []
-        for line in reversed(lines[-limit:]):
+    def pending_restart(self, cfg: AppConfig) -> bool:
+        flat = _flatten(self._read_yaml(self.overrides_path))
+        for path, value in flat.items():
+            spec = self._specs.get(path)
+            if not spec or not spec.restart_required:
+                continue
             try:
-                items.append(json.loads(line))
+                if _get_attr(cfg, path) != _coerce_value(spec, value):
+                    return True
+            except (AttributeError, ValueError):
+                return True
+        return False
+
+    def list_audit_logs(
+        self,
+        *,
+        limit: int = 100,
+        action: str = "",
+        actor: str = "",
+    ) -> dict[str, Any]:
+        if not self.audit_path.exists():
+            return {"items": [], "summary": {"total": 0, "filtered": 0}}
+        limit = max(1, min(int(limit), 500))
+        lines = self.audit_path.read_text().splitlines()
+        total = 0
+        matched_count = 0
+        filtered: list[dict[str, Any]] = []
+        action_filter = action.strip().lower()
+        actor_filter = actor.strip().lower()
+        for line in reversed(lines):
+            try:
+                item = json.loads(line)
             except json.JSONDecodeError:
                 continue
-        return {"items": items}
+            if not isinstance(item, dict):
+                continue
+            total += 1
+            if action_filter and action_filter not in str(item.get("action", "")).lower():
+                continue
+            if actor_filter and actor_filter not in str(item.get("actor", "")).lower():
+                continue
+            matched_count += 1
+            if len(filtered) < limit:
+                filtered.append(_redact_audit_value(item))
+        return {
+            "items": filtered,
+            "summary": {"total": total, "filtered": matched_count},
+        }
+
+
+def _redact_audit_value(value: Any, key: str = "") -> Any:
+    if isinstance(value, dict):
+        return {
+            str(entry_key): _redact_audit_value(entry_value, str(entry_key))
+            for entry_key, entry_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_audit_value(item, key) for item in value]
+    if any(token in key.lower() for token in ("password", "token", "secret", "api_key", "apikey", "authorization")):
+        return "[REDACTED]" if value else value
+    return value

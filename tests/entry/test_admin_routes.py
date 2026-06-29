@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock
+from unittest.mock import patch
+
+import httpx
 
 import pytest
 from aiohttp import web
@@ -14,14 +17,28 @@ from zd_agent.services.admin_routes import (
 )
 from zd_agent.services.app_context import app_config, install_saas_app_context
 
+REAL_ASYNC_CLIENT = httpx.AsyncClient
+
 
 class _Request:
-    def __init__(self, *, app, payload=None, cookies=None, headers=None, remote="127.0.0.1"):
+    def __init__(
+        self,
+        *,
+        app,
+        payload=None,
+        cookies=None,
+        headers=None,
+        remote="127.0.0.1",
+        query=None,
+        match_info=None,
+    ):
         self.app = app
         self._payload = payload or {}
         self.cookies = cookies or {}
         self.headers = headers or {}
         self.remote = remote
+        self.query = query or {}
+        self.match_info = match_info or {}
 
     async def json(self):
         return self._payload
@@ -55,17 +72,37 @@ def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
     assert "/admin/api/config/schema" in route_paths
     assert "/admin/api/run-records" in route_paths
     assert "/admin/api/audit-logs" in route_paths
+    assert "/admin/api/integrations/check" in route_paths
+    assert "/admin/static/{name}" in route_paths
 
 
-def test_admin_index_replaces_placeholder_summary_with_clickable_log_details() -> None:
+def test_admin_static_assets_are_split_from_html_shell() -> None:
     html = _load_index_html()
 
     assert "系统摘要" not in html
-    assert "最近运行事件" in html
-    assert "record-row" in html
-    assert "openLogDetail" in html
-    assert "log-drawer" in html
-    assert "redactLogValue" in html
+    assert '/admin/static/styles.css' in html
+    assert '/admin/static/app.js' in html
+    assert "最近运行事件" not in html
+
+
+@pytest.mark.asyncio
+async def test_admin_static_asset_serves_known_files_and_rejects_unknown(tmp_path) -> None:
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+
+    response = await app[ADMIN_HANDLERS_KEY]["static_asset"](
+        _Request(app=app, cookies=cookie, match_info={"name": "app.js"})
+    )
+    blocked = await app[ADMIN_HANDLERS_KEY]["static_asset"](
+        _Request(app=app, cookies=cookie, match_info={"name": "../config.yaml"})
+    )
+
+    assert response.status == 200
+    assert "renderRunRecords" in response.text
+    assert blocked.status == 404
 
 
 @pytest.mark.asyncio
@@ -129,7 +166,7 @@ async def test_admin_config_requires_default_password_change(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_run_records_reads_recent_jsonl_events(tmp_path) -> None:
+async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_and_redaction(tmp_path) -> None:
     app = _app(tmp_path)
     cfg = app_config(app)
     cfg.logging.log_dir = str(tmp_path / "logs")
@@ -137,8 +174,28 @@ async def test_admin_run_records_reads_recent_jsonl_events(tmp_path) -> None:
     log_dir.mkdir()
     (log_dir / "events-2026-06-29.jsonl").write_text(
         "\n".join([
-            json.dumps({"event": "agent_started", "ticket_id": 3134}),
-            json.dumps({"event": "agent_done", "ticket_id": 3134, "rounds": 5}),
+            json.dumps({
+                "timestamp": "2026-06-29T10:00:00Z",
+                "event": "agent_started",
+                "ticket_id": 3134,
+                "module": "runtime",
+            }),
+            json.dumps({
+                "timestamp": "2026-06-29T10:01:00Z",
+                "event": "agent_failed",
+                "ticket_id": 3135,
+                "module": "runtime",
+                "api_key": "sk-test-secret",
+                "nested": {"token": "secret-token"},
+                "error": "boom",
+            }),
+            json.dumps({
+                "timestamp": "2026-06-29T10:02:00Z",
+                "event": "agent_done",
+                "ticket_id": 3134,
+                "module": "reply",
+                "rounds": 5,
+            }),
         ]),
         encoding="utf-8",
     )
@@ -161,11 +218,149 @@ async def test_admin_run_records_reads_recent_jsonl_events(tmp_path) -> None:
     )
 
     response = await app[ADMIN_HANDLERS_KEY]["run_records"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            query={"ticket_id": "3135", "errors_only": "true"},
+        )
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert body["items"][0]["event"] == "agent_failed"
+    assert body["items"][0]["ticket_id"] == 3135
+    assert body["items"][0]["_source_file"] == "events-2026-06-29.jsonl"
+    assert body["items"][0]["api_key"] == "[REDACTED]"
+    assert body["items"][0]["nested"]["token"] == "[REDACTED]"
+    assert body["summary"]["total"] == 3
+    assert body["summary"]["filtered"] == 1
+    assert body["summary"]["error_events"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_audit_logs_support_filters_and_summary(tmp_path) -> None:
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": "admin123",
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+
+    response = await app[ADMIN_HANDLERS_KEY]["audit_logs"](
+        _Request(app=app, cookies=cookie, query={"action": "admin_password_changed"})
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert body["items"][0]["action"] == "admin_password_changed"
+    assert body["summary"]["filtered"] == 1
+    assert body["summary"]["total"] >= 2
+
+    limited_response = await app[ADMIN_HANDLERS_KEY]["audit_logs"](
+        _Request(app=app, cookies=cookie, query={"limit": "1"})
+    )
+    limited_body = json.loads(limited_response.text)
+    assert len(limited_body["items"]) == 1
+    assert limited_body["summary"]["filtered"] >= 2
+    assert limited_body["summary"]["total"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_admin_integration_check_reports_reachability_and_writes_audit(tmp_path) -> None:
+    app = _app(tmp_path)
+    cfg = app_config(app)
+    cfg.signoz.mcp_url = "https://signoz.example.test/mcp"
+    cfg.signoz.mcp_api_key = "super-secret-key"
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": "admin123",
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer super-secret-key"
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.services.admin_routes.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        response = await app[ADMIN_HANDLERS_KEY]["integration_check"](
+            _Request(
+                app=app,
+                cookies=cookie,
+                payload={"integration": "signoz"},
+            )
+        )
+
+    body = json.loads(response.text)
+    audit = await app[ADMIN_HANDLERS_KEY]["audit_logs"](
+        _Request(app=app, cookies=cookie, query={"action": "integration_check"})
+    )
+    audit_body = json.loads(audit.text)
+    assert response.status == 200
+    assert body["configured"] is True
+    assert body["reachable"] is True
+    assert body["status"] == "ok"
+    assert audit_body["items"][0]["action"] == "integration_check"
+    assert "super-secret-key" not in audit.text
+
+
+@pytest.mark.asyncio
+async def test_admin_deploy_status_includes_runtime_metadata_and_pending_restart(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ZD_AGENT_IMAGE_TAG", "sha-test")
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": "admin123",
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+    await app[ADMIN_HANDLERS_KEY]["config_apply"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "changes": {"zendesk.poll_interval_seconds": 120},
+                "reason": "test pending restart",
+            },
+        )
+    )
+
+    response = await app[ADMIN_HANDLERS_KEY]["deploy_status"](
         _Request(app=app, cookies=cookie)
     )
 
     body = json.loads(response.text)
     assert response.status == 200
-    assert body["items"][0]["event"] == "agent_done"
-    assert body["items"][0]["ticket_id"] == 3134
-    assert body["items"][0]["_source_file"] == "events-2026-06-29.jsonl"
+    assert body["image"]["tag"] == "sha-test"
+    assert body["image"]["commit_sha"] == "abc123"
+    assert body["pending_restart"] is True
