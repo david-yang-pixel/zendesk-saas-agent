@@ -9,6 +9,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "docker-image.yml"
 DEPLOY_SCRIPT = ROOT / "deploy" / "deploy-ghcr.sh"
+NGINX_CONF = ROOT / "deploy" / "nginx" / "zd-agent.conf"
 RUNBOOK = ROOT / "deploy" / "RUNBOOK.md"
 
 
@@ -101,6 +102,19 @@ def test_github_action_sends_success_email_only_after_deploy() -> None:
     assert "同步更新标签：" in text
     assert "工作流运行：" in text
     assert "Skipping deployment success email" in text
+
+
+def test_nginx_exposes_admin_console_without_exposing_internal_routes() -> None:
+    text = NGINX_CONF.read_text()
+
+    assert "location = /admin" in text
+    assert "location /admin/" in text
+    assert "proxy_pass http://127.0.0.1:8080;" in text
+    assert "proxy_set_header X-Forwarded-Proto $scheme;" in text
+    assert "add_header X-Frame-Options DENY always;" in text
+    assert "add_header X-Content-Type-Options nosniff always;" in text
+    assert "location /internal/" in text
+    assert "return 404;" in text
 
 
 def test_runbook_documents_zendesk_mcp_attachment_download_limit() -> None:

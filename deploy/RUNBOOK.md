@@ -219,7 +219,8 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 This `zd-agent` nginx template exposes only agent endpoints (`/webhook/`,
-`/healthz`) and intentionally does not define routes for remote MCP services.
+`/healthz`, `/admin`, `/admin/`) and intentionally does not define routes for
+remote MCP services.
 Routes such as `/github-mcp/`, `/docs-tool-service/`, `/notification-service/`,
 `/sandbox-worker/`, `/zendesk-mcp/`, `/signoz-mcp/`, and
 `/zendesk-reply-mcp` are owned by their independent service configs.
@@ -375,6 +376,9 @@ The backup cron should copy `.state/` + `工单记录/` daily. Add to root's cro
 
 ```bash
 curl -I https://<agent-domain>/healthz
+# Expected: HTTP/2 200
+
+curl -I https://<agent-domain>/admin
 # Expected: HTTP/2 200
 
 curl -X POST https://<agent-domain>/webhook/zendesk
