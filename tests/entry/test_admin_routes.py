@@ -322,9 +322,177 @@ async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_
     assert body["items"][0]["output_tokens"] == 56
     assert body["items"][0]["api_key"] == "[REDACTED]"
     assert body["items"][0]["nested"]["token"] == "[REDACTED]"
-    assert body["summary"]["total"] == 3
+    assert body["summary"]["total"] == 2
     assert body["summary"]["filtered"] == 1
     assert body["summary"]["error_events"] == 1
+    assert body["raw_events_total"] == 3
+
+
+@pytest.mark.asyncio
+async def test_admin_run_records_ignore_internal_events_and_normalize_agent_done(tmp_path) -> None:
+    app = _app(tmp_path)
+    cfg = app_config(app)
+    cfg.logging.log_dir = str(tmp_path / "logs")
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    lines = [
+        json.dumps({
+            "timestamp": f"2026-06-29T10:00:{second:02d}Z",
+            "event": "self_user_id_resolved",
+            "module": "mention.detector",
+            "source": "webhook",
+        })
+        for second in range(60)
+    ]
+    lines.append(
+        json.dumps({
+            "timestamp": "2026-06-29T10:01:00Z",
+            "event": "agent_done",
+            "ticket_id": 3172,
+            "status": "completed",
+            "module": "runtime.runner",
+            "rounds": 17,
+            "prompt_tokens": 18_200,
+            "completion_tokens": 127,
+            "total_tokens": 18_327,
+            "elapsed": "4.6s",
+            "trigger_type": "webhook",
+            "model": "gpt-5.5",
+        })
+    )
+    lines.extend(
+        json.dumps({
+            "timestamp": f"2026-06-29T10:02:{second:02d}Z",
+            "event": "self_user_id_resolved",
+            "module": "mention.detector",
+            "source": "webhook",
+        })
+        for second in range(60)
+    )
+    (log_dir / "events-2026-06-29.jsonl").write_text(
+        "\n".join(lines),
+        encoding="utf-8",
+    )
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app,
+            payload={"username": "admin", "password": "admin123"},
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": "admin123",
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+
+    response = await app[ADMIN_HANDLERS_KEY]["run_records"](
+        _Request(app=app, cookies=cookie, query={"limit": "200"})
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert [item["event"] for item in body["items"]] == ["agent_done"]
+    assert body["items"][0]["ticket_id"] == 3172
+    assert body["items"][0]["status"] == "completed"
+    assert body["items"][0]["input_tokens"] == 18_200
+    assert body["items"][0]["output_tokens"] == 127
+    assert body["items"][0]["total_tokens"] == 18_327
+    assert body["items"][0]["duration_ms"] == 4_600
+    assert body["items"][0]["trigger"] == "webhook"
+    assert body["items"][0]["model"] == "gpt-5.5"
+    assert body["summary"]["total"] == 1
+    assert body["summary"]["filtered"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_run_records_collapse_agent_lifecycle_to_one_ticket_run(tmp_path) -> None:
+    app = _app(tmp_path)
+    cfg = app_config(app)
+    cfg.logging.log_dir = str(tmp_path / "logs")
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "events-2026-06-29.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-06-29T10:00:00Z",
+                "event": "session_dispatched",
+                "ticket_id": 3172,
+                "session_id": "session-3172",
+                "module": "session_manager",
+            }),
+            json.dumps({
+                "timestamp": "2026-06-29T10:00:01Z",
+                "event": "agent_start",
+                "ticket_id": 3172,
+                "session_id": "session-3172",
+                "trigger_type": "webhook",
+                "module": "runtime.runner",
+            }),
+            json.dumps({
+                "timestamp": "2026-06-29T10:04:36Z",
+                "event": "agent_done",
+                "ticket_id": 3172,
+                "status": "completed",
+                "module": "runtime.runner",
+                "rounds": 17,
+                "prompt_tokens": 18_200,
+                "completion_tokens": 127,
+                "total_tokens": 18_327,
+                "elapsed": "4.6min",
+                "model": "gpt-5.5",
+            }),
+            json.dumps({
+                "timestamp": "2026-06-29T10:04:37Z",
+                "event": "session_finished",
+                "ticket_id": 3172,
+                "status": "completed",
+                "rounds": 17,
+                "tokens": 18_327,
+                "elapsed": "4.6min",
+                "remaining_active": 0,
+            }),
+        ]),
+        encoding="utf-8",
+    )
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app,
+            payload={"username": "admin", "password": "admin123"},
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": "admin123",
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+
+    response = await app[ADMIN_HANDLERS_KEY]["run_records"](
+        _Request(app=app, cookies=cookie, query={"limit": "200"})
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert len(body["items"]) == 1
+    assert body["items"][0]["event"] == "agent_done"
+    assert body["items"][0]["ticket_id"] == 3172
+    assert body["items"][0]["session_id"] == "session-3172"
+    assert body["items"][0]["rounds"] == 17
+    assert body["items"][0]["total_tokens"] == 18_327
+    assert body["items"][0]["duration_ms"] == 276_000
+    assert body["items"][0]["trigger"] == "webhook"
+    assert body["summary"]["total"] == 1
 
 
 @pytest.mark.asyncio

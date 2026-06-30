@@ -45,6 +45,46 @@ TOKEN_COUNT_KEYS = {
     "tokens",
     "max_tokens",
 }
+RUN_RECORD_EVENTS = {
+    "agent_start",
+    "agent_started",
+    "agent_done",
+    "agent_error",
+    "agent_failed",
+    "session_dispatched",
+    "session_queued",
+    "session_finished",
+    "session_crash",
+}
+RUNNING_RECORD_EVENTS = {
+    "agent_start",
+    "agent_started",
+    "session_dispatched",
+    "session_queued",
+}
+FAILED_RECORD_EVENTS = {
+    "agent_error",
+    "agent_failed",
+    "session_crash",
+}
+SESSION_END_RECORD_EVENTS = {
+    "session_finished",
+}
+RUN_EVENT_PRIORITY = {
+    "session_queued": 10,
+    "session_dispatched": 20,
+    "agent_start": 30,
+    "agent_started": 30,
+    "agent_error": 70,
+    "agent_failed": 70,
+    "session_crash": 75,
+    "session_finished": 80,
+    "agent_done": 90,
+}
+DURATION_RE = re.compile(
+    r"^\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|millisecond|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes)?\s*$",
+    re.IGNORECASE,
+)
 INTEGRATION_SPECS: dict[str, dict[str, str]] = {
     "zendesk_mcp": {
         "label": "Zendesk MCP",
@@ -243,6 +283,246 @@ def _is_error_event(item: dict[str, Any]) -> bool:
     return bool(ERROR_TOKEN_RE.search(text))
 
 
+def _number_from_keys(item: dict[str, Any], keys: tuple[str, ...]) -> int:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int | float):
+            if value > 0:
+                return int(value)
+            continue
+        try:
+            numeric = float(str(value).strip())
+        except (TypeError, ValueError):
+            continue
+        if numeric > 0:
+            return int(numeric)
+    return 0
+
+
+def _duration_value_to_ms(value: Any, *, default_unit: str = "seconds") -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    if isinstance(value, int | float):
+        numeric = float(value)
+        if numeric <= 0:
+            return 0
+        return int(numeric if default_unit == "milliseconds" else numeric * 1000)
+    match = DURATION_RE.match(str(value))
+    if match is None:
+        return 0
+    numeric = float(match.group("value"))
+    unit = (match.group("unit") or default_unit).lower()
+    if unit.startswith("ms") or unit.startswith("millisecond"):
+        return int(numeric)
+    if unit in {"m", "min", "mins", "minute", "minutes"}:
+        return int(numeric * 60_000)
+    return int(numeric * 1000)
+
+
+def _duration_ms_from_item(item: dict[str, Any]) -> int:
+    for key in ("duration_ms", "elapsed_ms", "latency_ms"):
+        ms = _duration_value_to_ms(item.get(key), default_unit="milliseconds")
+        if ms:
+            return ms
+    for key in ("duration_seconds", "elapsed_seconds", "latency_seconds"):
+        ms = _duration_value_to_ms(item.get(key), default_unit="seconds")
+        if ms:
+            return ms
+    for key in ("duration", "elapsed", "latency"):
+        ms = _duration_value_to_ms(item.get(key), default_unit="seconds")
+        if ms:
+            return ms
+    return 0
+
+
+def _normalize_run_record_event(item: dict[str, Any]) -> dict[str, Any] | None:
+    event = str(item.get("event") or "").strip()
+    event_normalized = event.lower()
+    if event_normalized not in RUN_RECORD_EVENTS:
+        return None
+    if not (item.get("ticket_id") or item.get("ticket") or item.get("session_id")):
+        return None
+
+    record = dict(item)
+    if not record.get("status"):
+        if event_normalized in FAILED_RECORD_EVENTS:
+            record["status"] = "failed"
+        elif event_normalized in RUNNING_RECORD_EVENTS:
+            record["status"] = "running"
+        else:
+            record["status"] = "completed"
+
+    input_tokens = _number_from_keys(record, ("input_tokens", "prompt_tokens", "tokens_in"))
+    output_tokens = _number_from_keys(
+        record,
+        ("output_tokens", "completion_tokens", "tokens_out"),
+    )
+    total_tokens = _number_from_keys(record, ("total_tokens", "token_count", "tokens"))
+    if input_tokens and not record.get("input_tokens"):
+        record["input_tokens"] = input_tokens
+    if output_tokens and not record.get("output_tokens"):
+        record["output_tokens"] = output_tokens
+    if not total_tokens and (input_tokens or output_tokens):
+        total_tokens = input_tokens + output_tokens
+    if total_tokens and not record.get("total_tokens"):
+        record["total_tokens"] = total_tokens
+
+    duration_ms = _duration_ms_from_item(record)
+    if duration_ms and not record.get("duration_ms"):
+        record["duration_ms"] = duration_ms
+
+    if not record.get("trigger"):
+        record["trigger"] = (
+            record.get("trigger_type")
+            or record.get("source")
+            or record.get("event")
+            or "-"
+        )
+    return record
+
+
+def _event_priority(item: dict[str, Any]) -> int:
+    return RUN_EVENT_PRIORITY.get(str(item.get("event") or "").lower(), 0)
+
+
+def _run_group_key(item: dict[str, Any]) -> str:
+    return str(item.get("ticket_id") or item.get("ticket") or item.get("session_id") or "")
+
+
+def _is_missing(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _merge_numeric_max(merged: dict[str, Any], update: dict[str, Any], key: str) -> None:
+    if key not in update or _is_missing(update.get(key)):
+        return
+    current = _number_from_keys(merged, (key,))
+    incoming = _number_from_keys(update, (key,))
+    if incoming >= current:
+        merged[key] = update[key]
+
+
+def _merge_latest_time(merged: dict[str, Any], update: dict[str, Any], key: str) -> None:
+    if key not in update or _is_missing(update.get(key)):
+        return
+    current = _parse_datetime(merged.get(key))
+    incoming = _parse_datetime(update.get(key))
+    if incoming is not None and (current is None or incoming >= current):
+        merged[key] = update[key]
+
+
+def _merge_run_records(
+    current: dict[str, Any] | None,
+    update: dict[str, Any],
+) -> dict[str, Any]:
+    if current is None:
+        return dict(update)
+
+    merged = dict(current)
+    current_priority = _event_priority(current)
+    update_priority = _event_priority(update)
+    priority_keys = {
+        "event",
+        "status",
+        "level",
+        "error",
+        "exception",
+        "traceback",
+        "model",
+        "llm_model",
+        "provider_model",
+    }
+    numeric_keys = {
+        "rounds",
+        "round_count",
+        "input_tokens",
+        "output_tokens",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "token_count",
+        "tokens",
+        "duration_ms",
+        "elapsed_ms",
+        "latency_ms",
+    }
+    time_keys = {"timestamp", "ts", "time", "created_at"}
+
+    for key, value in update.items():
+        if _is_missing(value):
+            continue
+        if key in priority_keys:
+            if update_priority >= current_priority or _is_missing(merged.get(key)):
+                merged[key] = value
+            continue
+        if key in numeric_keys:
+            _merge_numeric_max(merged, update, key)
+            continue
+        if key in time_keys:
+            _merge_latest_time(merged, update, key)
+            continue
+        if key == "trigger":
+            if _is_missing(merged.get(key)) or str(merged.get(key)).lower() in RUN_RECORD_EVENTS:
+                merged[key] = value
+            continue
+        if key == "_source_file":
+            merged[key] = value
+            continue
+        if _is_missing(merged.get(key)):
+            merged[key] = value
+
+    duration_ms = max(_duration_ms_from_item(merged), _duration_ms_from_item(update))
+    if duration_ms:
+        merged["duration_ms"] = duration_ms
+    if not merged.get("total_tokens"):
+        input_tokens = _number_from_keys(merged, ("input_tokens", "prompt_tokens", "tokens_in"))
+        output_tokens = _number_from_keys(
+            merged,
+            ("output_tokens", "completion_tokens", "tokens_out"),
+        )
+        if input_tokens or output_tokens:
+            merged["total_tokens"] = input_tokens + output_tokens
+    return merged
+
+
+def _aggregate_run_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    completed: list[dict[str, Any]] = []
+    open_records: dict[str, dict[str, Any]] = {}
+
+    for record in records:
+        key = _run_group_key(record)
+        if not key:
+            completed.append(record)
+            continue
+
+        event = str(record.get("event") or "").lower()
+        current = open_records.get(key)
+        current_event = str((current or {}).get("event") or "").lower()
+        if (
+            event in RUNNING_RECORD_EVENTS
+            and current is not None
+            and current_event not in RUNNING_RECORD_EVENTS
+        ):
+            completed.append(current)
+            current = None
+
+        merged = _merge_run_records(current, record)
+        if event in SESSION_END_RECORD_EVENTS:
+            completed.append(merged)
+            open_records.pop(key, None)
+        else:
+            open_records[key] = merged
+
+    completed.extend(open_records.values())
+    return completed
+
+
+def _run_record_sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
+    return (_event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc), _event_priority(item))
+
+
 def _query_limit(request: web.Request, *, default: int = 100) -> int:
     try:
         value = int(request.query.get("limit", str(default)))  # type: ignore[attr-defined]
@@ -350,29 +630,34 @@ def _read_recent_log_events(
             "exists": False,
         }
 
-    items: list[dict[str, Any]] = []
-    all_items: list[dict[str, Any]] = []
-    matched_items: list[dict[str, Any]] = []
-    paths = sorted(log_dir.glob("events-*.jsonl"), reverse=True)
+    run_events: list[dict[str, Any]] = []
+    raw_events_total = 0
+    paths = sorted(log_dir.glob("events-*.jsonl"))
     for path in paths:
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError:
             continue
-        for line in reversed(lines):
+        for line in lines:
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:
                 continue
             if not isinstance(item, dict):
                 continue
+            raw_events_total += 1
             item["_source_file"] = path.name
-            all_items.append(item)
-            if not _matches_run_filters(item, filters):
+            record = _normalize_run_record_event(item)
+            if record is None:
                 continue
-            matched_items.append(item)
-            if len(items) < limit:
-                items.append(_redact_value(item))
+            run_events.append(record)
+    all_items = sorted(
+        _aggregate_run_records(run_events),
+        key=_run_record_sort_key,
+        reverse=True,
+    )
+    matched_items = [item for item in all_items if _matches_run_filters(item, filters)]
+    items = [_redact_value(item) for item in matched_items[:limit]]
     return {
         "items": items,
         "summary": _run_summary(
@@ -382,6 +667,7 @@ def _read_recent_log_events(
         ),
         "filters": _public_run_filters(filters),
         "log_dir": str(log_dir),
+        "raw_events_total": raw_events_total,
         "exists": True,
     }
 
