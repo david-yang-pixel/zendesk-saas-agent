@@ -403,7 +403,7 @@ function buildRunDisplayRecords(items) {
       status,
       model: item.model || item.llm_model || item.provider_model || item.provider || "-",
       rounds,
-      roundsCount: rounds.length || numberFromKeys(item, ["rounds", "round_count"]) || 1,
+      roundsCount: numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1,
       inputTokens,
       outputTokens,
       totalTokens,
@@ -482,10 +482,11 @@ function renderRunRecordDetail(record, index) {
 
 function renderRound(round, index) {
   const tools = round.tools || [];
+  const roundNumber = round.round || round.index || index + 1;
   return `
     <div class="round-block">
       <div class="round-meta">
-        <span class="round-badge">R${index + 1}</span>
+        <span class="round-badge">R${escapeHtml(roundNumber)}</span>
         <span>${escapeHtml(round.model || "-")}</span>
         <span>${escapeHtml(formatRoundTokens(round))}</span>
         <span>${escapeHtml(round.durationMs ? formatDuration(round.durationMs) : "--")}</span>

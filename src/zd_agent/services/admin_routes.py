@@ -85,6 +85,7 @@ DURATION_RE = re.compile(
     r"^\s*(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>ms|millisecond|milliseconds|s|sec|secs|second|seconds|m|min|mins|minute|minutes)?\s*$",
     re.IGNORECASE,
 )
+TICKET_ID_RE = re.compile(r"^\d+$")
 INTEGRATION_SPECS: dict[str, dict[str, str]] = {
     "zendesk_mcp": {
         "label": "Zendesk MCP",
@@ -523,6 +524,143 @@ def _run_record_sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
     return (_event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc), _event_priority(item))
 
 
+def _ticket_id_for_archive(item: dict[str, Any]) -> str:
+    raw = str(item.get("ticket_id") or item.get("ticket") or "").strip()
+    return raw if TICKET_ID_RE.fullmatch(raw) else ""
+
+
+def _read_archive_meta(
+    archive_dir: Path | None,
+    ticket_id: str,
+    cache: dict[str, dict[str, Any] | None],
+) -> dict[str, Any] | None:
+    if archive_dir is None or not ticket_id:
+        return None
+    if ticket_id in cache:
+        return cache[ticket_id]
+
+    meta_path = archive_dir / ticket_id / "meta.json"
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cache[ticket_id] = None
+        return None
+    if not isinstance(meta, dict):
+        cache[ticket_id] = None
+        return None
+    meta["_archive_meta_path"] = str(meta_path)
+    cache[ticket_id] = meta
+    return meta
+
+
+def _positive_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int | float):
+        return int(value) if value > 0 else 0
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _archive_tool_to_ui_tool(call: dict[str, Any]) -> dict[str, Any]:
+    success = bool(call.get("success", False))
+    return {
+        "name": call.get("tool") or call.get("tool_name") or "unknown_tool",
+        "status": "success" if success else "failed",
+        "error": call.get("error") or "",
+        "message": call.get("result_preview") or call.get("error") or "",
+        "arguments": call.get("args") if isinstance(call.get("args"), dict) else {},
+    }
+
+
+def _archive_rounds(meta: dict[str, Any], record: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_tool_calls = meta.get("tool_calls")
+    if not isinstance(raw_tool_calls, list):
+        return []
+
+    grouped: dict[int, dict[str, Any]] = {}
+    for raw_call in raw_tool_calls:
+        if not isinstance(raw_call, dict):
+            continue
+        round_number = _positive_int(raw_call.get("round")) or 1
+        round_item = grouped.setdefault(
+            round_number,
+            {
+                "round": round_number,
+                "model": record.get("model") or record.get("llm_model") or "-",
+                "type": "tool_calls",
+                "tools": [],
+            },
+        )
+        round_item["tools"].append(_archive_tool_to_ui_tool(raw_call))
+
+    return [grouped[key] for key in sorted(grouped)]
+
+
+def _enrich_with_archive_meta(
+    record: dict[str, Any],
+    *,
+    archive_dir: Path | None,
+    cache: dict[str, dict[str, Any] | None],
+) -> dict[str, Any]:
+    ticket_id = _ticket_id_for_archive(record)
+    meta = _read_archive_meta(archive_dir, ticket_id, cache)
+    if meta is None:
+        return record
+
+    enriched = dict(record)
+    enriched["archive_available"] = True
+    enriched["archive_path"] = meta.get("_archive_meta_path")
+
+    for key in (
+        "session_id",
+        "ticket_type",
+        "fix_status",
+        "reply_sent",
+        "failed_tool_count",
+        "tool_call_count",
+        "failed_tools",
+        "customer_reply_available",
+        "reviewer_checklist_available",
+    ):
+        if key in meta and not _is_missing(meta.get(key)):
+            enriched[key] = meta[key]
+
+    for key in ("rounds", "round_count", "total_tokens"):
+        _merge_numeric_max(enriched, meta, key)
+
+    token_usage = meta.get("token_usage")
+    if isinstance(token_usage, dict):
+        if _is_missing(enriched.get("input_tokens")) and token_usage.get("prompt"):
+            enriched["input_tokens"] = token_usage["prompt"]
+        if _is_missing(enriched.get("output_tokens")) and token_usage.get("completion"):
+            enriched["output_tokens"] = token_usage["completion"]
+        if _is_missing(enriched.get("total_tokens")) and token_usage.get("total"):
+            enriched["total_tokens"] = token_usage["total"]
+
+    if _is_missing(enriched.get("duration_ms")) and meta.get("elapsed_seconds"):
+        enriched["duration_ms"] = _duration_value_to_ms(
+            meta.get("elapsed_seconds"),
+            default_unit="seconds",
+        )
+
+    raw_tool_calls = meta.get("tool_calls")
+    if isinstance(raw_tool_calls, list):
+        enriched["tool_calls"] = [
+            _archive_tool_to_ui_tool(call)
+            for call in raw_tool_calls
+            if isinstance(call, dict)
+        ]
+
+    rounds = _archive_rounds(meta, enriched)
+    if rounds:
+        enriched["llm_rounds"] = rounds
+    return enriched
+
+
 def _query_limit(request: web.Request, *, default: int = 100) -> int:
     try:
         value = int(request.query.get("limit", str(default)))  # type: ignore[attr-defined]
@@ -618,6 +756,7 @@ def _read_recent_log_events(
     *,
     limit: int,
     filters: dict[str, Any] | None = None,
+    archive_dir: Path | None = None,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 500))
     filters = filters or {}
@@ -651,8 +790,13 @@ def _read_recent_log_events(
             if record is None:
                 continue
             run_events.append(record)
+    archive_cache: dict[str, dict[str, Any] | None] = {}
+    enriched_items = [
+        _enrich_with_archive_meta(item, archive_dir=archive_dir, cache=archive_cache)
+        for item in _aggregate_run_records(run_events)
+    ]
     all_items = sorted(
-        _aggregate_run_records(run_events),
+        enriched_items,
         key=_run_record_sort_key,
         reverse=True,
     )
@@ -917,6 +1061,7 @@ async def handle_admin_run_records(request: web.Request) -> web.Response:
         Path(cfg.logging.log_dir),
         limit=_query_limit(request),
         filters=filters,
+        archive_dir=Path(cfg.knowledge.archive_dir),
     )
     payload["jsonl_enabled"] = bool(cfg.logging.jsonl_enabled)
     return web.json_response(payload)

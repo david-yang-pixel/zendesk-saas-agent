@@ -151,6 +151,8 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
         assert symbol in css
     assert ".run-record-row" in css
     assert "grid-template-columns" in css
+    assert 'numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1' in app_js
+    assert "round.round || round.index || index + 1" in app_js
 
 
 def test_admin_storage_config_page_is_not_blank() -> None:
@@ -493,6 +495,112 @@ async def test_admin_run_records_collapse_agent_lifecycle_to_one_ticket_run(tmp_
     assert body["items"][0]["duration_ms"] == 276_000
     assert body["items"][0]["trigger"] == "webhook"
     assert body["summary"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> None:
+    app = _app(tmp_path)
+    cfg = app_config(app)
+    cfg.logging.log_dir = str(tmp_path / "logs")
+    cfg.knowledge.archive_dir = str(tmp_path / "archive")
+    log_dir = tmp_path / "logs"
+    archive_dir = tmp_path / "archive" / "3172"
+    log_dir.mkdir()
+    archive_dir.mkdir(parents=True)
+    (log_dir / "events-2026-06-29.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-06-29T10:04:36Z",
+                "event": "agent_done",
+                "ticket_id": 3172,
+                "status": "completed",
+                "module": "runtime.runner",
+                "rounds": 17,
+                "prompt_tokens": 18_200,
+                "completion_tokens": 127,
+                "total_tokens": 18_327,
+                "elapsed": "4.6min",
+                "model": "gpt-5.5",
+            }),
+            json.dumps({
+                "timestamp": "2026-06-29T10:04:37Z",
+                "event": "session_finished",
+                "ticket_id": 3172,
+                "status": "completed",
+                "rounds": 17,
+                "tokens": 18_327,
+                "elapsed": "4.6min",
+            }),
+        ]),
+        encoding="utf-8",
+    )
+    (archive_dir / "meta.json").write_text(
+        json.dumps({
+            "ticket_id": 3172,
+            "session_id": "session-3172",
+            "status": "completed",
+            "rounds": 17,
+            "token_usage": {"prompt": 18_200, "completion": 127, "total": 18_327},
+            "tool_call_count": 3,
+            "tool_calls": [
+                {
+                    "round": 1,
+                    "tool": "zendesk_get_ticket",
+                    "success": True,
+                    "error": None,
+                    "result_preview": "loaded ticket",
+                },
+                {
+                    "round": 2,
+                    "tool": "sql_query",
+                    "success": False,
+                    "error": "database unavailable",
+                    "result_preview": "",
+                },
+                {
+                    "round": 17,
+                    "tool": "archive_ticket",
+                    "success": True,
+                    "error": None,
+                    "result_preview": "archived",
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app,
+            payload={"username": "admin", "password": "admin123"},
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": "admin123",
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+
+    response = await app[ADMIN_HANDLERS_KEY]["run_records"](
+        _Request(app=app, cookies=cookie, query={"limit": "200"})
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    item = body["items"][0]
+    assert item["ticket_id"] == 3172
+    assert item["session_id"] == "session-3172"
+    assert item["archive_available"] is True
+    assert item["tool_call_count"] == 3
+    assert [round_item["round"] for round_item in item["llm_rounds"]] == [1, 2, 17]
+    assert item["llm_rounds"][0]["tools"][0]["name"] == "zendesk_get_ticket"
+    assert item["llm_rounds"][1]["tools"][0]["status"] == "failed"
+    assert item["llm_rounds"][1]["tools"][0]["error"] == "database unavailable"
 
 
 @pytest.mark.asyncio
