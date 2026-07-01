@@ -123,6 +123,9 @@ def test_admin_shell_uses_chinese_management_navigation_and_sso_login() -> None:
     ]:
         assert label in app_js
     assert "管理后台" in html
+    assert "auth-shell" in html
+    assert "/admin/static/dify-logo.svg" in html
+    assert "/admin/static/dify-logo-on-blue.svg" in html
     assert "生产环境管理后台" not in html
     assert "使用 Google 登录" in html
     assert "使用飞书登录" in html
@@ -197,12 +200,17 @@ async def test_admin_static_asset_serves_known_files_and_rejects_unknown(tmp_pat
     response = await app[ADMIN_HANDLERS_KEY]["static_asset"](
         _Request(app=app, cookies=cookie, match_info={"name": "app.js"})
     )
+    logo_response = await app[ADMIN_HANDLERS_KEY]["static_asset"](
+        _Request(app=app, cookies=cookie, match_info={"name": "dify-logo.svg"})
+    )
     blocked = await app[ADMIN_HANDLERS_KEY]["static_asset"](
         _Request(app=app, cookies=cookie, match_info={"name": "../config.yaml"})
     )
 
     assert response.status == 200
     assert "renderRunRecords" in response.text
+    assert logo_response.status == 200
+    assert logo_response.content_type == "image/svg+xml"
     assert blocked.status == 404
 
 

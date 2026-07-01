@@ -8,53 +8,92 @@
 </head>
 <body>
   <div id="login" class="login-wrap">
-    <section class="auth-card">
-      <div class="auth-brand">
-        <div class="brand-mark">Dify</div>
+    <div class="auth-shell">
+      <section class="auth-visual" aria-label="zd-agent 管理后台">
+        <img class="auth-logo-on-blue" src="/admin/static/dify-logo-on-blue.svg" width="200" height="89" alt="Dify">
         <div>
-          <h1>zd-agent 管理后台</h1>
-          <p>统一管理 agent 配置、运行记录和审计变更</p>
+          <div class="auth-kicker">zd-agent 管理后台</div>
+          <h1>把工单自动化控制权收回到一个地方</h1>
+          <p>配置触发、模型、工具、回复策略和审计变更，保持线上 agent 可控、可查、可回滚。</p>
         </div>
-      </div>
-      <div class="sso-grid" aria-label="SSO 登录方式">
-        <button class="btn sso" onclick="showSsoHint('Google')">使用 Google 登录</button>
-        <button class="btn sso" onclick="showSsoHint('飞书')">使用飞书登录</button>
-      </div>
-      <div class="divider"><span>或使用账号密码</span></div>
-      <label for="login-user">账号</label>
-      <input id="login-user" value="admin" autocomplete="username">
-      <label for="login-pass">密码</label>
-      <input id="login-pass" type="password" value="admin123" autocomplete="current-password">
-      <p class="login-hint">默认账号 <code>admin</code>，初始密码 <code>admin123</code>。首次进入后需要修改密码。</p>
-      <button class="btn primary full" onclick="login()">登录管理后台</button>
-      <div id="login-msg" class="form-message danger-text" role="alert"></div>
-    </section>
+        <div class="auth-preview" aria-hidden="true">
+          <div class="preview-row strong"><span></span><b>Agent 运行中</b><em>live</em></div>
+          <div class="preview-row"><span></span><b>Zendesk MCP</b><em>connected</em></div>
+          <div class="preview-row"><span></span><b>审计日志</b><em>enabled</em></div>
+        </div>
+      </section>
+      <section class="auth-card">
+        <div class="auth-brand">
+          <img class="auth-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
+          <div>
+            <h2>登录管理后台</h2>
+            <p>使用已启用的登录方式进入控制台</p>
+          </div>
+        </div>
+        <div class="sso-grid" aria-label="SSO 登录方式">
+          <button class="btn sso google" onclick="showSsoHint('Google')"><span>G</span>使用 Google 登录</button>
+          <button class="btn sso feishu" onclick="showSsoHint('飞书')"><span>飞</span>使用飞书登录</button>
+        </div>
+        <div class="divider"><span>账号密码</span></div>
+        <div class="field-stack">
+          <label for="login-user">账号</label>
+          <input id="login-user" value="admin" autocomplete="username">
+        </div>
+        <div class="field-stack">
+          <label for="login-pass">密码</label>
+          <input id="login-pass" type="password" value="admin123" autocomplete="current-password">
+        </div>
+        <p class="login-hint">默认账号 <code>admin</code>，初始密码 <code>admin123</code>。首次进入后需要修改密码。</p>
+        <button class="btn primary full" onclick="login()">登录管理后台</button>
+        <div id="login-msg" class="form-message danger-text" role="alert"></div>
+      </section>
+    </div>
   </div>
 
   <div id="password-change" class="login-wrap hidden">
-    <section class="auth-card">
-      <div class="brand-mark">Dify</div>
-      <h1>修改初始密码</h1>
-      <p>当前账号仍在使用默认密码，修改后才能进入管理后台。</p>
-      <label for="change-current">当前密码</label>
-      <input id="change-current" type="password" autocomplete="current-password">
-      <label for="change-new">新密码</label>
-      <input id="change-new" type="password" placeholder="至少 8 位" autocomplete="new-password">
-      <label for="change-confirm">确认新密码</label>
-      <input id="change-confirm" type="password" autocomplete="new-password">
-      <div class="button-row">
-        <button class="btn primary" onclick="completePasswordChange()">保存新密码</button>
-        <button class="btn" onclick="logout()">退出登录</button>
-      </div>
-      <div id="change-msg" class="form-message danger-text" role="alert"></div>
-    </section>
+    <div class="auth-shell compact">
+      <section class="auth-visual" aria-label="安全设置">
+        <img class="auth-logo-on-blue" src="/admin/static/dify-logo-on-blue.svg" width="200" height="89" alt="Dify">
+        <div>
+          <div class="auth-kicker">首次登录</div>
+          <h1>先换掉默认密码</h1>
+          <p>默认凭据只能用于初始化。保存新密码后会进入管理后台。</p>
+        </div>
+      </section>
+      <section class="auth-card">
+        <div class="auth-brand">
+          <img class="auth-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
+          <div>
+            <h2>修改初始密码</h2>
+            <p>新密码至少 8 位</p>
+          </div>
+        </div>
+        <div class="field-stack">
+          <label for="change-current">当前密码</label>
+          <input id="change-current" type="password" autocomplete="current-password">
+        </div>
+        <div class="field-stack">
+          <label for="change-new">新密码</label>
+          <input id="change-new" type="password" placeholder="至少 8 位" autocomplete="new-password">
+        </div>
+        <div class="field-stack">
+          <label for="change-confirm">确认新密码</label>
+          <input id="change-confirm" type="password" autocomplete="new-password">
+        </div>
+        <div class="button-row">
+          <button class="btn primary" onclick="completePasswordChange()">保存新密码</button>
+          <button class="btn" onclick="logout()">退出登录</button>
+        </div>
+        <div id="change-msg" class="form-message danger-text" role="alert"></div>
+      </section>
+    </div>
   </div>
 
   <div id="app" class="shell hidden">
     <aside class="sidebar">
       <div class="sidebar-brand">
         <div class="sidebar-logo-row">
-          <div class="brand-mark small">Dify</div>
+          <img class="sidebar-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
           <div>
             <div class="sidebar-title">zd-agent</div>
             <div class="sidebar-subtitle">管理后台</div>

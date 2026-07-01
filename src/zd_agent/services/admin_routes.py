@@ -26,6 +26,8 @@ SESSION_COOKIE = "zd_admin_session"
 ADMIN_HANDLERS_KEY = web.AppKey("zd_agent.admin_handlers", dict)
 ADMIN_STATIC_FILES = {
     "app.js": "application/javascript",
+    "dify-logo-on-blue.svg": "image/svg+xml",
+    "dify-logo.svg": "image/svg+xml",
     "styles.css": "text/css",
 }
 SENSITIVE_KEY_RE = re.compile(
