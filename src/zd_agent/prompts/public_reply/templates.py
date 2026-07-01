@@ -47,10 +47,10 @@ def silent_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}! We've received your ticket. Could you briefly describe the issue?\n\n"
-        "- Which feature or page is affected?\n"
-        "- The error message or a screenshot (if any)\n"
-        "- What you were trying to do when it happened"
+        f"Hi{name_part}! We've received your ticket. What can I help you with?\n\n"
+        "- Billing/refund, account/subscription, feature usage, workflow, knowledge base, API, or an error/bug\n"
+        "- Any relevant page, feature, amount/date, error text, screenshot, or steps you tried\n"
+        "- What you expected and what happened instead"
     )
 
 
@@ -62,7 +62,7 @@ def greeting_template(*, customer_name: str = "") -> str:
     name_part = f" {customer_name}" if customer_name else ""
     return (
         f"Hi{name_part}! What can I help you with? "
-        "If possible, please share the error you're seeing, a screenshot, or steps to reproduce."
+        "For example, billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error you're seeing."
     )
 
 
@@ -74,10 +74,11 @@ def retry_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part} — sorry, I still can't investigate without specifics. "
-        "Could you describe **exactly what's happening**, for example:\n\n"
+        f"Hi{name_part} — I still need the specific request before I can help. "
+        "Could you share exactly what you need? For example:\n\n"
+        '- "I want to request a refund for my latest renewal"\n'
+        '- "How do I configure a feature for my use case?"\n'
         '- "I get a 500 error when creating a workflow"\n'
-        '- "My app page won\'t load on Chrome"\n'
         '- "My AI Credits show 0 but I only sent a few messages"'
     )
 
@@ -117,7 +118,7 @@ _MISSING_INFO_PROMPT = """Customer's recent messages on a Zendesk SaaS ticket:
 {messages}
 </customer_messages>
 
-The customer described their problem but the description is too vague to debug. \
+The customer described their request, but the details are too vague to act on. \
 Generate 2-3 specific, actionable bullet points asking for **missing information**. \
 Each point should ask for ONE specific thing.
 
@@ -129,9 +130,9 @@ Constraints:
 - Limit to 2-3 bullets total
 
 Good examples:
-- The specific app ID or workflow ID that's affected
-- The exact error message text (or a screenshot)
-- When this started happening / how often it reproduces
+- For billing/refund: the charge amount, invoice, renewal date, or subscription action involved
+- For feature usage: the outcome they want and the Dify feature/page they are using
+- For errors: the exact error message text, screenshot, affected app/workflow/dataset, or when it happened
 
 Bad examples (don't write):
 - Your Workspace ID  ← we have it
@@ -181,7 +182,7 @@ def _insufficient_info_fallback_template(*, customer_name: str = "") -> str:
     name_part = f"{customer_name}, " if customer_name else ""
     bullet_text = "\n".join(MISSING_INFO_FALLBACK_BULLETS)
     return (
-        f"{name_part}got it. To investigate faster, could you share:\n\n"
+        f"{name_part}got it. Could you share the missing details for your request:\n\n"
         f"{bullet_text}"
     )
 
@@ -311,7 +312,7 @@ async def insufficient_info_template(
     name_part = f"{customer_name}, " if customer_name else ""
     bullet_text = "\n".join(bullets)
     return (
-        f"{name_part}got it. To investigate faster, could you share:\n\n"
+        f"{name_part}got it. Could you share the missing details for your request:\n\n"
         f"{bullet_text}"
     )
 

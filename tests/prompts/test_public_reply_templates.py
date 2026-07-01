@@ -79,7 +79,10 @@ class TestStaticTemplates:
         body = silent_template(customer_name="Alice")
         assert "Alice" in body
         assert "ticket" in body.lower()
-        assert "describe" in body.lower()
+        body_lower = body.lower()
+        assert "what can i help you with" in body_lower
+        assert "billing/refund" in body_lower
+        assert "feature usage" in body_lower
 
     def test_silent_template_no_name(self) -> None:
         """没拿到客户名 → 不留奇怪空格"""
@@ -90,16 +93,20 @@ class TestStaticTemplates:
     def test_greeting_template_basic(self) -> None:
         body = greeting_template(customer_name="Dave")
         assert "Dave" in body
-        assert "what" in body.lower() or "help" in body.lower()
+        body_lower = body.lower()
+        assert "what" in body_lower or "help" in body_lower
+        assert "billing/refund" in body_lower
+        assert "feature usage" in body_lower
 
     def test_retry_template_has_examples(self) -> None:
         """模板 D 必须有具体例子帮客户表达"""
         body = retry_template(customer_name="Eve")
         # 至少含一个示例引号
         assert '"' in body
-        # 应该有 500 / app / workflow 等典型示例
         body_lower = body.lower()
-        assert any(kw in body_lower for kw in ("500", "workflow", "app"))
+        assert "refund" in body_lower
+        assert "feature" in body_lower
+        assert "500" in body_lower
 
     def test_handoff_template_mentions_human(self) -> None:
         """转人工通知必须明示 'human teammate'"""
@@ -440,8 +447,10 @@ class TestBuildAskBody:
                 model="m", api_key="k",
             )
         assert name == "C"
-        assert "To investigate faster" in body
-        assert "exact error" in body.lower()
+        assert "missing details for your request" in body
+        body_lower = body.lower()
+        assert "billing/refund" in body_lower
+        assert "feature usage" in body_lower
 
 
 class TestAskBodyGeneration:
@@ -453,8 +462,8 @@ class TestAskBodyGeneration:
             "choices": [{
                 "message": {
                     "content": (
-                        '{"body": "Alice, please send the exact error text and '
-                        'which workflow is affected."}'
+                        '{"body": "Alice, what can I help you with today: billing, '
+                        'refund, feature usage, or a technical error?"}'
                     ),
                 },
             }],
@@ -471,7 +480,8 @@ class TestAskBodyGeneration:
             )
 
         assert body == (
-            "Alice, please send the exact error text and which workflow is affected."
+            "Alice, what can I help you with today: billing, refund, feature usage, "
+            "or a technical error?"
         )
 
     @pytest.mark.asyncio

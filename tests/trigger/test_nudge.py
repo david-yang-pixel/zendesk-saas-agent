@@ -28,17 +28,24 @@ def test_detect_language_blank_fallback_english():
 def test_nudge_message_returns_lang_and_body():
     lang, body = nudge_message(customer_name="张三")
     assert lang == "zh"
-    assert "Workspace ID" in body
+    assert "退款" in body
+    assert "功能使用" in body
+    assert "Workspace ID" not in body
     assert "Dify" in body
 
 
 def test_nudge_message_japanese_uses_japanese_text():
     lang, body = nudge_message(customer_name="田中たろう")
     assert lang == "ja"
-    assert "サポート" in body or "Workspace ID" in body  # 日本語句子+保留 wid 字面
+    assert "サポート" in body
+    assert "返金" in body
+    assert "Workspace ID" not in body
 
 
 def test_nudge_message_english_default():
     lang, body = nudge_message(customer_name=None)
     assert lang == "en"
     assert "Hi!" in body
+    assert "billing/refund" in body
+    assert "feature usage" in body
+    assert "Workspace ID" not in body

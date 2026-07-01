@@ -10,9 +10,9 @@ from zd_agent.log import get_logger
 logger = get_logger(module="prompts.public_reply.ask_body")
 
 MISSING_INFO_FALLBACK_BULLETS: Final[tuple[str, ...]] = (
-    "- The specific app or workflow that's affected",
-    "- The exact error message or a screenshot",
-    "- What you were doing when this happened",
+    "- What you need help with, such as billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error",
+    "- Any relevant detail, such as the page or feature, amount/date, error text, screenshot, or steps you tried",
+    "- What result you expected and what happened instead",
 )
 
 ASK_BODY_MAX_CHARS: Final = 900
@@ -39,8 +39,9 @@ Rules:
 - Do not ask for customer name, email, Workspace ID, plan, or account owner; those are already available from the form or ticket metadata.
 - Do not mention internal state, trigger decider, confidence, LLM, templates, automation, or tools.
 - Do not claim investigation has already happened.
-- For a ticket with no actual issue yet, ask the customer to describe the problem and include the affected feature/page, exact error or screenshot, and what they were trying to do.
-- For a vague issue, infer the likely area from the customer's words and ask for specific missing details. If the area is unclear, ask for exact error, affected app/workflow/dataset, and reproduction step.
+- For a ticket with no actual request yet, ask what they need help with. Mention examples across support categories: billing/refund, feature usage/how-to, account/subscription, workflow, knowledge base, API, or an error/bug.
+- Do not assume every vague ticket is a troubleshooting or bug report. Ask for error text, screenshots, affected feature, and reproduction steps only when the customer indicates an error, failure, bug, or unexpected behavior.
+- For a vague request, infer the likely area from the customer's words and ask only for category-specific missing details: refund/billing needs amount/date/subscription action; feature usage needs desired outcome and current setup; account/subscription needs affected account or action; technical errors need affected page/feature, exact error, screenshot, and steps.
 - For a repeat ask, be direct and ask for the smallest set of exact details still missing. Do not apologize repeatedly.
 
 Return JSON exactly: {{"body": "..."}}"""
@@ -79,16 +80,16 @@ def _scenario_instruction(*, verdict_kind: str, ask_count: int) -> str:
         case "no_message":
             return (
                 "The ticket was created from form data, but the customer has not "
-                "described the actual issue yet."
+                "described their actual support request yet."
             )
         case "greeting":
             return (
                 "The customer only greeted the support channel and has not stated "
-                "a concrete Dify problem yet."
+                "a concrete Dify request yet."
             )
         case _:
             return (
-                "The customer mentioned a problem, but important debugging details "
+                "The customer mentioned a request, but important details "
                 "are missing."
             )
 
@@ -96,7 +97,7 @@ def _scenario_instruction(*, verdict_kind: str, ask_count: int) -> str:
 def _customer_message_context(customer_messages: list[str]) -> str:
     recent = [message.strip() for message in customer_messages[-5:] if message.strip()]
     if not recent:
-        return "(no customer issue message yet)"
+        return "(no customer request message yet)"
     return "\n---\n".join(recent)
 
 
