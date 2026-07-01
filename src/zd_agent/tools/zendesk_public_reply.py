@@ -27,10 +27,12 @@ footer 处理都不一样。
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, TYPE_CHECKING
 
 from zd_agent.config import get_config
 from zd_agent.integrations.zendesk_browser_relay import send_browser_relay_reply
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.pre_send_check import FreshnessResult, pre_send_check_or_abort
 from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
@@ -233,6 +235,82 @@ def _normalize_reply_body(body: str) -> str:
     return "\n".join(normalized.split()).strip()
 
 
+def _conversation_event_text(event: dict[str, Any]) -> str:
+    content = event.get("content")
+    if not isinstance(content, dict):
+        return ""
+    for key in ("text", "body", "html_text"):
+        value = content.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _iter_existing_public_reply_texts(payload: dict[str, Any]) -> Iterator[str]:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return
+
+    comments = data.get("comments")
+    if isinstance(comments, list):
+        for comment in comments:
+            if not isinstance(comment, dict) or comment.get("public") is not True:
+                continue
+            for key in ("body", "plain_body", "html_body"):
+                value = comment.get(key)
+                if isinstance(value, str) and value.strip():
+                    yield value
+                    break
+
+    conversation_log = data.get("conversation_log")
+    if not isinstance(conversation_log, dict):
+        return
+    events = conversation_log.get("events")
+    if not isinstance(events, list):
+        return
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        author = event.get("author")
+        if not isinstance(author, dict) or author.get("type") != "agent":
+            continue
+        text = _conversation_event_text(event)
+        if text:
+            yield text
+
+
+async def _recent_duplicate_public_reply_exists(
+    *,
+    ticket_id: int,
+    body_with_footer: str,
+) -> bool:
+    payload = await call_zendesk_tool(
+        "get_ticket_comments",
+        {
+            "ticket_id": ticket_id,
+            "include_conversation_log": True,
+            "conversation_page_size": 100,
+            "force_refresh": True,
+        },
+    )
+    if payload.get("success") is not True:
+        logger.warning(
+            "public_reply_duplicate_check_unavailable",
+            ticket_id=ticket_id,
+            code=payload.get("code"),
+            error=str(payload.get("error", ""))[:200],
+        )
+        return False
+
+    target = _normalize_reply_body(body_with_footer)
+    if not target:
+        return False
+    return any(
+        _normalize_reply_body(existing) == target
+        for existing in _iter_existing_public_reply_texts(payload)
+    )
+
+
 async def _send_public_reply_safely(
     *,
     ticket_id: int,
@@ -251,6 +329,14 @@ async def _send_public_reply_safely(
         )
 
     cfg = get_config()
+    if await _recent_duplicate_public_reply_exists(
+        ticket_id=ticket_id,
+        body_with_footer=body_with_footer,
+    ):
+        raise RuntimeError(
+            "Duplicate public reply already exists on this ticket; skip sending."
+        )
+
     freshness_check_url = (
         f"http://127.0.0.1:{cfg.webhook.listen_port}/internal/pre-send-freshness"
         if snapshot_customer_message_count is not None

@@ -389,6 +389,53 @@ class TestExecute:
         mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_execute_rejects_duplicate_public_reply_already_on_ticket(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        mock_relay = AsyncMock()
+        mock_mcp = AsyncMock(
+            return_value={
+                "success": True,
+                "data": {
+                    "conversation_log": {
+                        "events": [
+                            {
+                                "author": {"type": "agent"},
+                                "content": {"text": _append_footer("Hi there", "ask")},
+                            }
+                        ]
+                    }
+                },
+            },
+        )
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+            mock_mcp,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Hi there",
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert not r.success
+        assert "Duplicate public reply" in r.error
+        assert sess.reply_sent is False
+        mock_mcp.assert_awaited_once()
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_public_reply_blocks_unsupported_concrete_claims(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
@@ -651,6 +698,48 @@ class TestExecute:
         assert success is False
         assert msg == "ticket_id must be a positive integer"
         mock_context.assert_not_called()
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_public_reply_rejects_duplicate_public_comment(self) -> None:
+        mock_relay = AsyncMock()
+        mock_mcp = AsyncMock(
+            return_value={
+                "success": True,
+                "data": {
+                    "comments": [
+                        {
+                            "public": True,
+                            "plain_body": _append_footer(
+                                "Please share more details.",
+                                "ask",
+                            ),
+                        }
+                    ]
+                },
+            },
+        )
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+            mock_mcp,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            success, msg = await send_public_reply(
+                ticket_id=42,
+                body="Please share more details.",
+                reply_type="ask",
+                conversation_id="conv-1",
+            )
+
+        assert success is False
+        assert "Duplicate public reply" in msg
+        mock_mcp.assert_awaited_once()
         mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
