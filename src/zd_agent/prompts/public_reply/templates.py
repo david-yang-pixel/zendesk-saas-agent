@@ -6,13 +6,13 @@
   绝不向客户索取（agent 已经从 ``_form_data_from_msgs`` 拿到）
 - **footer 不在这里加**：``ZendeskPublicReply`` 工具层硬编码追加，本模块只输出
   正文 body（不含 footer 不含 ``---`` 分隔线）
-- **LLM 动态填充仅用于模板 C**：客户消息模糊时让 cheap LLM 生成"还缺什么"
-  的 2-3 个 bullet，避免硬模板"请提供更多信息"这种空话
+- **追问 LLM-first**：A/B/C/D 表示场景语义和 fallback；正常路径由 LLM 生成
+  最小客户追问，失败或命中安全过滤时回退到对应模板
 
 7 个模板对应 6 种触发场景 + 1 个 agent 给方案的 skeleton：
 - A silent          客户工单 0 消息（含 formResponse 已抽 name/wid）
 - B greeting        客户只发 hi / hello / 在吗
-- C insufficient    客户说了但太模糊 → LLM 动态填"缺啥"
+- C insufficient    客户说了但太模糊 → 要求补关键排查信息
 - D retry           第 2/3+ 次还没说清，措辞更直接 + 给具体例子
 - E handoff         转人工通知
 - F solution        agent 给方案（agent 自己组装正文，这里仅提供 hint）
@@ -21,12 +21,19 @@
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 import httpx
 
 from zd_agent.log import get_logger
+from zd_agent.prompts.public_reply.ask_body_generation import (
+    MISSING_INFO_FALLBACK_BULLETS,
+    generate_ask_body_with_llm as _generate_ask_body_with_llm,
+)
 
 logger = get_logger(module="prompts.public_reply")
+
+AskTemplateName = Literal["A", "B", "C", "D"]
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +165,52 @@ def _is_forbidden_bullet(bullet: str) -> bool:
     return any(phrase in low for phrase in _FORBIDDEN_BULLET_PHRASES)
 
 
+def _ask_template_name(*, verdict_kind: str, ask_count: int) -> AskTemplateName:
+    if ask_count >= 1:
+        return "D"
+    match verdict_kind:
+        case "no_message":
+            return "A"
+        case "greeting":
+            return "B"
+        case _:
+            return "C"
+
+
+def _insufficient_info_fallback_template(*, customer_name: str = "") -> str:
+    name_part = f"{customer_name}, " if customer_name else ""
+    bullet_text = "\n".join(MISSING_INFO_FALLBACK_BULLETS)
+    return (
+        f"{name_part}got it. To investigate faster, could you share:\n\n"
+        f"{bullet_text}"
+    )
+
+
+def _fallback_ask_body(
+    *,
+    verdict_kind: str,
+    ask_count: int,
+    customer_name: str,
+) -> tuple[str, AskTemplateName]:
+    template_name = _ask_template_name(
+        verdict_kind=verdict_kind,
+        ask_count=ask_count,
+    )
+    match template_name:
+        case "A":
+            return silent_template(customer_name=customer_name), template_name
+        case "B":
+            return greeting_template(customer_name=customer_name), template_name
+        case "D":
+            return retry_template(customer_name=customer_name), template_name
+        case "C":
+            return (
+                _insufficient_info_fallback_template(customer_name=customer_name),
+                template_name,
+            )
+    raise ValueError(f"unsupported ask template: {template_name}")
+
+
 async def _generate_missing_info_bullets(
     *,
     customer_messages: list[str],
@@ -169,16 +222,10 @@ async def _generate_missing_info_bullets(
 
     出错时 fallback 到通用的硬编码 3 点（仍能继续 ask 流程）。
     """
-    fallback_bullets = [
-        "- The specific app or workflow that's affected",
-        "- The exact error message or a screenshot",
-        "- What you were doing when this happened",
-    ]
-
     # 只看最近 5 条客户消息，足够 LLM 判断且省 token
     recent = customer_messages[-5:] if customer_messages else []
     if not recent:
-        return fallback_bullets
+        return list(MISSING_INFO_FALLBACK_BULLETS)
 
     joined = "\n---\n".join(m for m in recent if m)
     prompt = _MISSING_INFO_PROMPT.format(messages=joined)
@@ -200,14 +247,14 @@ async def _generate_missing_info_bullets(
             )
     except Exception as e:
         logger.warning("template_c_llm_http_error", error=str(e)[:200])
-        return fallback_bullets
+        return list(MISSING_INFO_FALLBACK_BULLETS)
 
     if resp.status_code != 200:
         logger.warning(
             "template_c_llm_bad_status",
             status=resp.status_code, body=resp.text[:200],
         )
-        return fallback_bullets
+        return list(MISSING_INFO_FALLBACK_BULLETS)
 
     try:
         data = resp.json()
@@ -220,7 +267,7 @@ async def _generate_missing_info_bullets(
             if isinstance(b, str) and b.strip()
         ][:3]
         if not bullets:
-            return fallback_bullets
+            return list(MISSING_INFO_FALLBACK_BULLETS)
 
         # 防御：每个 bullet 必须以 "- " 开头（M6 测试覆盖 LLM 可能漏了）
         normalized = []
@@ -239,11 +286,11 @@ async def _generate_missing_info_bullets(
                 "template_c_llm_filtered_too_many",
                 kept=len(filtered), dropped=dropped,
             )
-            return fallback_bullets
+            return list(MISSING_INFO_FALLBACK_BULLETS)
         return filtered
     except Exception as e:
         logger.warning("template_c_llm_parse_error", error=str(e)[:200])
-        return fallback_bullets
+        return list(MISSING_INFO_FALLBACK_BULLETS)
 
 
 async def insufficient_info_template(
@@ -287,20 +334,22 @@ async def build_ask_body(
     Returns:
         (body_text, template_name) — template_name 是 "A"/"B"/"C"/"D" 用于 log
     """
-    # ask_count >= 1 一律用 D（更直接）
-    if ask_count >= 1:
-        return retry_template(customer_name=customer_name), "D"
-
-    # ask_count == 0：首次 ask，按 verdict 选模板
-    if verdict_kind == "no_message":
-        return silent_template(customer_name=customer_name), "A"
-    if verdict_kind == "greeting":
-        return greeting_template(customer_name=customer_name), "B"
-    # insufficient_info → LLM 动态填
-    body = await insufficient_info_template(
+    template_name = _ask_template_name(
+        verdict_kind=verdict_kind,
+        ask_count=ask_count,
+    )
+    body = await _generate_ask_body_with_llm(
+        verdict_kind=verdict_kind,
+        ask_count=ask_count,
         customer_name=customer_name,
         customer_messages=customer_messages,
         model=model,
         api_key=api_key,
     )
-    return body, "C"
+    if body is not None:
+        return body, template_name
+    return _fallback_ask_body(
+        verdict_kind=verdict_kind,
+        ask_count=ask_count,
+        customer_name=customer_name,
+    )

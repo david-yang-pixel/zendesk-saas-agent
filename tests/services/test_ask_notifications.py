@@ -91,6 +91,37 @@ async def test_ask_template_build_failure_does_not_send() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ask_template_uses_pre_generation_snapshot_for_send() -> None:
+    customer_msgs = [{"id": "m1", "body": "hello"}]
+    mock_send = AsyncMock(return_value=(True, "ok"))
+
+    async def fake_build(**kwargs):
+        customer_msgs.append({"id": "m2", "body": "the workflow now shows 500"})
+        return "Please send the exact workflow error.", "template-B"
+
+    with (
+        patch("zd_agent.config.get_config", return_value=_make_cfg()),
+        patch(
+            "zd_agent.prompts.public_reply.templates.build_ask_body",
+            AsyncMock(side_effect=fake_build),
+        ),
+        patch("zd_agent.tools.zendesk_public_reply.send_public_reply", mock_send),
+    ):
+        sent = await send_ask_template_best_effort(
+            ticket_id=9999,
+            verdict_kind="greeting",
+            customer_msgs=customer_msgs,
+            ask_count=0,
+            source="zendesk_webhook",
+        )
+
+    assert sent is True
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.kwargs["snapshot_customer_message_count"] == 1
+    assert mock_send.await_args.kwargs["snapshot_customer_last_message_id"] == "m1"
+
+
+@pytest.mark.asyncio
 async def test_ask_template_send_failure_is_retryable_failure() -> None:
     mock_build = AsyncMock(return_value=("Please share details.", "template-B"))
     mock_send = AsyncMock(return_value=(False, "kill switch off"))

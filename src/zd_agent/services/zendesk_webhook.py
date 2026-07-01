@@ -5,11 +5,13 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 
 from aiohttp import web
 
 from zd_agent.log import get_logger
 from zd_agent.services.app_context import app_config, trigger_queue, webhook_dedup
+from zd_agent.services.trigger_delay import with_trigger_delay
 
 logger = get_logger(module="services.zendesk_webhook")
 
@@ -60,9 +62,15 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     dedup.add(key)
 
     queue = trigger_queue(request.app)
-    await queue.put({
-        "source": "zendesk_webhook",
-        "ticket_id": ticket_id,
-        "event": event,
-    })
+    await queue.put(
+        with_trigger_delay(
+            {
+                "source": "zendesk_webhook",
+                "ticket_id": ticket_id,
+                "event": event,
+            },
+            delay_seconds=cfg.public_reply.silent_initial_wait_seconds,
+            now_fn=time.time,
+        )
+    )
     return web.Response(status=200, text="ok")

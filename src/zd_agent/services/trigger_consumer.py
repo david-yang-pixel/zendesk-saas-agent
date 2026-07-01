@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 
 from zd_agent.config import EnvSettings, get_config
 from zd_agent.log import get_logger
+from zd_agent.services.trigger_delay import wait_for_trigger_availability
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 
 logger = get_logger(module="services.trigger_consumer")
@@ -43,6 +44,7 @@ async def run_trigger_consumer(
     while True:
         msg = await queue.get()
         try:
+            await wait_for_trigger_availability(msg)
             await handle_message_fn(
                 msg=msg,
                 manager=manager,

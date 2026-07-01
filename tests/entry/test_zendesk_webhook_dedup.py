@@ -13,7 +13,7 @@ import base64
 import hashlib
 import hmac
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -37,6 +37,7 @@ def _build_app(tmp_path) -> web.Application:
     cfg = MagicMock()
     cfg.webhook.signing_secret = "topsecret"
     cfg.webhook.zendesk_path = "/webhook/zendesk"
+    cfg.public_reply.silent_initial_wait_seconds = 60
 
     import asyncio
     install_saas_app_context(
@@ -157,3 +158,15 @@ async def test_bad_signature_401(tmp_path):
 
     r = await handle_zendesk_webhook(_Req())  # type: ignore[arg-type]
     assert r.status == 401
+
+
+@pytest.mark.asyncio
+async def test_classic_webhook_uses_initial_wait_window(tmp_path):
+    app = _build_app(tmp_path)
+
+    with patch("zd_agent.services.zendesk_webhook.time.time", return_value=1000.0):
+        r = await _post(app, {"ticket_id": 2278, "latest_comment_id": 1})
+
+    assert r.status == 200 and r.text == "ok"
+    queued = trigger_queue(app).get_nowait()
+    assert queued["available_at"] == 1060.0

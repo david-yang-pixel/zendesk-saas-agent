@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -59,6 +59,53 @@ async def test_run_trigger_consumer_delegates_queue_messages(tmp_path) -> None:
     assert calls[0]["cfg"] is cfg
     assert calls[0]["env"] is env
     assert calls[0]["log_path"] == log_path
+
+
+@pytest.mark.asyncio
+async def test_run_trigger_consumer_waits_for_delayed_message(tmp_path, monkeypatch) -> None:
+    queue: asyncio.Queue = asyncio.Queue()
+    manager = MagicMock()
+    state = MagicMock()
+    cfg = MagicMock()
+    env = MagicMock()
+    log_path = tmp_path / "trigger_log.jsonl"
+    handled = asyncio.Event()
+    wait = AsyncMock()
+
+    async def fake_handle_message(**kwargs):
+        handled.set()
+
+    monkeypatch.setattr(
+        "zd_agent.services.trigger_consumer.wait_for_trigger_availability",
+        wait,
+    )
+    await queue.put({
+        "ticket_id": 2808,
+        "source": "messaging_webhook",
+        "available_at": 1030.0,
+    })
+    task = asyncio.create_task(
+        run_trigger_consumer(
+            queue,
+            manager,
+            state,
+            cfg=cfg,
+            env=env,
+            log_path=log_path,
+            handle_message_fn=fake_handle_message,
+            silence_expired_ask_fn=MagicMock(),
+            post_verdict_dispatch_fn=MagicMock(),
+            escalate_fn=MagicMock(),
+        )
+    )
+
+    await asyncio.wait_for(handled.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    wait.assert_awaited_once()
+    assert wait.await_args.args[0]["available_at"] == 1030.0
 
 
 @pytest.mark.asyncio

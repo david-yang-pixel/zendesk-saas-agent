@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -32,7 +33,8 @@ class FakeRequest:
         }
         self.app = {
             "config": SimpleNamespace(
-                webhook=SimpleNamespace(messaging_signing_secret=secret)
+                webhook=SimpleNamespace(messaging_signing_secret=secret),
+                public_reply=SimpleNamespace(silence_window_seconds=30),
             ),
             "webhook_dedup": WebhookDedup(dedup_path),
             "trigger_queue": asyncio.Queue(),
@@ -66,3 +68,28 @@ async def test_messaging_webhook_enqueues_end_user_actor(tmp_path):
     assert queued["ticket_id"] == "2757"
     assert queued["conversation_id"] == "conv-1"
     assert queued["messaging_app_id"] == "app-1"
+    assert queued["available_at"] > 0
+
+
+@pytest.mark.asyncio
+async def test_messaging_webhook_uses_customer_message_merge_window(tmp_path):
+    payload = {
+        "id": "evt-1",
+        "app": {"id": "app-1"},
+        "detail": {"id": "2757"},
+        "event": {
+            "actor": {"type": "end_user"},
+            "conversation": {"id": "conv-1"},
+            "message": {"id": "msg-1", "body": "hello"},
+        },
+        "subject": "zen:ticket:2757",
+        "type": "zen:event-type:messaging_ticket.message_added",
+    }
+    request = FakeRequest(payload, tmp_path / "dedup.json")
+
+    with patch("zd_agent.services.zendesk_messaging_webhook.time.time", return_value=1000.0):
+        response = await handle_zendesk_messaging_webhook(request)
+
+    assert response.status == 200
+    queued = trigger_queue(request.app).get_nowait()
+    assert queued["available_at"] == 1030.0

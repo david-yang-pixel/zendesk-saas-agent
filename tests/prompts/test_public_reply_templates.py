@@ -15,7 +15,8 @@
   - LLM 返回空 / 全空 → fallback
 - build_ask_body 分发：
   - ask_count=0 + verdict ∈ {no_message/greeting/insufficient_info} → A/B/C
-  - ask_count>=1 一律 → D（retry）
+    语义，但正文优先由 LLM 生成，失败时才 fallback
+  - ask_count>=1 一律 → D（retry）语义，同样优先由 LLM 生成
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zd_agent.prompts.public_reply.templates import (
+    _generate_ask_body_with_llm,
     _generate_missing_info_bullets,
     build_ask_body,
     closed_template,
@@ -359,32 +361,41 @@ class TestInsufficientInfoTemplate:
 
 class TestBuildAskBody:
     @pytest.mark.asyncio
-    async def test_no_message_ask_count_zero_returns_A(self) -> None:
-        body, name = await build_ask_body(
-            verdict_kind="no_message", ask_count=0,
-            customer_name="Alice", customer_messages=[],
-            model="m", api_key="k",
-        )
-        assert name == "A"
-        assert "Alice" in body
-        assert "describe" in body.lower()
-
-    @pytest.mark.asyncio
-    async def test_greeting_ask_count_zero_returns_B(self) -> None:
-        body, name = await build_ask_body(
-            verdict_kind="greeting", ask_count=0,
-            customer_name="Bob", customer_messages=["hi"],
-            model="m", api_key="k",
-        )
-        assert name == "B"
-        assert "Bob" in body
-
-    @pytest.mark.asyncio
-    async def test_insufficient_info_ask_count_zero_returns_C(self) -> None:
+    async def test_no_message_ask_count_zero_uses_llm_body_with_A_semantics(self) -> None:
         with patch(
-            "zd_agent.prompts.public_reply.templates._generate_missing_info_bullets",
-            AsyncMock(return_value=["- the error", "- the app"]),
-        ):
+            "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
+            AsyncMock(return_value="Alice, what issue should we investigate?"),
+        ) as mock_generate:
+            body, name = await build_ask_body(
+                verdict_kind="no_message", ask_count=0,
+                customer_name="Alice", customer_messages=[],
+                model="m", api_key="k",
+            )
+        assert name == "A"
+        assert body == "Alice, what issue should we investigate?"
+        assert mock_generate.await_args.kwargs["verdict_kind"] == "no_message"
+
+    @pytest.mark.asyncio
+    async def test_greeting_ask_count_zero_uses_llm_body_with_B_semantics(self) -> None:
+        with patch(
+            "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
+            AsyncMock(return_value="Bob, what can I help you with?"),
+        ) as mock_generate:
+            body, name = await build_ask_body(
+                verdict_kind="greeting", ask_count=0,
+                customer_name="Bob", customer_messages=["hi"],
+                model="m", api_key="k",
+            )
+        assert name == "B"
+        assert body == "Bob, what can I help you with?"
+        assert mock_generate.await_args.kwargs["verdict_kind"] == "greeting"
+
+    @pytest.mark.asyncio
+    async def test_insufficient_info_ask_count_zero_uses_llm_body_with_C_semantics(self) -> None:
+        with patch(
+            "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
+            AsyncMock(return_value="Carol, please send the exact error and app ID."),
+        ) as mock_generate:
             body, name = await build_ask_body(
                 verdict_kind="insufficient_info", ask_count=0,
                 customer_name="Carol",
@@ -392,8 +403,8 @@ class TestBuildAskBody:
                 model="m", api_key="k",
             )
         assert name == "C"
-        assert "Carol" in body
-        assert "- the error" in body
+        assert body == "Carol, please send the exact error and app ID."
+        assert mock_generate.await_args.kwargs["verdict_kind"] == "insufficient_info"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("verdict_kind", [
@@ -403,13 +414,86 @@ class TestBuildAskBody:
     async def test_ask_count_ge_one_always_returns_D(
         self, verdict_kind: str, ask_count: int,
     ) -> None:
-        """ask_count >= 1 一律升级到 D（不分 verdict）"""
-        body, name = await build_ask_body(
-            verdict_kind=verdict_kind, ask_count=ask_count,
-            customer_name="Dave", customer_messages=["x"],
-            model="m", api_key="k",
-        )
+        with patch(
+            "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
+            AsyncMock(return_value="Dave, I still need the exact error."),
+        ) as mock_generate:
+            body, name = await build_ask_body(
+                verdict_kind=verdict_kind, ask_count=ask_count,
+                customer_name="Dave", customer_messages=["x"],
+                model="m", api_key="k",
+            )
         assert name == "D"
-        assert "Dave" in body
-        # D 必含具体例子
-        assert '"' in body
+        assert body == "Dave, I still need the exact error."
+        assert mock_generate.await_args.kwargs["ask_count"] == ask_count
+
+    @pytest.mark.asyncio
+    async def test_build_ask_body_falls_back_when_llm_body_missing(self) -> None:
+        with patch(
+            "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
+            AsyncMock(return_value=None),
+        ):
+            body, name = await build_ask_body(
+                verdict_kind="insufficient_info", ask_count=0,
+                customer_name="Carol",
+                customer_messages=["it's broken"],
+                model="m", api_key="k",
+            )
+        assert name == "C"
+        assert "To investigate faster" in body
+        assert "exact error" in body.lower()
+
+
+class TestAskBodyGeneration:
+    @pytest.mark.asyncio
+    async def test_llm_generated_ask_body_is_used(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{
+                "message": {
+                    "content": (
+                        '{"body": "Alice, please send the exact error text and '
+                        'which workflow is affected."}'
+                    ),
+                },
+            }],
+        })
+
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            body = await _generate_ask_body_with_llm(
+                verdict_kind="insufficient_info",
+                ask_count=0,
+                customer_name="Alice",
+                customer_messages=["workflow broken"],
+                model="m",
+                api_key="k",
+            )
+
+        assert body == (
+            "Alice, please send the exact error text and which workflow is affected."
+        )
+
+    @pytest.mark.asyncio
+    async def test_llm_generated_ask_body_rejects_known_field_requests(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{
+                "message": {
+                    "content": '{"body": "Please share your Workspace ID."}',
+                },
+            }],
+        })
+
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            body = await _generate_ask_body_with_llm(
+                verdict_kind="insufficient_info",
+                ask_count=0,
+                customer_name="Alice",
+                customer_messages=["app broken"],
+                model="m",
+                api_key="k",
+            )
+
+        assert body is None

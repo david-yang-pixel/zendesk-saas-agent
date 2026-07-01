@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from typing import Any
 
 from aiohttp import web
@@ -12,6 +13,7 @@ from aiohttp import web
 from zd_agent.log import get_logger
 from zd_agent.services.app_context import app_config, trigger_queue, webhook_dedup
 from zd_agent.services.messaging_context import save_messaging_context
+from zd_agent.services.trigger_delay import with_trigger_delay
 
 logger = get_logger(module="services.zendesk_messaging_webhook")
 
@@ -148,13 +150,19 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
         )
 
     queue = trigger_queue(request.app)
-    await queue.put({
-        "source": "messaging_webhook",
-        "ticket_id": ticket_id,
-        "conversation_id": conversation_id,
-        "messaging_app_id": messaging_app_id,
-        "event": event,
-    })
+    await queue.put(
+        with_trigger_delay(
+            {
+                "source": "messaging_webhook",
+                "ticket_id": ticket_id,
+                "conversation_id": conversation_id,
+                "messaging_app_id": messaging_app_id,
+                "event": event,
+            },
+            delay_seconds=cfg.public_reply.silence_window_seconds,
+            now_fn=time.time,
+        )
+    )
     logger.info(
         "zendesk_messaging_webhook_enqueued",
         event_id=event_id, ticket_id=ticket_id, msg_id=msg_id,
