@@ -61,6 +61,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("public_reply.silence_window_seconds", "客户消息合并窗口", "回复策略", input="number"),
     FieldSpec("public_reply.ask_followup_alert_minutes", "ask 后告警分钟", "回复策略", input="number"),
     FieldSpec("public_reply.abandoned_hours", "放弃等待小时数", "回复策略", input="number"),
+    FieldSpec("prompts.ask_extra_instructions", "Ask 提示词补充规则", "回复策略", input="textarea"),
+    FieldSpec("prompts.agent_extra_instructions", "Agent 处理工单补充规则", "模型与运行", input="textarea"),
     FieldSpec("public_reply.browser_relay_url", "Browser relay URL", "工具与集成"),
     FieldSpec("public_reply.browser_relay_api_key", "Browser relay API Key", "工具与集成", secret=True),
     FieldSpec("zendesk_mcp.mcp_url", "Zendesk MCP URL", "工具与集成"),

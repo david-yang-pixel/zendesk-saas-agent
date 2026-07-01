@@ -1,8 +1,8 @@
 :root {
-  --blue-700: #155eef;
-  --blue-600: #2563eb;
-  --blue-100: #dbeafe;
-  --blue-50: #eff6ff;
+  --blue-700: #0033ff;
+  --blue-600: #155eef;
+  --blue-100: #dfe7ff;
+  --blue-50: #f2f6ff;
   --sidebar: #eaf4ff;
   --border: #d7e3f3;
   --border-strong: #b9cce5;
@@ -72,6 +72,12 @@ textarea {
 textarea {
   min-height: 92px;
   resize: vertical;
+}
+
+.prompt-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.55;
+  min-height: 150px;
 }
 
 input:disabled {
@@ -147,6 +153,12 @@ button:focus-visible {
   width: 42px;
 }
 
+.brand-mark.small {
+  font-size: 12px;
+  height: 34px;
+  width: 48px;
+}
+
 .sso-grid {
   display: grid;
   gap: 10px;
@@ -187,6 +199,12 @@ button:focus-visible {
 .sidebar-brand {
   border-bottom: 1px solid #c7dcfb;
   padding: 4px 10px 18px;
+}
+
+.sidebar-logo-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
 }
 
 .sidebar-title {
@@ -732,6 +750,59 @@ button:focus-visible {
   min-width: 0;
 }
 
+.event-trace {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 12px;
+}
+
+.event-trace-title {
+  align-items: center;
+  color: #405675;
+  display: flex;
+  flex-wrap: wrap;
+  font-weight: 850;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.event-trace-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 170px 12px minmax(150px, 220px) minmax(0, 1fr);
+  min-width: 0;
+}
+
+.event-time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.event-dot {
+  border-radius: 999px;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.event-dot.success {
+  background: var(--success);
+}
+
+.event-dot.failed,
+.event-dot.timeout {
+  background: var(--danger);
+}
+
+.event-dot.running {
+  background: var(--warn);
+}
+
 .integration-grid {
   display: grid;
   gap: 14px;
@@ -956,5 +1027,18 @@ pre {
 
   .mini-row {
     grid-template-columns: 1fr;
+  }
+
+  .event-trace-row {
+    grid-template-columns: 12px minmax(0, 1fr);
+  }
+
+  .event-time {
+    grid-column: 2;
+  }
+
+  .event-dot {
+    grid-column: 1;
+    grid-row: 1 / span 3;
   }
 }

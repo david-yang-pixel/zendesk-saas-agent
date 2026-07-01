@@ -326,6 +326,11 @@ class PublicReplyConfig(BaseModel):
     browser_relay_timeout_seconds: int = 90
 
 
+class PromptOverridesConfig(BaseModel):
+    ask_extra_instructions: str = ""
+    agent_extra_instructions: str = ""
+
+
 class LoggingConfig(BaseModel):
     """日志配置。stdout 始终走带色 ConsoleRenderer（不可配）；
     jsonl_enabled 控制是否额外写 JSON 行到 log_dir/events-<date>.jsonl 供排查。
@@ -362,6 +367,7 @@ class AppConfig(BaseModel):
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
+    prompts: PromptOverridesConfig = Field(default_factory=PromptOverridesConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
 

@@ -142,6 +142,7 @@ class SessionManager:
             logger.info(
                 "session_queued",
                 ticket_id=ticket_id,
+                session_id=session.session_id,
                 waiting_for_slot=True,
             )
 
@@ -165,6 +166,7 @@ class SessionManager:
                 logger.info(
                     "session_finished",
                     ticket_id=ticket_id,
+                    session_id=session.session_id,
                     status=session.status.value,
                     rounds=session.round_count,
                     tokens=session.token_usage.total_tokens,

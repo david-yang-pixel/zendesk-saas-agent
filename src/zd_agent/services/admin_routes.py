@@ -389,7 +389,21 @@ def _event_priority(item: dict[str, Any]) -> int:
 
 
 def _run_group_key(item: dict[str, Any]) -> str:
-    return str(item.get("ticket_id") or item.get("ticket") or item.get("session_id") or "")
+    session_id = str(item.get("session_id") or "").strip()
+    if session_id:
+        return f"session:{session_id}"
+    ticket_id = str(item.get("ticket_id") or item.get("ticket") or "").strip()
+    return f"ticket:{ticket_id}" if ticket_id else ""
+
+
+def _ticket_group_key(item: dict[str, Any]) -> str:
+    ticket_id = str(item.get("ticket_id") or item.get("ticket") or "").strip()
+    return f"ticket:{ticket_id}" if ticket_id else ""
+
+
+def _session_group_key(item: dict[str, Any]) -> str:
+    session_id = str(item.get("session_id") or "").strip()
+    return f"session:{session_id}" if session_id else ""
 
 
 def _is_missing(value: Any) -> bool:
@@ -491,12 +505,18 @@ def _merge_run_records(
 def _aggregate_run_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     completed: list[dict[str, Any]] = []
     open_records: dict[str, dict[str, Any]] = {}
+    open_by_ticket: dict[str, str] = {}
 
     for record in records:
         key = _run_group_key(record)
         if not key:
             completed.append(record)
             continue
+
+        ticket_key = _ticket_group_key(record)
+        session_key = _session_group_key(record)
+        if not session_key and ticket_key and ticket_key in open_by_ticket:
+            key = open_by_ticket[ticket_key]
 
         event = str(record.get("event") or "").lower()
         current = open_records.get(key)
@@ -509,10 +529,15 @@ def _aggregate_run_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
             completed.append(current)
             current = None
 
+        if session_key and ticket_key and event in RUNNING_RECORD_EVENTS:
+            open_by_ticket[ticket_key] = key
+
         merged = _merge_run_records(current, record)
         if event in SESSION_END_RECORD_EVENTS:
             completed.append(merged)
             open_records.pop(key, None)
+            if ticket_key and open_by_ticket.get(ticket_key) == key:
+                open_by_ticket.pop(ticket_key, None)
         else:
             open_records[key] = merged
 
@@ -661,6 +686,50 @@ def _enrich_with_archive_meta(
     return enriched
 
 
+def _record_has_error(item: dict[str, Any]) -> bool:
+    if _is_error_event(item):
+        return True
+    events = item.get("events")
+    if not isinstance(events, list):
+        return False
+    return any(_is_error_event(event) for event in events if isinstance(event, dict))
+
+
+def _trace_matches(record: dict[str, Any], event: dict[str, Any]) -> bool:
+    record_session = str(record.get("session_id") or "").strip()
+    event_session = str(event.get("session_id") or "").strip()
+    if record_session and event_session:
+        return record_session == event_session
+
+    record_ticket = str(record.get("ticket_id") or record.get("ticket") or "").strip()
+    event_ticket = str(event.get("ticket_id") or event.get("ticket") or "").strip()
+    if not record_ticket or record_ticket != event_ticket:
+        return False
+    if record_session and event_session and record_session != event_session:
+        return False
+    return True
+
+
+def _trace_sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
+    return (_event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc), _event_priority(item))
+
+
+def _attach_event_trace(
+    record: dict[str, Any],
+    trace_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    events = sorted(
+        (event for event in trace_events if _trace_matches(record, event)),
+        key=_trace_sort_key,
+    )
+    if not events:
+        return record
+    enriched = dict(record)
+    enriched["events"] = events
+    enriched["event_count"] = len(events)
+    return enriched
+
+
 def _query_limit(request: web.Request, *, default: int = 100) -> int:
     try:
         value = int(request.query.get("limit", str(default)))  # type: ignore[attr-defined]
@@ -699,15 +768,28 @@ def _matches_run_filters(item: dict[str, Any], filters: dict[str, Any]) -> bool:
     }:
         return False
     event = filters.get("event")
-    if event and event not in str(item.get("event") or "").lower():
+    trace_events = [
+        trace_event for trace_event in item.get("events", [])
+        if isinstance(trace_event, dict)
+    ] if isinstance(item.get("events"), list) else []
+    if event and not any(
+        event in str(value).lower()
+        for value in [item.get("event"), *(trace.get("event") for trace in trace_events)]
+    ):
         return False
     module = filters.get("module")
-    if module and module not in str(item.get("module") or "").lower():
+    if module and not any(
+        module in str(value).lower()
+        for value in [item.get("module"), *(trace.get("module") for trace in trace_events)]
+    ):
         return False
     level = filters.get("level")
-    if level and level not in str(item.get("level") or "").lower():
+    if level and not any(
+        level in str(value).lower()
+        for value in [item.get("level"), *(trace.get("level") for trace in trace_events)]
+    ):
         return False
-    if filters.get("errors_only") and not _is_error_event(item):
+    if filters.get("errors_only") and not _record_has_error(item):
         return False
     item_time = _event_datetime(item)
     since = filters.get("since")
@@ -746,7 +828,7 @@ def _run_summary(
         "filtered": len(filtered),
         "today_events": len(today_items),
         "today_tickets": len(today_ticket_ids),
-        "error_events": sum(1 for item in filtered if _is_error_event(item)),
+        "error_events": sum(1 for item in filtered if _record_has_error(item)),
         "latest_timestamp": latest_timestamp,
     }
 
@@ -770,6 +852,7 @@ def _read_recent_log_events(
         }
 
     run_events: list[dict[str, Any]] = []
+    trace_events: list[dict[str, Any]] = []
     raw_events_total = 0
     paths = sorted(log_dir.glob("events-*.jsonl"))
     for path in paths:
@@ -786,13 +869,18 @@ def _read_recent_log_events(
                 continue
             raw_events_total += 1
             item["_source_file"] = path.name
+            if _run_group_key(item):
+                trace_events.append(dict(item))
             record = _normalize_run_record_event(item)
             if record is None:
                 continue
             run_events.append(record)
     archive_cache: dict[str, dict[str, Any] | None] = {}
     enriched_items = [
-        _enrich_with_archive_meta(item, archive_dir=archive_dir, cache=archive_cache)
+        _attach_event_trace(
+            _enrich_with_archive_meta(item, archive_dir=archive_dir, cache=archive_cache),
+            trace_events,
+        )
         for item in _aggregate_run_records(run_events)
     ]
     all_items = sorted(

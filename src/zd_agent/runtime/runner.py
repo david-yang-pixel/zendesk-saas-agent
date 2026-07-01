@@ -198,6 +198,7 @@ async def run_agent(session: AgentSession) -> None:
         logger.error(
             "agent_error",
             ticket_id=session.ticket_id,
+            session_id=session.session_id,
             error=str(e),
             exc_info=True,
         )
@@ -212,6 +213,7 @@ async def run_agent(session: AgentSession) -> None:
         logger.info(
             "agent_done",
             ticket_id=session.ticket_id,
+            session_id=session.session_id,
             status=session.status.value,
             rounds=session.round_count,
             prompt_tokens=session.token_usage.prompt_tokens,

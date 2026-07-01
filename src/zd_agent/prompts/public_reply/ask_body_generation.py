@@ -70,6 +70,12 @@ FORBIDDEN_BODY_PHRASES: Final[tuple[str, ...]] = (
 )
 
 
+def _admin_ask_prompt_override() -> str:
+    from zd_agent.config import get_config
+
+    return get_config().prompts.ask_extra_instructions.strip()
+
+
 def _scenario_instruction(*, verdict_kind: str, ask_count: int) -> str:
     if ask_count >= 1:
         return (
@@ -142,6 +148,9 @@ async def generate_ask_body_with_llm(
         customer_name=customer_name or "(not available)",
         messages=_customer_message_context(customer_messages),
     )
+    override = _admin_ask_prompt_override()
+    if override:
+        prompt = f"{prompt}\n\nAdmin-managed additional rules:\n{override}"
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

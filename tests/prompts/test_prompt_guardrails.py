@@ -1,5 +1,7 @@
 """Prompt guardrails that mirror the local Dify support skill."""
 
+from zd_agent import config as config_module
+from zd_agent.config import AppConfig
 from zd_agent.runtime.prompt.builder import PromptBuilder
 from zd_agent.runtime.prompt.defaults import register_default_sections
 from zd_agent.runtime.prompt.section import PromptContext
@@ -64,3 +66,14 @@ def test_prompt_requires_structured_ticket_done_evidence_blocks():
     assert "**workspace**" in prompt
     assert "- `status`: normal" in prompt
     assert "`字段`: 值" in prompt
+
+
+def test_admin_agent_prompt_override_is_injected(monkeypatch):
+    cfg = AppConfig()
+    cfg.prompts.agent_extra_instructions = "Use admin-managed escalation wording."
+    monkeypatch.setattr(config_module, "_config", cfg)
+
+    prompt = _build()
+
+    assert "## 管理后台补充规则" in prompt
+    assert "Use admin-managed escalation wording." in prompt

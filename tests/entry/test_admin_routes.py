@@ -146,13 +146,26 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
 
     for text in ["总处理数", "成功率", "平均耗时", "Token 消耗", "轮次", "触发方式"]:
         assert text in app_js
-    for symbol in ["run-record-card", "record-expand", "round-timeline", "tool-call-row"]:
+    for symbol in ["run-record-card", "record-expand", "round-timeline", "tool-call-row", "event-trace"]:
         assert symbol in app_js
         assert symbol in css
     assert ".run-record-row" in css
     assert "grid-template-columns" in css
     assert 'numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1' in app_js
     assert "round.round || round.index || index + 1" in app_js
+    assert "rawEvents" in app_js
+    assert "查看完整日志" in app_js
+
+
+def test_admin_config_pages_render_prompt_textareas() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "prompt-textarea" in app_js
+    assert 'field.input === "textarea"' in app_js
 
 
 def test_admin_storage_config_page_is_not_blank() -> None:
@@ -324,6 +337,8 @@ async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_
     assert body["items"][0]["output_tokens"] == 56
     assert body["items"][0]["api_key"] == "[REDACTED]"
     assert body["items"][0]["nested"]["token"] == "[REDACTED]"
+    assert body["items"][0]["event_count"] == 1
+    assert body["items"][0]["events"][0]["event"] == "agent_failed"
     assert body["summary"]["total"] == 2
     assert body["summary"]["filtered"] == 1
     assert body["summary"]["error_events"] == 1
@@ -408,6 +423,7 @@ async def test_admin_run_records_ignore_internal_events_and_normalize_agent_done
     assert body["items"][0]["duration_ms"] == 4_600
     assert body["items"][0]["trigger"] == "webhook"
     assert body["items"][0]["model"] == "gpt-5.5"
+    assert body["items"][0]["event_count"] == 1
     assert body["summary"]["total"] == 1
     assert body["summary"]["filtered"] == 1
 
@@ -494,6 +510,13 @@ async def test_admin_run_records_collapse_agent_lifecycle_to_one_ticket_run(tmp_
     assert body["items"][0]["total_tokens"] == 18_327
     assert body["items"][0]["duration_ms"] == 276_000
     assert body["items"][0]["trigger"] == "webhook"
+    assert body["items"][0]["event_count"] == 4
+    assert [event["event"] for event in body["items"][0]["events"]] == [
+        "session_dispatched",
+        "agent_start",
+        "agent_done",
+        "session_finished",
+    ]
     assert body["summary"]["total"] == 1
 
 
@@ -601,6 +624,7 @@ async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> 
     assert item["llm_rounds"][0]["tools"][0]["name"] == "zendesk_get_ticket"
     assert item["llm_rounds"][1]["tools"][0]["status"] == "failed"
     assert item["llm_rounds"][1]["tools"][0]["error"] == "database unavailable"
+    assert item["event_count"] == 2
 
 
 @pytest.mark.asyncio

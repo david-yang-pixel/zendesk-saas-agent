@@ -385,6 +385,7 @@ function buildRunDisplayRecords(items) {
   return items.map((item, index) => {
     const status = runStatus(item);
     const rounds = extractRounds(item);
+    const rawEvents = Array.isArray(item.events) ? item.events : [];
     const inputTokens = numberFromKeys(item, ["input_tokens", "prompt_tokens", "tokens_in"]);
     const outputTokens = numberFromKeys(item, ["output_tokens", "completion_tokens", "tokens_out"]);
     const totalTokens = numberFromKeys(item, ["total_tokens", "tokens", "token_count"]) || inputTokens + outputTokens;
@@ -392,6 +393,7 @@ function buildRunDisplayRecords(items) {
     const ticket = item.ticket_id || item.ticket || "";
     const key = [
       item._source_file || "events",
+      item.session_id || "",
       item.timestamp || item.ts || index,
       item.event || "event",
       ticket || index
@@ -399,6 +401,7 @@ function buildRunDisplayRecords(items) {
     return {
       key,
       raw: item,
+      rawEvents,
       ticketLabel: ticket ? `#${ticket}` : "-",
       status,
       model: item.model || item.llm_model || item.provider_model || item.provider || "-",
@@ -411,6 +414,7 @@ function buildRunDisplayRecords(items) {
       trigger: item.trigger || item.trigger_type || item.source || item.event || "-",
       time: item.timestamp || item.ts || item.time || item.created_at,
       summary: logSummary(item),
+      eventCount: Number(item.event_count || rawEvents.length || 0),
       isExpanded: state.expandedRuns.has(key)
     };
   });
@@ -471,11 +475,13 @@ function renderRunRecordDetail(record, index) {
         <span class="chip">${escapeHtml(record.model)}</span>
         <span>${escapeHtml(formatTokenPair(record))}</span>
         <span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "耗时未知")}</span>
+        <span>${escapeHtml(record.eventCount ? `${record.eventCount} 条事件` : "无事件链路")}</span>
         <button class="btn secondary compact" onclick="openRunRecordDetail(${index})">查看完整日志</button>
       </div>
       <div class="round-timeline">
         ${record.rounds.map((round, roundIndex) => renderRound(round, roundIndex)).join("")}
       </div>
+      ${renderEventTimeline(record, 8)}
     </div>
   `;
 }
@@ -513,6 +519,36 @@ function renderToolCall(tool) {
   `;
 }
 
+function renderEventTimeline(record, limit = 0) {
+  const events = record.rawEvents || [];
+  if (!events.length) return "";
+  const visibleEvents = limit > 0 ? events.slice(-limit) : events;
+  const hiddenCount = Math.max(0, events.length - visibleEvents.length);
+  return `
+    <div class="event-trace">
+      <div class="event-trace-title">
+        <span>事件链路</span>
+        ${hiddenCount ? `<span class="muted">已省略较早 ${hiddenCount} 条，完整内容见日志抽屉</span>` : ""}
+      </div>
+      ${visibleEvents.map(event => renderEventTraceRow(event)).join("")}
+    </div>
+  `;
+}
+
+function renderEventTraceRow(event) {
+  const status = runStatus(event);
+  const eventName = event.event || "event";
+  const detail = event.error || event.reason || event.status || event.module || event._source_file || "";
+  return `
+    <div class="event-trace-row">
+      <span class="event-time">${escapeHtml(formatTime(event.timestamp || event.ts || event.time || event.created_at))}</span>
+      <span class="event-dot ${status}"></span>
+      <span class="event-name truncate">${escapeHtml(eventName)}</span>
+      <span class="muted truncate">${escapeHtml(detail)}</span>
+    </div>
+  `;
+}
+
 function extractRounds(item) {
   const directRounds = Array.isArray(item.rounds)
     ? item.rounds
@@ -521,6 +557,10 @@ function extractRounds(item) {
       : [];
   if (directRounds.length) {
     return directRounds.map(round => normalizeRound(round, item));
+  }
+  const traceTools = extractTraceTools(item.events || []);
+  if (traceTools.length) {
+    return [normalizeRound({ round: 1, type: "tool_calls", tools: traceTools }, item)];
   }
   return [normalizeRound(item, item)];
 }
@@ -561,6 +601,18 @@ function extractToolCalls(item) {
     duration: tool.duration || tool.elapsed || formatDuration(durationMsFromItem(tool)),
     message: tool.error || tool.message || tool.summary || ""
   }));
+}
+
+function extractTraceTools(events) {
+  if (!Array.isArray(events)) return [];
+  return events
+    .filter(event => event && typeof event === "object" && (event.event === "tool_call" || event.tool || event.tool_name))
+    .map(event => ({
+      name: event.tool || event.tool_name || event.event || "unknown_tool",
+      status: runStatus(event),
+      duration: event.duration || event.elapsed || formatDuration(durationMsFromItem(event)),
+      message: event.error || event.status || event.module || ""
+    }));
 }
 
 function toggleRunRecord(index) {
@@ -759,6 +811,9 @@ function renderInput(field) {
         <option value="false" ${!checked ? "selected" : ""}>关闭</option>
       </select>
     `;
+  }
+  if (field.input === "textarea") {
+    return `<textarea id="${id}" data-path="${field.path}" class="prompt-textarea" rows="7">${escapeHtml(value)}</textarea>`;
   }
   const inputType = field.input === "number" ? "number" : "text";
   return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(value)}">`;
@@ -987,17 +1042,24 @@ function resetAuditFilters() {
 }
 
 function openRunRecordDetail(index) {
-  const item = state.runDisplayRecords[index]?.raw;
-  if (!item) return;
+  const record = state.runDisplayRecords[index];
+  if (!record) return;
+  const item = record.raw;
   openDrawer(
-    item.event || "日志详情",
-    formatTime(item.timestamp || item.ts),
+    `${record.ticketLabel} 运行日志`,
+    `${formatTime(record.time)} · ${record.eventCount || 0} 条事件`,
     `
       <div class="kv-grid">
         <strong>工单</strong><span>${escapeHtml(item.ticket_id || item.ticket || "-")}</span>
+        <strong>Session</strong><span>${escapeHtml(item.session_id || "-")}</span>
+        <strong>状态</strong><span>${renderStatusBadge(record.status)}</span>
+        <strong>轮次</strong><span>${escapeHtml(record.roundsCount)}</span>
+        <strong>Token</strong><span>${escapeHtml(formatTokenPair(record))}</span>
+        <strong>耗时</strong><span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "-")}</span>
         <strong>模块</strong><span>${escapeHtml(item.module || "-")}</span>
         <strong>来源文件</strong><span>${escapeHtml(item._source_file || "-")}</span>
       </div>
+      ${renderEventTimeline(record)}
       <pre>${escapeHtml(JSON.stringify(redactLogValue(item), null, 2))}</pre>
     `
   );

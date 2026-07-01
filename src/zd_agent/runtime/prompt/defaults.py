@@ -45,6 +45,12 @@ def load_db_schema() -> str:
 _load_db_schema = load_db_schema
 
 
+def _admin_agent_prompt_override() -> str:
+    from zd_agent.config import get_config
+
+    return get_config().prompts.agent_extra_instructions.strip()
+
+
 def register_static_sections(builder: PromptBuilder) -> None:
     """注册**只 byte-identical 跨工单**的静态 prompt 段。
 
@@ -94,6 +100,15 @@ def register_static_sections(builder: PromptBuilder) -> None:
             order=36,
         )
     )
+    agent_override = _admin_agent_prompt_override()
+    if agent_override:
+        builder.register(
+            PromptSection(
+                name="admin_agent_prompt_override",
+                content=f"## 管理后台补充规则\n\n{agent_override}",
+                order=37,
+            )
+        )
 
 
 def register_dynamic_sections(builder: PromptBuilder) -> None:

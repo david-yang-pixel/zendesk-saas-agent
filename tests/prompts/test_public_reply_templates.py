@@ -24,6 +24,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from zd_agent import config as config_module
+from zd_agent.config import AppConfig
 from zd_agent.prompts.public_reply.templates import (
     _generate_ask_body_with_llm,
     _generate_missing_info_bullets,
@@ -454,6 +456,34 @@ class TestBuildAskBody:
 
 
 class TestAskBodyGeneration:
+    @pytest.mark.asyncio
+    async def test_admin_ask_prompt_override_is_sent_to_llm(self, monkeypatch) -> None:
+        cfg = AppConfig()
+        cfg.prompts.ask_extra_instructions = "Ask one concise category question first."
+        monkeypatch.setattr(config_module, "_config", cfg)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{
+                "message": {"content": "{\"body\": \"What can I help you with?\"}"},
+            }],
+        })
+        async_post = AsyncMock(return_value=mock_resp)
+
+        with patch("httpx.AsyncClient.post", async_post):
+            await _generate_ask_body_with_llm(
+                verdict_kind="greeting",
+                ask_count=0,
+                customer_name="Alice",
+                customer_messages=["hi"],
+                model="m",
+                api_key="k",
+            )
+
+        request_json = async_post.await_args.kwargs["json"]
+        prompt = request_json["messages"][0]["content"]
+        assert "Ask one concise category question first." in prompt
+
     @pytest.mark.asyncio
     async def test_llm_generated_ask_body_is_used(self) -> None:
         mock_resp = MagicMock()

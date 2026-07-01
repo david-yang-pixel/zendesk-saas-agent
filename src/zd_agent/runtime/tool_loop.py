@@ -27,6 +27,38 @@ logger = get_logger(module="tool_loop")
 _console = Console(highlight=False)
 
 
+def _log_loop_progress(session: AgentSession, event: LoopProgress, model_name: str) -> None:
+    logger.info(
+        "llm_round",
+        ticket_id=session.ticket_id,
+        session_id=session.session_id,
+        round=event.round,
+        model=model_name,
+        message_count=event.message_count,
+        token_count=event.token_count,
+        prompt_tokens=event.prompt_tokens,
+        completion_tokens=event.completion_tokens,
+        tool_call_count=event.tool_call_count,
+        llm_elapsed_seconds=round(event.llm_elapsed, 3),
+        stop_reason=event.stop_reason,
+    )
+
+
+def _log_tool_event(session: AgentSession, event: ToolExecuted) -> None:
+    logger.info(
+        "tool_call",
+        ticket_id=session.ticket_id,
+        session_id=session.session_id,
+        round=event.round,
+        tool=event.tool_name,
+        success=event.success,
+        duration_seconds=round(event.elapsed, 3),
+        output_length=event.output_length,
+        error=(event.error or "")[:500],
+        argument_keys=sorted(str(key) for key in event.arguments.keys()),
+    )
+
+
 def _format_output_size(length: int) -> str:
     if length < 1024:
         return f"{length} chars"
@@ -85,6 +117,7 @@ async def run_tool_loop(
         ):
             match event:
                 case LoopProgress():
+                    _log_loop_progress(session, event, model_name)
                     _console.print(
                         f"\n[bold dim]{'─' * 50}[/bold dim]\n"
                         f"[bold]📍 Round {event.round}[/bold]  "
@@ -99,6 +132,7 @@ async def run_tool_loop(
                         current_round_id = await reporter.report_round(run_id, event, model_name)
 
                 case ToolExecuted() if event.success:
+                    _log_tool_event(session, event)
                     size_info = _format_output_size(event.output_length)
                     _console.print(
                         f"  [green]✓ {event.tool_name}[/green]  "
@@ -108,6 +142,7 @@ async def run_tool_loop(
                         await reporter.report_tool_call(run_id, current_round_id, event)
 
                 case ToolExecuted():
+                    _log_tool_event(session, event)
                     err_preview = (event.error or "unknown")[:120]
                     _console.print(
                         f"  [red]✗ {event.tool_name}[/red]  "

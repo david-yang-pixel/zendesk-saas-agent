@@ -16,6 +16,8 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["llm.model"]["input"] == "text"
     assert by_path["openai.api_key"]["secret"] is True
     assert by_path["openai.api_key"]["editable"] is True
+    assert by_path["prompts.ask_extra_instructions"]["input"] == "textarea"
+    assert by_path["prompts.agent_extra_instructions"]["input"] == "textarea"
 
 
 def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:
