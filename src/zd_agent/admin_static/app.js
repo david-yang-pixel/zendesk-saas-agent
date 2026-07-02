@@ -22,6 +22,33 @@ const SUBTITLES = {
   "审计日志": "所有配置、密钥、登录方式和部署变更记录"
 };
 
+const GROUP_DESCRIPTIONS = {
+  "触发配置": [
+    "控制 agent 什么时候开始处理工单。",
+    "包含 Zendesk webhook、轮询、@mention、静默等待、客户连发合并和主动公开询问。"
+  ],
+  "回复策略": [
+    "控制 agent 什么时候发送 public reply、什么时候 ask、什么时候交给人工。",
+    "Browser Relay 的 URL/API Key 已移到「工具与集成」，这里只保留回复行为策略。"
+  ],
+  "模型与运行": [
+    "配置模型供应商、Base URL、模型名、API Key、并发、轮次、超时和提示词补充规则。",
+    "模型名是可编辑输入框，不限制为固定下拉选项。"
+  ],
+  "工具与集成": [
+    "配置 agent 使用的远程 MCP/Tool Service 和 Browser Relay。",
+    "这里可以测试连通性；检测结果会写入审计日志。"
+  ],
+  "存储配置": [
+    "配置运行记录、审计日志、附件缓存、sandbox 和配置持久化路径。",
+    "路径类配置通常需要重启生效。"
+  ],
+  "部署状态": [
+    "查看镜像、提交、重启状态，并管理后台登录方式。",
+    "默认账号密码登录；Google/飞书 SSO 需要配置后再开启。"
+  ]
+};
+
 const INTEGRATIONS = [
   ["public_reply_browser_relay", "Browser Relay", "客户可见 public reply"],
   ["zendesk_mcp", "Zendesk MCP", "工单读取、内部评论、标签和关注"],
@@ -41,7 +68,9 @@ const state = {
   runRecords: [],
   runRecordsPayload: null,
   runDisplayRecords: [],
-  runLimit: 80,
+  runLimit: 50,
+  runQueryKey: "",
+  runRefreshing: false,
   expandedRuns: new Set(),
   loadingRunDetails: new Set(),
   auditLogs: [],
@@ -234,13 +263,21 @@ function setPageActions() {
   const actions = document.getElementById("page-actions");
   const editable = !["总览", "运行记录", "审计日志"].includes(state.activeMenu);
   if (!editable) {
-    actions.innerHTML = `<button class="btn secondary" onclick="render()">刷新</button>`;
+    actions.innerHTML = `<button class="btn secondary" onclick="refreshActivePage()">刷新</button>`;
     return;
   }
   actions.innerHTML = `
     <button class="btn secondary" onclick="previewChanges()">预览变更</button>
     <button class="btn primary" onclick="saveChanges()">保存配置</button>
   `;
+}
+
+function refreshActivePage() {
+  if (state.activeMenu === "运行记录") {
+    void renderRunRecords({ reload: true });
+    return;
+  }
+  void render();
 }
 
 function setContent(html) {
@@ -421,16 +458,21 @@ async function loadRunRecords(limit = 100, filters = state.runFilters, options =
   if (options.updateState !== false) {
     state.runRecords = data.items || [];
     state.runRecordsPayload = data;
+    state.runQueryKey = runQueryKey(limit, filters);
   }
   return data;
 }
 
 async function renderRunRecords(options = {}) {
-  const data = options.reload === false && state.runRecordsPayload
+  const queryKey = runQueryKey(state.runLimit, state.runFilters);
+  const data = options.reload !== true && state.runRecordsPayload && state.runQueryKey === queryKey
     ? { ...state.runRecordsPayload, items: state.runRecords }
     : null;
   if (data) {
-    renderRunRecordsContent(data);
+    renderRunRecordsContent(data, { refreshing: state.runRefreshing });
+    if (!state.runRefreshing && state.loadingRunDetails.size === 0 && state.expandedRuns.size === 0) {
+      refreshRunRecordsInBackground();
+    }
     return;
   }
   setContent(renderRunRecordsShell());
@@ -443,6 +485,43 @@ async function renderRunRecords(options = {}) {
   } catch (err) {
     setContent(errorHtml(err.message || "运行记录加载失败"));
   }
+}
+
+function refreshRunRecordsInBackground() {
+  if (state.loadingRunDetails.size > 0 || state.expandedRuns.size > 0) {
+    return;
+  }
+  state.runRefreshing = true;
+  renderRunRecordsContent(
+    { ...state.runRecordsPayload, items: state.runRecords },
+    { refreshing: true }
+  );
+  void loadRunRecords(state.runLimit, state.runFilters, {
+    quick: shouldQuickLoadRunRecords(),
+    detail: false
+  })
+    .then(payload => {
+      if (state.activeMenu === "运行记录") {
+        state.runRefreshing = false;
+        renderRunRecordsContent(payload);
+      }
+    })
+    .catch(error => {
+      if (state.activeMenu === "运行记录") {
+        showToast(`运行记录刷新失败：${error.message || "未知错误"}`, "danger");
+        renderRunRecordsContent(
+          { ...state.runRecordsPayload, items: state.runRecords },
+          { refreshError: error.message || "刷新失败" }
+        );
+      }
+    })
+    .finally(() => {
+      state.runRefreshing = false;
+    });
+}
+
+function runQueryKey(limit, filters = {}) {
+  return JSON.stringify({ limit, filters });
 }
 
 function shouldQuickLoadRunRecords() {
@@ -478,7 +557,7 @@ function renderRunRecordsShell() {
   `;
 }
 
-function renderRunRecordsContent(data) {
+function renderRunRecordsContent(data, meta = {}) {
   const items = data.items || [];
   let records = buildRunDisplayRecords(items);
   if (state.runFilters.status === "success") {
@@ -512,9 +591,12 @@ function renderRunRecordsContent(data) {
         <span>运行记录</span>
         <div class="header-actions">
           <span class="chip">显示 ${records.length} / ${data.summary?.filtered ?? records.length}</span>
+          ${meta.refreshing ? `<span class="chip">后台刷新中</span>` : ""}
+          ${meta.refreshError ? `<span class="chip danger-chip">刷新失败</span>` : ""}
+          ${data.cache_hit ? `<span class="chip">缓存命中</span>` : ""}
           ${data.partial ? `<span class="chip">快速模式</span>` : ""}
           <span class="chip">JSONL ${data.jsonl_enabled ? "已开启" : "未开启"}</span>
-          ${(data.summary?.filtered || 0) > state.runLimit
+          ${data.has_more || (data.summary?.filtered || 0) > state.runLimit
             ? `<button class="btn secondary compact" onclick="loadMoreRuns()">加载更多</button>`
             : ""}
         </div>
@@ -564,6 +646,7 @@ function buildRunDisplayRecords(items) {
       model: item.model || item.llm_model || item.provider_model || item.provider || "-",
       rounds,
       roundsCount: numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1,
+      hasDetailedRounds: rounds.some(round => !round.synthetic),
       inputTokens,
       outputTokens,
       totalTokens,
@@ -637,11 +720,18 @@ function renderRunRecordDetail(record, index) {
     <div class="run-record-detail">
       <div class="detail-summary">
         <span class="chip">${escapeHtml(record.model)}</span>
+        <span>轮次 ${escapeHtml(record.roundsCount)}</span>
         <span>${escapeHtml(formatTokenPair(record))}</span>
         <span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "耗时未知")}</span>
         <span>${escapeHtml(record.eventCount ? `${record.eventCount} 条事件` : "无事件链路")}</span>
+        ${record.hasDetailedRounds ? "" : `<span class="chip warn-chip">仅聚合轮次</span>`}
         <button class="btn secondary compact" onclick="openRunRecordDetail(${index})">查看完整日志</button>
       </div>
+      ${record.hasDetailedRounds ? "" : `
+        <div class="notice-card">
+          这条记录只有总轮次和事件链路，JSONL 中没有逐轮 LLM 明细；后台已按聚合轮次展示，完整原始事件可在日志抽屉查看。
+        </div>
+      `}
       <div class="round-timeline">
         ${record.rounds.map((round, roundIndex) => renderRound(round, roundIndex)).join("")}
       </div>
@@ -653,14 +743,16 @@ function renderRunRecordDetail(record, index) {
 function renderRound(round, index) {
   const tools = round.tools || [];
   const roundNumber = round.round || round.index || index + 1;
+  const badge = round.synthetic ? "聚合" : `R${roundNumber}`;
   return `
     <div class="round-block">
       <div class="round-meta">
-        <span class="round-badge">R${escapeHtml(roundNumber)}</span>
+        <span class="round-badge">${escapeHtml(badge)}</span>
         <span>${escapeHtml(round.model || "-")}</span>
         <span>${escapeHtml(formatRoundTokens(round))}</span>
         <span>${escapeHtml(round.durationMs ? formatDuration(round.durationMs) : "--")}</span>
         <span class="chip">${escapeHtml(round.type || "tool_calls")}</span>
+        ${round.synthetic && round.totalRounds ? `<span class="chip">${escapeHtml(round.totalRounds)} 轮</span>` : ""}
         <span class="chip">${tools.length} 工具</span>
       </div>
       <div class="tool-call-list">
@@ -728,7 +820,23 @@ function extractRounds(item) {
   if (traceRounds.length) {
     return traceRounds.map(round => normalizeRound(round, item));
   }
-  return [normalizeRound(item, item)];
+  const totalRounds = numberFromKeys(item, ["rounds", "round_count", "total_rounds"]);
+  const traceTools = extractTraceTools(item.events || []);
+  if (totalRounds) {
+    return [normalizeRound({
+      synthetic: true,
+      round: 1,
+      model: item.model || item.llm_model || "-",
+      input_tokens: item.input_tokens || item.prompt_tokens || 0,
+      output_tokens: item.output_tokens || item.completion_tokens || 0,
+      total_tokens: item.total_tokens || item.tokens || 0,
+      duration_ms: item.duration_ms || item.elapsed_ms || 0,
+      type: "聚合轮次",
+      total_rounds: totalRounds,
+      tools: traceTools
+    }, item)];
+  }
+  return [normalizeRound({ ...item, synthetic: true, type: item.event || "event" }, item)];
 }
 
 function normalizeRound(round, parent) {
@@ -752,6 +860,8 @@ function normalizeRound(round, parent) {
     totalTokens: numberFromKeys(round, ["total_tokens", "tokens", "token_count"]),
     durationMs: durationMsFromItem(round),
     type: round.type || round.finish_reason || (tools.length ? "tool_calls" : parent.event || "event"),
+    synthetic: Boolean(round.synthetic),
+    totalRounds: numberFromKeys(round, ["total_rounds", "rounds", "round_count"]),
     tools
   };
 }
@@ -853,7 +963,7 @@ function toggleRunRecord(index) {
 
 function applyRunFilters() {
   const status = document.getElementById("run-status").value;
-  state.runLimit = 80;
+  state.runLimit = 50;
   state.runFilters = {
     ticket_id: document.getElementById("run-ticket").value.trim(),
     event: document.getElementById("run-event").value.trim(),
@@ -867,14 +977,14 @@ function applyRunFilters() {
 
 function resetRunFilters() {
   state.runFilters = {};
-  state.runLimit = 80;
+  state.runLimit = 50;
   state.expandedRuns.clear();
   void renderRunRecords();
 }
 
 function loadMoreRuns() {
   state.runLimit += 80;
-  void renderRunRecords();
+  void renderRunRecords({ reload: true });
 }
 
 function renderConfigPage(menu) {
@@ -883,7 +993,7 @@ function renderConfigPage(menu) {
     setContent(emptyHtml("当前模块没有可编辑配置"));
     return;
   }
-  setContent(`${renderModuleOverview(menu, fields)}${renderForm(menu, fields)}`);
+  setContent(`${renderModuleGuide(menu)}${renderModuleOverview(menu, fields)}${renderForm(menu, fields)}`);
 }
 
 async function renderStorageConfig() {
@@ -894,6 +1004,7 @@ async function renderStorageConfig() {
   const stateDir = fieldValue("resources.state_dir") || deploy?.storage?.state_dir || "-";
   const logDir = deploy?.storage?.log_dir || "-";
   setContent(`
+    ${renderModuleGuide("存储配置")}
     <div class="metric-grid storage-metrics">
       ${metricCard("运行记录 JSONL", "已启用", "单次处理日志", "success-text")}
       ${metricCard("审计日志", "已启用", "配置和密钥变更", "success-text")}
@@ -950,6 +1061,7 @@ function storageCheck(label, value, status) {
 function renderIntegrations() {
   const fields = fieldsFor("工具与集成");
   setContent(`
+    ${renderModuleGuide("工具与集成")}
     <section class="card">
       <div class="card-header">
         <span>工具与集成</span>
@@ -1035,6 +1147,20 @@ function renderModuleOverview(menu, fields) {
       ${metricCard("需重启", restartCount, "路径、监听和部分轮询配置", restartCount ? "warn-text" : "")}
       ${metricCard("密钥字段", secretCount, "只显示配置状态和指纹")}
     </div>
+  `;
+}
+
+function renderModuleGuide(menu) {
+  const lines = GROUP_DESCRIPTIONS[menu] || [];
+  if (!lines.length) return "";
+  return `
+    <section class="module-guide">
+      <div>
+        <strong>${escapeHtml(menu)}管理</strong>
+        <p>${escapeHtml(lines[0])}</p>
+      </div>
+      <span>${escapeHtml(lines[1] || "保存前可预览变更，保存后写入审计日志。")}</span>
+    </section>
   `;
 }
 
@@ -1187,6 +1313,7 @@ function renderDiff(diff, restartRequired) {
 async function renderDeployStatus() {
   const deploy = await loadDeployStatus();
   setContent(`
+    ${renderModuleGuide("部署状态")}
     <div class="metric-grid">
       ${metricCard("Agent 服务", deploy.agent?.status || "unknown", "当前进程", deploy.agent?.status === "running" ? "success-text" : "warn-text")}
       ${metricCard("镜像标签", deploy.image?.tag || "latest", deploy.image?.name || "zd-agent")}
@@ -1340,20 +1467,46 @@ function openRunRecordDrawer(record) {
     `${record.ticketLabel} 运行日志`,
     `${formatTime(record.time)} · ${record.eventCount || 0} 条事件`,
     `
-      <div class="kv-grid">
-        <strong>工单</strong><span>${escapeHtml(item.ticket_id || item.ticket || "-")}</span>
-        <strong>Session</strong><span>${escapeHtml(item.session_id || "-")}</span>
-        <strong>状态</strong><span>${renderStatusBadge(record.status)}</span>
-        <strong>轮次</strong><span>${escapeHtml(record.roundsCount)}</span>
-        <strong>Token</strong><span>${escapeHtml(formatTokenPair(record))}</span>
-        <strong>耗时</strong><span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "-")}</span>
-        <strong>模块</strong><span>${escapeHtml(item.module || "-")}</span>
-        <strong>来源文件</strong><span>${escapeHtml(item._source_file || "-")}</span>
-      </div>
-      ${renderEventTimeline(record)}
-      <pre>${escapeHtml(JSON.stringify(redactLogValue(item), null, 2))}</pre>
+      ${renderRunDrawerSummary(record)}
+      <section class="drawer-section">
+        <div class="drawer-section-title">轮次与工具</div>
+        <div class="round-timeline drawer-rounds">
+          ${record.rounds.map((round, roundIndex) => renderRound(round, roundIndex)).join("")}
+        </div>
+      </section>
+      <section class="drawer-section">
+        <div class="drawer-section-title">事件链路</div>
+        ${record.rawEvents.length ? renderEventTimeline(record) : emptyHtml("没有可展示的事件链路")}
+      </section>
+      <details class="raw-json" open>
+        <summary>原始 JSON</summary>
+        <pre>${escapeHtml(JSON.stringify(redactLogValue(item), null, 2))}</pre>
+      </details>
     `
   );
+}
+
+function renderRunDrawerSummary(record) {
+  const item = record.raw;
+  return `
+    <section class="drawer-section">
+      <div class="drawer-section-title">运行摘要</div>
+      <div class="summary-strip">
+        <div><span>工单</span><strong>${escapeHtml(item.ticket_id || item.ticket || "-")}</strong></div>
+        <div><span>状态</span><strong>${renderStatusBadge(record.status)}</strong></div>
+        <div><span>轮次</span><strong>${escapeHtml(record.roundsCount)}</strong></div>
+        <div><span>Token</span><strong>${escapeHtml(formatTokenPair(record))}</strong></div>
+        <div><span>耗时</span><strong>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "-")}</strong></div>
+      </div>
+      <div class="kv-grid detail-kv">
+        <strong>Session</strong><span>${escapeHtml(item.session_id || "-")}</span>
+        <strong>模块</strong><span>${escapeHtml(item.module || "-")}</span>
+        <strong>触发方式</strong><span>${escapeHtml(formatTrigger(record.trigger))}</span>
+        <strong>来源文件</strong><span>${escapeHtml(item._source_file || "-")}</span>
+        <strong>明细状态</strong><span>${record.hasDetailedRounds ? "逐轮明细可用" : "仅聚合轮次"}</span>
+      </div>
+    </section>
+  `;
 }
 
 function openAuditDetail(index) {
@@ -1402,6 +1555,16 @@ function showModal(title, body, actions) {
 
 function closeModal() {
   document.getElementById("modal-backdrop").classList.add("hidden");
+}
+
+function showToast(message, tone = "info") {
+  const existing = document.querySelector(".toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.className = `toast ${tone}`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  window.setTimeout(() => toast.remove(), 4200);
 }
 
 function metricCard(label, value, description = "", className = "", id = "") {

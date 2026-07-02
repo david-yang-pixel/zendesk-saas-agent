@@ -153,12 +153,18 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     for symbol in ["run-record-card", "record-expand", "round-timeline", "tool-call-row", "event-trace"]:
         assert symbol in app_js
         assert symbol in css
+    for symbol in ["module-guide", "summary-strip", "raw-json", "notice-card", "toast"]:
+        assert symbol in app_js or symbol in css
     assert ".run-record-row" in css
     assert "grid-template-columns" in css
     assert "position: sticky" in css
     assert 'numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1' in app_js
     assert 'round: numberFromKeys(round, ["round", "round_number"]) ||' in app_js
     assert "round.round || round.index || index + 1" in app_js
+    assert "仅聚合轮次" in app_js
+    assert "聚合轮次" in app_js
+    assert "后台刷新中" in app_js
+    assert "缓存命中" in app_js
     assert "rawEvents" in app_js
     assert "查看完整日志" in app_js
     assert "renderOverviewShell" in app_js
@@ -180,6 +186,12 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "prompt-textarea" in app_js
     assert 'field.input === "textarea"' in app_js
     assert "module-overview" in app_js
+    assert "module-guide" in app_js
+    assert "Ask 提示词补充规则" in (
+        resources.files("zd_agent.services")
+        .joinpath("admin_config.py")
+        .read_text(encoding="utf-8")
+    )
 
 
 def test_admin_storage_config_page_is_not_blank() -> None:
@@ -860,6 +872,44 @@ def test_admin_run_records_quick_list_skips_detail_and_reads_newest_tail_first(
         "tool_call",
         "agent_done",
     ]
+
+
+def test_admin_run_records_quick_list_uses_short_lived_cache(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    archive_dir = tmp_path / "archive"
+    log_dir.mkdir()
+    archive_dir.mkdir()
+    (log_dir / "events-2026-07-02.jsonl").write_text(
+        json.dumps({
+            "timestamp": "2026-07-02T08:02:00Z",
+            "event": "agent_done",
+            "ticket_id": 4101,
+            "session_id": "session-4101",
+            "rounds": 3,
+        }),
+        encoding="utf-8",
+    )
+    admin_routes._RUN_RECORD_CACHE.clear()
+
+    first = admin_routes._read_recent_log_events_cached(
+        log_dir,
+        limit=50,
+        filters={"quick": True},
+        archive_dir=archive_dir,
+        include_detail=False,
+    )
+    second = admin_routes._read_recent_log_events_cached(
+        log_dir,
+        limit=50,
+        filters={"quick": True},
+        archive_dir=archive_dir,
+        include_detail=False,
+    )
+
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+    assert second["items"][0]["ticket_id"] == 4101
+    assert second["has_more"] is False
 
 
 def test_admin_run_records_only_reads_archive_meta_for_returned_page(

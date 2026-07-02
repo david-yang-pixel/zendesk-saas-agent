@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
@@ -153,6 +155,10 @@ INTEGRATION_SPECS: dict[str, dict[str, str]] = {
         "kind": "http",
     },
 }
+RUN_RECORD_CACHE_TTL_SECONDS = 3.0
+RUN_RECORD_CACHE_MAX_ITEMS = 24
+RUN_RECORD_FAST_MAX_SCAN_LINES = 50_000
+_RUN_RECORD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _remote_ip(request: web.Request) -> str:
@@ -979,6 +985,114 @@ def _public_run_filters(filters: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _log_dir_signature(log_dir: Path) -> str:
+    if not log_dir.exists():
+        return "missing"
+    parts: list[str] = []
+    for path in sorted(log_dir.glob("events-*.jsonl"), reverse=True)[:4]:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        parts.append(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}")
+    return "|".join(parts) or "empty"
+
+
+def _cacheable_run_records_request(filters: dict[str, Any], include_detail: bool) -> bool:
+    return (
+        bool(filters.get("quick"))
+        and not include_detail
+        and not any(
+            filters.get(key)
+            for key in (
+                "record_key",
+                "ticket_id",
+                "event",
+                "module",
+                "level",
+                "errors_only",
+                "since",
+                "until",
+            )
+        )
+    )
+
+
+def _run_records_cache_key(
+    *,
+    log_dir: Path,
+    archive_dir: Path | None,
+    limit: int,
+    filters: dict[str, Any],
+    include_detail: bool,
+) -> str:
+    return json.dumps(
+        {
+            "log_dir": str(log_dir),
+            "archive_dir": str(archive_dir or ""),
+            "signature": _log_dir_signature(log_dir),
+            "limit": limit,
+            "filters": _public_run_filters(filters),
+            "detail": include_detail,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _prune_run_records_cache() -> None:
+    if len(_RUN_RECORD_CACHE) <= RUN_RECORD_CACHE_MAX_ITEMS:
+        return
+    for key, _value in sorted(_RUN_RECORD_CACHE.items(), key=lambda item: item[1][0])[
+        : len(_RUN_RECORD_CACHE) - RUN_RECORD_CACHE_MAX_ITEMS
+    ]:
+        _RUN_RECORD_CACHE.pop(key, None)
+
+
+def _read_recent_log_events_cached(
+    log_dir: Path,
+    *,
+    limit: int,
+    filters: dict[str, Any],
+    archive_dir: Path | None,
+    include_detail: bool,
+) -> dict[str, Any]:
+    if not _cacheable_run_records_request(filters, include_detail):
+        return _read_recent_log_events(
+            log_dir,
+            limit=limit,
+            filters=filters,
+            archive_dir=archive_dir,
+            include_detail=include_detail,
+        )
+
+    key = _run_records_cache_key(
+        log_dir=log_dir,
+        archive_dir=archive_dir,
+        limit=limit,
+        filters=filters,
+        include_detail=include_detail,
+    )
+    now = time.monotonic()
+    cached = _RUN_RECORD_CACHE.get(key)
+    if cached is not None and now - cached[0] <= RUN_RECORD_CACHE_TTL_SECONDS:
+        payload = deepcopy(cached[1])
+        payload["cache_hit"] = True
+        return payload
+
+    payload = _read_recent_log_events(
+        log_dir,
+        limit=limit,
+        filters=filters,
+        archive_dir=archive_dir,
+        include_detail=include_detail,
+    )
+    payload["cache_hit"] = False
+    _RUN_RECORD_CACHE[key] = (now, deepcopy(payload))
+    _prune_run_records_cache()
+    return deepcopy(payload)
+
+
 def _matches_run_filters(
     item: dict[str, Any],
     filters: dict[str, Any],
@@ -1099,6 +1213,7 @@ def _read_recent_log_events(
     paths = sorted(log_dir.glob("events-*.jsonl"), reverse=fast_list)
     scanned_files = 0
     enough_fast_records = False
+    scan_limit_hit = False
     for path in paths:
         scanned_files += 1
         try:
@@ -1116,16 +1231,25 @@ def _read_recent_log_events(
                     trace_events.append(dict(item))
                 record = _normalize_run_record_event(item)
                 if record is None:
+                    if fast_list and raw_events_total >= RUN_RECORD_FAST_MAX_SCAN_LINES:
+                        scan_limit_hit = True
+                        break
                     continue
                 run_events.append(record)
-                if fast_list and len(
-                    _aggregate_run_records(sorted(run_events, key=_run_record_sort_key)),
-                ) >= limit:
-                    enough_fast_records = True
+                if fast_list and len(run_events) >= limit and (
+                    len(run_events) == limit or len(run_events) % 20 == 0
+                ):
+                    if len(
+                        _aggregate_run_records(sorted(run_events, key=_run_record_sort_key)),
+                    ) >= limit:
+                        enough_fast_records = True
+                        break
+                if fast_list and raw_events_total >= RUN_RECORD_FAST_MAX_SCAN_LINES:
+                    scan_limit_hit = True
                     break
         except OSError:
             continue
-        if enough_fast_records:
+        if enough_fast_records or scan_limit_hit:
             break
     needs_trace_index = include_detail or any(
         filters.get(key) for key in ("event", "module", "level", "errors_only")
@@ -1160,6 +1284,9 @@ def _read_recent_log_events(
         for item in matched_items[:limit]
     ]
     items = [_redact_value(item) for item in page_items]
+    has_more = len(matched_items) > limit or (
+        fast_list and (scanned_files < len(paths) or scan_limit_hit)
+    )
     return {
         "items": items,
         "summary": _run_summary(
@@ -1171,8 +1298,11 @@ def _read_recent_log_events(
         "filters": _public_run_filters(filters),
         "log_dir": str(log_dir),
         "raw_events_total": raw_events_total,
-        "partial": fast_list and scanned_files < len(paths),
+        "partial": fast_list and (scanned_files < len(paths) or scan_limit_hit),
         "scanned_files": scanned_files,
+        "scan_limit_hit": scan_limit_hit,
+        "returned": len(items),
+        "has_more": has_more,
         "detail": include_detail,
         "exists": True,
     }
@@ -1419,7 +1549,7 @@ async def handle_admin_run_records(request: web.Request) -> web.Response:
         return unauthorized
     cfg = app_config(request.app)
     filters = _run_filters_from_query(request.query)  # type: ignore[attr-defined]
-    payload = _read_recent_log_events(
+    payload = _read_recent_log_events_cached(
         Path(cfg.logging.log_dir),
         limit=_query_limit(request),
         filters=filters,
