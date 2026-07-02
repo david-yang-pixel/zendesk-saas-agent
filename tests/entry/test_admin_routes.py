@@ -157,9 +157,13 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert "grid-template-columns" in css
     assert "position: sticky" in css
     assert 'numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1' in app_js
+    assert 'round: numberFromKeys(round, ["round", "round_number"]) ||' in app_js
     assert "round.round || round.index || index + 1" in app_js
     assert "rawEvents" in app_js
     assert "查看完整日志" in app_js
+    assert "renderOverviewShell" in app_js
+    assert "renderRecentRunsIntoOverview" in app_js
+    assert "await Promise.all" not in app_js[app_js.index("async function renderOverview"):app_js.index("function goMenu")]
 
 
 def test_admin_config_pages_render_prompt_textareas() -> None:
@@ -681,6 +685,91 @@ def test_admin_run_records_trace_index_supports_module_filters(tmp_path) -> None
         "agent_done",
         "tool_call",
     ]
+
+
+def test_admin_run_records_builds_rounds_from_jsonl_trace_events(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "events-2026-07-02.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:00Z",
+                "event": "agent_start",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "model": "gpt-5.5",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:03Z",
+                "event": "llm_round",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "round": 1,
+                "model": "gpt-5.5",
+                "prompt_tokens": 1200,
+                "completion_tokens": 80,
+                "llm_elapsed_seconds": 2.4,
+                "tool_call_count": 1,
+                "stop_reason": "tool_calls",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:05Z",
+                "event": "tool_call",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "round": 1,
+                "tool": "zendesk_get_ticket",
+                "success": True,
+                "duration_seconds": 1.5,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:10Z",
+                "event": "llm_round",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "round": 2,
+                "model": "gpt-5.5",
+                "prompt_tokens": 1500,
+                "completion_tokens": 120,
+                "llm_elapsed_seconds": 3.1,
+                "tool_call_count": 1,
+                "stop_reason": "tool_calls",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:13Z",
+                "event": "tool_call",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "round": 2,
+                "tool": "sql_query",
+                "success": False,
+                "duration_seconds": 2.2,
+                "error": "database unavailable",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:20Z",
+                "event": "agent_done",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "status": "completed",
+                "rounds": 2,
+                "total_tokens": 2900,
+            }),
+        ]),
+        encoding="utf-8",
+    )
+
+    body = admin_routes._read_recent_log_events(log_dir, limit=20)
+
+    item = body["items"][0]
+    assert item["rounds"] == 2
+    assert [round_item["round"] for round_item in item["llm_rounds"]] == [1, 2]
+    assert item["llm_rounds"][0]["input_tokens"] == 1200
+    assert item["llm_rounds"][1]["output_tokens"] == 120
+    assert item["llm_rounds"][0]["tools"][0]["name"] == "zendesk_get_ticket"
+    assert item["llm_rounds"][1]["tools"][0]["name"] == "sql_query"
+    assert item["llm_rounds"][1]["tools"][0]["status"] == "failed"
+    assert item["llm_rounds"][1]["tools"][0]["error"] == "database unavailable"
 
 
 def test_admin_run_records_only_reads_archive_meta_for_returned_page(

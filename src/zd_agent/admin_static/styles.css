@@ -774,7 +774,7 @@ button:focus-visible {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: 170px 12px minmax(150px, 220px) minmax(0, 1fr);
+  grid-template-columns: 170px 12px 48px minmax(150px, 220px) minmax(0, 1fr);
   min-width: 0;
 }
 
@@ -801,6 +801,39 @@ button:focus-visible {
 
 .event-dot.running {
   background: var(--warn);
+}
+
+.round-chip {
+  background: var(--blue-50);
+  border: 1px solid var(--blue-100);
+  border-radius: 999px;
+  color: #155eef;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1;
+  padding: 5px 8px;
+  text-align: center;
+}
+
+.inline-loading {
+  align-items: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  color: var(--muted);
+  display: flex;
+  gap: 10px;
+  min-height: 52px;
+  padding: 14px;
+}
+
+.inline-loading span {
+  animation: skeleton-pulse 1200ms ease-in-out infinite;
+  background:
+    linear-gradient(90deg, #edf4ff 0%, #f8fbff 42%, #e8f1ff 72%);
+  background-size: 220% 100%;
+  border-radius: 999px;
+  height: 16px;
+  width: 64px;
 }
 
 .integration-grid {

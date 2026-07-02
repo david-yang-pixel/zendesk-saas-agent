@@ -246,22 +246,38 @@ function setContent(html) {
   document.getElementById("content").innerHTML = html;
 }
 
+function setInnerHtml(id, html) {
+  const node = document.getElementById(id);
+  if (node) {
+    node.innerHTML = html;
+  }
+}
+
+function replaceHtml(id, html) {
+  const node = document.getElementById(id);
+  if (node) {
+    node.outerHTML = html;
+  }
+}
+
 async function renderOverview() {
-  const [runs, deploy] = await Promise.all([
-    loadRunRecords(20, {}),
-    loadDeployStatus()
-  ]);
-  const summary = runs.summary || {};
-  const latest = buildRunDisplayRecords(runs.items || []).slice(0, 5);
-  const total = summary.today_tickets || latest.length || summary.filtered || 0;
-  const errors = summary.error_events || 0;
-  const successRate = total ? `${Math.max(0, Math.round((1 - errors / total) * 100))}%` : "--";
-  setContent(`
+  state.runDisplayRecords = [];
+  setContent(renderOverviewShell());
+  void loadDeployStatus()
+    .then(renderOverviewDeploy)
+    .catch(error => renderOverviewDeployError(error));
+  void loadRunRecords(5, {}, { quick: true, updateState: false })
+    .then(renderRecentRunsIntoOverview)
+    .catch(error => renderRecentRunsError(error));
+}
+
+function renderOverviewShell() {
+  return `
     <div class="metric-grid">
-      ${metricCard("Agent 服务", deploy.agent?.status === "running" ? "运行中" : "异常", "当前进程", deploy.agent?.status === "running" ? "success-text" : "warn-text")}
-      ${metricCard("今日处理", total || "--", `${summary.today_events || 0} 个事件`)}
-      ${metricCard("成功率", successRate, `${errors} 个错误事件`, errors ? "warn-text" : "success-text")}
-      ${metricCard("配置状态", deploy.pending_restart ? "待重启" : "已同步", deploy.pending_restart ? "存在需重启配置" : "当前配置已生效", deploy.pending_restart ? "warn-text" : "success-text")}
+      ${metricCard("Agent 服务", "加载中", "读取部署状态", "", "overview-agent-card")}
+      ${metricCard("今日处理", "--", "读取运行记录", "", "overview-today-card")}
+      ${metricCard("成功率", "--", "读取错误事件", "", "overview-success-card")}
+      ${metricCard("配置状态", "加载中", "读取配置状态", "", "overview-config-card")}
     </div>
     <div class="overview-grid">
       <section class="card">
@@ -269,32 +285,105 @@ async function renderOverview() {
           <span>最近运行</span>
           <button class="btn secondary" onclick="goMenu('运行记录')">查看全部</button>
         </div>
-        <div class="card-body mini-list">
-          ${latest.length ? latest.map((record, index) => `
-            <button class="mini-row" onclick="goRunDetail(${index})">
-              <span class="event-name">${escapeHtml(record.ticketLabel)}</span>
-              <span>${renderStatusBadge(record.status)}</span>
-              <span class="truncate">${escapeHtml(record.summary || "查看完整日志")}</span>
-            </button>
-          `).join("") : emptyHtml(runRecordsEmptyText(runs))}
+        <div id="overview-recent-list" class="card-body mini-list">
+          ${inlineLoadingHtml("正在读取最近运行")}
         </div>
       </section>
       <section class="card">
         <div class="card-header">
           <span>关键配置</span>
-          <span class="chip">${deploy.pending_restart ? "待重启" : "已同步"}</span>
+          <span id="overview-config-chip" class="chip">加载中</span>
         </div>
-        <div class="card-body kv-grid">
-          <strong>镜像标签</strong><span>${escapeHtml(deploy.image?.tag || "latest")}</span>
-          <strong>提交</strong><span>${escapeHtml(shortSha(deploy.image?.commit_sha) || "--")}</span>
-          <strong>账号密码登录</strong><span>${deploy.admin_auth?.password_login?.enabled ? "开启" : "关闭"}</span>
-          <strong>Google SSO</strong><span>${authStatus(deploy.admin_auth?.google_sso)}</span>
-          <strong>飞书 SSO</strong><span>${authStatus(deploy.admin_auth?.feishu_sso)}</span>
+        <div id="overview-config-grid" class="card-body kv-grid">
+          <strong>镜像标签</strong><span>--</span>
+          <strong>提交</strong><span>--</span>
+          <strong>账号密码登录</strong><span>--</span>
+          <strong>Google SSO</strong><span>--</span>
+          <strong>飞书 SSO</strong><span>--</span>
         </div>
       </section>
     </div>
+  `;
+}
+
+function renderOverviewDeploy(deploy) {
+  replaceHtml(
+    "overview-agent-card",
+    metricCard(
+      "Agent 服务",
+      deploy.agent?.status === "running" ? "运行中" : "异常",
+      "当前进程",
+      deploy.agent?.status === "running" ? "success-text" : "warn-text",
+      "overview-agent-card"
+    )
+  );
+  replaceHtml(
+    "overview-config-card",
+    metricCard(
+      "配置状态",
+      deploy.pending_restart ? "待重启" : "已同步",
+      deploy.pending_restart ? "存在需重启配置" : "当前配置已生效",
+      deploy.pending_restart ? "warn-text" : "success-text",
+      "overview-config-card"
+    )
+  );
+  setInnerHtml("overview-config-chip", deploy.pending_restart ? "待重启" : "已同步");
+  setInnerHtml("overview-config-grid", `
+    <strong>镜像标签</strong><span>${escapeHtml(deploy.image?.tag || "latest")}</span>
+    <strong>提交</strong><span>${escapeHtml(shortSha(deploy.image?.commit_sha) || "--")}</span>
+    <strong>账号密码登录</strong><span>${deploy.admin_auth?.password_login?.enabled ? "开启" : "关闭"}</span>
+    <strong>Google SSO</strong><span>${authStatus(deploy.admin_auth?.google_sso)}</span>
+    <strong>飞书 SSO</strong><span>${authStatus(deploy.admin_auth?.feishu_sso)}</span>
+  `);
+}
+
+function renderOverviewDeployError(error) {
+  replaceHtml(
+    "overview-agent-card",
+    metricCard("Agent 服务", "读取失败", error.message || "部署状态不可用", "warn-text", "overview-agent-card")
+  );
+  replaceHtml(
+    "overview-config-card",
+    metricCard("配置状态", "未知", "部署状态读取失败", "warn-text", "overview-config-card")
+  );
+}
+
+function renderRecentRunsIntoOverview(runs) {
+  const summary = runs.summary || {};
+  const latest = buildRunDisplayRecords(runs.items || []).slice(0, 5);
+  const total = summary.today_tickets || latest.length || summary.filtered || 0;
+  const errors = summary.error_events || 0;
+  const successRate = total ? `${Math.max(0, Math.round((1 - errors / total) * 100))}%` : "--";
+  replaceHtml(
+    "overview-today-card",
+    metricCard("今日处理", total || "--", `${summary.today_events || 0} 个事件`, "", "overview-today-card")
+  );
+  replaceHtml(
+    "overview-success-card",
+    metricCard("成功率", successRate, `${errors} 个错误事件`, errors ? "warn-text" : "success-text", "overview-success-card")
+  );
+  setInnerHtml("overview-recent-list", `
+    ${latest.length ? latest.map((record, index) => `
+      <button class="mini-row" onclick="goRunDetail(${index})">
+        <span class="event-name">${escapeHtml(record.ticketLabel)}</span>
+        <span>${renderStatusBadge(record.status)}</span>
+        <span class="truncate">${escapeHtml(record.summary || "查看完整日志")}</span>
+      </button>
+    `).join("") : emptyHtml(runRecordsEmptyText(runs))}
   `);
   state.runDisplayRecords = latest;
+}
+
+function renderRecentRunsError(error) {
+  setInnerHtml("overview-recent-list", errorHtml(error.message || "运行记录读取失败"));
+  replaceHtml(
+    "overview-today-card",
+    metricCard("今日处理", "--", "运行记录读取失败", "warn-text", "overview-today-card")
+  );
+  replaceHtml(
+    "overview-success-card",
+    metricCard("成功率", "--", "运行记录读取失败", "warn-text", "overview-success-card")
+  );
 }
 
 function goMenu(menu) {
@@ -314,16 +403,21 @@ function goRunDetail(index) {
   });
 }
 
-async function loadRunRecords(limit = 100, filters = state.runFilters) {
+async function loadRunRecords(limit = 100, filters = state.runFilters, options = {}) {
   const params = new URLSearchParams({ limit: String(limit) });
   Object.entries(filters || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
       params.set(key, String(value));
     }
   });
+  if (options.quick) {
+    params.set("quick", "true");
+  }
   const data = await api(`/admin/api/run-records?${params.toString()}`);
-  state.runRecords = data.items || [];
-  state.runRecordsPayload = data;
+  if (options.updateState !== false) {
+    state.runRecords = data.items || [];
+    state.runRecordsPayload = data;
+  }
   return data;
 }
 
@@ -547,10 +641,12 @@ function renderEventTraceRow(event) {
   const status = runStatus(event);
   const eventName = event.event || "event";
   const detail = event.error || event.reason || event.status || event.module || event._source_file || "";
+  const round = eventRoundLabel(event);
   return `
     <div class="event-trace-row">
       <span class="event-time">${escapeHtml(formatTime(event.timestamp || event.ts || event.time || event.created_at))}</span>
       <span class="event-dot ${status}"></span>
+      <span class="round-chip">${escapeHtml(round)}</span>
       <span class="event-name truncate">${escapeHtml(eventName)}</span>
       <span class="muted truncate">${escapeHtml(detail)}</span>
     </div>
@@ -566,9 +662,9 @@ function extractRounds(item) {
   if (directRounds.length) {
     return directRounds.map(round => normalizeRound(round, item));
   }
-  const traceTools = extractTraceTools(item.events || []);
-  if (traceTools.length) {
-    return [normalizeRound({ round: 1, type: "tool_calls", tools: traceTools }, item)];
+  const traceRounds = extractTraceRounds(item.events || [], item);
+  if (traceRounds.length) {
+    return traceRounds.map(round => normalizeRound(round, item));
   }
   return [normalizeRound(item, item)];
 }
@@ -587,6 +683,7 @@ function normalizeRound(round, parent) {
     }
   }
   return {
+    round: numberFromKeys(round, ["round", "round_number"]) || numberFromKeys(parent, ["round", "rounds", "round_count"]),
     model: round.model || round.llm_model || parent.model || parent.llm_model || "-",
     inputTokens: numberFromKeys(round, ["input_tokens", "prompt_tokens", "tokens_in"]),
     outputTokens: numberFromKeys(round, ["output_tokens", "completion_tokens", "tokens_out"]),
@@ -607,20 +704,62 @@ function extractToolCalls(item) {
     name: tool.name || tool.tool || tool.tool_name || tool.function?.name || "unknown_tool",
     status: runStatus(tool),
     duration: tool.duration || tool.elapsed || formatDuration(durationMsFromItem(tool)),
-    message: tool.error || tool.message || tool.summary || ""
+    message: tool.error || tool.message || tool.summary || "",
+    round: numberFromKeys(tool, ["round", "round_number"])
   }));
+}
+
+function extractTraceRounds(events, parent) {
+  if (!Array.isArray(events)) return [];
+  const groups = new Map();
+  events.forEach(event => {
+    if (!event || typeof event !== "object") return;
+    const round = numberFromKeys(event, ["round", "round_number"]);
+    if (!round) return;
+    const eventName = String(event.event || "").toLowerCase();
+    const isRoundEvent = eventName === "llm_round" || eventName === "round_tool_calls";
+    const isToolEvent = eventName === "tool_call" || event.tool || event.tool_name;
+    if (!isRoundEvent && !isToolEvent) return;
+    if (!groups.has(round)) {
+      groups.set(round, {
+        round,
+        model: event.model || parent.model || parent.llm_model || "-",
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        duration_ms: 0,
+        type: event.stop_reason || (isToolEvent ? "tool_calls" : eventName),
+        tools: []
+      });
+    }
+    const group = groups.get(round);
+    group.input_tokens = Math.max(group.input_tokens, numberFromKeys(event, ["input_tokens", "prompt_tokens", "tokens_in"]));
+    group.output_tokens = Math.max(group.output_tokens, numberFromKeys(event, ["output_tokens", "completion_tokens", "tokens_out"]));
+    group.total_tokens = Math.max(group.total_tokens, numberFromKeys(event, ["total_tokens", "tokens", "token_count"]));
+    group.duration_ms = Math.max(group.duration_ms, durationMsFromItem(event));
+    if (event.stop_reason) group.type = event.stop_reason;
+    if (isToolEvent) {
+      group.tools.push(traceToolFromEvent(event));
+    }
+  });
+  return Array.from(groups.values()).sort((a, b) => a.round - b.round);
 }
 
 function extractTraceTools(events) {
   if (!Array.isArray(events)) return [];
   return events
     .filter(event => event && typeof event === "object" && (event.event === "tool_call" || event.tool || event.tool_name))
-    .map(event => ({
-      name: event.tool || event.tool_name || event.event || "unknown_tool",
-      status: runStatus(event),
-      duration: event.duration || event.elapsed || formatDuration(durationMsFromItem(event)),
-      message: event.error || event.status || event.module || ""
-    }));
+    .map(event => traceToolFromEvent(event));
+}
+
+function traceToolFromEvent(event) {
+  return {
+    name: event.tool || event.tool_name || event.event || "unknown_tool",
+    status: runStatus(event),
+    duration: event.duration || event.elapsed || formatDuration(durationMsFromItem(event)),
+    message: event.error || event.status || event.module || "",
+    round: numberFromKeys(event, ["round", "round_number"])
+  };
 }
 
 function toggleRunRecord(index) {
@@ -1142,9 +1281,9 @@ function closeModal() {
   document.getElementById("modal-backdrop").classList.add("hidden");
 }
 
-function metricCard(label, value, description = "", className = "") {
+function metricCard(label, value, description = "", className = "", id = "") {
   return `
-    <div class="metric-card">
+    <div ${id ? `id="${escapeHtml(id)}"` : ""} class="metric-card">
       <div class="metric-label">${escapeHtml(label)}</div>
       <div class="metric-value ${className}">${escapeHtml(value)}</div>
       <div class="metric-description">${escapeHtml(description)}</div>
@@ -1165,6 +1304,15 @@ function loadingHtml(text) {
       <div class="skeleton-panel">
         <span></span><span></span><span></span><span></span>
       </div>
+    </div>
+  `;
+}
+
+function inlineLoadingHtml(text) {
+  return `
+    <div class="inline-loading" role="status" aria-live="polite">
+      <span></span>
+      <strong>${escapeHtml(text)}</strong>
     </div>
   `;
 }
@@ -1259,6 +1407,11 @@ function formatTrigger(value) {
     agent_done: "处理完成"
   };
   return labels[raw] || raw;
+}
+
+function eventRoundLabel(event) {
+  const round = numberFromKeys(event, ["round", "round_number"]);
+  return round ? `R${round}` : "-";
 }
 
 function logSummary(item) {

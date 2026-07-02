@@ -627,6 +627,93 @@ def _archive_rounds(meta: dict[str, Any], record: dict[str, Any]) -> list[dict[s
     return [grouped[key] for key in sorted(grouped)]
 
 
+def _round_number_from_item(item: dict[str, Any]) -> int:
+    return (
+        _positive_int(item.get("round"))
+        or _positive_int(item.get("round_number"))
+        or _positive_int(item.get("iteration"))
+    )
+
+
+def _trace_tool_to_ui_tool(event: dict[str, Any]) -> dict[str, Any]:
+    success_raw = event.get("success")
+    success_text = str(success_raw).strip().lower()
+    failed = (
+        success_raw is False
+        or success_text in {"false", "0", "failed", "failure", "error"}
+        or _is_error_event(event)
+    )
+    return {
+        "name": event.get("tool") or event.get("tool_name") or "unknown_tool",
+        "status": "failed" if failed else "success",
+        "error": event.get("error") or event.get("exception") or "",
+        "message": (
+            event.get("result_preview")
+            or event.get("error")
+            or event.get("status")
+            or event.get("module")
+            or ""
+        ),
+        "duration_ms": _duration_ms_from_item(event),
+        "arguments": event.get("arguments") if isinstance(event.get("arguments"), dict) else {},
+    }
+
+
+def _trace_rounds(events: list[dict[str, Any]], record: dict[str, Any]) -> list[dict[str, Any]]:
+    grouped: dict[int, dict[str, Any]] = {}
+    for event in events:
+        round_number = _round_number_from_item(event)
+        if not round_number:
+            continue
+        event_name = str(event.get("event") or "").lower()
+        is_tool_event = event_name == "tool_call" or bool(event.get("tool") or event.get("tool_name"))
+        is_round_event = event_name in {"llm_round", "round_tool_calls"} or is_tool_event
+        if not is_round_event:
+            continue
+
+        round_item = grouped.setdefault(
+            round_number,
+            {
+                "round": round_number,
+                "model": record.get("model") or record.get("llm_model") or event.get("model") or "-",
+                "type": "tool_calls",
+                "tools": [],
+            },
+        )
+        if event.get("model") and _is_missing(round_item.get("model")):
+            round_item["model"] = event["model"]
+        input_tokens = _number_from_keys(event, ("input_tokens", "prompt_tokens", "tokens_in"))
+        output_tokens = _number_from_keys(
+            event,
+            ("output_tokens", "completion_tokens", "tokens_out"),
+        )
+        total_tokens = _number_from_keys(event, ("total_tokens", "token_count", "tokens"))
+        duration_ms = (
+            _duration_ms_from_item(event)
+            or _duration_value_to_ms(event.get("llm_elapsed_seconds"), default_unit="seconds")
+        )
+        if input_tokens:
+            _merge_numeric_max(round_item, {"input_tokens": input_tokens}, "input_tokens")
+        if output_tokens:
+            _merge_numeric_max(round_item, {"output_tokens": output_tokens}, "output_tokens")
+        if total_tokens:
+            _merge_numeric_max(round_item, {"total_tokens": total_tokens}, "total_tokens")
+        if duration_ms:
+            _merge_numeric_max(round_item, {"duration_ms": duration_ms}, "duration_ms")
+        if event.get("stop_reason"):
+            round_item["type"] = event["stop_reason"]
+        if event.get("tool_call_count"):
+            _merge_numeric_max(
+                round_item,
+                {"tool_call_count": event["tool_call_count"]},
+                "tool_call_count",
+            )
+        if is_tool_event:
+            round_item["tools"].append(_trace_tool_to_ui_tool(event))
+
+    return [grouped[key] for key in sorted(grouped)]
+
+
 def _enrich_with_archive_meta(
     record: dict[str, Any],
     *,
@@ -784,6 +871,15 @@ def _attach_event_trace(
     enriched = dict(record)
     enriched["events"] = events
     enriched["event_count"] = len(events)
+    if _is_missing(enriched.get("llm_rounds")):
+        rounds = _trace_rounds(events, enriched)
+        if rounds:
+            enriched["llm_rounds"] = rounds
+            round_count = max(_positive_int(round_item.get("round")) for round_item in rounds)
+            if _is_missing(enriched.get("rounds")):
+                enriched["rounds"] = round_count
+            if _is_missing(enriched.get("round_count")):
+                enriched["round_count"] = round_count
     return enriched
 
 
@@ -802,6 +898,7 @@ def _run_filters_from_query(query: Any) -> dict[str, Any]:
         "module": str(query.get("module", "") or "").strip().lower(),
         "level": str(query.get("level", "") or "").strip().lower(),
         "errors_only": _truthy(query.get("errors_only")),
+        "quick": _truthy(query.get("quick")),
         "since": _parse_datetime(query.get("since")),
         "until": _parse_datetime(query.get("until")),
     }
@@ -916,12 +1013,18 @@ def _read_recent_log_events(
     run_events: list[dict[str, Any]] = []
     trace_events: list[dict[str, Any]] = []
     raw_events_total = 0
-    paths = sorted(log_dir.glob("events-*.jsonl"))
+    quick = bool(filters.get("quick")) and not any(
+        filters.get(key)
+        for key in ("ticket_id", "event", "module", "level", "errors_only", "since", "until")
+    )
+    paths = sorted(log_dir.glob("events-*.jsonl"), reverse=quick)
+    scanned_files = 0
     for path in paths:
         try:
             lines = path.open(encoding="utf-8")
         except OSError:
             continue
+        scanned_files += 1
         with lines:
             for line in lines:
                 try:
@@ -938,6 +1041,8 @@ def _read_recent_log_events(
                 if record is None:
                     continue
                 run_events.append(record)
+        if quick and len(_aggregate_run_records(run_events)) >= limit:
+            break
     trace_index = _build_trace_index(trace_events)
     all_items = sorted(
         _aggregate_run_records(run_events),
@@ -973,6 +1078,8 @@ def _read_recent_log_events(
         "filters": _public_run_filters(filters),
         "log_dir": str(log_dir),
         "raw_events_total": raw_events_total,
+        "partial": quick and scanned_files < len(paths),
+        "scanned_files": scanned_files,
         "exists": True,
     }
 
