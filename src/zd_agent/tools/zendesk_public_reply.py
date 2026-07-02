@@ -27,6 +27,7 @@ footer 处理都不一样。
 """
 from __future__ import annotations
 
+import re as _re
 from collections.abc import Iterator
 from typing import Any, TYPE_CHECKING
 
@@ -36,7 +37,10 @@ from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.pre_send_check import FreshnessResult, pre_send_check_or_abort
 from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
-from zd_agent.runtime.reply_audit import public_reply_evidence_blockers
+from zd_agent.runtime.reply_audit import (
+    public_reply_evidence_blockers,
+    public_reply_privacy_blockers,
+)
 from zd_agent.services.messaging_context import get_messaging_context
 from zd_agent.tools.base import Tool, ToolResult
 
@@ -92,7 +96,6 @@ _VALID_REPLY_TYPES = frozenset(_FOOTER_BY_TYPE)
 # 索引列出的就是 .md 形式），但客户点开看到的是 raw markdown 源文本（content-type:
 # text/markdown），非常丑。HTML 形式（无 .md）才是给人看的正常文档页。
 # Regex：替换 docs.dify.ai/<path>.md → docs.dify.ai/<path>（保留 path）
-import re as _re
 _DOCS_MD_PATTERN = _re.compile(
     r"(https?://docs\.dify\.ai/[^\s\)\]>]+?)\.md\b"
 )
@@ -428,6 +431,21 @@ async def send_public_reply(
         return False, "body is empty"
     if reply_type not in _VALID_REPLY_TYPES:
         return False, f"invalid reply_type: {reply_type!r}"
+    privacy_blockers = public_reply_privacy_blockers(body)
+    if privacy_blockers:
+        logger.warning(
+            "public_reply_privacy_hard_gate_blocked_direct",
+            ticket_id=ticket_id,
+            reply_type=reply_type,
+            warning_count=len(privacy_blockers),
+            warnings=privacy_blockers[:5],
+        )
+        return (
+            False,
+            "Public reply privacy hard gate blocked this reply. "
+            "Remove internal source paths before replying: "
+            + "; ".join(privacy_blockers[:5]),
+        )
 
     # Footer 追加
     body_with_footer = _append_footer(body, reply_type)
@@ -540,6 +558,7 @@ class ZendeskPublicReply(Tool):
         "向 SaaS messaging 工单发送 Public Reply（客户可见的公开评论）。"
         "正文应该用 English（统一语言）。系统会自动追加 footer 注明 AI 身份并提示"
         "客户可回复 'human' 转人工，**不要在 body 里自己写 footer**。"
+        "**不要包含源码路径、内部仓库路径、文件名+行号或内部代码实现位置**。"
         "reply_type 决定 footer 措辞变体："
         "ask（向客户问问题，模板 A/B/C/D）/ "
         "solution（给出解决方案，模板 F）/ "
@@ -557,7 +576,8 @@ class ZendeskPublicReply(Tool):
                 "type": "string",
                 "description": (
                     "公开回复正文，**English only**，Markdown 格式。"
-                    "不要包含 footer——系统会自动追加。"
+                    "不要包含 footer——系统会自动追加。不要包含源码路径、"
+                    "内部仓库路径、文件名+行号或内部代码实现位置。"
                 ),
             },
             "reply_type": {
@@ -658,6 +678,24 @@ class ZendeskPublicReply(Tool):
                     "Public reply already sent in this agent session; "
                     "do not send another customer-visible reply. Use archive_ticket "
                     "for the processing summary, or re-fetch the ticket before retrying."
+                ),
+            )
+
+        privacy_blockers = public_reply_privacy_blockers(body)
+        if privacy_blockers:
+            logger.warning(
+                "public_reply_privacy_hard_gate_blocked",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                warning_count=len(privacy_blockers),
+                warnings=privacy_blockers[:5],
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Public reply privacy hard gate blocked this reply. "
+                    "Remove internal source paths before replying: "
+                    + "; ".join(privacy_blockers[:5])
                 ),
             )
 

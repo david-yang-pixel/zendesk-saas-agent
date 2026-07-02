@@ -5,7 +5,11 @@ tool_call_log. 找出未经证实的 claim 作为 SE 复核 hint。
 """
 from __future__ import annotations
 
-from zd_agent.runtime.reply_audit import audit_reply_against_tools
+from zd_agent.runtime.reply_audit import (
+    audit_reply_against_tools,
+    public_reply_evidence_blockers,
+    public_reply_privacy_blockers,
+)
 
 
 def _tool_log(*previews: str) -> list[dict]:
@@ -126,3 +130,33 @@ class TestMultipleWarnings:
         )
         # PR + file + ticket ref + version = 4 warnings
         assert len(warnings) >= 4
+
+
+class TestPublicReplyPrivacyBlockers:
+    def test_public_reply_blocks_source_paths_even_when_evidenced(self) -> None:
+        body = (
+            "Jina rerank support exists in `models/jina/models/rerank/rerank.py` "
+            "and `models/jina/models/rerank/jina-reranker-m0.yaml`."
+        )
+        log = _tool_log(
+            "git_grep result: models/jina/models/rerank/rerank.py "
+            "models/jina/models/rerank/jina-reranker-m0.yaml",
+        )
+
+        blockers = public_reply_evidence_blockers(
+            body=body,
+            tool_call_log=log,
+            current_ticket_id=3237,
+        )
+
+        assert any("internal source path" in blocker for blocker in blockers)
+        assert any("rerank.py" in blocker for blocker in blockers)
+        assert any("jina-reranker-m0.yaml" in blocker for blocker in blockers)
+
+    def test_public_reply_allows_docs_urls_and_api_paths(self) -> None:
+        body = (
+            "Please see https://docs.dify.ai/api-reference/files/upload-file "
+            "and call `POST /v1/files/upload`."
+        )
+
+        assert public_reply_privacy_blockers(body) == []

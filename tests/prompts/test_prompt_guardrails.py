@@ -21,6 +21,14 @@ def test_prompt_requires_source_verified_claims():
     assert "Source MCP runtime" in prompt
 
 
+def test_prompt_forbids_source_paths_in_customer_visible_replies():
+    prompt = _build()
+
+    assert "客户可见回复不得包含源码路径" in prompt
+    assert "文件名+行号" in prompt
+    assert "源码证据只写内部记录" in prompt
+
+
 def test_prompt_requires_github_issue_pr_gate():
     prompt = _build()
 

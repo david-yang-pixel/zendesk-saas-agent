@@ -10,12 +10,13 @@
 | 2 | 我是否调过 sql_query 拿到 workspace 的真实 DB 状态？（有具体行返回 / 具体 0 row 证据）| 没 → 立刻补一轮 sql |
 | 3 | Subagent 任务描述里**是否明写**了当前 category 的必查路径表？| 没 → 重新派 subagent，把路径粘进任务描述 |
 | 4 | 我是否**用了多个同义词**搜历史工单？（一个关键词 0 hit 不算搜过 — 至少 2 个同义/近义词）| 没 → 补 ticket_record_search |
-| 5 | 我的回复里**有没有引用具体证据**？（"看到 message_credit_service.py:39 quota_limit=5000" 这种）| 没 → 必须要么找到证据，要么诚实说"未找到" |
+| 5 | Internal Note / archive 里**有没有引用具体证据**？客户回复是否把证据改写成不含源码路径的产品层结论？| 没 → 必须要么找到证据，要么诚实说"未找到" |
 | 6 | 我打算给的 confidence 是 high / medium / low？ | medium / low → 见下面 "Redo 规则" |
 
 ## 证据门槛补充
 
 - 任何**源码 / API / 配置 / 字段 / UI 路径 / PR / 版本**断言，都必须有 `git_grep / github_code_search`、`git_show`、SQL、SigNoz、Zendesk 或 KB 真实返回支撑。没验证就不写进客户回复。
+- 客户可见回复不得包含源码路径、内部仓库路径、文件名+行号或内部实现文件位置；源码证据只写 Internal Note / archive / Feishu 内部记录。
 - **GitHub Issue / PR evidence gate**：traceback、回归、升级后异常、疑似内部 bug、实现缺陷、"是否已修复"类问题，必须查 Issue/PR；不能只读源码就给客户下结论。
 - **Zendesk 最新对话是唯一真相源**：本地工单记录只作为参考。follow-up 判断和本次回复范围必须来自最新 Zendesk 对话，而不是本地归档是否存在。
 - Billing/plan 判断必须优先使用 billing 库订阅表或 Stripe 状态证据；不要用主库 `tenants.plan` 或 inspector 显示替代。

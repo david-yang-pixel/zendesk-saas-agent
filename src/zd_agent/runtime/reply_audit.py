@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Final
 
 # 检测正则
 _PR_PATTERN = re.compile(r"\bPR\s*#(\d{1,6})\b")
@@ -30,6 +30,11 @@ _FILE_PATH_PATTERN = re.compile(
     r"\b([a-zA-Z][\w/-]*?/[\w/-]+\.(?:py|ts|tsx|js|jsx|md|yaml|yml|sql))\b"
 )
 _VERSION_PATTERN = re.compile(r"\bv?(\d+\.\d+\.\d+)\b")
+_PUBLIC_INTERNAL_SOURCE_PATH_PATTERN: Final = re.compile(
+    r"(?<![\w./:-])/?(?:[\w.-]+/){1,}[\w.-]+\."
+    r"(?:pyi?|tsx?|jsx?|mjs|cjs|go|rs|java|kt|rb|php|sql|ya?ml|toml|json|md)"
+    r"(?::\d+)?\b"
+)
 
 
 def _join_tool_outputs(tool_call_log: list[dict[str, Any]]) -> str:
@@ -141,8 +146,26 @@ def public_reply_evidence_blockers(
     irreversible customer-visible actions, so concrete PR / Issue / file path /
     version / historical-ticket claims must have appeared in tool evidence.
     """
-    return audit_reply_against_tools(
-        body=body,
-        tool_call_log=tool_call_log,
-        current_ticket_id=current_ticket_id,
-    )
+    return [
+        *public_reply_privacy_blockers(body),
+        *audit_reply_against_tools(
+            body=body,
+            tool_call_log=tool_call_log,
+            current_ticket_id=current_ticket_id,
+        ),
+    ]
+
+
+def public_reply_privacy_blockers(body: str) -> list[str]:
+    if not body:
+        return []
+
+    paths = sorted(set(_PUBLIC_INTERNAL_SOURCE_PATH_PATTERN.findall(body)))
+    return [
+        (
+            "Public reply contains internal source path "
+            f"`{path}`. Remove repository/file paths from customer-visible "
+            "replies and describe the product behavior instead."
+        )
+        for path in paths
+    ]

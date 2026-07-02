@@ -17,8 +17,6 @@ import pytest
 from zd_agent.config import AppConfig, PublicReplyConfig
 from zd_agent.tools.zendesk_public_reply import (
     _FOOTER_BY_TYPE,
-    _FOOTER_CLOSED,
-    _FOOTER_HANDOFF,
     _FOOTER_STANDARD,
     _append_footer,
     _format_reply_body,
@@ -507,6 +505,51 @@ class TestExecute:
 
         assert r.success
         mock_relay.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_public_reply_blocks_internal_source_paths_even_if_seen_in_tools(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.tool_call_log = [
+            {
+                "tool": "github_code_search",
+                "args": {"query": "Jina rerank"},
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "models/jina/models/rerank/rerank.py and "
+                    "models/jina/models/rerank/jina-reranker-m0.yaml"
+                ),
+            },
+        ]
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            r = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "Jina rerank support exists in "
+                        "`models/jina/models/rerank/rerank.py` and "
+                        "`models/jina/models/rerank/jina-reranker-m0.yaml`."
+                    ),
+                    "reply_type": "solution",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert not r.success
+        assert "privacy hard gate" in r.error
+        assert "internal source path" in r.error
+        assert sess.reply_sent is False
+        mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_refund_reply_blocks_eligibility_without_owner_gate(self) -> None:
