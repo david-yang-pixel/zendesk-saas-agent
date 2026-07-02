@@ -697,6 +697,64 @@ def _record_has_error(item: dict[str, Any]) -> bool:
     return any(_is_error_event(event) for event in events if isinstance(event, dict))
 
 
+def _trace_index_keys(item: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    session_key = _session_group_key(item)
+    ticket_key = _ticket_group_key(item)
+    if session_key:
+        keys.add(session_key)
+    if ticket_key:
+        keys.add(ticket_key)
+    return keys
+
+
+def _build_trace_index(trace_events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    index: dict[str, list[dict[str, Any]]] = {}
+    for event in trace_events:
+        for key in _trace_index_keys(event):
+            index.setdefault(key, []).append(event)
+    for events in index.values():
+        events.sort(key=_trace_sort_key)
+    return index
+
+
+def _trace_events_for_record(
+    record: dict[str, Any],
+    trace_index: dict[str, list[dict[str, Any]]] | None,
+) -> list[dict[str, Any]]:
+    if trace_index is None:
+        events = record.get("events")
+        return [
+            event for event in events
+            if isinstance(event, dict)
+        ] if isinstance(events, list) else []
+
+    matched: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    keys = _trace_index_keys(record)
+    for key in keys:
+        for event in trace_index.get(key, []):
+            event_id = id(event)
+            if event_id in seen:
+                continue
+            if not _trace_matches(record, event):
+                continue
+            seen.add(event_id)
+            matched.append(event)
+    if len(keys) > 1:
+        matched.sort(key=_trace_sort_key)
+    return matched
+
+
+def _record_has_error_with_trace(
+    item: dict[str, Any],
+    trace_index: dict[str, list[dict[str, Any]]] | None,
+) -> bool:
+    if _is_error_event(item):
+        return True
+    return any(_is_error_event(event) for event in _trace_events_for_record(item, trace_index))
+
+
 def _trace_matches(record: dict[str, Any], event: dict[str, Any]) -> bool:
     record_session = str(record.get("session_id") or "").strip()
     event_session = str(event.get("session_id") or "").strip()
@@ -718,12 +776,9 @@ def _trace_sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
 
 def _attach_event_trace(
     record: dict[str, Any],
-    trace_events: list[dict[str, Any]],
+    trace_index: dict[str, list[dict[str, Any]]] | None,
 ) -> dict[str, Any]:
-    events = sorted(
-        (event for event in trace_events if _trace_matches(record, event)),
-        key=_trace_sort_key,
-    )
+    events = _trace_events_for_record(record, trace_index)
     if not events:
         return record
     enriched = dict(record)
@@ -762,7 +817,12 @@ def _public_run_filters(filters: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _matches_run_filters(item: dict[str, Any], filters: dict[str, Any]) -> bool:
+def _matches_run_filters(
+    item: dict[str, Any],
+    filters: dict[str, Any],
+    *,
+    trace_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> bool:
     ticket_id = filters.get("ticket_id")
     if ticket_id and ticket_id not in {
         str(item.get("ticket_id") or ""),
@@ -770,28 +830,25 @@ def _matches_run_filters(item: dict[str, Any], filters: dict[str, Any]) -> bool:
     }:
         return False
     event = filters.get("event")
-    trace_events = [
-        trace_event for trace_event in item.get("events", [])
-        if isinstance(trace_event, dict)
-    ] if isinstance(item.get("events"), list) else []
+    module = filters.get("module")
+    level = filters.get("level")
+    trace_events = _trace_events_for_record(item, trace_index) if event or module or level else []
     if event and not any(
         event in str(value).lower()
         for value in [item.get("event"), *(trace.get("event") for trace in trace_events)]
     ):
         return False
-    module = filters.get("module")
     if module and not any(
         module in str(value).lower()
         for value in [item.get("module"), *(trace.get("module") for trace in trace_events)]
     ):
         return False
-    level = filters.get("level")
     if level and not any(
         level in str(value).lower()
         for value in [item.get("level"), *(trace.get("level") for trace in trace_events)]
     ):
         return False
-    if filters.get("errors_only") and not _record_has_error(item):
+    if filters.get("errors_only") and not _record_has_error_with_trace(item, trace_index):
         return False
     item_time = _event_datetime(item)
     since = filters.get("since")
@@ -808,6 +865,7 @@ def _run_summary(
     total: int,
     filtered: list[dict[str, Any]],
     all_items: list[dict[str, Any]],
+    error_events: int | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     today_items = [
@@ -830,7 +888,9 @@ def _run_summary(
         "filtered": len(filtered),
         "today_events": len(today_items),
         "today_tickets": len(today_ticket_ids),
-        "error_events": sum(1 for item in filtered if _record_has_error(item)),
+        "error_events": error_events
+        if error_events is not None
+        else sum(1 for item in filtered if _record_has_error(item)),
         "latest_timestamp": latest_timestamp,
     }
 
@@ -859,45 +919,56 @@ def _read_recent_log_events(
     paths = sorted(log_dir.glob("events-*.jsonl"))
     for path in paths:
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            lines = path.open(encoding="utf-8")
         except OSError:
             continue
-        for line in lines:
-            try:
-                item = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(item, dict):
-                continue
-            raw_events_total += 1
-            item["_source_file"] = path.name
-            if _run_group_key(item):
-                trace_events.append(dict(item))
-            record = _normalize_run_record_event(item)
-            if record is None:
-                continue
-            run_events.append(record)
-    archive_cache: dict[str, dict[str, Any] | None] = {}
-    enriched_items = [
-        _attach_event_trace(
-            _enrich_with_archive_meta(item, archive_dir=archive_dir, cache=archive_cache),
-            trace_events,
-        )
-        for item in _aggregate_run_records(run_events)
-    ]
+        with lines:
+            for line in lines:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                raw_events_total += 1
+                item["_source_file"] = path.name
+                if _run_group_key(item):
+                    trace_events.append(dict(item))
+                record = _normalize_run_record_event(item)
+                if record is None:
+                    continue
+                run_events.append(record)
+    trace_index = _build_trace_index(trace_events)
     all_items = sorted(
-        enriched_items,
+        _aggregate_run_records(run_events),
         key=_run_record_sort_key,
         reverse=True,
     )
-    matched_items = [item for item in all_items if _matches_run_filters(item, filters)]
-    items = [_redact_value(item) for item in matched_items[:limit]]
+    matched_items = [
+        item for item in all_items
+        if _matches_run_filters(item, filters, trace_index=trace_index)
+    ]
+    matched_error_events = sum(
+        1 for item in matched_items
+        if _record_has_error_with_trace(item, trace_index)
+    )
+    archive_cache: dict[str, dict[str, Any] | None] = {}
+    page_items = [
+        _enrich_with_archive_meta(
+            _attach_event_trace(item, trace_index),
+            archive_dir=archive_dir,
+            cache=archive_cache,
+        )
+        for item in matched_items[:limit]
+    ]
+    items = [_redact_value(item) for item in page_items]
     return {
         "items": items,
         "summary": _run_summary(
             total=len(all_items),
             filtered=matched_items,
             all_items=all_items,
+            error_events=matched_error_events,
         ),
         "filters": _public_run_filters(filters),
         "log_dir": str(log_dir),

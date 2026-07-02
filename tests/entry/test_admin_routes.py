@@ -11,6 +11,7 @@ import httpx
 import pytest
 from aiohttp import web
 
+from zd_agent.services import admin_routes
 from zd_agent.config import AppConfig
 from zd_agent.services.admin_routes import (
     ADMIN_HANDLERS_KEY,
@@ -154,6 +155,7 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
         assert symbol in css
     assert ".run-record-row" in css
     assert "grid-template-columns" in css
+    assert "position: sticky" in css
     assert 'numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1' in app_js
     assert "round.round || round.index || index + 1" in app_js
     assert "rawEvents" in app_js
@@ -169,6 +171,7 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
 
     assert "prompt-textarea" in app_js
     assert 'field.input === "textarea"' in app_js
+    assert "module-overview" in app_js
 
 
 def test_admin_storage_config_page_is_not_blank() -> None:
@@ -633,6 +636,98 @@ async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> 
     assert item["llm_rounds"][1]["tools"][0]["status"] == "failed"
     assert item["llm_rounds"][1]["tools"][0]["error"] == "database unavailable"
     assert item["event_count"] == 2
+
+
+def test_admin_run_records_trace_index_supports_module_filters(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "events-2026-07-02.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:00Z",
+                "event": "agent_done",
+                "ticket_id": 4001,
+                "session_id": "session-4001",
+                "module": "runtime.runner",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:01Z",
+                "event": "tool_call",
+                "ticket_id": 4001,
+                "session_id": "session-4001",
+                "module": "db.gateway",
+                "tool": "sql_query",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:01:00Z",
+                "event": "agent_done",
+                "ticket_id": 4002,
+                "session_id": "session-4002",
+                "module": "runtime.runner",
+            }),
+        ]),
+        encoding="utf-8",
+    )
+
+    body = admin_routes._read_recent_log_events(
+        log_dir,
+        limit=20,
+        filters={"module": "db.gateway"},
+    )
+
+    assert [item["ticket_id"] for item in body["items"]] == [4001]
+    assert body["items"][0]["event_count"] == 2
+    assert [event["event"] for event in body["items"][0]["events"]] == [
+        "agent_done",
+        "tool_call",
+    ]
+
+
+def test_admin_run_records_only_reads_archive_meta_for_returned_page(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    log_dir = tmp_path / "logs"
+    archive_dir = tmp_path / "archive"
+    log_dir.mkdir()
+    archive_dir.mkdir()
+    (log_dir / "events-2026-07-02.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:00Z",
+                "event": "agent_done",
+                "ticket_id": 4001,
+                "session_id": "session-4001",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:01:00Z",
+                "event": "agent_done",
+                "ticket_id": 4002,
+                "session_id": "session-4002",
+            }),
+        ]),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_read_archive_meta(_archive_dir, ticket_id, _cache):
+        calls.append(ticket_id)
+        return {
+            "_archive_meta_path": f"/archive/{ticket_id}/meta.json",
+            "tool_call_count": 1,
+        }
+
+    monkeypatch.setattr(admin_routes, "_read_archive_meta", fake_read_archive_meta)
+
+    body = admin_routes._read_recent_log_events(
+        log_dir,
+        limit=1,
+        archive_dir=archive_dir,
+    )
+
+    assert [item["ticket_id"] for item in body["items"]] == [4002]
+    assert calls == ["4002"]
+    assert body["summary"]["total"] == 2
 
 
 @pytest.mark.asyncio

@@ -30,12 +30,13 @@ class FieldSpec:
 
 
 FIELD_SPECS: tuple[FieldSpec, ...] = (
-    FieldSpec("llm.provider", "Provider", "模型与运行"),
-    FieldSpec("llm.base_url", "Base URL", "模型与运行"),
+    FieldSpec("llm.provider", "模型供应商", "模型与运行"),
+    FieldSpec("llm.base_url", "模型 Base URL", "模型与运行"),
     FieldSpec("llm.model", "主模型", "模型与运行"),
     FieldSpec("llm.subagent_model", "Subagent 模型", "模型与运行"),
-    FieldSpec("llm.temperature", "Temperature", "模型与运行", input="number"),
-    FieldSpec("llm.max_tokens", "Max tokens", "模型与运行", input="number"),
+    FieldSpec("llm.temperature", "温度", "模型与运行", input="number"),
+    FieldSpec("llm.timeout", "模型请求超时秒数", "模型与运行", input="number"),
+    FieldSpec("llm.max_tokens", "单次最大输出 token", "模型与运行", input="number"),
     FieldSpec("openai.api_key", "OpenAI API Key", "模型与运行", secret=True),
     FieldSpec("anthropic.api_key", "Anthropic API Key", "模型与运行", secret=True),
     FieldSpec("agent.max_concurrent_sessions", "并发上限", "模型与运行", input="number"),
@@ -44,46 +45,98 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("agent.guardrails.max_tokens_per_session", "最大上下文 token", "模型与运行", input="number"),
     FieldSpec("agent.guardrails.context_compaction_trigger_tokens", "压缩触发 token", "模型与运行", input="number"),
     FieldSpec("agent.guardrails.context_compaction_target_tokens", "压缩目标 token", "模型与运行", input="number"),
+    FieldSpec("retry.max_attempts", "全局重试次数", "模型与运行", input="number"),
+    FieldSpec("retry.base_delay_seconds", "全局重试初始延迟秒数", "模型与运行", input="number"),
+    FieldSpec("retry.max_delay_seconds", "全局重试最大延迟秒数", "模型与运行", input="number"),
+    FieldSpec("retry.jitter", "重试启用 jitter", "模型与运行", input="boolean"),
+    FieldSpec("retry.llm.max_attempts", "LLM 重试次数覆盖", "模型与运行", input="number"),
+    FieldSpec("retry.zendesk.max_attempts", "Zendesk 重试次数覆盖", "模型与运行", input="number"),
+    FieldSpec("retry.git.max_attempts", "源码/Git 重试次数覆盖", "模型与运行", input="number"),
+    FieldSpec("retry.sandbox.max_attempts", "Sandbox 重试次数覆盖", "模型与运行", input="number"),
+    FieldSpec("prompts.agent_extra_instructions", "Agent 处理工单补充规则", "模型与运行", input="textarea"),
+    FieldSpec("zendesk.subdomain", "Zendesk 子域名", "触发配置", restart_required=True),
+    FieldSpec("zendesk.email", "Zendesk 账号邮箱", "触发配置", restart_required=True),
+    FieldSpec("zendesk.api_token", "Zendesk API Token", "触发配置", secret=True),
     FieldSpec("zendesk.search_query", "新工单搜索条件", "触发配置"),
+    FieldSpec("zendesk.poll_query", "轮询基础查询", "触发配置"),
     FieldSpec("zendesk.poll_interval_seconds", "新工单轮询间隔", "触发配置", input="number", restart_required=True),
     FieldSpec("zendesk.mention_trigger", "@mention 触发词", "触发配置"),
     FieldSpec("zendesk.mention_poll_interval_seconds", "@mention 扫描间隔", "触发配置", input="number", restart_required=True),
+    FieldSpec("zendesk.agent_user_id", "Agent Zendesk 用户 ID", "触发配置", input="number", restart_required=True),
     FieldSpec("zendesk.min_ticket_id", "灰度最小工单 ID", "触发配置", input="number"),
+    FieldSpec("webhook.signing_secret", "Tickets webhook 签名密钥", "触发配置", secret=True, restart_required=True),
+    FieldSpec("webhook.messaging_signing_secret", "Messaging webhook 签名密钥", "触发配置", secret=True, restart_required=True),
+    FieldSpec("webhook.listen_host", "Webhook 监听地址", "触发配置", restart_required=True, protected=True),
+    FieldSpec("webhook.listen_port", "Webhook 监听端口", "触发配置", input="number", restart_required=True, protected=True),
+    FieldSpec("webhook.zendesk_path", "Tickets webhook 路径", "触发配置", restart_required=True),
+    FieldSpec("webhook.zendesk_messaging_path", "Messaging webhook 路径", "触发配置", restart_required=True),
+    FieldSpec("webhook.feishu_path", "飞书 webhook 路径", "触发配置", restart_required=True),
     FieldSpec("trigger_decider.llm_model", "触发判定模型", "触发配置"),
+    FieldSpec("trigger_decider.silence_minutes_default", "默认静默分钟数", "触发配置", input="number"),
+    FieldSpec("trigger_decider.silence_extend_to_minutes", "静默延长分钟数", "触发配置", input="number"),
     FieldSpec("trigger_decider.rapid_burst_window_seconds", "客户连发窗口", "触发配置", input="number"),
     FieldSpec("trigger_decider.rapid_burst_threshold", "客户连发阈值", "触发配置", input="number"),
     FieldSpec("trigger_decider.insufficient_timeout_minutes", "信息不足超时", "触发配置", input="number"),
     FieldSpec("trigger_decider.abandoned_hours", "放弃等待小时数", "触发配置", input="number"),
+    FieldSpec("trigger_decider.greeting_only_alert_minutes", "仅问候告警分钟数", "触发配置", input="number"),
     FieldSpec("trigger_decider.enable_public_nudge", "主动公开询问", "触发配置", input="boolean"),
+    FieldSpec("trigger_decider.post_agent_cooldown_seconds", "Agent 结束后冷却秒数", "触发配置", input="number"),
+    FieldSpec("silence_waker.scan_interval_seconds", "静默唤醒扫描间隔", "触发配置", input="number", restart_required=True),
+    FieldSpec("waiting_poller.scan_interval_seconds", "等待工单扫描间隔", "触发配置", input="number", restart_required=True),
+    FieldSpec("waiting_poller.abandoned_hours", "等待工单放弃小时数", "触发配置", input="number"),
+    FieldSpec("waiting_poller.greeting_alert_minutes", "等待工单问候告警分钟数", "触发配置", input="number"),
+    FieldSpec("waiting_poller.poll_new_messages", "等待工单兜底拉取新消息", "触发配置", input="boolean"),
     FieldSpec("public_reply.enabled", "自动 public reply", "回复策略", input="boolean"),
     FieldSpec("public_reply.max_ask_count", "最大 ask 次数", "回复策略", input="number"),
     FieldSpec("public_reply.silent_initial_wait_seconds", "初始等待窗口", "回复策略", input="number"),
     FieldSpec("public_reply.silence_window_seconds", "客户消息合并窗口", "回复策略", input="number"),
     FieldSpec("public_reply.ask_followup_alert_minutes", "ask 后告警分钟", "回复策略", input="number"),
     FieldSpec("public_reply.abandoned_hours", "放弃等待小时数", "回复策略", input="number"),
+    FieldSpec("public_reply.browser_relay_timeout_seconds", "Browser relay 超时秒数", "回复策略", input="number"),
     FieldSpec("prompts.ask_extra_instructions", "Ask 提示词补充规则", "回复策略", input="textarea"),
-    FieldSpec("prompts.agent_extra_instructions", "Agent 处理工单补充规则", "模型与运行", input="textarea"),
     FieldSpec("public_reply.browser_relay_url", "Browser relay URL", "工具与集成"),
     FieldSpec("public_reply.browser_relay_api_key", "Browser relay API Key", "工具与集成", secret=True),
     FieldSpec("zendesk_mcp.mcp_url", "Zendesk MCP URL", "工具与集成"),
     FieldSpec("zendesk_mcp.mcp_api_key", "Zendesk MCP API Key", "工具与集成", secret=True),
+    FieldSpec("zendesk_mcp.request_timeout_seconds", "Zendesk MCP 超时秒数", "工具与集成", input="number"),
     FieldSpec("db_gateway.url", "DB Gateway URL", "工具与集成"),
     FieldSpec("db_gateway.api_key", "DB Gateway API Key", "工具与集成", secret=True),
+    FieldSpec("db_gateway.request_timeout_seconds", "DB Gateway 超时秒数", "工具与集成", input="number"),
     FieldSpec("signoz.mcp_url", "SigNoz MCP URL", "工具与集成"),
     FieldSpec("signoz.mcp_api_key", "SigNoz MCP API Key", "工具与集成", secret=True),
+    FieldSpec("signoz.request_timeout_seconds", "SigNoz MCP 超时秒数", "工具与集成", input="number"),
     FieldSpec("source_mcp.mcp_url", "Source MCP URL", "工具与集成"),
     FieldSpec("source_mcp.mcp_api_key", "Source MCP API Key", "工具与集成", secret=True),
+    FieldSpec("source_mcp.request_timeout_seconds", "Source MCP 超时秒数", "工具与集成", input="number"),
     FieldSpec("github_mcp.mcp_url", "GitHub MCP URL", "工具与集成"),
     FieldSpec("github_mcp.mcp_api_key", "GitHub MCP API Key", "工具与集成", secret=True),
+    FieldSpec("github_mcp.request_timeout_seconds", "GitHub MCP 超时秒数", "工具与集成", input="number"),
     FieldSpec("docs_tool_service.mcp_url", "Docs service URL", "工具与集成"),
     FieldSpec("docs_tool_service.mcp_api_key", "Docs service API Key", "工具与集成", secret=True),
+    FieldSpec("docs_tool_service.request_timeout_seconds", "Docs service 超时秒数", "工具与集成", input="number"),
     FieldSpec("notification_service.mcp_url", "Notification service URL", "工具与集成"),
     FieldSpec("notification_service.mcp_api_key", "Notification service API Key", "工具与集成", secret=True),
+    FieldSpec("notification_service.request_timeout_seconds", "Notification service 超时秒数", "工具与集成", input="number"),
     FieldSpec("sandbox_worker.mcp_url", "Sandbox worker URL", "工具与集成"),
     FieldSpec("sandbox_worker.mcp_api_key", "Sandbox worker API Key", "工具与集成", secret=True),
+    FieldSpec("sandbox_worker.request_timeout_seconds", "Sandbox worker 超时秒数", "工具与集成", input="number"),
+    FieldSpec("feishu.webhook_url", "飞书 fallback webhook URL", "工具与集成"),
+    FieldSpec("feishu.webhook_secret", "飞书 fallback webhook Secret", "工具与集成", secret=True),
+    FieldSpec("feishu.daily_summary_time", "飞书日报时间", "工具与集成"),
+    FieldSpec("feishu.daily_summary_timezone", "飞书日报时区", "工具与集成"),
+    FieldSpec("inspector.binary", "Inspector binary", "工具与集成", restart_required=True, protected=True),
+    FieldSpec("inspector.config_file", "Inspector config file", "工具与集成", restart_required=True, protected=True),
+    FieldSpec("inspector.timeout_seconds", "Inspector 超时秒数", "工具与集成", input="number"),
     FieldSpec("resources.base_dir", "资源根目录", "存储配置", restart_required=True, protected=True),
+    FieldSpec("resources.saas_codebase_dir", "SaaS 源码目录名", "存储配置", restart_required=True),
+    FieldSpec("resources.knowledge_base_dir", "知识库资料目录名", "存储配置", restart_required=True),
+    FieldSpec("resources.ticket_records_dir", "工单记录目录名", "存储配置", restart_required=True),
     FieldSpec("resources.attachments_dir", "附件目录", "存储配置"),
     FieldSpec("resources.state_dir", "状态目录", "存储配置", restart_required=True, protected=True),
+    FieldSpec("knowledge.docs_dir", "知识库文档目录", "存储配置", restart_required=True),
+    FieldSpec("knowledge.archive_dir", "Agent 归档目录", "存储配置", restart_required=True),
+    FieldSpec("logging.jsonl_enabled", "JSONL 运行日志", "存储配置", input="boolean", restart_required=True),
+    FieldSpec("logging.log_dir", "JSONL 日志目录", "存储配置", restart_required=True),
     FieldSpec("sandbox.base_dir", "Sandbox 目录", "存储配置"),
     FieldSpec("sandbox.cleanup_on_success", "Sandbox 成功后清理", "存储配置", input="boolean"),
     FieldSpec("sandbox.cleanup_on_failure", "Sandbox 失败后清理", "存储配置", input="boolean"),
@@ -100,6 +153,19 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
 SECRET_ENV_MAP = {
     "openai.api_key": "OPENAI_API_KEY",
     "anthropic.api_key": "ANTHROPIC_API_KEY",
+    "zendesk.api_token": "ZENDESK_API_TOKEN",
+    "webhook.signing_secret": "ZENDESK_WEBHOOK_SECRET",
+    "webhook.messaging_signing_secret": "ZENDESK_MESSAGING_WEBHOOK_SECRET",
+    "public_reply.browser_relay_api_key": "ZENDESK_BROWSER_RELAY_API_KEY",
+    "zendesk_mcp.mcp_api_key": "ZENDESK_MCP_API_KEY",
+    "db_gateway.api_key": "DB_GATEWAY_API_KEY",
+    "signoz.mcp_api_key": "SIGNOZ_MCP_API_KEY",
+    "source_mcp.mcp_api_key": "SOURCE_MCP_API_KEY",
+    "github_mcp.mcp_api_key": "GITHUB_MCP_API_KEY",
+    "docs_tool_service.mcp_api_key": "DOCS_TOOL_SERVICE_API_KEY",
+    "notification_service.mcp_api_key": "NOTIFICATION_SERVICE_API_KEY",
+    "sandbox_worker.mcp_api_key": "SANDBOX_WORKER_API_KEY",
+    "feishu.webhook_secret": "FEISHU_WEBHOOK_SECRET",
 }
 
 ADMIN_AUTH_DEFAULTS: dict[str, Any] = {
@@ -346,7 +412,10 @@ class AdminConfigStore:
                 env_name = SECRET_ENV_MAP.get(path)
                 if env_name:
                     os.environ[env_name] = str(value)
-                elif not path.startswith(("openai.", "anthropic.", "admin_auth.")):
+                if (
+                    not spec.restart_required
+                    and not path.startswith(("openai.", "anthropic.", "admin_auth."))
+                ):
                     _set_attr(cfg, path, value)
             else:
                 _deep_set(overrides, path, value)
@@ -377,7 +446,7 @@ class AdminConfigStore:
             env_name = SECRET_ENV_MAP.get(path)
             if env_name:
                 os.environ[env_name] = str(value)
-            elif not path.startswith(("openai.", "anthropic.", "admin_auth.")):
+            if not path.startswith(("openai.", "anthropic.", "admin_auth.")):
                 _set_attr(cfg, path, value)
 
     def _write_audit(

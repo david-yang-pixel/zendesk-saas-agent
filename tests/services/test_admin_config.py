@@ -14,10 +14,38 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
 
     assert by_path["llm.base_url"]["editable"] is True
     assert by_path["llm.model"]["input"] == "text"
+    assert by_path["llm.timeout"]["input"] == "number"
     assert by_path["openai.api_key"]["secret"] is True
     assert by_path["openai.api_key"]["editable"] is True
     assert by_path["prompts.ask_extra_instructions"]["input"] == "textarea"
     assert by_path["prompts.agent_extra_instructions"]["input"] == "textarea"
+    assert by_path["retry.max_attempts"]["group"] == "模型与运行"
+
+
+def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
+    store = AdminConfigStore(tmp_path)
+
+    schema = store.schema()
+    by_path = {field["path"]: field for field in schema["fields"]}
+
+    for path in [
+        "zendesk.subdomain",
+        "zendesk.api_token",
+        "webhook.zendesk_messaging_path",
+        "trigger_decider.post_agent_cooldown_seconds",
+        "waiting_poller.poll_new_messages",
+        "public_reply.browser_relay_timeout_seconds",
+        "zendesk_mcp.request_timeout_seconds",
+        "db_gateway.request_timeout_seconds",
+        "signoz.request_timeout_seconds",
+        "logging.jsonl_enabled",
+        "logging.log_dir",
+        "knowledge.archive_dir",
+    ]:
+        assert path in by_path
+    assert by_path["zendesk.api_token"]["secret"] is True
+    assert by_path["webhook.listen_port"]["restart_required"] is True
+    assert by_path["logging.jsonl_enabled"]["input"] == "boolean"
 
 
 def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:
@@ -31,19 +59,23 @@ def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:
 
 
 def test_effective_config_redacts_secrets(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("ZENDESK_API_TOKEN", "zendesk-token-secret")
     cfg = AppConfig()
     cfg.llm.base_url = "https://llm.example.test/v1"
     store = AdminConfigStore(tmp_path)
 
     effective = store.effective_config(cfg)
+    dumped = json.dumps(effective["values"])
 
     assert effective["values"]["llm.base_url"] == "https://llm.example.test/v1"
-    assert effective["values"]["openai.api_key"]["configured"] is False
+    assert effective["values"]["openai.api_key"]["configured"] is True
+    assert effective["values"]["zendesk.api_token"]["configured"] is True
     assert effective["values"]["admin_auth.password_login_enabled"] is True
     assert effective["values"]["admin_auth.google_sso_enabled"] is False
     assert effective["values"]["admin_auth.feishu_sso_enabled"] is False
-    assert "sk-" not in json.dumps(effective["values"]).lower()
+    assert "sk-test-secret" not in dumped
+    assert "zendesk-token-secret" not in dumped
 
 
 def test_preview_reports_diff_and_redacts_secret_values(tmp_path, monkeypatch) -> None:
@@ -58,6 +90,7 @@ def test_preview_reports_diff_and_redacts_secret_values(tmp_path, monkeypatch) -
             "changes": {
                 "llm.model": "new-model",
                 "openai.api_key": "sk-test-secret",
+                "zendesk.api_token": "zendesk-token-secret",
             },
             "reason": "test change",
         },
@@ -68,7 +101,9 @@ def test_preview_reports_diff_and_redacts_secret_values(tmp_path, monkeypatch) -
     assert diff["llm.model"]["new"] == "new-model"
     assert diff["openai.api_key"]["old"] == {"configured": False, "fingerprint": ""}
     assert diff["openai.api_key"]["new"]["configured"] is True
+    assert diff["zendesk.api_token"]["new"]["configured"] is True
     assert "sk-test-secret" not in json.dumps(preview)
+    assert "zendesk-token-secret" not in json.dumps(preview)
 
 
 def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
@@ -82,6 +117,7 @@ def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
                 "llm.base_url": "https://proxy.example.test/v1/",
                 "llm.model": "gpt-custom",
                 "openai.api_key": "sk-test-secret",
+                "db_gateway.api_key": "db-test-secret",
             },
             "reason": "switch model proxy",
         },
@@ -92,9 +128,12 @@ def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
     assert result["ok"] is True
     assert cfg.llm.base_url == "https://proxy.example.test/v1"
     assert cfg.llm.model == "gpt-custom"
+    assert cfg.db_gateway.api_key == "db-test-secret"
     assert store.overrides_path.exists()
     assert store.secrets_path.exists()
-    assert "sk-test-secret" not in store.audit_path.read_text()
+    audit_text = store.audit_path.read_text()
+    assert "sk-test-secret" not in audit_text
+    assert "db-test-secret" not in audit_text
     assert "llm.base_url" in store.audit_path.read_text()
     assert store.list_audit_logs()["items"][0]["actor"] == "admin"
 

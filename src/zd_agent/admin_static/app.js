@@ -41,6 +41,7 @@ const state = {
   runRecords: [],
   runRecordsPayload: null,
   runDisplayRecords: [],
+  runLimit: 80,
   expandedRuns: new Set(),
   auditLogs: [],
   deployStatus: null,
@@ -165,6 +166,7 @@ async function init() {
   }
   showApp();
   renderNav();
+  setContent(loadingHtml("正在加载配置"));
   await loadConfig();
   await render();
 }
@@ -246,7 +248,7 @@ function setContent(html) {
 
 async function renderOverview() {
   const [runs, deploy] = await Promise.all([
-    loadRunRecords(100, {}),
+    loadRunRecords(20, {}),
     loadDeployStatus()
   ]);
   const summary = runs.summary || {};
@@ -328,7 +330,7 @@ async function loadRunRecords(limit = 100, filters = state.runFilters) {
 async function renderRunRecords(options = {}) {
   const data = options.reload === false && state.runRecordsPayload
     ? state.runRecordsPayload
-    : await loadRunRecords(200);
+    : await loadRunRecords(state.runLimit);
   const items = data.items || [];
   let records = buildRunDisplayRecords(items);
   if (state.runFilters.status === "success") {
@@ -360,7 +362,13 @@ async function renderRunRecords(options = {}) {
     <section class="card run-record-card">
       <div class="card-header">
         <span>运行记录</span>
-        <span class="chip">JSONL ${data.jsonl_enabled ? "已开启" : "未开启"}</span>
+        <div class="header-actions">
+          <span class="chip">显示 ${records.length} / ${data.summary?.filtered ?? records.length}</span>
+          <span class="chip">JSONL ${data.jsonl_enabled ? "已开启" : "未开启"}</span>
+          ${(data.summary?.filtered || 0) > state.runLimit
+            ? `<button class="btn secondary compact" onclick="loadMoreRuns()">加载更多</button>`
+            : ""}
+        </div>
       </div>
       <div class="run-table">
         <div class="run-table-header">
@@ -459,7 +467,7 @@ function renderRunRecordRow(record, index) {
         <span>${escapeHtml(record.roundsCount)}</span>
         <span class="truncate">${escapeHtml(formatTokenPair(record))}</span>
         <span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "--")}</span>
-        <span><span class="trigger-chip">${escapeHtml(record.trigger)}</span></span>
+        <span><span class="trigger-chip" title="${escapeHtml(record.trigger)}">${escapeHtml(formatTrigger(record.trigger))}</span></span>
         <span class="muted">${escapeHtml(relativeTime(record.time))}</span>
         <button class="btn secondary compact" onclick="openRunRecordDetail(${index})">日志</button>
       </div>
@@ -628,6 +636,7 @@ function toggleRunRecord(index) {
 
 function applyRunFilters() {
   const status = document.getElementById("run-status").value;
+  state.runLimit = 80;
   state.runFilters = {
     ticket_id: document.getElementById("run-ticket").value.trim(),
     event: document.getElementById("run-event").value.trim(),
@@ -641,7 +650,13 @@ function applyRunFilters() {
 
 function resetRunFilters() {
   state.runFilters = {};
+  state.runLimit = 80;
   state.expandedRuns.clear();
+  void renderRunRecords();
+}
+
+function loadMoreRuns() {
+  state.runLimit += 80;
   void renderRunRecords();
 }
 
@@ -651,7 +666,7 @@ function renderConfigPage(menu) {
     setContent(emptyHtml("当前模块没有可编辑配置"));
     return;
   }
-  setContent(renderForm(menu, fields));
+  setContent(`${renderModuleOverview(menu, fields)}${renderForm(menu, fields)}`);
 }
 
 async function renderStorageConfig() {
@@ -789,6 +804,20 @@ function renderForm(title, fields) {
         `).join("")}
       </div>
     </section>
+  `;
+}
+
+function renderModuleOverview(menu, fields) {
+  const secretCount = fields.filter(field => field.secret).length;
+  const restartCount = fields.filter(field => field.restart_required).length;
+  const immediateCount = Math.max(0, fields.length - restartCount);
+  return `
+    <div class="module-overview">
+      ${metricCard("可配置项", fields.length, `${menu} 当前纳入后台管理`)}
+      ${metricCard("立即生效", immediateCount, "保存后写入运行配置", "success-text")}
+      ${metricCard("需重启", restartCount, "路径、监听和部分轮询配置", restartCount ? "warn-text" : "")}
+      ${metricCard("密钥字段", secretCount, "只显示配置状态和指纹")}
+    </div>
   `;
 }
 
@@ -1124,7 +1153,20 @@ function metricCard(label, value, description = "", className = "") {
 }
 
 function loadingHtml(text) {
-  return `<div class="empty-state">${escapeHtml(text)}</div>`;
+  return `
+    <div class="loading-state" role="status" aria-live="polite">
+      <div class="loading-copy">
+        <strong>${escapeHtml(text)}</strong>
+        <span>正在读取线上配置和运行数据</span>
+      </div>
+      <div class="skeleton-grid">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="skeleton-panel">
+        <span></span><span></span><span></span><span></span>
+      </div>
+    </div>
+  `;
 }
 
 function errorHtml(text) {
@@ -1201,6 +1243,22 @@ function formatValue(value) {
   }
   if (value === undefined || value === null || value === "") return "-";
   return String(value);
+}
+
+function formatTrigger(value) {
+  const raw = String(value || "-");
+  const labels = {
+    messaging_webhook: "消息 webhook",
+    zendesk_webhook: "工单 webhook",
+    webhook: "webhook",
+    "webhook-mention": "@mention",
+    mention_poller: "@mention 轮询",
+    silence_waker: "静默唤醒",
+    waiting_poller: "等待轮询",
+    session_finished: "会话完成",
+    agent_done: "处理完成"
+  };
+  return labels[raw] || raw;
 }
 
 function logSummary(item) {
