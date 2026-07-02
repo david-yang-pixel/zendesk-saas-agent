@@ -163,6 +163,10 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert "查看完整日志" in app_js
     assert "renderOverviewShell" in app_js
     assert "renderRecentRunsIntoOverview" in app_js
+    assert "renderRunRecordsShell" in app_js
+    assert 'detail: false' in app_js
+    assert "ensureRunRecordDetail" in app_js
+    assert 'detail: true' in app_js
     assert "await Promise.all" not in app_js[app_js.index("async function renderOverview"):app_js.index("function goMenu")]
 
 
@@ -770,6 +774,92 @@ def test_admin_run_records_builds_rounds_from_jsonl_trace_events(tmp_path) -> No
     assert item["llm_rounds"][1]["tools"][0]["name"] == "sql_query"
     assert item["llm_rounds"][1]["tools"][0]["status"] == "failed"
     assert item["llm_rounds"][1]["tools"][0]["error"] == "database unavailable"
+
+
+def test_admin_run_records_quick_list_skips_detail_and_reads_newest_tail_first(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    log_dir = tmp_path / "logs"
+    archive_dir = tmp_path / "archive"
+    log_dir.mkdir()
+    archive_dir.mkdir()
+    (log_dir / "events-2026-07-01.jsonl").write_text(
+        json.dumps({
+            "timestamp": "2026-07-01T08:00:00Z",
+            "event": "agent_done",
+            "ticket_id": 3999,
+            "session_id": "session-3999",
+        }),
+        encoding="utf-8",
+    )
+    (log_dir / "events-2026-07-02.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-07-02T08:00:00Z",
+                "event": "agent_started",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:01:00Z",
+                "event": "tool_call",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "round": 1,
+                "tool": "zendesk_get_ticket",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-02T08:02:00Z",
+                "event": "agent_done",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "rounds": 1,
+            }),
+        ]),
+        encoding="utf-8",
+    )
+
+    def fail_archive_read(*_args):
+        raise AssertionError("quick list must not read archive details")
+
+    with monkeypatch.context() as context:
+        context.setattr(admin_routes, "_read_archive_meta", fail_archive_read)
+        body = admin_routes._read_recent_log_events(
+            log_dir,
+            limit=1,
+            filters={"quick": True},
+            archive_dir=archive_dir,
+            include_detail=False,
+        )
+
+    item = body["items"][0]
+    assert item["ticket_id"] == 4101
+    assert item["detail_loaded"] is False
+    assert "record_key" in item
+    assert "events" not in item
+    assert "llm_rounds" not in item
+    assert body["scanned_files"] == 1
+    assert body["raw_events_total"] == 1
+    assert body["partial"] is True
+
+    detail = admin_routes._read_recent_log_events(
+        log_dir,
+        limit=1,
+        filters={"record_key": item["record_key"]},
+        archive_dir=archive_dir,
+        include_detail=True,
+    )
+
+    detail_item = detail["items"][0]
+    assert detail_item["detail_loaded"] is True
+    assert detail_item["ticket_id"] == 4101
+    assert detail_item["event_count"] == 3
+    assert [event["event"] for event in detail_item["events"]] == [
+        "agent_started",
+        "tool_call",
+        "agent_done",
+    ]
 
 
 def test_admin_run_records_only_reads_archive_meta_for_returned_page(

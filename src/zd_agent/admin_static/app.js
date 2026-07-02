@@ -43,6 +43,7 @@ const state = {
   runDisplayRecords: [],
   runLimit: 80,
   expandedRuns: new Set(),
+  loadingRunDetails: new Set(),
   auditLogs: [],
   deployStatus: null,
   runFilters: {},
@@ -266,7 +267,7 @@ async function renderOverview() {
   void loadDeployStatus()
     .then(renderOverviewDeploy)
     .catch(error => renderOverviewDeployError(error));
-  void loadRunRecords(5, {}, { quick: true, updateState: false })
+  void loadRunRecords(5, {}, { quick: true, detail: false, updateState: false })
     .then(renderRecentRunsIntoOverview)
     .catch(error => renderRecentRunsError(error));
 }
@@ -413,6 +414,9 @@ async function loadRunRecords(limit = 100, filters = state.runFilters, options =
   if (options.quick) {
     params.set("quick", "true");
   }
+  if (typeof options.detail === "boolean") {
+    params.set("detail", options.detail ? "true" : "false");
+  }
   const data = await api(`/admin/api/run-records?${params.toString()}`);
   if (options.updateState !== false) {
     state.runRecords = data.items || [];
@@ -423,8 +427,58 @@ async function loadRunRecords(limit = 100, filters = state.runFilters, options =
 
 async function renderRunRecords(options = {}) {
   const data = options.reload === false && state.runRecordsPayload
-    ? state.runRecordsPayload
-    : await loadRunRecords(state.runLimit);
+    ? { ...state.runRecordsPayload, items: state.runRecords }
+    : null;
+  if (data) {
+    renderRunRecordsContent(data);
+    return;
+  }
+  setContent(renderRunRecordsShell());
+  try {
+    const payload = await loadRunRecords(state.runLimit, state.runFilters, {
+      quick: shouldQuickLoadRunRecords(),
+      detail: false
+    });
+    renderRunRecordsContent(payload);
+  } catch (err) {
+    setContent(errorHtml(err.message || "运行记录加载失败"));
+  }
+}
+
+function shouldQuickLoadRunRecords() {
+  const filters = state.runFilters || {};
+  return !filters.ticket_id && !filters.event && !filters.module && !filters.errors_only;
+}
+
+function renderRunRecordsShell() {
+  return `
+    <div class="metric-grid run-metrics">
+      ${metricCard("总处理数", "--", "读取最近运行")}
+      ${metricCard("成功率", "--", "读取错误事件")}
+      ${metricCard("平均耗时", "--", "读取耗时")}
+      ${metricCard("Token 消耗", "--", "读取用量")}
+    </div>
+    <section class="filter-panel">
+      <input placeholder="工单号筛选" disabled>
+      <select disabled><option>全部状态</option></select>
+      <input placeholder="事件" disabled>
+      <input placeholder="模块" disabled>
+      <button class="btn primary" disabled>查询</button>
+      <button class="btn secondary" disabled>重置</button>
+    </section>
+    <section class="card run-record-card">
+      <div class="card-header">
+        <span>运行记录</span>
+        <span class="chip">快速读取中</span>
+      </div>
+      <div class="card-body">
+        ${inlineLoadingHtml("正在读取最近运行记录")}
+      </div>
+    </section>
+  `;
+}
+
+function renderRunRecordsContent(data) {
   const items = data.items || [];
   let records = buildRunDisplayRecords(items);
   if (state.runFilters.status === "success") {
@@ -458,6 +512,7 @@ async function renderRunRecords(options = {}) {
         <span>运行记录</span>
         <div class="header-actions">
           <span class="chip">显示 ${records.length} / ${data.summary?.filtered ?? records.length}</span>
+          ${data.partial ? `<span class="chip">快速模式</span>` : ""}
           <span class="chip">JSONL ${data.jsonl_enabled ? "已开启" : "未开启"}</span>
           ${(data.summary?.filtered || 0) > state.runLimit
             ? `<button class="btn secondary compact" onclick="loadMoreRuns()">加载更多</button>`
@@ -493,7 +548,7 @@ function buildRunDisplayRecords(items) {
     const totalTokens = numberFromKeys(item, ["total_tokens", "tokens", "token_count"]) || inputTokens + outputTokens;
     const durationMs = durationMsFromItem(item);
     const ticket = item.ticket_id || item.ticket || "";
-    const key = [
+    const key = item.record_key || [
       item._source_file || "events",
       item.session_id || "",
       item.timestamp || item.ts || index,
@@ -571,6 +626,13 @@ function renderRunRecordRow(record, index) {
 }
 
 function renderRunRecordDetail(record, index) {
+  if (state.loadingRunDetails.has(record.key)) {
+    return `
+      <div class="run-record-detail">
+        ${inlineLoadingHtml("正在读取完整日志链路")}
+      </div>
+    `;
+  }
   return `
     <div class="run-record-detail">
       <div class="detail-summary">
@@ -767,10 +829,26 @@ function toggleRunRecord(index) {
   if (!record) return;
   if (state.expandedRuns.has(record.key)) {
     state.expandedRuns.delete(record.key);
+    state.loadingRunDetails.delete(record.key);
+    void renderRunRecords({ reload: false });
+    return;
   } else {
     state.expandedRuns.add(record.key);
   }
+  if (record.raw?.detail_loaded) {
+    void renderRunRecords({ reload: false });
+    return;
+  }
+  state.loadingRunDetails.add(record.key);
   void renderRunRecords({ reload: false });
+  void ensureRunRecordDetail(index)
+    .catch(error => showModal("运行日志读取失败", errorHtml(error.message || "详情加载失败"), [
+      { label: "关闭", className: "secondary", onClick: closeModal }
+    ]))
+    .finally(() => {
+      state.loadingRunDetails.delete(record.key);
+      void renderRunRecords({ reload: false });
+    });
 }
 
 function applyRunFilters() {
@@ -1209,9 +1287,54 @@ function resetAuditFilters() {
   void renderAuditLogs();
 }
 
-function openRunRecordDetail(index) {
+async function ensureRunRecordDetail(index) {
   const record = state.runDisplayRecords[index];
-  if (!record) return;
+  if (!record) return null;
+  if (record.raw?.detail_loaded) return record;
+  const recordKey = record.raw?.record_key || record.key;
+  if (!recordKey) return record;
+  const data = await loadRunRecords(1, { record_key: recordKey }, {
+    detail: true,
+    updateState: false
+  });
+  const item = data.items?.[0];
+  if (!item) {
+    throw new Error("没有找到这条运行记录的完整日志");
+  }
+  const rawIndex = state.runRecords.findIndex(raw => (raw.record_key || "") === recordKey);
+  if (rawIndex >= 0) {
+    state.runRecords[rawIndex] = item;
+  }
+  if (state.runRecordsPayload?.items && rawIndex >= 0) {
+    state.runRecordsPayload.items[rawIndex] = item;
+  }
+  const [detailed] = buildRunDisplayRecords([item]);
+  state.runDisplayRecords[index] = detailed;
+  return detailed;
+}
+
+async function openRunRecordDetail(index) {
+  const current = state.runDisplayRecords[index];
+  if (!current) return;
+  openDrawer(
+    `${current.ticketLabel} 运行日志`,
+    "正在读取完整日志链路",
+    inlineLoadingHtml("正在读取完整日志链路")
+  );
+  try {
+    const record = await ensureRunRecordDetail(index);
+    if (!record) return;
+    openRunRecordDrawer(record);
+  } catch (err) {
+    openDrawer(
+      `${current.ticketLabel} 运行日志`,
+      "读取失败",
+      errorHtml(err.message || "详情加载失败")
+    );
+  }
+}
+
+function openRunRecordDrawer(record) {
   const item = record.raw;
   openDrawer(
     `${record.ticketLabel} 运行日志`,

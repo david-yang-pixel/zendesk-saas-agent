@@ -551,6 +551,17 @@ def _run_record_sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
     return (_event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc), _event_priority(item))
 
 
+def _run_record_public_key(item: dict[str, Any]) -> str:
+    parts = [
+        str(item.get("_source_file") or "events"),
+        str(item.get("session_id") or ""),
+        str(item.get("timestamp") or item.get("ts") or item.get("time") or item.get("created_at") or ""),
+        str(item.get("event") or ""),
+        str(item.get("ticket_id") or item.get("ticket") or ""),
+    ]
+    return "|".join(parts)
+
+
 def _ticket_id_for_archive(item: dict[str, Any]) -> str:
     raw = str(item.get("ticket_id") or item.get("ticket") or "").strip()
     return raw if TICKET_ID_RE.fullmatch(raw) else ""
@@ -883,6 +894,59 @@ def _attach_event_trace(
     return enriched
 
 
+def _response_record(
+    record: dict[str, Any],
+    *,
+    include_detail: bool,
+    trace_index: dict[str, list[dict[str, Any]]] | None,
+    archive_dir: Path | None,
+    cache: dict[str, dict[str, Any] | None],
+) -> dict[str, Any]:
+    if include_detail:
+        enriched = _enrich_with_archive_meta(
+            _attach_event_trace(record, trace_index),
+            archive_dir=archive_dir,
+            cache=cache,
+        )
+        enriched["detail_loaded"] = True
+    else:
+        enriched = dict(record)
+        if trace_index is not None:
+            events = _trace_events_for_record(record, trace_index)
+            if events:
+                enriched["event_count"] = len(events)
+        enriched.pop("events", None)
+        enriched.pop("llm_rounds", None)
+        enriched.pop("tool_calls", None)
+        enriched["detail_loaded"] = False
+    enriched["record_key"] = _run_record_public_key(enriched)
+    return enriched
+
+
+def _iter_jsonl_lines(path: Path, *, reverse: bool = False):
+    if not reverse:
+        with path.open(encoding="utf-8") as lines:
+            yield from lines
+        return
+
+    chunk_size = 64 * 1024
+    with path.open("rb") as handle:
+        position = handle.seek(0, os.SEEK_END)
+        buffer = b""
+        while position > 0:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            parts = (chunk + buffer).split(b"\n")
+            buffer = parts[0]
+            for line in reversed(parts[1:]):
+                if line:
+                    yield line.decode("utf-8", errors="replace")
+        if buffer:
+            yield buffer.decode("utf-8", errors="replace")
+
+
 def _query_limit(request: web.Request, *, default: int = 100) -> int:
     try:
         value = int(request.query.get("limit", str(default)))  # type: ignore[attr-defined]
@@ -893,6 +957,7 @@ def _query_limit(request: web.Request, *, default: int = 100) -> int:
 
 def _run_filters_from_query(query: Any) -> dict[str, Any]:
     return {
+        "record_key": str(query.get("record_key", "") or "").strip(),
         "ticket_id": str(query.get("ticket_id", "") or "").strip(),
         "event": str(query.get("event", "") or "").strip().lower(),
         "module": str(query.get("module", "") or "").strip().lower(),
@@ -920,6 +985,9 @@ def _matches_run_filters(
     *,
     trace_index: dict[str, list[dict[str, Any]]] | None = None,
 ) -> bool:
+    record_key = filters.get("record_key")
+    if record_key and record_key != _run_record_public_key(item):
+        return False
     ticket_id = filters.get("ticket_id")
     if ticket_id and ticket_id not in {
         str(item.get("ticket_id") or ""),
@@ -998,6 +1066,7 @@ def _read_recent_log_events(
     limit: int,
     filters: dict[str, Any] | None = None,
     archive_dir: Path | None = None,
+    include_detail: bool = True,
 ) -> dict[str, Any]:
     limit = max(1, min(limit, 500))
     filters = filters or {}
@@ -1015,17 +1084,25 @@ def _read_recent_log_events(
     raw_events_total = 0
     quick = bool(filters.get("quick")) and not any(
         filters.get(key)
-        for key in ("ticket_id", "event", "module", "level", "errors_only", "since", "until")
+        for key in (
+            "record_key",
+            "ticket_id",
+            "event",
+            "module",
+            "level",
+            "errors_only",
+            "since",
+            "until",
+        )
     )
-    paths = sorted(log_dir.glob("events-*.jsonl"), reverse=quick)
+    fast_list = quick and not include_detail
+    paths = sorted(log_dir.glob("events-*.jsonl"), reverse=fast_list)
     scanned_files = 0
+    enough_fast_records = False
     for path in paths:
-        try:
-            lines = path.open(encoding="utf-8")
-        except OSError:
-            continue
         scanned_files += 1
-        with lines:
+        try:
+            lines = _iter_jsonl_lines(path, reverse=fast_list)
             for line in lines:
                 try:
                     item = json.loads(line)
@@ -1041,11 +1118,21 @@ def _read_recent_log_events(
                 if record is None:
                     continue
                 run_events.append(record)
-        if quick and len(_aggregate_run_records(run_events)) >= limit:
+                if fast_list and len(
+                    _aggregate_run_records(sorted(run_events, key=_run_record_sort_key)),
+                ) >= limit:
+                    enough_fast_records = True
+                    break
+        except OSError:
+            continue
+        if enough_fast_records:
             break
-    trace_index = _build_trace_index(trace_events)
+    needs_trace_index = include_detail or any(
+        filters.get(key) for key in ("event", "module", "level", "errors_only")
+    )
+    trace_index = _build_trace_index(trace_events) if needs_trace_index else None
     all_items = sorted(
-        _aggregate_run_records(run_events),
+        _aggregate_run_records(sorted(run_events, key=_run_record_sort_key)),
         key=_run_record_sort_key,
         reverse=True,
     )
@@ -1055,12 +1142,18 @@ def _read_recent_log_events(
     ]
     matched_error_events = sum(
         1 for item in matched_items
-        if _record_has_error_with_trace(item, trace_index)
+        if (
+            _record_has_error_with_trace(item, trace_index)
+            if trace_index is not None
+            else _record_has_error(item)
+        )
     )
     archive_cache: dict[str, dict[str, Any] | None] = {}
     page_items = [
-        _enrich_with_archive_meta(
-            _attach_event_trace(item, trace_index),
+        _response_record(
+            item,
+            include_detail=include_detail,
+            trace_index=trace_index,
             archive_dir=archive_dir,
             cache=archive_cache,
         )
@@ -1078,8 +1171,9 @@ def _read_recent_log_events(
         "filters": _public_run_filters(filters),
         "log_dir": str(log_dir),
         "raw_events_total": raw_events_total,
-        "partial": quick and scanned_files < len(paths),
+        "partial": fast_list and scanned_files < len(paths),
         "scanned_files": scanned_files,
+        "detail": include_detail,
         "exists": True,
     }
 
@@ -1330,6 +1424,7 @@ async def handle_admin_run_records(request: web.Request) -> web.Response:
         limit=_query_limit(request),
         filters=filters,
         archive_dir=Path(cfg.knowledge.archive_dir),
+        include_detail=_truthy(request.query.get("detail", "true")),  # type: ignore[attr-defined]
     )
     payload["jsonl_enabled"] = bool(cfg.logging.jsonl_enabled)
     return web.json_response(payload)
