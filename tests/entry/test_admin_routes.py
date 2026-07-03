@@ -188,6 +188,11 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "module-overview" in app_js
     assert "module-guide" in app_js
     assert "FIELD_SECTIONS" in app_js
+    assert "selectConfigSection" in app_js
+    assert "renderConfigSectionPicker" in app_js
+    assert "renderConfigSectionDetails" in app_js
+    assert "点击卡片查看配置" in app_js
+    assert "config-section-tile" in app_js
     assert "config-section-card" in app_js
     assert "触发判定与等待策略" in app_js
     assert "主模型与判定模型" in app_js

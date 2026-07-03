@@ -342,6 +342,7 @@ const state = {
   deployStatus: null,
   runFilters: {},
   auditFilters: {},
+  activeConfigSections: {},
   integrationChecks: {}
 };
 
@@ -1384,9 +1385,11 @@ function fieldsFor(menu) {
 function renderForm(title, fields) {
   const sections = fieldSectionsFor(title, fields);
   if (!sections.length) return "";
+  const activeIndex = activeConfigSectionIndex(title, sections);
   return `
     <div class="config-section-stack">
-      ${sections.map(renderConfigSection).join("")}
+      ${renderConfigSectionPicker(title, sections, activeIndex)}
+      ${renderConfigSectionDetails(sections[activeIndex])}
     </div>
   `;
 }
@@ -1415,9 +1418,62 @@ function fieldSectionsFor(menu, fields) {
   return sections;
 }
 
-function renderConfigSection(section) {
+function activeConfigSectionIndex(menu, sections) {
+  const activeTitle = state.activeConfigSections[menu];
+  const index = sections.findIndex(section => section.title === activeTitle);
+  return index >= 0 ? index : 0;
+}
+
+function selectConfigSection(menu, index) {
+  const sections = fieldSectionsFor(menu, fieldsFor(menu));
+  const section = sections[index];
+  if (!section) return;
+  state.activeConfigSections[menu] = section.title;
+  void render();
+}
+
+function renderConfigSectionPicker(menu, sections, activeIndex) {
   return `
-    <section class="card config-section-card">
+    <section class="card config-section-picker-card">
+      <div class="config-section-picker-head">
+        <div>
+          <span>配置分组</span>
+          <p>点击卡片查看配置，只展开当前需要调整的部分。</p>
+        </div>
+        <span class="chip">${sections.length} 个分组</span>
+      </div>
+      <div class="config-section-picker">
+        ${sections.map((section, index) => renderConfigSectionTile(menu, section, index, activeIndex)).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderConfigSectionTile(menu, section, index, activeIndex) {
+  const isActive = index === activeIndex;
+  return `
+    <button
+      type="button"
+      class="config-section-tile ${isActive ? "active" : ""}"
+      aria-pressed="${isActive ? "true" : "false"}"
+      onclick="selectConfigSection(${escapeHtml(JSON.stringify(menu))}, ${index})"
+    >
+      <div class="config-section-tile-head">
+        <strong>${escapeHtml(section.title)}</strong>
+        <span>${isActive ? "已选中" : "打开"}</span>
+      </div>
+      <p>${escapeHtml(section.description || "查看并编辑这一组配置。")}</p>
+      <div class="config-section-tile-foot">
+        <span>${section.fields.length} 项配置</span>
+        <span class="config-section-arrow">›</span>
+      </div>
+    </button>
+  `;
+}
+
+function renderConfigSectionDetails(section) {
+  return `
+    <section class="card config-section-card config-section-detail">
       <div class="card-header config-section-header">
         <div>
           <span>${escapeHtml(section.title)}</span>
