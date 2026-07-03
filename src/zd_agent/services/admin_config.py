@@ -71,7 +71,7 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("webhook.zendesk_path", "Tickets webhook 路径", "触发配置", restart_required=True),
     FieldSpec("webhook.zendesk_messaging_path", "Messaging webhook 路径", "触发配置", restart_required=True),
     FieldSpec("webhook.feishu_path", "飞书 webhook 路径", "触发配置", restart_required=True),
-    FieldSpec("trigger_decider.llm_model", "触发判定模型", "触发配置"),
+    FieldSpec("trigger_decider.llm_model", "触发判定模型", "模型与运行"),
     FieldSpec("trigger_decider.silence_minutes_default", "默认静默分钟数", "触发配置", input="number"),
     FieldSpec("trigger_decider.silence_extend_to_minutes", "静默延长分钟数", "触发配置", input="number"),
     FieldSpec("trigger_decider.rapid_burst_window_seconds", "客户连发窗口", "触发配置", input="number"),

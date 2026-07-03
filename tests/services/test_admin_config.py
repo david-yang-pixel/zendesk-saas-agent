@@ -20,6 +20,7 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["prompts.ask_extra_instructions"]["input"] == "textarea"
     assert by_path["prompts.agent_extra_instructions"]["input"] == "textarea"
     assert by_path["retry.max_attempts"]["group"] == "模型与运行"
+    assert by_path["trigger_decider.llm_model"]["group"] == "模型与运行"
 
 
 def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
@@ -46,6 +47,7 @@ def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
     assert by_path["zendesk.api_token"]["secret"] is True
     assert by_path["webhook.listen_port"]["restart_required"] is True
     assert by_path["logging.jsonl_enabled"]["input"] == "boolean"
+    assert by_path["trigger_decider.enable_public_nudge"]["group"] == "触发配置"
 
 
 def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:

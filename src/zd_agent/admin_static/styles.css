@@ -2212,12 +2212,40 @@ textarea {
   max-height: 52vh;
 }
 
-.config-card .card-body {
-  padding: 22px;
+.config-section-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.config-section-card {
+  border-color: #cfe0f6;
+}
+
+.config-section-header {
+  align-items: flex-start;
+  background:
+    linear-gradient(180deg, rgba(248, 251, 255, 0.92), rgba(255, 255, 255, 0.98));
+}
+
+.config-section-header > div {
+  display: grid;
+  gap: 5px;
+}
+
+.config-section-header p {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0;
 }
 
 .form-grid {
   grid-template-columns: minmax(180px, 250px) minmax(0, 1fr) minmax(96px, 128px);
+}
+
+.form-grid label {
+  line-height: 1.35;
+  padding-top: 10px;
 }
 
 .prompt-textarea {

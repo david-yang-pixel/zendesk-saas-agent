@@ -24,15 +24,15 @@ const SUBTITLES = {
 
 const GROUP_DESCRIPTIONS = {
   "触发配置": [
-    "控制 agent 什么时候开始处理工单。",
-    "包含 Zendesk webhook、轮询、@mention、静默等待、客户连发合并和主动公开询问。"
+    "控制 agent 什么时候开始处理、什么时候等待，以及什么时候主动追问。",
+    "判定模型放在「模型与运行」里；这里聚焦入口、窗口和扫描策略。"
   ],
   "回复策略": [
     "控制 agent 什么时候发送 public reply、什么时候 ask、什么时候交给人工。",
     "Browser Relay 的 URL/API Key 已移到「工具与集成」，这里只保留回复行为策略。"
   ],
   "模型与运行": [
-    "配置模型供应商、Base URL、模型名、API Key、并发、轮次、超时和提示词补充规则。",
+    "配置主回复模型、Subagent 模型、触发判定模型、API Key、并发、轮次、超时和提示词补充规则。",
     "模型名是可编辑输入框，不限制为固定下拉选项。"
   ],
   "工具与集成": [
@@ -46,6 +46,271 @@ const GROUP_DESCRIPTIONS = {
   "部署状态": [
     "查看镜像、提交、重启状态，并管理后台登录方式。",
     "默认账号密码登录；Google/飞书 SSO 需要配置后再开启。"
+  ]
+};
+
+const FIELD_SECTIONS = {
+  "触发配置": [
+    {
+      title: "Zendesk 接入与轮询",
+      description: "工单来源、搜索条件、轮询间隔、@mention 和灰度范围。",
+      paths: [
+        "zendesk.subdomain",
+        "zendesk.email",
+        "zendesk.api_token",
+        "zendesk.search_query",
+        "zendesk.poll_query",
+        "zendesk.poll_interval_seconds",
+        "zendesk.mention_trigger",
+        "zendesk.mention_poll_interval_seconds",
+        "zendesk.agent_user_id",
+        "zendesk.min_ticket_id"
+      ]
+    },
+    {
+      title: "Webhook 入口",
+      description: "Tickets、Messaging 和飞书 webhook 的监听地址、路径与签名密钥。",
+      paths: [
+        "webhook.signing_secret",
+        "webhook.messaging_signing_secret",
+        "webhook.listen_host",
+        "webhook.listen_port",
+        "webhook.zendesk_path",
+        "webhook.zendesk_messaging_path",
+        "webhook.feishu_path"
+      ]
+    },
+    {
+      title: "触发判定与等待策略",
+      description: "客户消息合并、信息不足等待、仅问候告警和主动公开询问开关。",
+      paths: [
+        "trigger_decider.silence_minutes_default",
+        "trigger_decider.silence_extend_to_minutes",
+        "trigger_decider.rapid_burst_window_seconds",
+        "trigger_decider.rapid_burst_threshold",
+        "trigger_decider.insufficient_timeout_minutes",
+        "trigger_decider.abandoned_hours",
+        "trigger_decider.greeting_only_alert_minutes",
+        "trigger_decider.enable_public_nudge",
+        "trigger_decider.post_agent_cooldown_seconds"
+      ]
+    },
+    {
+      title: "后台扫描器",
+      description: "静默唤醒和等待工单兜底扫描，偏运行时调度。",
+      paths: [
+        "silence_waker.scan_interval_seconds",
+        "waiting_poller.scan_interval_seconds",
+        "waiting_poller.abandoned_hours",
+        "waiting_poller.greeting_alert_minutes",
+        "waiting_poller.poll_new_messages"
+      ]
+    }
+  ],
+  "回复策略": [
+    {
+      title: "Public reply 策略",
+      description: "是否允许自动公开回复、ask 次数上限和 Browser Relay 调用超时。",
+      paths: [
+        "public_reply.enabled",
+        "public_reply.max_ask_count",
+        "public_reply.browser_relay_timeout_seconds"
+      ]
+    },
+    {
+      title: "等待与追问窗口",
+      description: "客户消息到达后的等待、合并、ask 告警和放弃等待时间。",
+      paths: [
+        "public_reply.silent_initial_wait_seconds",
+        "public_reply.silence_window_seconds",
+        "public_reply.ask_followup_alert_minutes",
+        "public_reply.abandoned_hours"
+      ]
+    },
+    {
+      title: "Ask 提示词",
+      description: "信息不足时交给大模型生成 ask 的补充规则。",
+      paths: ["prompts.ask_extra_instructions"]
+    }
+  ],
+  "模型与运行": [
+    {
+      title: "主模型与判定模型",
+      description: "主回复、Subagent 和触发判定各自使用的模型与接入地址。",
+      paths: [
+        "llm.provider",
+        "llm.base_url",
+        "llm.model",
+        "llm.subagent_model",
+        "trigger_decider.llm_model"
+      ]
+    },
+    {
+      title: "模型参数与密钥",
+      description: "请求温度、超时、输出上限和供应商 API Key。",
+      paths: [
+        "llm.temperature",
+        "llm.timeout",
+        "llm.max_tokens",
+        "openai.api_key",
+        "anthropic.api_key"
+      ]
+    },
+    {
+      title: "运行护栏",
+      description: "并发、最大轮次、会话超时和上下文压缩阈值。",
+      paths: [
+        "agent.max_concurrent_sessions",
+        "agent.guardrails.max_rounds",
+        "agent.guardrails.timeout_seconds",
+        "agent.guardrails.max_tokens_per_session",
+        "agent.guardrails.context_compaction_trigger_tokens",
+        "agent.guardrails.context_compaction_target_tokens"
+      ]
+    },
+    {
+      title: "重试策略",
+      description: "全局和下游服务的 retry 次数、退避与 jitter。",
+      paths: [
+        "retry.max_attempts",
+        "retry.base_delay_seconds",
+        "retry.max_delay_seconds",
+        "retry.jitter",
+        "retry.llm.max_attempts",
+        "retry.zendesk.max_attempts",
+        "retry.git.max_attempts",
+        "retry.sandbox.max_attempts"
+      ]
+    },
+    {
+      title: "Agent 提示词",
+      description: "处理工单主提示词的补充约束。",
+      paths: ["prompts.agent_extra_instructions"]
+    }
+  ],
+  "工具与集成": [
+    {
+      title: "Browser Relay",
+      description: "客户可见 public reply 的浏览器中继服务。",
+      paths: [
+        "public_reply.browser_relay_url",
+        "public_reply.browser_relay_api_key"
+      ]
+    },
+    {
+      title: "Zendesk MCP",
+      description: "工单读取、内部评论、标签、关注和附件读取。",
+      paths: [
+        "zendesk_mcp.mcp_url",
+        "zendesk_mcp.mcp_api_key",
+        "zendesk_mcp.request_timeout_seconds"
+      ]
+    },
+    {
+      title: "排查工具服务",
+      description: "DB、SigNoz、Source、GitHub、官方文档和 Sandbox 等远程能力。",
+      paths: [
+        "db_gateway.url",
+        "db_gateway.api_key",
+        "db_gateway.request_timeout_seconds",
+        "signoz.mcp_url",
+        "signoz.mcp_api_key",
+        "signoz.request_timeout_seconds",
+        "source_mcp.mcp_url",
+        "source_mcp.mcp_api_key",
+        "source_mcp.request_timeout_seconds",
+        "github_mcp.mcp_url",
+        "github_mcp.mcp_api_key",
+        "github_mcp.request_timeout_seconds",
+        "docs_tool_service.mcp_url",
+        "docs_tool_service.mcp_api_key",
+        "docs_tool_service.request_timeout_seconds",
+        "sandbox_worker.mcp_url",
+        "sandbox_worker.mcp_api_key",
+        "sandbox_worker.request_timeout_seconds"
+      ]
+    },
+    {
+      title: "通知服务",
+      description: "飞书通知服务、fallback webhook 和日报时间。",
+      paths: [
+        "notification_service.mcp_url",
+        "notification_service.mcp_api_key",
+        "notification_service.request_timeout_seconds",
+        "feishu.webhook_url",
+        "feishu.webhook_secret",
+        "feishu.daily_summary_time",
+        "feishu.daily_summary_timezone"
+      ]
+    },
+    {
+      title: "Legacy Inspector",
+      description: "旧 inspector 兼容入口，后续可逐步迁移到远程服务。",
+      paths: [
+        "inspector.binary",
+        "inspector.config_file",
+        "inspector.timeout_seconds"
+      ]
+    }
+  ],
+  "存储配置": [
+    {
+      title: "资源目录",
+      description: "资源根目录、代码库、知识库和工单记录目录。",
+      paths: [
+        "resources.base_dir",
+        "resources.saas_codebase_dir",
+        "resources.knowledge_base_dir",
+        "resources.ticket_records_dir",
+        "resources.attachments_dir",
+        "resources.state_dir"
+      ]
+    },
+    {
+      title: "知识库与日志",
+      description: "知识库路径、归档路径和 JSONL 运行日志存储。",
+      paths: [
+        "knowledge.docs_dir",
+        "knowledge.archive_dir",
+        "logging.jsonl_enabled",
+        "logging.log_dir"
+      ]
+    },
+    {
+      title: "Sandbox 存储",
+      description: "隔离执行目录和成功/失败后的清理策略。",
+      paths: [
+        "sandbox.base_dir",
+        "sandbox.cleanup_on_success",
+        "sandbox.cleanup_on_failure"
+      ]
+    }
+  ],
+  "部署状态": [
+    {
+      title: "账号密码登录",
+      description: "后台默认登录方式，支持开启或关闭。",
+      paths: ["admin_auth.password_login_enabled"]
+    },
+    {
+      title: "Google SSO",
+      description: "Google OAuth 客户端和允许登录的域名。",
+      paths: [
+        "admin_auth.google_sso_enabled",
+        "admin_auth.google_client_id",
+        "admin_auth.google_client_secret",
+        "admin_auth.google_allowed_domains"
+      ]
+    },
+    {
+      title: "飞书 SSO",
+      description: "飞书应用凭据和 SSO 开关。",
+      paths: [
+        "admin_auth.feishu_sso_enabled",
+        "admin_auth.feishu_app_id",
+        "admin_auth.feishu_app_secret"
+      ]
+    }
   ]
 };
 
@@ -1117,23 +1382,71 @@ function fieldsFor(menu) {
 }
 
 function renderForm(title, fields) {
+  const sections = fieldSectionsFor(title, fields);
+  if (!sections.length) return "";
   return `
-    <section class="card config-card">
-      <div class="card-header">
-        <span>${escapeHtml(title)}</span>
-        <span class="chip">保存前会生成审计记录</span>
+    <div class="config-section-stack">
+      ${sections.map(renderConfigSection).join("")}
+    </div>
+  `;
+}
+
+function fieldSectionsFor(menu, fields) {
+  const fieldByPath = new Map(fields.map(field => [field.path, field]));
+  const used = new Set();
+  const configuredSections = FIELD_SECTIONS[menu] || [];
+  const sections = configuredSections
+    .map(section => {
+      const sectionFields = section.paths
+        .map(path => fieldByPath.get(path))
+        .filter(Boolean);
+      sectionFields.forEach(field => used.add(field.path));
+      return { ...section, fields: sectionFields };
+    })
+    .filter(section => section.fields.length);
+  const remainingFields = fields.filter(field => !used.has(field.path));
+  if (remainingFields.length) {
+    sections.push({
+      title: "其他配置",
+      description: "尚未归入专门小节，但仍可在后台编辑。",
+      fields: remainingFields
+    });
+  }
+  return sections;
+}
+
+function renderConfigSection(section) {
+  return `
+    <section class="card config-section-card">
+      <div class="card-header config-section-header">
+        <div>
+          <span>${escapeHtml(section.title)}</span>
+          <p>${escapeHtml(section.description || "")}</p>
+        </div>
+        <span class="chip">${section.fields.length} 项配置</span>
       </div>
       <div class="card-body form-grid">
-        ${fields.map(field => `
-          <label for="field-${field.path}">${escapeHtml(field.label)}</label>
-          ${renderInput(field)}
-          <span class="field-help ${field.restart_required ? "warn-text" : "muted"}">
-            ${field.secret ? "可替换密钥" : field.restart_required ? "需重启生效" : field.protected ? "受保护" : "立即生效"}
-          </span>
-        `).join("")}
+        ${section.fields.map(renderFieldRow).join("")}
       </div>
     </section>
   `;
+}
+
+function renderFieldRow(field) {
+  return `
+    <label for="field-${field.path}" title="${escapeHtml(field.path)}">${escapeHtml(field.label)}</label>
+    ${renderInput(field)}
+    <span class="field-help ${field.restart_required ? "warn-text" : "muted"}">
+      ${fieldHelpText(field)}
+    </span>
+  `;
+}
+
+function fieldHelpText(field) {
+  if (field.secret) return "可替换密钥";
+  if (field.restart_required) return "需重启生效";
+  if (field.protected) return "受保护";
+  return "立即生效";
 }
 
 function renderModuleOverview(menu, fields) {

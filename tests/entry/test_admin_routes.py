@@ -187,6 +187,11 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert 'field.input === "textarea"' in app_js
     assert "module-overview" in app_js
     assert "module-guide" in app_js
+    assert "FIELD_SECTIONS" in app_js
+    assert "config-section-card" in app_js
+    assert "触发判定与等待策略" in app_js
+    assert "主模型与判定模型" in app_js
+    assert "判定模型放在「模型与运行」里" in app_js
     assert "Ask 提示词补充规则" in (
         resources.files("zd_agent.services")
         .joinpath("admin_config.py")
