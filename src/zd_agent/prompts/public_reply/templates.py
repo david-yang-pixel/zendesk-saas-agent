@@ -2,12 +2,12 @@
 
 设计决策（来自 2026-05-13 跟用户讨论）：
 - **统一 English**：messaging 工单一律英文回复，不跟随客户语言
-- **不问已知字段**：Workspace ID / customer name / email 在 formResponse 里已有，
-  绝不向客户索取（agent 已经从 ``_form_data_from_msgs`` 拿到）
+- **不重复问已知字段**：customer name / email 在 formResponse 里已有，绝不向客户索取。
+  Workspace ID 仅可作为条件补充："如果不是当前 workspace，请附上对应 Workspace ID"。
 - **footer 不在这里加**：``ZendeskPublicReply`` 工具层硬编码追加，本模块只输出
   正文 body（不含 footer 不含 ``---`` 分隔线）
-- **追问 LLM-first**：A/B/C/D 表示场景语义和 fallback；正常路径由 LLM 生成
-  最小客户追问，失败或命中安全过滤时回退到对应模板
+- **追问混合策略**：无消息/仅问候使用固定 ask；信息已经模糊但不完整时，
+  LLM 只用于生成最小缺失信息追问，失败或命中安全过滤时回退到对应模板
 
 7 个模板对应 6 种触发场景 + 1 个 agent 给方案的 skeleton：
 - A silent          客户工单 0 消息（含 formResponse 已抽 name/wid）
@@ -47,12 +47,10 @@ def silent_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}! We've received your ticket. "
-        "Please share what type of issue you need help with.\n\n"
-        "Useful details, if relevant:\n"
-        "- Billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error/bug\n"
-        "- A short description of what you are trying to do or what happened\n"
-        "- Any relevant page, app, workflow, dataset, API, billing/account area, error text, or screenshot"
+        f"Hi{name_part}, thanks for reaching out. Could you please let us know "
+        "what you need help with? For example, is it related to billing/refund, "
+        "feature usage or how-to guidance, account/subscription changes, "
+        "workflows, knowledge base, API, or an error/bug?"
     )
 
 
@@ -63,8 +61,10 @@ def greeting_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}! What type of issue are you running into? "
-        "For example: billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error/bug."
+        f"Hi{name_part}, thanks for reaching out. Could you please let us know "
+        "what you need help with? For example, is it related to billing/refund, "
+        "feature usage or how-to guidance, account/subscription changes, "
+        "workflows, knowledge base, API, or an error/bug?"
     )
 
 
@@ -76,12 +76,9 @@ def retry_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part} — I still need to know what type of issue this is before I can help. "
-        "Could you share the issue type and a short description? For example:\n\n"
-        '- "I want to request a refund for my latest renewal"\n'
-        '- "How do I configure a feature for my use case?"\n'
-        '- "I get a 500 error when creating a workflow"\n'
-        '- "My AI Credits show 0 but I only sent a few messages"'
+        f"Hi{name_part}, I still need to know what you need help with before I can continue. "
+        "For example, is it related to billing/refund, feature usage or how-to guidance, "
+        "account/subscription changes, workflows, knowledge base, API, or an error/bug?"
     )
 
 
@@ -125,7 +122,8 @@ Generate 2-3 specific, actionable bullet points asking for **missing information
 Each point should ask for ONE specific thing.
 
 Constraints:
-- **DO NOT** ask for Workspace ID, customer name, or email — we already have these from the form
+- **DO NOT** ask for customer name or email — we already have these from the form
+- **DO NOT** ask for Workspace ID by default. Only ask for it as a conditional detail if the customer is referring to a different workspace.
 - Be specific to what's vague in their messages (avoid generic "more info please")
 - Each bullet must start with "- " on its own line
 - Use natural English, polite but direct
@@ -137,21 +135,14 @@ Good examples:
 - For errors: the exact error message text, screenshot, affected app/workflow/dataset, or when it happened
 
 Bad examples (don't write):
-- Your Workspace ID  ← we have it
+- Your Workspace ID  ← unconditional, we usually have it
 - Your email  ← we have it
 - More information about the issue  ← too vague
 
 Return JSON: {{"bullets": ["- ...", "- ...", "- ..."]}}"""
 
 
-# LLM 即使被 prompt 明确禁止，偶尔仍会生成"请提供 Workspace ID / 邮箱 / 姓名"
-# 之类的 bullet —— 这三项 formResponse 已经有了，再问会让客户觉得冗余 + 不专业。
-# 用 substring match (lowercased) 过滤掉，没什么误伤面：
-#   - "workspace id" / "wid"        → 已知字段
-#   - "your email" / "email address"→ 已知字段
-#   - "your name" / "full name"     → 已知字段
 _FORBIDDEN_BULLET_PHRASES = (
-    "workspace id",
     "your workspace",
     "wid:",
     "your email",
@@ -161,11 +152,25 @@ _FORBIDDEN_BULLET_PHRASES = (
     "your account name",
 )
 
+_WORKSPACE_ID_ALLOWED_MARKERS = (
+    "different workspace",
+    "another workspace",
+    "not the current workspace",
+    "not this workspace",
+)
+
 
 def _is_forbidden_bullet(bullet: str) -> bool:
     """判断 bullet 是否要求已知字段（应被过滤）。"""
     low = bullet.lower()
-    return any(phrase in low for phrase in _FORBIDDEN_BULLET_PHRASES)
+    asks_workspace_id = "workspace id" in low or "workspace_id" in low
+    asks_workspace_id_unconditionally = (
+        asks_workspace_id
+        and not any(marker in low for marker in _WORKSPACE_ID_ALLOWED_MARKERS)
+    )
+    return asks_workspace_id_unconditionally or any(
+        phrase in low for phrase in _FORBIDDEN_BULLET_PHRASES
+    )
 
 
 def _ask_template_name(*, verdict_kind: str, ask_count: int) -> AskTemplateName:
@@ -184,7 +189,7 @@ def _insufficient_info_fallback_template(*, customer_name: str = "") -> str:
     name_part = f"{customer_name}, " if customer_name else ""
     bullet_text = "\n".join(MISSING_INFO_FALLBACK_BULLETS)
     return (
-        f"{name_part}got it. Could you share what type of issue this is and a short description?\n\n"
+        f"{name_part}got it. Please send over the missing details so I can continue:\n\n"
         f"{bullet_text}"
     )
 
@@ -314,7 +319,7 @@ async def insufficient_info_template(
     name_part = f"{customer_name}, " if customer_name else ""
     bullet_text = "\n".join(bullets)
     return (
-        f"{name_part}got it. Could you share the missing details for your request:\n\n"
+        f"{name_part}got it. Please send over the missing details so I can continue:\n\n"
         f"{bullet_text}"
     )
 
@@ -341,16 +346,20 @@ async def build_ask_body(
         verdict_kind=verdict_kind,
         ask_count=ask_count,
     )
-    body = await _generate_ask_body_with_llm(
-        verdict_kind=verdict_kind,
-        ask_count=ask_count,
-        customer_name=customer_name,
-        customer_messages=customer_messages,
-        model=model,
-        api_key=api_key,
+    should_use_llm = template_name == "C" or (
+        template_name == "D" and verdict_kind == "insufficient_info"
     )
-    if body is not None:
-        return body, template_name
+    if should_use_llm:
+        body = await _generate_ask_body_with_llm(
+            verdict_kind=verdict_kind,
+            ask_count=ask_count,
+            customer_name=customer_name,
+            customer_messages=customer_messages,
+            model=model,
+            api_key=api_key,
+        )
+        if body is not None:
+            return body, template_name
     return _fallback_ask_body(
         verdict_kind=verdict_kind,
         ask_count=ask_count,

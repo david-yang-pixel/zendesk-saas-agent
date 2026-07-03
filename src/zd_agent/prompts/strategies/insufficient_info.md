@@ -3,9 +3,9 @@
 客户描述过于简略，缺关键信息。
 
 ## 关键步骤
-1. 先判断客户是否已经表达问题类型；如果只是打招呼或内容过短，不要假设是 bug。
-2. 通过 `zendesk_public_reply` 发送 `reply_type="ask"`，让大模型按最新上下文生成针对性 ask；ask 的目的，是问客户这次遇到的是什么类型的问题，以便进入正确处理路径。
-3. 如果客户只是"你好 / 您好 / hello / 在吗"，先礼貌询问客户遇到的问题类型；可以给少量类型例子辅助表达，例如退款/账单、功能使用、账号/订阅、Workflow、Knowledge Base、API、报错/bug。
+1. 先判断客户是否已经表达真实问题或诉求；如果只是打招呼或内容过短，不要假设是 bug。
+2. 通过 `zendesk_public_reply` 发送 `reply_type="ask"`，让大模型按最新上下文生成针对性 ask；ask 的目的，是让客户说出这次需要什么帮助，以便 agent 后续自行分类和处理。
+3. 如果客户只是"你好 / 您好 / hello / 在吗"，先礼貌询问客户需要什么帮助；可以用 `For example...` 列常见方向（billing/refund、feature usage/how-to、account/subscription、workflows、knowledge base、API、error/bug），但不要要求客户先选择分类。
 4. 如果 public ask 发送失败或当前不允许公开回复，只写 internal note 说明等待客户补充，不要推送飞书人工介入。
 5. 不要瞎猜根因。
 

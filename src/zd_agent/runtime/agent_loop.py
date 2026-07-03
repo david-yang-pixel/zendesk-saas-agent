@@ -448,9 +448,8 @@ def _inject_language_reminder(session: AgentSession, message_store: MessageStore
     label = _LANG_NAMES.get(lang, lang)
     message_store.append_user(
         f"[系统提醒] 基于字符统计的初步检测，客户可能使用 {label} 沟通。"
-        f"请你结合对话全文独立判断客户实际使用的语言，"
-        f"并使用客户的语言撰写 Internal Note 正文内容"
-        f"（Suggested Reply、Internal Analysis、Review Guide 各段内容）。"
+        f"该检测只用于理解客户原文；客户可见 public reply / Suggested Reply 必须使用 English，"
+        f"不跟随客户语言。Internal Analysis、Review Guide 使用中文。"
         f"section 标题保持英文不变，代码块和命令行内容不受此限制。"
     )
     session._language_reminder_injected = True  # type: ignore[attr-defined]

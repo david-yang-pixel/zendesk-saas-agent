@@ -97,16 +97,13 @@ def register_dynamic_sections(builder: PromptBuilder) -> None:
 
     def _reply_language_section(ctx: PromptContext) -> str:
         detected = _LANG_NAMES.get(ctx.customer_language, ctx.customer_language)
-        is_zh = ctx.customer_language == "zh"
-        target = "中文" if is_zh else "English"
         return (
             f"初步检测客户可能使用 **{detected}** 沟通（基于字符统计，仅供参考）。"
-            f"请结合对话全文独立判断客户实际使用的语言。\n\n"
-            f"**客户回复输出语言（二选一）**：客户用中文 → 用中文回复；"
-            f"客户用任何其他语言（English / 日本語 / Português / Español / 한국어 / ...）→ "
-            f"一律用 **English** 回复。**绝不 EN + 中文双语对照**，**绝不让 agent 输出日语 / 葡语等非中英文**（质量不可控）。\n\n"
-            f"基于上述检测，本工单**Suggested Reply 段应使用 {target}**。\n"
-            f"Internal Analysis / Review Guide 段如客户是中文则用中文，否则用中文（运维同事母语）。\n"
+            f"这只用于理解客户原文，不决定公开回复语言。\n\n"
+            f"**客户可见 public reply / Suggested Reply 一律使用 English**，"
+            f"不跟随客户语言。**绝不 EN + 中文双语对照**，"
+            f"**绝不让 agent 输出中文 / 日语 / 葡语等非英文公开回复**。\n\n"
+            f"Internal Analysis / Review Guide 段使用中文，方便内部审核。\n"
             f"代码块和命令行内容不受语言限制。"
         )
 

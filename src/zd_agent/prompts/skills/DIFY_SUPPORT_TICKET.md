@@ -54,7 +54,7 @@
 
 ### 场景规则
 
-- 信息不足、仅问候或空消息：让模型基于最新上下文生成针对性 ask。ask 的目的，是问客户这次遇到的是什么类型的问题，以便进入正确处理路径；可以给少量类型例子辅助表达，例如退款/账单、功能使用、账号/订阅、Workflow、Knowledge Base、API、报错/bug，但不要默认套“请提供报错、截图、复现步骤”的 bug 模板。此类场景不是人工介入理由，不要调用 `feishu_push ticket_escalate`。
+- 信息不足、仅问候或空消息：让模型基于最新上下文生成针对性 ask。ask 的目的，是让客户说出这次需要什么帮助，以便 agent 后续自行分类和排查；可以用 `For example...` 列常见方向（billing/refund、feature usage/how-to、account/subscription、workflows、knowledge base、API、error/bug），但不要要求客户先选择分类，也不要默认套“请提供报错、截图、复现步骤”的 bug 模板。此类场景不是人工介入理由，不要调用 `feishu_push ticket_escalate`。
 - 退款：先确认 requester 是 workspace owner；不是 owner 就不要继续判断退款资格。owner 通过后再查订阅、支付、退款政策和时间线。
 - 计费/额度：同时查当前恢复状态和客户报错时间附近的历史状态，不只看当前 plan。
 - Workflow/Knowledge Base 卡住：用 DB 状态和 SigNoz/worker 日志确认进度、等待时长和失败点。
@@ -64,7 +64,7 @@
 
 ### 回复和记录
 
-- 客户中文则中文回复；其他语言默认 English；不要双语对照。
+- 客户可见 public reply 一律使用 English，不跟随客户语言；不要双语对照。
 - 客户可见回复要短、具体、承接客户原问题。simple 不超过 200 字，medium 不超过 400 字，complex 不超过 700 字。
 - 客户可见回复不得包含源码路径、内部仓库路径、文件名+行号、调用栈路径、内部服务名、DB 表字段、SQL、trace id、token、密钥或未脱敏日志。
 - 源码路径、SQL、日志、trace、PR 链路和内部判断只写 internal note、运行记录或归档。

@@ -10,9 +10,10 @@ from zd_agent.log import get_logger
 logger = get_logger(module="prompts.public_reply.ask_body")
 
 MISSING_INFO_FALLBACK_BULLETS: Final[tuple[str, ...]] = (
-    "- What type of issue this is, such as billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error/bug",
-    "- A short description of what you are trying to do or what happened",
-    "- Any relevant page, app, workflow, dataset, API, billing/account area, error text, or screenshot if there is one",
+    "- The page or feature involved",
+    "- Any error text, screenshot, or what you saw",
+    "- When it happened",
+    "- If this is about a different workspace, the Workspace ID",
 )
 
 ASK_BODY_MAX_CHARS: Final = 900
@@ -36,18 +37,20 @@ Rules:
 - Use English only.
 - Keep it concise: one short paragraph plus up to 3 bullets if bullets help.
 - Ask only for the minimum information needed to make the ticket actionable.
-- Do not ask for customer name, email, Workspace ID, plan, or account owner; those are already available from the form or ticket metadata.
+- Do not ask for customer name, email, plan, or account owner; those are already available from the form or ticket metadata.
+- Do not ask for Workspace ID by default. You may ask for it only as a conditional detail: "If this is about a different workspace, the Workspace ID."
 - Do not mention internal state, trigger decider, confidence, LLM, templates, automation, or tools.
 - Do not claim investigation has already happened.
-- For a ticket with no actual request yet, ask what type of issue the customer is encountering, so support can choose the right path. Mention concise examples across support categories: billing/refund, feature usage/how-to, account/subscription, workflow, knowledge base, API, or an error/bug.
+- For a ticket with no actual request yet, ask what the customer needs help with. The goal is to get the real question or issue from the customer.
+- You may give concise examples of common directions: billing/refund, feature usage or how-to guidance, account/subscription changes, workflows, knowledge base, API, or an error/bug.
+- Do not ask the customer to choose a category, provide an issue type, or classify the request first.
 - Do not assume every vague ticket is a troubleshooting or bug report. Ask for error text, screenshots, affected feature, and reproduction steps only when the customer indicates an error, failure, bug, or unexpected behavior.
-- For a vague request, infer the likely issue type from the customer's words and ask only for the smallest details needed to proceed. Refund/billing may need amount/date/subscription action; feature usage may need desired outcome and current setup; account/subscription may need affected account or action; technical errors may need affected page/feature, exact error, screenshot, and steps.
+- For a vague request, infer the likely intent from the customer's words and ask only for the smallest details needed to proceed. Refund/billing may need amount/date/subscription action; feature usage may need desired outcome and current setup; account/subscription may need affected account or action; technical errors may need affected page/feature, exact error, screenshot, and steps.
 - For a repeat ask, be direct and ask for the smallest set of exact details still missing. Do not apologize repeatedly.
 
 Return JSON exactly: {{"body": "..."}}"""
 
 FORBIDDEN_BODY_PHRASES: Final[tuple[str, ...]] = (
-    "workspace id",
     "workspace_id",
     "organization id",
     "org id",
@@ -67,6 +70,19 @@ FORBIDDEN_BODY_PHRASES: Final[tuple[str, ...]] = (
     "trigger_decider",
     "template",
     "llm",
+    "what type of issue",
+    "issue type",
+    "choose a category",
+    "select a category",
+    "what category",
+    "which category",
+)
+
+_WORKSPACE_ID_ALLOWED_MARKERS: Final[tuple[str, ...]] = (
+    "different workspace",
+    "another workspace",
+    "not the current workspace",
+    "not this workspace",
 )
 
 
@@ -109,9 +125,15 @@ def _customer_message_context(customer_messages: list[str]) -> str:
 
 def _is_unsafe_generated_body(body: str) -> bool:
     low = body.lower()
+    asks_workspace_id = "workspace id" in low or "workspace_id" in low
+    asks_workspace_id_unconditionally = (
+        asks_workspace_id
+        and not any(marker in low for marker in _WORKSPACE_ID_ALLOWED_MARKERS)
+    )
     return (
         len(body) < 20
         or len(body) > ASK_BODY_MAX_CHARS
+        or asks_workspace_id_unconditionally
         or any(phrase in low for phrase in FORBIDDEN_BODY_PHRASES)
     )
 

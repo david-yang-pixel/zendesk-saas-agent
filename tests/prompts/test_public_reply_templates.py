@@ -5,18 +5,17 @@
   - 客户名字插入
   - 客户名字为空时去掉空格
   - 不含 footer（footer 在工具层加）
-  - 不问 Workspace ID（绝不要再向客户索取已知字段）
+  - 不重复索取已知字段（Workspace ID 只允许作为 different workspace 条件补充）
   - 一律英文（无中文字符）
 - 模板 C insufficient_info：
   - 调 LLM 生成动态 bullets
-  - LLM 错误 fallback 到 3 个硬编码 bullet
+  - LLM 错误 fallback 到硬编码 bullet
   - LLM 返回不规范（缺 "- " 前缀）被自动 normalize
   - LLM 返回过多（>3）截断到 3
   - LLM 返回空 / 全空 → fallback
 - build_ask_body 分发：
-  - ask_count=0 + verdict ∈ {no_message/greeting/insufficient_info} → A/B/C
-    语义，但正文优先由 LLM 生成，失败时才 fallback
-  - ask_count>=1 一律 → D（retry）语义，同样优先由 LLM 生成
+  - no_message/greeting 使用固定 A/B 文案
+  - insufficient_info 使用 C/D 语义，优先由 LLM 生成缺失信息追问，失败时 fallback
 """
 from __future__ import annotations
 
@@ -60,11 +59,12 @@ class TestStaticTemplates:
         silent_template, greeting_template, retry_template,
         handoff_template, closed_template,
     ])
-    def test_no_workspace_id_ask(self, fn) -> None:
-        """绝不向客户索取 Workspace ID / Email / Name（已知字段）"""
+    def test_no_unconditional_known_field_ask(self, fn) -> None:
         body = fn(customer_name="Bob").lower()
-        assert "workspace id" not in body
         assert "your email" not in body
+        assert "your workspace id" not in body
+        if "workspace id" in body:
+            assert "different workspace" in body
 
     @pytest.mark.parametrize("fn", [
         silent_template, greeting_template, retry_template,
@@ -80,16 +80,22 @@ class TestStaticTemplates:
     def test_silent_template_basic(self) -> None:
         body = silent_template(customer_name="Alice")
         assert "Alice" in body
-        assert "ticket" in body.lower()
         body_lower = body.lower()
-        assert "what type of issue" in body_lower
+        assert "let us know what you need help with" in body_lower
         assert "billing/refund" in body_lower
-        assert "feature usage" in body_lower
+        assert "feature usage or how-to guidance" in body_lower
+        assert "account/subscription changes" in body_lower
+        assert "workflows" in body_lower
+        assert "knowledge base" in body_lower
+        assert "api" in body_lower
+        assert "error/bug" in body_lower
+        assert "what type of issue" not in body_lower
+        assert "issue type" not in body_lower
 
     def test_silent_template_no_name(self) -> None:
         """没拿到客户名 → 不留奇怪空格"""
         body = silent_template(customer_name="")
-        assert "Hi!" in body
+        assert "Hi," in body
         assert "Hi !" not in body  # 不该有 "Hi  !"
 
     def test_greeting_template_basic(self) -> None:
@@ -97,19 +103,30 @@ class TestStaticTemplates:
         assert "Dave" in body
         body_lower = body.lower()
         assert "what" in body_lower or "help" in body_lower
-        assert "what type of issue" in body_lower
+        assert "let us know what you need help with" in body_lower
         assert "billing/refund" in body_lower
-        assert "workflow" in body_lower
+        assert "feature usage or how-to guidance" in body_lower
+        assert "account/subscription changes" in body_lower
+        assert "workflows" in body_lower
+        assert "knowledge base" in body_lower
+        assert "api" in body_lower
+        assert "error/bug" in body_lower
+        assert "what type of issue" not in body_lower
+        assert "issue type" not in body_lower
 
-    def test_retry_template_has_examples(self) -> None:
-        """模板 D 必须有具体例子帮客户表达"""
+    def test_retry_template_asks_for_actual_question(self) -> None:
         body = retry_template(customer_name="Eve")
-        # 至少含一个示例引号
-        assert '"' in body
         body_lower = body.lower()
-        assert "refund" in body_lower
-        assert "feature" in body_lower
-        assert "500" in body_lower
+        assert "what you need help with" in body_lower
+        assert "billing/refund" in body_lower
+        assert "feature usage or how-to guidance" in body_lower
+        assert "account/subscription changes" in body_lower
+        assert "workflows" in body_lower
+        assert "knowledge base" in body_lower
+        assert "api" in body_lower
+        assert "error/bug" in body_lower
+        assert "what type of issue" not in body_lower
+        assert "issue type" not in body_lower
 
     def test_handoff_template_mentions_human(self) -> None:
         """转人工通知必须明示 'human teammate'"""
@@ -194,7 +211,6 @@ class TestMissingInfoBullets:
 
     @pytest.mark.asyncio
     async def test_llm_empty_bullets_fallback(self) -> None:
-        """LLM 返回空 bullets → fallback 3 个通用 bullet"""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json = MagicMock(return_value={
@@ -204,7 +220,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=["x"], model="m", api_key="k",
             )
-        assert len(bullets) == 3  # fallback
+        assert len(bullets) == 4  # fallback
         assert all(b.startswith("- ") for b in bullets)
 
     @pytest.mark.asyncio
@@ -216,7 +232,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=["x"], model="m", api_key="k",
             )
-        assert len(bullets) == 3
+        assert len(bullets) == 4
 
     @pytest.mark.asyncio
     async def test_llm_non_200_fallback(self) -> None:
@@ -227,7 +243,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=["x"], model="m", api_key="k",
             )
-        assert len(bullets) == 3
+        assert len(bullets) == 4
 
     @pytest.mark.asyncio
     async def test_empty_customer_messages_uses_fallback(self) -> None:
@@ -236,7 +252,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=[], model="m", api_key="k",
             )
-        assert len(bullets) == 3
+        assert len(bullets) == 4
         mock_post.assert_not_called()
 
     # ── post-filter：LLM 不听话问了已知字段（workspace id / email / name）──
@@ -286,7 +302,6 @@ class TestMissingInfoBullets:
 
     @pytest.mark.asyncio
     async def test_llm_asks_all_forbidden_falls_back(self) -> None:
-        """LLM 全部生成已知字段问题 → 过滤后 < 2 条 → fallback 3 个通用"""
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json = MagicMock(return_value={
@@ -302,9 +317,10 @@ class TestMissingInfoBullets:
                 customer_messages=["x"], model="m", api_key="k",
             )
         # 全被过滤 → fallback
-        assert len(bullets) == 3
+        assert len(bullets) == 4
         all_text = " ".join(bullets).lower()
-        assert "workspace id" not in all_text
+        assert "your workspace id" not in all_text
+        assert "different workspace" in all_text
         assert "your email" not in all_text
         assert "your name" not in all_text
 
@@ -371,10 +387,10 @@ class TestInsufficientInfoTemplate:
 
 class TestBuildAskBody:
     @pytest.mark.asyncio
-    async def test_no_message_ask_count_zero_uses_llm_body_with_A_semantics(self) -> None:
+    async def test_no_message_ask_count_zero_uses_fixed_A_without_llm(self) -> None:
         with patch(
             "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
-            AsyncMock(return_value="Alice, what issue should we investigate?"),
+            AsyncMock(return_value="should not be used"),
         ) as mock_generate:
             body, name = await build_ask_body(
                 verdict_kind="no_message", ask_count=0,
@@ -382,14 +398,14 @@ class TestBuildAskBody:
                 model="m", api_key="k",
             )
         assert name == "A"
-        assert body == "Alice, what issue should we investigate?"
-        assert mock_generate.await_args.kwargs["verdict_kind"] == "no_message"
+        assert "let us know what you need help with" in body.lower()
+        mock_generate.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_greeting_ask_count_zero_uses_llm_body_with_B_semantics(self) -> None:
+    async def test_greeting_ask_count_zero_uses_fixed_B_without_llm(self) -> None:
         with patch(
             "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
-            AsyncMock(return_value="Bob, what can I help you with?"),
+            AsyncMock(return_value="should not be used"),
         ) as mock_generate:
             body, name = await build_ask_body(
                 verdict_kind="greeting", ask_count=0,
@@ -397,8 +413,8 @@ class TestBuildAskBody:
                 model="m", api_key="k",
             )
         assert name == "B"
-        assert body == "Bob, what can I help you with?"
-        assert mock_generate.await_args.kwargs["verdict_kind"] == "greeting"
+        assert "let us know what you need help with" in body.lower()
+        mock_generate.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_insufficient_info_ask_count_zero_uses_llm_body_with_C_semantics(self) -> None:
@@ -417,16 +433,14 @@ class TestBuildAskBody:
         assert mock_generate.await_args.kwargs["verdict_kind"] == "insufficient_info"
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("verdict_kind", [
-        "no_message", "greeting", "insufficient_info",
-    ])
+    @pytest.mark.parametrize("verdict_kind", ["no_message", "greeting"])
     @pytest.mark.parametrize("ask_count", [1, 2, 5, 9])
-    async def test_ask_count_ge_one_always_returns_D(
+    async def test_greeting_or_empty_repeat_ask_uses_fixed_D_without_llm(
         self, verdict_kind: str, ask_count: int,
-    ) -> None:
+        ) -> None:
         with patch(
             "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
-            AsyncMock(return_value="Dave, I still need the exact error."),
+            AsyncMock(return_value="should not be used"),
         ) as mock_generate:
             body, name = await build_ask_body(
                 verdict_kind=verdict_kind, ask_count=ask_count,
@@ -434,7 +448,25 @@ class TestBuildAskBody:
                 model="m", api_key="k",
             )
         assert name == "D"
-        assert body == "Dave, I still need the exact error."
+        assert "what you need help with" in body.lower()
+        mock_generate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ask_count", [1, 2, 5, 9])
+    async def test_insufficient_info_repeat_ask_can_use_llm_D(
+        self, ask_count: int,
+    ) -> None:
+        with patch(
+            "zd_agent.prompts.public_reply.templates._generate_ask_body_with_llm",
+            AsyncMock(return_value="Dave, please send the exact error."),
+        ) as mock_generate:
+            body, name = await build_ask_body(
+                verdict_kind="insufficient_info", ask_count=ask_count,
+                customer_name="Dave", customer_messages=["x"],
+                model="m", api_key="k",
+            )
+        assert name == "D"
+        assert body == "Dave, please send the exact error."
         assert mock_generate.await_args.kwargs["ask_count"] == ask_count
 
     @pytest.mark.asyncio
@@ -450,10 +482,12 @@ class TestBuildAskBody:
                 model="m", api_key="k",
             )
         assert name == "C"
-        assert "what type of issue" in body
         body_lower = body.lower()
-        assert "billing/refund" in body_lower
-        assert "feature usage" in body_lower
+        assert "missing details" in body_lower
+        assert "page or feature" in body_lower
+        assert "different workspace" in body_lower
+        assert "what type of issue" not in body_lower
+        assert "issue type" not in body_lower
 
 
 class TestAskBodyGeneration:
@@ -493,8 +527,8 @@ class TestAskBodyGeneration:
             "choices": [{
                 "message": {
                     "content": (
-                        '{"body": "Alice, what can I help you with today: billing, '
-                        'refund, feature usage, or a technical error?"}'
+                        '{"body": "Alice, please describe what you need help with '
+                        'or what happened so I can look into it."}'
                     ),
                 },
             }],
@@ -511,9 +545,62 @@ class TestAskBodyGeneration:
             )
 
         assert body == (
-            "Alice, what can I help you with today: billing, refund, feature usage, "
-            "or a technical error?"
+            "Alice, please describe what you need help with or what happened so I "
+            "can look into it."
         )
+
+    @pytest.mark.asyncio
+    async def test_llm_generated_ask_body_rejects_category_selection_question(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{
+                "message": {
+                    "content": '{"body": "Please share what type of issue this is."}',
+                },
+            }],
+        })
+
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            body = await _generate_ask_body_with_llm(
+                verdict_kind="greeting",
+                ask_count=0,
+                customer_name="Alice",
+                customer_messages=["hi"],
+                model="m",
+                api_key="k",
+            )
+
+        assert body is None
+
+    @pytest.mark.asyncio
+    async def test_ask_prompt_guides_problem_description_not_category_choice(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{
+                "message": {"content": "{\"body\": \"What happened?\"}"},
+            }],
+        })
+        async_post = AsyncMock(return_value=mock_resp)
+
+        with patch("httpx.AsyncClient.post", async_post):
+            await _generate_ask_body_with_llm(
+                verdict_kind="greeting",
+                ask_count=0,
+                customer_name="Alice",
+                customer_messages=["hi"],
+                model="m",
+                api_key="k",
+            )
+
+        request_json = async_post.await_args.kwargs["json"]
+        prompt = request_json["messages"][0]["content"].lower()
+        assert "what the customer needs help with" in prompt
+        assert "billing/refund" in prompt
+        assert "feature usage or how-to guidance" in prompt
+        assert "do not ask the customer to choose a category" in prompt
+        assert "what type of issue the customer is encountering" not in prompt
 
     @pytest.mark.asyncio
     async def test_llm_generated_ask_body_rejects_known_field_requests(self) -> None:
@@ -538,3 +625,33 @@ class TestAskBodyGeneration:
             )
 
         assert body is None
+
+    @pytest.mark.asyncio
+    async def test_llm_generated_ask_body_allows_conditional_workspace_id(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{
+                "message": {
+                    "content": (
+                        '{"body": "Please send what happened. If this is about a '
+                        'different workspace, include the Workspace ID."}'
+                    ),
+                },
+            }],
+        })
+
+        with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
+            body = await _generate_ask_body_with_llm(
+                verdict_kind="insufficient_info",
+                ask_count=0,
+                customer_name="Alice",
+                customer_messages=["issue"],
+                model="m",
+                api_key="k",
+            )
+
+        assert body == (
+            "Please send what happened. If this is about a different workspace, "
+            "include the Workspace ID."
+        )

@@ -60,7 +60,7 @@ WHERE taj.tenant_id = '<wid>'
 
 - ❌ **不自动发起 Stripe 退款**（agent 只能告知客户判定，不能实操）
 - ❌ **不承诺具体到账时间**（"1-2 工作日" OK，"3 天内到账" 不行）
-- ❌ **不双语对照** —— 客户中文 → 中文，其他 → English
+- ❌ **不双语对照** —— 客户可见 public reply 一律 English
 - ❌ **不沉默 escalate** —— 必须先 public_reply 告诉客户判定
 
 ## confidence / needs_human 取值

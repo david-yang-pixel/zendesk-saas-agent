@@ -123,7 +123,7 @@ Best regards,
 Dify Support
 ```
 
-**语言规则**：客户中文 → 中文；其他语言（含日 / 葡 / 英）→ 一律 English。
+**语言规则**：客户可见 public reply 一律 English，不跟随客户语言。
 **绝不双语对照**。
 
 ### 5. 同步推送飞书 ticket_escalate（**必须 inline 完整 draft**）
