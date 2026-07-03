@@ -745,7 +745,7 @@ async function renderRunRecords(options = {}) {
   setContent(renderRunRecordsShell());
   try {
     const payload = await loadRunRecords(state.runLimit, state.runFilters, {
-      quick: shouldQuickLoadRunRecords(),
+      quick: false,
       detail: false
     });
     renderRunRecordsContent(payload);
@@ -764,7 +764,7 @@ function refreshRunRecordsInBackground() {
     { refreshing: true }
   );
   void loadRunRecords(state.runLimit, state.runFilters, {
-    quick: shouldQuickLoadRunRecords(),
+    quick: false,
     detail: false
   })
     .then(payload => {
@@ -789,11 +789,6 @@ function refreshRunRecordsInBackground() {
 
 function runQueryKey(limit, filters = {}) {
   return JSON.stringify({ limit, filters });
-}
-
-function shouldQuickLoadRunRecords() {
-  const filters = state.runFilters || {};
-  return !filters.ticket_id && !filters.event && !filters.module && !filters.errors_only;
 }
 
 function renderRunRecordsShell() {

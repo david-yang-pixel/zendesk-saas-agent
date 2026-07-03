@@ -168,6 +168,8 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert "rawEvents" in app_js
     assert "查看完整日志" in app_js
     assert "renderOverviewShell" in app_js
+    assert "quick: shouldQuickLoadRunRecords()" not in app_js
+    assert "quick: false" in app_js
     assert "renderRecentRunsIntoOverview" in app_js
     assert "renderRunRecordsShell" in app_js
     assert 'detail: false' in app_js
