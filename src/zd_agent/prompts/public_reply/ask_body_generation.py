@@ -10,9 +10,9 @@ from zd_agent.log import get_logger
 logger = get_logger(module="prompts.public_reply.ask_body")
 
 MISSING_INFO_FALLBACK_BULLETS: Final[tuple[str, ...]] = (
-    "- What you need help with, such as billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error",
-    "- Any relevant detail, such as the page or feature, amount/date, error text, screenshot, or steps you tried",
-    "- What result you expected and what happened instead",
+    "- What type of issue this is, such as billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error/bug",
+    "- A short description of what you are trying to do or what happened",
+    "- Any relevant page, app, workflow, dataset, API, billing/account area, error text, or screenshot if there is one",
 )
 
 ASK_BODY_MAX_CHARS: Final = 900
@@ -39,9 +39,9 @@ Rules:
 - Do not ask for customer name, email, Workspace ID, plan, or account owner; those are already available from the form or ticket metadata.
 - Do not mention internal state, trigger decider, confidence, LLM, templates, automation, or tools.
 - Do not claim investigation has already happened.
-- For a ticket with no actual request yet, ask what they need help with. Mention examples across support categories: billing/refund, feature usage/how-to, account/subscription, workflow, knowledge base, API, or an error/bug.
+- For a ticket with no actual request yet, ask what type of issue the customer is encountering, so support can choose the right path. Mention concise examples across support categories: billing/refund, feature usage/how-to, account/subscription, workflow, knowledge base, API, or an error/bug.
 - Do not assume every vague ticket is a troubleshooting or bug report. Ask for error text, screenshots, affected feature, and reproduction steps only when the customer indicates an error, failure, bug, or unexpected behavior.
-- For a vague request, infer the likely area from the customer's words and ask only for category-specific missing details: refund/billing needs amount/date/subscription action; feature usage needs desired outcome and current setup; account/subscription needs affected account or action; technical errors need affected page/feature, exact error, screenshot, and steps.
+- For a vague request, infer the likely issue type from the customer's words and ask only for the smallest details needed to proceed. Refund/billing may need amount/date/subscription action; feature usage may need desired outcome and current setup; account/subscription may need affected account or action; technical errors may need affected page/feature, exact error, screenshot, and steps.
 - For a repeat ask, be direct and ask for the smallest set of exact details still missing. Do not apologize repeatedly.
 
 Return JSON exactly: {{"body": "..."}}"""

@@ -82,7 +82,7 @@ class TestStaticTemplates:
         assert "Alice" in body
         assert "ticket" in body.lower()
         body_lower = body.lower()
-        assert "what can i help you with" in body_lower
+        assert "what type of issue" in body_lower
         assert "billing/refund" in body_lower
         assert "feature usage" in body_lower
 
@@ -97,8 +97,9 @@ class TestStaticTemplates:
         assert "Dave" in body
         body_lower = body.lower()
         assert "what" in body_lower or "help" in body_lower
+        assert "what type of issue" in body_lower
         assert "billing/refund" in body_lower
-        assert "feature usage" in body_lower
+        assert "workflow" in body_lower
 
     def test_retry_template_has_examples(self) -> None:
         """模板 D 必须有具体例子帮客户表达"""
@@ -449,7 +450,7 @@ class TestBuildAskBody:
                 model="m", api_key="k",
             )
         assert name == "C"
-        assert "missing details for your request" in body
+        assert "what type of issue" in body
         body_lower = body.lower()
         assert "billing/refund" in body_lower
         assert "feature usage" in body_lower

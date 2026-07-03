@@ -76,6 +76,47 @@ async def test_push_alert_urgent(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_push_ticket_escalate_rejects_greeting_or_info_gap(fake_session):
+    with patch(
+        "zd_agent.tools.feishu_tools.push_notification_card",
+        new_callable=AsyncMock,
+    ) as push:
+        result = await FeishuPush().execute(
+            {
+                "card_type": "ticket_escalate",
+                "content": "信息不足：客户最新消息仅为“你好”，没有提供具体问题。",
+                "zendesk_url": "https://z/12345",
+            },
+            fake_session,
+        )
+
+    assert result.success is False
+    assert "public ask" in (result.error or "")
+    push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_push_ticket_escalate_allows_max_asks_reached(fake_session):
+    with patch(
+        "zd_agent.tools.feishu_tools.push_notification_card",
+        new_callable=AsyncMock,
+        return_value={"success": True, "output": "pushed (ticket_escalate)"},
+    ) as push:
+        result = await FeishuPush().execute(
+            {
+                "card_type": "ticket_escalate",
+                "content": "ask 达到上限：客户仍未补充必要信息，需要人工判断下一步。",
+                "zendesk_url": "https://z/12345",
+            },
+            fake_session,
+        )
+
+    assert result.success is True
+    assert "ticket_escalate" in result.output
+    push.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_push_rejects_invalid_arg_types(fake_session):
     with patch(
         "zd_agent.tools.feishu_tools.push_notification_card",

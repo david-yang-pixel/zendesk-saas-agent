@@ -47,10 +47,12 @@ def silent_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}! We've received your ticket. What can I help you with?\n\n"
-        "- Billing/refund, account/subscription, feature usage, workflow, knowledge base, API, or an error/bug\n"
-        "- Any relevant page, feature, amount/date, error text, screenshot, or steps you tried\n"
-        "- What you expected and what happened instead"
+        f"Hi{name_part}! We've received your ticket. "
+        "Please share what type of issue you need help with.\n\n"
+        "Useful details, if relevant:\n"
+        "- Billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error/bug\n"
+        "- A short description of what you are trying to do or what happened\n"
+        "- Any relevant page, app, workflow, dataset, API, billing/account area, error text, or screenshot"
     )
 
 
@@ -61,8 +63,8 @@ def greeting_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}! What can I help you with? "
-        "For example, billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error you're seeing."
+        f"Hi{name_part}! What type of issue are you running into? "
+        "For example: billing/refund, feature usage, account/subscription, workflow, knowledge base, API, or an error/bug."
     )
 
 
@@ -74,8 +76,8 @@ def retry_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part} — I still need the specific request before I can help. "
-        "Could you share exactly what you need? For example:\n\n"
+        f"Hi{name_part} — I still need to know what type of issue this is before I can help. "
+        "Could you share the issue type and a short description? For example:\n\n"
         '- "I want to request a refund for my latest renewal"\n'
         '- "How do I configure a feature for my use case?"\n'
         '- "I get a 500 error when creating a workflow"\n'
@@ -182,7 +184,7 @@ def _insufficient_info_fallback_template(*, customer_name: str = "") -> str:
     name_part = f"{customer_name}, " if customer_name else ""
     bullet_text = "\n".join(MISSING_INFO_FALLBACK_BULLETS)
     return (
-        f"{name_part}got it. Could you share the missing details for your request:\n\n"
+        f"{name_part}got it. Could you share what type of issue this is and a short description?\n\n"
         f"{bullet_text}"
     )
 

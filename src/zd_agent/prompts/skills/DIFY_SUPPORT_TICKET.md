@@ -54,7 +54,7 @@
 
 ### 场景规则
 
-- 信息不足、仅问候或空消息：让模型基于最新上下文生成针对性 ask。问题要覆盖客户可能是退款、账单、功能使用、账号/订阅、Workflow、Knowledge Base、API、报错/bug 等意图，不要默认套“请提供报错、截图、复现步骤”的 bug 模板。
+- 信息不足、仅问候或空消息：让模型基于最新上下文生成针对性 ask。ask 的目的，是问客户这次遇到的是什么类型的问题，以便进入正确处理路径；可以给少量类型例子辅助表达，例如退款/账单、功能使用、账号/订阅、Workflow、Knowledge Base、API、报错/bug，但不要默认套“请提供报错、截图、复现步骤”的 bug 模板。此类场景不是人工介入理由，不要调用 `feishu_push ticket_escalate`。
 - 退款：先确认 requester 是 workspace owner；不是 owner 就不要继续判断退款资格。owner 通过后再查订阅、支付、退款政策和时间线。
 - 计费/额度：同时查当前恢复状态和客户报错时间附近的历史状态，不只看当前 plan。
 - Workflow/Knowledge Base 卡住：用 DB 状态和 SigNoz/worker 日志确认进度、等待时长和失败点。
@@ -69,7 +69,7 @@
 - 客户可见回复不得包含源码路径、内部仓库路径、文件名+行号、调用栈路径、内部服务名、DB 表字段、SQL、trace id、token、密钥或未脱敏日志。
 - 源码路径、SQL、日志、trace、PR 链路和内部判断只写 internal note、运行记录或归档。
 - 需要客户补信息时，只问当前判断缺少的最小集合；发送前重新确认客户在 agent 思考期间没有发新消息。
-- 低置信度、敏感动作、需要工程/SRE/财务或无法复现的平台问题，写 `zendesk_internal_reply` 并用 `feishu_push` 升级；不要强行 public reply。
+- 低置信度、敏感动作、需要工程/SRE/财务或无法复现的平台问题，写 `zendesk_internal_reply` 并用 `feishu_push` 升级；不要强行 public reply。仅问候、空消息或普通信息不足要先 ask，不属于低置信度升级。
 - 成功调用 `zendesk_public_reply` 后，不再重复写一条 internal note；处理摘要交给 `archive_ticket`。
 
 ### Internal note 结构

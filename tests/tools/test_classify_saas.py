@@ -46,6 +46,26 @@ async def test_classify_refund_loads_strategy(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_classify_insufficient_info_asks_customer_instead_of_escalating(
+    fake_session,
+):
+    tool = ClassifyTicket()
+    fake_session.ticket_type = ""
+    fake_session.classification_reasoning = ""
+
+    r = await tool.execute(
+        {"ticket_type": "insufficient_info", "reasoning": "客户只发了您好"},
+        fake_session,
+    )
+
+    assert r.success is True
+    assert fake_session.ticket_type == "insufficient_info"
+    assert "生成针对性 ask" in r.output
+    assert "推送飞书 ticket_escalate" not in r.output
+    assert "不要调用 `feishu_push ticket_escalate`" in r.output
+
+
+@pytest.mark.asyncio
 async def test_classify_invalid_type_falls_back(fake_session):
     tool = ClassifyTicket()
     fake_session.ticket_type = ""

@@ -128,7 +128,7 @@ Subagent 返回后先读它的 `Conclusion / Checked / Evidence / Gaps / Parent 
     后续动作：无需跟进 / 等客户补充 / 需观察
     注意事项：SigNoz 不可用 / 证据缺口 / 无
     ```
-- `ticket_escalate`：需人工介入（退款 / 信息不足 / 敏感决策）
+- `ticket_escalate`：需人工介入（退款财务实操 / 敏感决策 / 已达到 ask 上限 / 已取证后需工程或 SRE 介入）；不要用于仅问候或普通信息不足。
 - `alert`：通用告警（`urgent=true` 会触发 @ 所有人）
 
 ## 归档工具
