@@ -21,6 +21,9 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["prompts.agent_extra_instructions"]["input"] == "textarea"
     assert by_path["retry.max_attempts"]["group"] == "模型与运行"
     assert by_path["trigger_decider.llm_model"]["group"] == "模型与运行"
+    assert by_path["zendesk.mention_trigger"]["label"] == "主 @mention 触发词"
+    assert by_path["zendesk.mention_aliases"]["input"] == "textarea"
+    assert by_path["zendesk.mention_aliases"]["group"] == "触发配置"
 
 
 def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
@@ -163,6 +166,34 @@ def test_restart_required_overrides_wait_for_restart(tmp_path) -> None:
     assert cfg.zendesk.poll_interval_seconds == 60
     assert store.effective_config(cfg)["values"]["zendesk.poll_interval_seconds"] == 120
     assert restarted_cfg.zendesk.poll_interval_seconds == 120
+
+
+def test_apply_parses_zendesk_mention_aliases(tmp_path) -> None:
+    cfg = AppConfig()
+    cfg.zendesk.mention_aliases = ["@old"]
+    store = AdminConfigStore(tmp_path)
+
+    result = store.apply(
+        cfg,
+        {
+            "changes": {
+                "zendesk.mention_aliases": "@yonggang\n@saas-agent, @YONGGANG\n\n",
+            },
+            "reason": "show mention aliases",
+        },
+        actor="admin",
+        ip="127.0.0.1",
+    )
+    restarted_cfg = AppConfig()
+    store.apply_saved(restarted_cfg)
+
+    assert result["ok"] is True
+    assert cfg.zendesk.mention_aliases == ["@yonggang", "@saas-agent"]
+    assert store.effective_config(cfg)["values"]["zendesk.mention_aliases"] == [
+        "@yonggang",
+        "@saas-agent",
+    ]
+    assert restarted_cfg.zendesk.mention_aliases == ["@yonggang", "@saas-agent"]
 
 
 def test_apply_saved_skips_admin_auth_secrets_without_leaking_audit(tmp_path) -> None:

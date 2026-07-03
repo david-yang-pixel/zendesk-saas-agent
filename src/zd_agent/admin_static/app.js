@@ -62,6 +62,7 @@ const FIELD_SECTIONS = {
         "zendesk.poll_query",
         "zendesk.poll_interval_seconds",
         "zendesk.mention_trigger",
+        "zendesk.mention_aliases",
         "zendesk.mention_poll_interval_seconds",
         "zendesk.agent_user_id",
         "zendesk.min_ticket_id"
@@ -1565,6 +1566,7 @@ function fieldValue(path) {
   if (value && typeof value === "object" && "configured" in value) {
     return value.configured ? `已配置 · ${value.fingerprint || ""}` : "未配置";
   }
+  if (Array.isArray(value)) return value.join("\n");
   if (value === null || value === undefined) return "";
   return value;
 }
@@ -1579,11 +1581,16 @@ function collectChanges() {
     const nextValue = input.value;
     if (typeof oldValue === "object" && oldValue && "configured" in oldValue) {
       if (nextValue) changes[path] = nextValue;
-    } else if (String(oldValue ?? "") !== String(nextValue)) {
+    } else if (fieldComparableValue(oldValue) !== String(nextValue)) {
       changes[path] = nextValue;
     }
   });
   return changes;
+}
+
+function fieldComparableValue(value) {
+  if (Array.isArray(value)) return value.join("\n");
+  return String(value ?? "");
 }
 
 async function previewChanges() {

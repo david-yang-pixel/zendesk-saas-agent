@@ -60,7 +60,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("zendesk.search_query", "新工单搜索条件", "触发配置"),
     FieldSpec("zendesk.poll_query", "轮询基础查询", "触发配置"),
     FieldSpec("zendesk.poll_interval_seconds", "新工单轮询间隔", "触发配置", input="number", restart_required=True),
-    FieldSpec("zendesk.mention_trigger", "@mention 触发词", "触发配置"),
+    FieldSpec("zendesk.mention_trigger", "主 @mention 触发词", "触发配置"),
+    FieldSpec("zendesk.mention_aliases", "@mention 别名触发词", "触发配置", input="textarea"),
     FieldSpec("zendesk.mention_poll_interval_seconds", "@mention 扫描间隔", "触发配置", input="number", restart_required=True),
     FieldSpec("zendesk.agent_user_id", "Agent Zendesk 用户 ID", "触发配置", input="number", restart_required=True),
     FieldSpec("zendesk.min_ticket_id", "灰度最小工单 ID", "触发配置", input="number"),
@@ -202,6 +203,8 @@ def _set_attr(root: Any, path: str, value: Any) -> None:
 
 
 def _coerce_value(spec: FieldSpec, value: Any) -> Any:
+    if spec.path == "zendesk.mention_aliases":
+        return _coerce_mention_aliases(value)
     if spec.input == "boolean":
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on", "开启"}
@@ -226,6 +229,27 @@ def _coerce_value(spec: FieldSpec, value: Any) -> Any:
                 raise ValueError(f"{spec.path} must be an http(s) URL")
         return raw
     return raw
+
+
+def _coerce_mention_aliases(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = str(value).replace(",", "\n").splitlines()
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        alias = item.strip()
+        if not alias:
+            continue
+        key = alias.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        aliases.append(alias)
+    return aliases
 
 
 def _validate_normalized_value(spec: FieldSpec, value: Any) -> None:

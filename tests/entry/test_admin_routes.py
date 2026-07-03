@@ -194,6 +194,8 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "点击卡片查看配置" in app_js
     assert "config-section-tile" in app_js
     assert "config-section-card" in app_js
+    assert "zendesk.mention_aliases" in app_js
+    assert "fieldComparableValue" in app_js
     assert "触发判定与等待策略" in app_js
     assert "主模型与判定模型" in app_js
     assert "判定模型放在「模型与运行」里" in app_js
