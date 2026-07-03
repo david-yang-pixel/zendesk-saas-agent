@@ -52,52 +52,11 @@ def _admin_agent_prompt_override() -> str:
 
 
 def register_static_sections(builder: PromptBuilder) -> None:
-    """注册**只 byte-identical 跨工单**的静态 prompt 段。
-
-    招法 4: 这些段进 system prompt，让 OpenAI/Anthropic prefix cache 拉满。
-    动态段（date / strategy / language / followup / customer_profile）请
-    用 register_dynamic_sections。
-    """
     builder.register(
         PromptSection(
-            name="soul",
-            content=load_prompt("SOUL.md"),
+            name="core_router",
+            content=load_prompt("CORE_ROUTER.md"),
             order=10,
-        )
-    )
-    builder.register(
-        PromptSection(
-            name="agents",
-            content=load_prompt("AGENTS.md"),
-            order=20,
-        )
-    )
-    builder.register(
-        PromptSection(
-            name="tools",
-            content=load_prompt("TOOLS.md"),
-            order=30,
-        )
-    )
-    builder.register(
-        PromptSection(
-            name="common_playbook",
-            content=load_prompt("playbook/COMMON_PLAYBOOK.md"),
-            order=22,
-        )
-    )
-    builder.register(
-        PromptSection(
-            name="reply_templates",
-            content=load_prompt("templates/REPLY_TEMPLATES.md"),
-            order=35,
-        )
-    )
-    builder.register(
-        PromptSection(
-            name="dev_report",
-            content=load_prompt("templates/DEV_REPORT.md"),
-            order=36,
         )
     )
     agent_override = _admin_agent_prompt_override()
@@ -105,7 +64,7 @@ def register_static_sections(builder: PromptBuilder) -> None:
         builder.register(
             PromptSection(
                 name="admin_agent_prompt_override",
-                content=f"## 管理后台补充规则\n\n{agent_override}",
+                content=f"## 管理后台系统提示词\n\n{agent_override}",
                 order=37,
             )
         )

@@ -5,26 +5,20 @@ from importlib import resources
 from typing import Any
 
 from zd_agent.log import get_logger
+from zd_agent.runtime.prompt.skill_context import (
+    DEFAULT_TICKET_TYPE,
+    TICKET_TYPE_SET,
+    build_ticket_skill_context,
+    load_ticket_strategy,
+    normalize_ticket_type,
+)
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
 
 logger = get_logger(module="classify")
 
-# SaaS categories (aligned with skill 01-08 KB):
-VALID_TYPES = {
-    "platform_issue",
-    "knowledge_base",
-    "workflow",
-    "api",
-    "permissions",
-    "product_usage",
-    "billing",
-    "refund",
-    "insufficient_info",
-    "mention",
-    "general",
-}
-DEFAULT_TYPE = "general"
+VALID_TYPES = TICKET_TYPE_SET
+DEFAULT_TYPE = DEFAULT_TICKET_TYPE
 
 # Lazy-load 矩阵：每个 ticket_type 在 classify 后需要附加哪些"重型 prompt 段"
 # 到 tool result（不进 system prompt 以保 prompt cache）。
@@ -35,12 +29,6 @@ DEFAULT_TYPE = "general"
 #   完全不附加，节省 ~9-10k tokens
 NEEDS_SQL = {"platform_issue", "billing", "workflow", "knowledge_base", "permissions", "refund"}
 NEEDS_REFUND_FLOW = {"refund"}
-
-
-def _load_strategy(ticket_type: str) -> str:
-    filename = f"{ticket_type}.md"
-    ref = resources.files("zd_agent.prompts.strategies").joinpath(filename)
-    return ref.read_text(encoding="utf-8")
 
 
 def _load_prompt_file(package: str, filename: str) -> str:
@@ -83,9 +71,9 @@ def _build_lazy_sections(ticket_type: str) -> str:
 class ClassifyTicket(Tool):
     name = "classify_ticket"
     description = (
-        "信息收集和版本确认完成后，对工单进行 SaaS 场景分类。分类结果决定后续"
-        "加载哪些针对性策略 prompt（如 refund → 退款流程）。"
-        "必须在 First-Pass Intake 完成后尽早调用。"
+        "读取最新 Zendesk 工单上下文后，对工单进行 SaaS 场景分类。分类结果决定后续"
+        "加载哪些 Skills 和针对性策略 prompt（如 refund → 退款流程）。"
+        "必须在第一轮尽早调用。"
     )
     parameters = {
         "type": "object",
@@ -125,19 +113,19 @@ class ClassifyTicket(Tool):
             return ToolResult(success=False, error="ticket_type must be a string")
         if not isinstance(reasoning, str):
             return ToolResult(success=False, error="reasoning must be a string")
-        ticket_type = ticket_type.strip().lower()
+        provided_ticket_type = ticket_type.strip().lower()
+        ticket_type = normalize_ticket_type(provided_ticket_type)
         reasoning = reasoning.strip()
         if not reasoning:
             return ToolResult(success=False, error="reasoning is empty")
 
-        if ticket_type not in VALID_TYPES:
+        if ticket_type != provided_ticket_type:
             logger.warning(
                 "invalid_ticket_type",
                 ticket_id=session.ticket_id,
-                provided=ticket_type,
+                provided=provided_ticket_type,
                 fallback=DEFAULT_TYPE,
             )
-            ticket_type = DEFAULT_TYPE
 
         session.ticket_type = ticket_type
         session.classification_reasoning = reasoning
@@ -150,7 +138,7 @@ class ClassifyTicket(Tool):
         )
 
         try:
-            strategy = _load_strategy(ticket_type)
+            strategy = load_ticket_strategy(ticket_type)
         except Exception as e:
             logger.warning(
                 "strategy_load_failed",
@@ -179,14 +167,16 @@ class ClassifyTicket(Tool):
             lazy_chars=len(lazy_sections),
         )
 
+        skill_context = build_ticket_skill_context(
+            ticket_type=ticket_type,
+            strategy=strategy,
+            lazy_sections=lazy_sections,
+        )
         output_parts = [
             f"工单已分类为 **{ticket_type}**",
             f"分类依据：{reasoning}",
             "---",
-            f"## 针对性处理策略\n\n{strategy}",
+            skill_context,
         ]
-        if lazy_sections:
-            output_parts.append("---")
-            output_parts.append(lazy_sections)
 
         return ToolResult(output="\n\n".join(output_parts))

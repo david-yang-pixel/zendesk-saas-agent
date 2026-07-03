@@ -12,14 +12,16 @@ def _build(ctx: PromptContext) -> str:
     return b.build(ctx)
 
 
-def test_common_playbook_always_loaded():
+def test_core_router_always_loaded():
     out = _build(PromptContext())
-    assert "高频工单快速分诊" in out or "快速通道" in out
+    assert "Dify SaaS Support Agent Core Router" in out
+    assert "第一轮必须尽早调用 `classify_ticket`" in out
 
 
-def test_reply_templates_always_loaded():
+def test_reply_templates_NOT_in_system_prompt():
     out = _build(PromptContext())
-    assert "客户回复模板" in out or "Missing Critical Info" in out
+    assert "客户回复模板" not in out
+    assert "Missing Critical Info" not in out
 
 
 # ─────────── SQL/DB/REFUND lazy-load (no longer in system prompt) ───────────
@@ -58,7 +60,45 @@ def test_classify_ticket_attaches_sql_for_sql_categories():
         tool.execute({"ticket_type": "workflow", "reasoning": "test"}, session)
     )
     assert result.success is True
+    assert "已激活 Skills" in (result.output or "")
+    assert "dify_support_ticket" in (result.output or "")
+    assert "完整链路分析" in (result.output or "")
+    assert "zendesk_get_ticket" in (result.output or "")
+    assert "zendesk_get_attachments" in (result.output or "")
+    assert "zendesk_public_reply" in (result.output or "")
+    assert "signoz_errors" in (result.output or "")
+    assert "saas_deployed_version" in (result.output or "")
+    assert "github_search_prs" in (result.output or "")
+    assert "不要回退到本地 shell" in (result.output or "")
+    assert "类型策略 Skill: workflow" in (result.output or "")
     assert "SQL 查询模板" in (result.output or "")
+
+
+def test_custom_skill_context_loaded_from_admin_config(monkeypatch):
+    from zd_agent import config as config_mod
+    from zd_agent.config import AppConfig, CustomSkillConfig
+    from zd_agent.runtime.prompt.skill_context import build_ticket_skill_context
+
+    cfg = AppConfig()
+    cfg.skills.custom = [
+        CustomSkillConfig(
+            name="billing_refund_skill",
+            description="Refund SOP",
+            content="Always verify requester is workspace owner before refund checks.",
+            enabled=True,
+        ),
+    ]
+    cfg.skills.enabled = ["dify_support_ticket", "billing_refund_skill"]
+    monkeypatch.setattr(config_mod, "_config", cfg)
+
+    out = build_ticket_skill_context(
+        ticket_type="general",
+        strategy="General strategy",
+    )
+
+    assert "billing_refund_skill" in out
+    assert "Refund SOP" in out
+    assert "Always verify requester is workspace owner before refund checks." in out
 
 
 def test_classify_ticket_attaches_billing_table_routing_rules():
@@ -90,6 +130,9 @@ def test_classify_ticket_skips_sql_for_non_sql_categories():
         tool.execute({"ticket_type": "product_usage", "reasoning": "test"}, session)
     )
     assert result.success is True
+    assert "已激活 Skills" in (result.output or "")
+    assert "dify_support_ticket" in (result.output or "")
+    assert "类型策略 Skill: product_usage" in (result.output or "")
     assert "SQL 查询模板" not in (result.output or "")
     assert "退款流程" not in (result.output or "")
 
@@ -141,17 +184,19 @@ def test_followup_context_skipped_without_verified_new_diff():
     assert "跟进模式 · 最新 Zendesk 对话优先" not in out
 
 
-def test_dev_report_loaded_for_platform_issue():
+def test_dev_report_NOT_in_system_prompt_for_platform_issue():
     out = _build(PromptContext(ticket_type="platform_issue"))
-    # DEV_REPORT content has a distinctive header
-    assert "开发转交格式" in out or "Dev Report" in out
+    assert "开发转交格式" not in out
+    assert "Dev Report" not in out
 
 
-def test_dev_report_always_loaded_regardless_of_category():
+def test_dev_report_NOT_in_system_prompt_regardless_of_category():
     out = _build(PromptContext(ticket_type="refund"))
-    assert "开发转交格式" in out or "Dev Report" in out
+    assert "开发转交格式" not in out
+    assert "Dev Report" not in out
     out_blank = _build(PromptContext())
-    assert "开发转交格式" in out_blank or "Dev Report" in out_blank
+    assert "开发转交格式" not in out_blank
+    assert "Dev Report" not in out_blank
 
 
 # ─────────── DB schema lazy-loaded via classify tool ───────────

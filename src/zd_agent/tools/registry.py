@@ -5,6 +5,7 @@ from __future__ import annotations
 from zd_agent.tools.archive import ArchiveTicket
 from zd_agent.tools.base import Tool, ToolRegistry
 from zd_agent.tools.classify import ClassifyTicket
+from zd_agent.tools.custom_mcp import CustomMcpCall
 from zd_agent.tools.git_source import (
     GitDiff,
     GitGrep,
@@ -132,5 +133,7 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(SignozTraceback())
     registry.register(SignozServices())
     registry.register(SignozQuery())
+
+    registry.register(CustomMcpCall())
 
     return registry

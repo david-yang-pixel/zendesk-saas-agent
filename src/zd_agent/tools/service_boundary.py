@@ -256,6 +256,13 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
         fully_isolated=True,
         notes="Feishu credentials and retry logic live in notification-service MCP.",
     ),
+    "custom_mcp_call": _boundary(
+        "remote_mcp",
+        "admin-configured-mcp",
+        service_backed=True,
+        fully_isolated=True,
+        notes="Calls an enabled MCP service configured from the admin console.",
+    ),
 }
 
 

@@ -106,6 +106,12 @@ def test_next_batch_tools_are_fully_isolated_mcp_services() -> None:
     assert sandbox.service_backed is True
     assert sandbox.fully_isolated is True
 
+    custom_mcp = get_tool_service_boundary("custom_mcp_call")
+    assert custom_mcp.execution_boundary == "remote_mcp"
+    assert custom_mcp.service == "admin-configured-mcp"
+    assert custom_mcp.service_backed is True
+    assert custom_mcp.fully_isolated is True
+
 
 def test_boundary_summary_exposes_rollup_counts() -> None:
     registry = create_tool_registry()

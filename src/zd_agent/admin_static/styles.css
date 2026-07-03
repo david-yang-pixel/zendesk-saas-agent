@@ -2140,6 +2140,189 @@ textarea {
   border-color: #cbddf3;
 }
 
+.action-card {
+  cursor: pointer;
+  min-height: 170px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.action-card:hover {
+  border-color: #9bbcf0;
+  box-shadow: 0 18px 42px rgba(37, 99, 235, 0.12);
+  transform: translateY(-1px);
+}
+
+.action-card:focus-visible {
+  outline: 3px solid rgba(21, 94, 239, 0.18);
+  outline-offset: 2px;
+}
+
+.integration-card-head,
+.integration-card-actions,
+.manager-toolbar,
+.manager-item-head,
+.modal-config-summary,
+.locked-skill-row {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.integration-card-head > div,
+.manager-toolbar > div,
+.modal-config-summary > div,
+.locked-skill-row > div {
+  min-width: 0;
+}
+
+.integration-card-head strong,
+.manager-toolbar strong,
+.modal-config-summary strong {
+  color: #0c2b56;
+  display: block;
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.integration-card-head .muted,
+.manager-toolbar p,
+.modal-config-summary p,
+.locked-skill-row p,
+.integration-note-grid p {
+  margin: 4px 0 0;
+}
+
+.integration-status {
+  font-size: 13px;
+  font-weight: 720;
+  min-height: 20px;
+}
+
+.integration-card-actions {
+  margin-top: auto;
+}
+
+.skill-card {
+  background:
+    linear-gradient(180deg, rgba(238, 246, 255, 0.98), rgba(255, 255, 255, 0.96));
+  border-color: #bcd4fb;
+}
+
+.custom-mcp-card {
+  border-style: dashed;
+}
+
+.integration-note-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.integration-note-grid > div {
+  background: #f7fbff;
+  border: 1px solid #d7e5f6;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.modal-form-grid,
+.manager-field-grid {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(150px, 210px) minmax(0, 1fr) minmax(100px, 150px);
+}
+
+.modal-config-summary,
+.manager-intro,
+.manager-item,
+.modal-reason-box {
+  background: #f8fbff;
+  border: 1px solid #d7e5f6;
+  border-radius: 15px;
+  padding: 16px;
+}
+
+.manager-intro,
+.manager-list,
+.modal-reason-box {
+  display: grid;
+  gap: 12px;
+}
+
+.manager-toolbar {
+  margin-top: 4px;
+}
+
+.locked-skill-row {
+  background: #fff;
+  border: 1px solid #d7e5f6;
+  border-radius: 13px;
+  padding: 12px 14px;
+}
+
+.manager-list {
+  max-height: 46vh;
+  overflow: auto;
+}
+
+.manager-item {
+  display: grid;
+  gap: 14px;
+}
+
+.manager-item-head {
+  border-bottom: 1px solid #dfebfa;
+  padding-bottom: 10px;
+}
+
+.manager-wide-label {
+  display: block;
+}
+
+.single-manager-item {
+  max-height: none;
+  overflow: visible;
+}
+
+.json-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  min-height: 220px;
+}
+
+.modal-reason-box textarea {
+  min-height: 76px;
+}
+
+.integration-modal-status {
+  background: #fff;
+  border: 1px solid #d7e5f6;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 760;
+  padding: 5px 10px;
+}
+
+@media (max-width: 900px) {
+  .integration-note-grid,
+  .modal-form-grid,
+  .manager-field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .integration-card-actions,
+  .manager-toolbar,
+  .manager-item-head,
+  .modal-config-summary,
+  .locked-skill-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .run-table {
   background: #fff;
   max-width: 100%;

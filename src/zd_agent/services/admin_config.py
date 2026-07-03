@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -12,8 +13,9 @@ from typing import Any
 from urllib.parse import urlparse
 
 import yaml
+from pydantic import BaseModel
 
-from zd_agent.config import AppConfig
+from zd_agent.config import AppConfig, CustomMcpServiceConfig, CustomSkillConfig
 from zd_agent.services.atomic_write import atomic_write_text
 
 
@@ -53,7 +55,7 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("retry.zendesk.max_attempts", "Zendesk 重试次数覆盖", "模型与运行", input="number"),
     FieldSpec("retry.git.max_attempts", "源码/Git 重试次数覆盖", "模型与运行", input="number"),
     FieldSpec("retry.sandbox.max_attempts", "Sandbox 重试次数覆盖", "模型与运行", input="number"),
-    FieldSpec("prompts.agent_extra_instructions", "Agent 处理工单补充规则", "模型与运行", input="textarea"),
+    FieldSpec("prompts.agent_extra_instructions", "系统提示词", "模型与运行", input="textarea"),
     FieldSpec("zendesk.subdomain", "Zendesk 子域名", "触发配置", restart_required=True),
     FieldSpec("zendesk.email", "Zendesk 账号邮箱", "触发配置", restart_required=True),
     FieldSpec("zendesk.api_token", "Zendesk API Token", "触发配置", secret=True),
@@ -97,6 +99,8 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("prompts.ask_extra_instructions", "Ask 提示词补充规则", "回复策略", input="textarea"),
     FieldSpec("public_reply.browser_relay_url", "Browser relay URL", "工具与集成"),
     FieldSpec("public_reply.browser_relay_api_key", "Browser relay API Key", "工具与集成", secret=True),
+    FieldSpec("skills.enabled", "启用 Skills", "工具与集成", input="textarea"),
+    FieldSpec("skills.custom", "自定义 Skills", "工具与集成", input="json"),
     FieldSpec("zendesk_mcp.mcp_url", "Zendesk MCP URL", "工具与集成"),
     FieldSpec("zendesk_mcp.mcp_api_key", "Zendesk MCP API Key", "工具与集成", secret=True),
     FieldSpec("zendesk_mcp.request_timeout_seconds", "Zendesk MCP 超时秒数", "工具与集成", input="number"),
@@ -121,6 +125,7 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("sandbox_worker.mcp_url", "Sandbox worker URL", "工具与集成"),
     FieldSpec("sandbox_worker.mcp_api_key", "Sandbox worker API Key", "工具与集成", secret=True),
     FieldSpec("sandbox_worker.request_timeout_seconds", "Sandbox worker 超时秒数", "工具与集成", input="number"),
+    FieldSpec("mcp_services.custom", "自定义 MCP 服务", "工具与集成", input="json"),
     FieldSpec("feishu.webhook_url", "飞书 fallback webhook URL", "工具与集成"),
     FieldSpec("feishu.webhook_secret", "飞书 fallback webhook Secret", "工具与集成", secret=True),
     FieldSpec("feishu.daily_summary_time", "飞书日报时间", "工具与集成"),
@@ -178,6 +183,8 @@ ADMIN_AUTH_DEFAULTS: dict[str, Any] = {
     "admin_auth.feishu_app_id": "",
 }
 
+NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,63}$")
+
 
 def _fingerprint(value: str) -> str:
     if not value:
@@ -185,6 +192,16 @@ def _fingerprint(value: str) -> str:
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
     prefix = value[:3] if len(value) >= 3 else "***"
     return f"{prefix}-***{digest}"
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump()
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    return value
 
 
 def _get_attr(root: Any, path: str) -> Any:
@@ -205,6 +222,12 @@ def _set_attr(root: Any, path: str, value: Any) -> None:
 def _coerce_value(spec: FieldSpec, value: Any) -> Any:
     if spec.path == "zendesk.mention_aliases":
         return _coerce_mention_aliases(value)
+    if spec.path == "skills.enabled":
+        return _coerce_skill_names(value)
+    if spec.path == "skills.custom":
+        return _coerce_custom_skills(value)
+    if spec.path == "mcp_services.custom":
+        return _coerce_custom_mcp_services(value)
     if spec.input == "boolean":
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on", "开启"}
@@ -231,6 +254,78 @@ def _coerce_value(spec: FieldSpec, value: Any) -> Any:
     return raw
 
 
+def _json_payload(value: Any, *, path: str) -> Any:
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path} must be valid JSON") from exc
+    return value
+
+
+def _coerce_custom_skills(value: Any) -> list[CustomSkillConfig]:
+    payload = _json_payload(value, path="skills.custom")
+    if payload is None:
+        return []
+    if not isinstance(payload, list):
+        raise ValueError("skills.custom must be a JSON array")
+    skills: list[CustomSkillConfig] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("skills.custom items must be JSON objects")
+        skill = CustomSkillConfig(**item)
+        name = skill.name.strip()
+        if not NAME_RE.match(name):
+            raise ValueError(f"invalid custom Skill name: {name or '<empty>'}")
+        if name == "dify_support_ticket":
+            raise ValueError("custom Skill name conflicts with built-in Skill")
+        if name in seen:
+            raise ValueError(f"duplicate custom Skill name: {name}")
+        if skill.enabled and not skill.content.strip():
+            raise ValueError(f"custom Skill content is required: {name}")
+        skills.append(skill.model_copy(update={"name": name}))
+        seen.add(name)
+    return skills
+
+
+def _coerce_custom_mcp_services(value: Any) -> list[CustomMcpServiceConfig]:
+    payload = _json_payload(value, path="mcp_services.custom")
+    if payload is None:
+        return []
+    if not isinstance(payload, list):
+        raise ValueError("mcp_services.custom must be a JSON array")
+    services: list[CustomMcpServiceConfig] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("mcp_services.custom items must be JSON objects")
+        service = CustomMcpServiceConfig(**item)
+        name = service.name.strip()
+        if not NAME_RE.match(name):
+            raise ValueError(f"invalid custom MCP service name: {name or '<empty>'}")
+        if name in seen:
+            raise ValueError(f"duplicate custom MCP service name: {name}")
+        url = service.mcp_url.strip().rstrip("/")
+        if service.enabled and not url:
+            raise ValueError(f"custom MCP URL is required: {name}")
+        if url:
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError(f"custom MCP URL must be http(s): {name}")
+        timeout = max(3, int(service.request_timeout_seconds or 35))
+        services.append(service.model_copy(update={
+            "name": name,
+            "mcp_url": url,
+            "request_timeout_seconds": timeout,
+        }))
+        seen.add(name)
+    return services
+
+
 def _coerce_mention_aliases(value: Any) -> list[str]:
     if value is None:
         return []
@@ -252,7 +347,47 @@ def _coerce_mention_aliases(value: Any) -> list[str]:
     return aliases
 
 
+def _coerce_skill_names(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_items = [str(item) for item in value]
+    else:
+        raw_items = str(value).replace(",", "\n").splitlines()
+    requested = [item.strip() for item in raw_items if item.strip()]
+    invalid = [
+        item for item in requested
+        if not NAME_RE.match(item)
+    ]
+    if invalid:
+        raise ValueError(f"invalid Skill names: {', '.join(invalid)}")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in requested:
+        if item in seen:
+            continue
+        normalized.append(item)
+        seen.add(item)
+    return normalized
+
+
+def _validate_enabled_skills(
+    enabled: list[str],
+    *,
+    custom_skills: list[CustomSkillConfig],
+) -> None:
+    from zd_agent.runtime.prompt.skill_context import AVAILABLE_SKILL_NAMES
+
+    allowed = {*AVAILABLE_SKILL_NAMES, *(skill.name for skill in custom_skills)}
+    unknown = [name for name in enabled if name not in allowed]
+    if unknown:
+        raise ValueError(f"unknown Skills: {', '.join(unknown)}")
+
+
 def _validate_normalized_value(spec: FieldSpec, value: Any) -> None:
+    if spec.path == "skills.enabled":
+        if not value:
+            raise ValueError("skills.enabled must include at least one Skill")
     if spec.input == "number":
         if not isinstance(value, int | float):
             raise ValueError(f"{spec.path} must be a number")
@@ -357,12 +492,16 @@ class AdminConfigStore:
                 values[spec.path] = None
             else:
                 override = self._override_value(spec.path)
-                values[spec.path] = (
+                values[spec.path] = _jsonable(
                     override if override is not None else _get_attr(cfg, spec.path)
                 )
         return {"values": values}
 
-    def _normalized_changes(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _normalized_changes(
+        self,
+        payload: dict[str, Any],
+        cfg: AppConfig | None = None,
+    ) -> dict[str, Any]:
         changes = payload.get("changes", {})
         if not isinstance(changes, dict):
             raise ValueError("changes must be an object")
@@ -376,10 +515,18 @@ class AdminConfigStore:
             normalized_value = _coerce_value(spec, value)
             _validate_normalized_value(spec, normalized_value)
             normalized[spec.path] = normalized_value
+        if "skills.enabled" in normalized:
+            custom_skills = normalized.get("skills.custom")
+            if custom_skills is None and cfg is not None:
+                custom_skills = cfg.skills.custom
+            _validate_enabled_skills(
+                normalized["skills.enabled"],
+                custom_skills=custom_skills or [],
+            )
         return normalized
 
     def preview(self, cfg: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
-        changes = self._normalized_changes(payload)
+        changes = self._normalized_changes(payload, cfg)
         diff: list[dict[str, Any]] = []
         restart_required = False
         for path, new_value in changes.items():
@@ -395,8 +542,8 @@ class AdminConfigStore:
                 old_value = self._virtual_value(path)
                 shown_new = new_value
             else:
-                old_value = _get_attr(cfg, path)
-                shown_new = new_value
+                old_value = _jsonable(_get_attr(cfg, path))
+                shown_new = _jsonable(new_value)
             if old_value != shown_new:
                 diff.append({
                     "path": path,
@@ -425,7 +572,7 @@ class AdminConfigStore:
         if not str(payload.get("reason") or "").strip():
             raise ValueError("reason is required")
         preview = self.preview(cfg, payload)
-        changes = self._normalized_changes(payload)
+        changes = self._normalized_changes(payload, cfg)
         overrides = self._read_yaml(self.overrides_path)
         secrets_data = self._read_yaml(self.secrets_path)
 
@@ -442,7 +589,7 @@ class AdminConfigStore:
                 ):
                     _set_attr(cfg, path, value)
             else:
-                _deep_set(overrides, path, value)
+                _deep_set(overrides, path, _jsonable(value))
                 if not path.startswith("admin_auth.") and not spec.restart_required:
                     _set_attr(cfg, path, value)
 

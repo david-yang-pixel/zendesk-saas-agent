@@ -32,11 +32,11 @@ const GROUP_DESCRIPTIONS = {
     "Browser Relay 的 URL/API Key 已移到「工具与集成」，这里只保留回复行为策略。"
   ],
   "模型与运行": [
-    "配置主回复模型、Subagent 模型、触发判定模型、API Key、并发、轮次、超时和提示词补充规则。",
+    "配置主回复模型、Subagent 模型、触发判定模型、API Key、并发、轮次、超时和系统提示词。",
     "模型名是可编辑输入框，不限制为固定下拉选项。"
   ],
   "工具与集成": [
-    "配置 agent 使用的远程 MCP/Tool Service 和 Browser Relay。",
+    "配置 agent 使用的 Skills、远程 MCP/Tool Service 和 Browser Relay。",
     "这里可以测试连通性；检测结果会写入审计日志。"
   ],
   "存储配置": [
@@ -184,12 +184,17 @@ const FIELD_SECTIONS = {
       ]
     },
     {
-      title: "Agent 提示词",
-      description: "处理工单主提示词的补充约束。",
+      title: "系统提示词",
+      description: "追加到 system prompt，用于规范处理工单时的 Skill 调度、语气和排查约束。",
       paths: ["prompts.agent_extra_instructions"]
     }
   ],
   "工具与集成": [
+    {
+      title: "Skills",
+      description: "配置 agent 可启用的处理流程能力，和 MCP 一起组成排查能力面。",
+      paths: ["skills.enabled", "skills.custom"]
+    },
     {
       title: "Browser Relay",
       description: "客户可见 public reply 的浏览器中继服务。",
@@ -228,7 +233,8 @@ const FIELD_SECTIONS = {
         "docs_tool_service.request_timeout_seconds",
         "sandbox_worker.mcp_url",
         "sandbox_worker.mcp_api_key",
-        "sandbox_worker.request_timeout_seconds"
+        "sandbox_worker.request_timeout_seconds",
+        "mcp_services.custom"
       ]
     },
     {
@@ -325,6 +331,62 @@ const INTEGRATIONS = [
   ["docs_tool_service", "Docs Service", "官方文档缓存和限域读取"],
   ["notification_service", "Notification Service", "飞书通知和重试"],
   ["sandbox_worker", "Sandbox Worker", "隔离文件读写、搜索和执行"]
+];
+
+const INTEGRATION_CONFIG_PATHS = {
+  public_reply_browser_relay: [
+    "public_reply.browser_relay_url",
+    "public_reply.browser_relay_api_key",
+    "public_reply.browser_relay_timeout_seconds"
+  ],
+  zendesk_mcp: [
+    "zendesk_mcp.mcp_url",
+    "zendesk_mcp.mcp_api_key",
+    "zendesk_mcp.request_timeout_seconds"
+  ],
+  db_gateway: [
+    "db_gateway.url",
+    "db_gateway.api_key",
+    "db_gateway.request_timeout_seconds"
+  ],
+  signoz: [
+    "signoz.mcp_url",
+    "signoz.mcp_api_key",
+    "signoz.request_timeout_seconds"
+  ],
+  source_mcp: [
+    "source_mcp.mcp_url",
+    "source_mcp.mcp_api_key",
+    "source_mcp.request_timeout_seconds"
+  ],
+  github_mcp: [
+    "github_mcp.mcp_url",
+    "github_mcp.mcp_api_key",
+    "github_mcp.request_timeout_seconds"
+  ],
+  docs_tool_service: [
+    "docs_tool_service.mcp_url",
+    "docs_tool_service.mcp_api_key",
+    "docs_tool_service.request_timeout_seconds"
+  ],
+  notification_service: [
+    "notification_service.mcp_url",
+    "notification_service.mcp_api_key",
+    "notification_service.request_timeout_seconds"
+  ],
+  sandbox_worker: [
+    "sandbox_worker.mcp_url",
+    "sandbox_worker.mcp_api_key",
+    "sandbox_worker.request_timeout_seconds"
+  ]
+};
+
+const BUILT_IN_SKILLS = [
+  {
+    name: "dify_support_ticket",
+    label: "Dify Support Ticket",
+    description: "服务器 agent 默认处理 SaaS 工单的核心 Skill，始终启用。"
+  }
 ];
 
 const state = {
@@ -528,6 +590,14 @@ async function render() {
 
 function setPageActions() {
   const actions = document.getElementById("page-actions");
+  if (state.activeMenu === "工具与集成") {
+    actions.innerHTML = `
+      <button class="btn secondary" onclick="refreshActivePage()">刷新</button>
+      <button class="btn secondary" onclick="openSkillManager()">管理 Skill</button>
+      <button class="btn primary" onclick="openMcpManager()">新增 MCP</button>
+    `;
+    return;
+  }
   const editable = !["总览", "运行记录", "审计日志"].includes(state.activeMenu);
   if (!editable) {
     actions.innerHTML = `<button class="btn secondary" onclick="refreshActivePage()">刷新</button>`;
@@ -853,6 +923,9 @@ function renderRunRecordsContent(data, meta = {}) {
         <span>运行记录</span>
         <div class="header-actions">
           <span class="chip">显示 ${records.length} / ${data.summary?.filtered ?? records.length}</span>
+          <span class="chip">完整会话 ${data.summary?.total ?? records.length}</span>
+          <span class="chip">原始事件 ${data.raw_events_total ?? 0}</span>
+          <span class="chip">扫描文件 ${data.scanned_files ?? 0}</span>
           ${meta.refreshing ? `<span class="chip">后台刷新中</span>` : ""}
           ${meta.refreshError ? `<span class="chip danger-chip">刷新失败</span>` : ""}
           ${data.cache_hit ? `<span class="chip">缓存命中</span>` : ""}
@@ -1321,20 +1394,64 @@ function storageCheck(label, value, status) {
 }
 
 function renderIntegrations() {
-  const fields = fieldsFor("工具与集成");
   setContent(`
     ${renderModuleGuide("工具与集成")}
     <section class="card">
       <div class="card-header">
         <span>工具与集成</span>
-        <span class="chip">检测会写入审计日志</span>
+        <div class="header-actions">
+          <span class="chip">${customSkills().length + BUILT_IN_SKILLS.length} 个 Skill</span>
+          <span class="chip">${INTEGRATIONS.length + customMcpServices().length} 个服务</span>
+          <span class="chip">检测会写入审计日志</span>
+        </div>
       </div>
       <div class="card-body integration-grid">
+        ${renderSkillSummaryCard()}
         ${INTEGRATIONS.map(([name, label, description]) => renderIntegrationCard(name, label, description)).join("")}
+        ${customMcpServices().map(service => renderCustomMcpCard(service)).join("")}
       </div>
     </section>
-    ${renderForm("工具与集成", fields)}
+    <section class="card">
+      <div class="card-header">
+        <span>管理说明</span>
+        <span class="chip">Skill 与 MCP 统一管理</span>
+      </div>
+      <div class="card-body integration-note-grid">
+        <div>
+          <strong>Skill</strong>
+          <p>Skill 用来定义处理工单的 SOP 和工具使用约束。内置 Dify Support Ticket 始终启用，自定义 Skill 可以新增、禁用或删除。</p>
+        </div>
+        <div>
+          <strong>MCP</strong>
+          <p>内置 MCP 点击卡片编辑连接配置；自定义 MCP 保存后会通过 <code>custom_mcp_call</code> 按服务名和工具名调用。</p>
+        </div>
+      </div>
+    </section>
   `);
+}
+
+function renderSkillSummaryCard() {
+  const skills = customSkills();
+  const enabledCustom = skills.filter(skill => skill.enabled !== false).length;
+  return `
+    <div class="integration-card action-card skill-card" role="button" tabindex="0"
+      onclick="openSkillManager()"
+      onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault(); openSkillManager();}">
+      <div class="integration-card-head">
+        <div>
+          <strong>Skills</strong>
+          <div class="muted">处理工单 SOP、系统提示词配套能力</div>
+        </div>
+        <span class="chip enabled">内置必开</span>
+      </div>
+      <div class="integration-status success-text">
+        ${BUILT_IN_SKILLS.length} 个内置 · ${enabledCustom} 个自定义启用
+      </div>
+      <div class="integration-card-actions">
+        <button class="btn secondary" onclick="event.stopPropagation(); openSkillManager()">管理 Skill</button>
+      </div>
+    </div>
+  `;
 }
 
 function renderIntegrationCard(name, label, description) {
@@ -1343,14 +1460,55 @@ function renderIntegrationCard(name, label, description) {
     ? `${result.status} · ${result.detail || ""}`
     : "尚未检测";
   const cls = result?.reachable ? "success-text" : result ? "warn-text" : "muted";
+  const paths = INTEGRATION_CONFIG_PATHS[name] || [];
+  const configured = integrationConfigured(paths);
   return `
-    <div class="integration-card">
-      <div>
-        <strong>${escapeHtml(label)}</strong>
-        <div class="muted">${escapeHtml(description)}</div>
+    <div class="integration-card action-card" role="button" tabindex="0"
+      onclick="openIntegrationConfig(${jsArg(name)})"
+      onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault(); openIntegrationConfig(${jsArg(name)});}">
+      <div class="integration-card-head">
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <div class="muted">${escapeHtml(description)}</div>
+        </div>
+        <span class="chip ${configured ? "enabled" : ""}">${configured ? "已配置" : "未配置"}</span>
       </div>
-      <div class="${cls}">${escapeHtml(status)}</div>
-      <button class="btn secondary" onclick="checkIntegration('${name}')">测试连接</button>
+      <div class="integration-status ${cls}">${escapeHtml(status)}</div>
+      <div class="integration-card-actions">
+        <button class="btn secondary" onclick="event.stopPropagation(); checkIntegration(${jsArg(name)})">测试连接</button>
+        <button class="btn secondary" onclick="event.stopPropagation(); openIntegrationConfig(${jsArg(name)})">配置</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderCustomMcpCard(service) {
+  const name = String(service.name || "");
+  const label = service.label || name || "未命名 MCP";
+  const description = service.description || "自定义远程 MCP 服务";
+  const result = state.integrationChecks[name];
+  const status = result
+    ? `${result.status} · ${result.detail || ""}`
+    : "尚未检测";
+  const cls = result?.reachable ? "success-text" : result ? "warn-text" : "muted";
+  const enabled = service.enabled !== false;
+  const configured = enabled && Boolean(service.mcp_url);
+  return `
+    <div class="integration-card action-card custom-mcp-card" role="button" tabindex="0"
+      onclick="openCustomMcpConfig(${jsArg(name)})"
+      onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault(); openCustomMcpConfig(${jsArg(name)});}">
+      <div class="integration-card-head">
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <div class="muted">${escapeHtml(description)}</div>
+        </div>
+        <span class="chip ${configured ? "enabled" : ""}">${enabled ? (configured ? "已配置" : "缺 URL") : "已禁用"}</span>
+      </div>
+      <div class="integration-status ${cls}">${escapeHtml(status)}</div>
+      <div class="integration-card-actions">
+        <button class="btn secondary" onclick="event.stopPropagation(); checkIntegration(${jsArg(name)})">测试连接</button>
+        <button class="btn secondary" onclick="event.stopPropagation(); openCustomMcpConfig(${jsArg(name)})">配置</button>
+      </div>
     </div>
   `;
 }
@@ -1374,8 +1532,328 @@ async function checkIntegration(name) {
   renderIntegrations();
 }
 
+async function testIntegrationFromModal(name) {
+  const node = document.getElementById("integration-modal-status");
+  if (node) {
+    node.className = "integration-modal-status muted";
+    node.textContent = "检测中";
+  }
+  try {
+    const result = await api("/admin/api/integrations/check", {
+      method: "POST",
+      body: JSON.stringify({ integration: name })
+    });
+    state.integrationChecks[name] = result;
+    if (node) {
+      node.className = `integration-modal-status ${result.reachable ? "success-text" : "warn-text"}`;
+      node.textContent = `${result.status} · ${result.detail || ""}`;
+    }
+  } catch (err) {
+    state.integrationChecks[name] = {
+      status: "failed",
+      detail: err.message || "检测失败",
+      reachable: false
+    };
+    if (node) {
+      node.className = "integration-modal-status danger-text";
+      node.textContent = err.message || "检测失败";
+    }
+  }
+}
+
+function openIntegrationConfig(name) {
+  const integration = INTEGRATIONS.find(item => item[0] === name);
+  if (!integration) return;
+  const [, label, description] = integration;
+  const fields = fieldsByPaths(INTEGRATION_CONFIG_PATHS[name] || []);
+  showModal(`${label} 配置`, `
+    <div class="modal-config-summary">
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <p>${escapeHtml(description)}</p>
+      </div>
+      <span id="integration-modal-status" class="integration-modal-status muted">${escapeHtml(integrationStatusText(name))}</span>
+    </div>
+    <div class="modal-form-grid">
+      ${fields.map(renderFieldRow).join("")}
+    </div>
+    ${renderReasonBox(`${label} 连接配置调整`)}
+  `, [
+    { label: "测试连接", className: "secondary", onClick: () => testIntegrationFromModal(name) },
+    { label: "取消", className: "secondary", onClick: closeModal },
+    { label: "保存", className: "primary", onClick: () => saveModalConfig(`${label} 连接配置调整`) }
+  ]);
+}
+
+function openSkillManager() {
+  showModal("Skill 管理", `
+    <div class="manager-intro">
+      <strong>内置 Skill</strong>
+      ${BUILT_IN_SKILLS.map(skill => `
+        <div class="locked-skill-row">
+          <div>
+            <span>${escapeHtml(skill.label)}</span>
+            <p>${escapeHtml(skill.description)}</p>
+          </div>
+          <span class="chip enabled">始终启用</span>
+        </div>
+      `).join("")}
+    </div>
+    <div class="manager-toolbar">
+      <strong>自定义 Skill</strong>
+      <button class="btn secondary compact" onclick="addSkillManagerItem()">添加 Skill</button>
+    </div>
+    <div id="skill-manager-list" class="manager-list">
+      ${customSkills().map(renderSkillManagerItem).join("") || emptyHtml("还没有自定义 Skill")}
+    </div>
+    ${renderReasonBox("调整 Skill 配置")}
+  `, [
+    { label: "取消", className: "secondary", onClick: closeModal },
+    { label: "保存", className: "primary", onClick: saveSkillManager }
+  ]);
+}
+
+function renderSkillManagerItem(skill = {}) {
+  return `
+    <div class="manager-item" data-skill-item>
+      <div class="manager-item-head">
+        <strong>${escapeHtml(skill.name || "新 Skill")}</strong>
+        <button class="btn secondary compact" onclick="removeManagerItem(this)">删除</button>
+      </div>
+      <div class="manager-field-grid">
+        <label>名称</label>
+        <input data-skill-field="name" value="${escapeHtml(skill.name || "")}" placeholder="例如 billing_refund_sop">
+        <span class="muted">字母开头，可用数字、-、_</span>
+        <label>说明</label>
+        <input data-skill-field="description" value="${escapeHtml(skill.description || "")}" placeholder="这个 Skill 解决什么问题">
+        <span class="muted">展示给管理员和 prompt</span>
+        <label>启用</label>
+        <select data-skill-field="enabled">
+          <option value="true" ${skill.enabled !== false ? "selected" : ""}>开启</option>
+          <option value="false" ${skill.enabled === false ? "selected" : ""}>关闭</option>
+        </select>
+        <span class="muted">关闭后不会注入上下文</span>
+      </div>
+      <label class="manager-wide-label">Skill 内容</label>
+      <textarea data-skill-field="content" class="prompt-textarea" rows="8" placeholder="写入 SOP、证据要求和工具使用规则">${escapeHtml(skill.content || "")}</textarea>
+    </div>
+  `;
+}
+
+function addSkillManagerItem() {
+  addManagerItem("skill-manager-list", renderSkillManagerItem({ enabled: true }));
+}
+
+async function saveSkillManager() {
+  const error = document.getElementById("modal-save-error");
+  const skills = Array.from(document.querySelectorAll("[data-skill-item]")).map(item => ({
+    name: item.querySelector("[data-skill-field='name']").value.trim(),
+    description: item.querySelector("[data-skill-field='description']").value.trim(),
+    enabled: item.querySelector("[data-skill-field='enabled']").value === "true",
+    content: item.querySelector("[data-skill-field='content']").value.trim()
+  })).filter(skill => skill.name || skill.description || skill.content);
+  const enabled = [
+    "dify_support_ticket",
+    ...skills.filter(skill => skill.enabled).map(skill => skill.name).filter(Boolean)
+  ];
+  await applyConfigPayload({
+    "skills.custom": skills,
+    "skills.enabled": enabled.join("\n")
+  }, reasonFromModal("调整 Skill 配置"), error);
+}
+
+function openMcpManager() {
+  showModal("自定义 MCP 管理", `
+    <div class="manager-toolbar">
+      <div>
+        <strong>自定义 MCP 服务</strong>
+        <p>用于补充内置 MCP 之外的远程能力。保存后 Skill 或系统提示词可通过 service 名称引用。</p>
+      </div>
+      <button class="btn secondary compact" onclick="addMcpManagerItem()">添加 MCP</button>
+    </div>
+    <div id="mcp-manager-list" class="manager-list">
+      ${customMcpServices().map(service => renderMcpManagerItem(service)).join("") || emptyHtml("还没有自定义 MCP")}
+    </div>
+    ${renderReasonBox("调整自定义 MCP 配置")}
+  `, [
+    { label: "取消", className: "secondary", onClick: closeModal },
+    { label: "保存", className: "primary", onClick: saveMcpManager }
+  ]);
+}
+
+function renderMcpManagerItem(service = {}) {
+  const name = service.name || "";
+  return `
+    <div class="manager-item" data-mcp-item data-original-name="${escapeHtml(name)}">
+      <div class="manager-item-head">
+        <strong>${escapeHtml(service.label || name || "新 MCP")}</strong>
+        <button class="btn secondary compact" onclick="removeManagerItem(this)">删除</button>
+      </div>
+      ${renderMcpFieldGrid(service)}
+    </div>
+  `;
+}
+
+function renderMcpFieldGrid(service = {}) {
+  return `
+    <div class="manager-field-grid">
+      <label>服务名</label>
+      <input data-mcp-field="name" value="${escapeHtml(service.name || "")}" placeholder="例如 linear_mcp">
+      <span class="muted">调用时使用的 service</span>
+      <label>展示名</label>
+      <input data-mcp-field="label" value="${escapeHtml(service.label || "")}" placeholder="例如 Linear MCP">
+      <span class="muted">卡片标题</span>
+      <label>说明</label>
+      <input data-mcp-field="description" value="${escapeHtml(service.description || "")}" placeholder="这个 MCP 提供什么能力">
+      <span class="muted">卡片说明</span>
+      <label>MCP URL</label>
+      <input data-mcp-field="mcp_url" value="${escapeHtml(service.mcp_url || "")}" placeholder="https://example.com/mcp">
+      <span class="muted">支持 http(s)</span>
+      <label>API Key</label>
+      <input data-mcp-field="mcp_api_key" type="password" placeholder="${service.mcp_api_key ? "已配置，留空保持不变" : "可选"}">
+      <span class="muted">保存后用于 Authorization</span>
+      <label>超时秒数</label>
+      <input data-mcp-field="request_timeout_seconds" type="number" value="${escapeHtml(service.request_timeout_seconds || 35)}">
+      <span class="muted">最小 3 秒</span>
+      <label>启用</label>
+      <select data-mcp-field="enabled">
+        <option value="true" ${service.enabled !== false ? "selected" : ""}>开启</option>
+        <option value="false" ${service.enabled === false ? "selected" : ""}>关闭</option>
+      </select>
+      <span class="muted">关闭后不可检测和调用</span>
+    </div>
+  `;
+}
+
+function addMcpManagerItem() {
+  addManagerItem("mcp-manager-list", renderMcpManagerItem({ enabled: true, request_timeout_seconds: 35 }));
+}
+
+function openCustomMcpConfig(name) {
+  const service = customMcpServices().find(item => item.name === name);
+  if (!service) return;
+  showModal(`${service.label || service.name} 配置`, `
+    <div class="modal-config-summary">
+      <div>
+        <strong>${escapeHtml(service.label || service.name)}</strong>
+        <p>${escapeHtml(service.description || "自定义远程 MCP 服务")}</p>
+      </div>
+      <span id="integration-modal-status" class="integration-modal-status muted">${escapeHtml(integrationStatusText(service.name))}</span>
+    </div>
+    <div class="manager-item single-manager-item" data-mcp-item data-original-name="${escapeHtml(service.name)}">
+      ${renderMcpFieldGrid(service)}
+    </div>
+    ${renderReasonBox(`${service.label || service.name} 配置调整`)}
+  `, [
+    { label: "删除", className: "danger", onClick: () => deleteCustomMcp(service.name) },
+    { label: "测试连接", className: "secondary", onClick: () => testIntegrationFromModal(service.name) },
+    { label: "取消", className: "secondary", onClick: closeModal },
+    { label: "保存", className: "primary", onClick: () => saveSingleCustomMcp(service.name) }
+  ]);
+}
+
+async function saveMcpManager() {
+  const error = document.getElementById("modal-save-error");
+  const services = collectMcpManagerServices(document);
+  await applyConfigPayload({ "mcp_services.custom": services }, reasonFromModal("调整自定义 MCP 配置"), error);
+}
+
+async function saveSingleCustomMcp(originalName) {
+  const error = document.getElementById("modal-save-error");
+  const [updated] = collectMcpManagerServices(document);
+  if (!updated) {
+    if (error) error.textContent = "MCP 配置不能为空";
+    return;
+  }
+  const services = customMcpServices().map(service => (
+    service.name === originalName ? updated : service
+  ));
+  await applyConfigPayload({ "mcp_services.custom": services }, reasonFromModal(`${originalName} 配置调整`), error);
+}
+
+async function deleteCustomMcp(name) {
+  const error = document.getElementById("modal-save-error");
+  const services = customMcpServices().filter(service => service.name !== name);
+  await applyConfigPayload({ "mcp_services.custom": services }, reasonFromModal(`删除自定义 MCP ${name}`), error);
+}
+
+function addManagerItem(listId, html) {
+  const list = document.getElementById(listId);
+  if (!list) return;
+  if (list.querySelector(".empty-state")) {
+    list.innerHTML = "";
+  }
+  list.insertAdjacentHTML("beforeend", html);
+}
+
+function removeManagerItem(button) {
+  const item = button.closest("[data-skill-item], [data-mcp-item]");
+  if (item) item.remove();
+}
+
+function collectMcpManagerServices(root) {
+  const existingByName = new Map(customMcpServices().map(service => [service.name, service]));
+  return Array.from(root.querySelectorAll("[data-mcp-item]")).map(item => {
+    const field = name => item.querySelector(`[data-mcp-field='${name}']`);
+    const originalName = item.getAttribute("data-original-name") || "";
+    const existing = existingByName.get(originalName) || {};
+    const newKey = field("mcp_api_key").value.trim();
+    return {
+      name: field("name").value.trim(),
+      label: field("label").value.trim(),
+      description: field("description").value.trim(),
+      mcp_url: field("mcp_url").value.trim(),
+      mcp_api_key: newKey || existing.mcp_api_key || "",
+      request_timeout_seconds: Number(field("request_timeout_seconds").value || 35),
+      enabled: field("enabled").value === "true"
+    };
+  }).filter(service => service.name || service.label || service.mcp_url);
+}
+
 function fieldsFor(menu) {
   return (state.schema.fields || []).filter(field => field.group === menu);
+}
+
+function fieldByPath(path) {
+  return (state.schema.fields || []).find(field => field.path === path);
+}
+
+function fieldsByPaths(paths) {
+  return paths.map(fieldByPath).filter(Boolean);
+}
+
+function jsArg(value) {
+  return escapeHtml(JSON.stringify(value));
+}
+
+function integrationConfigured(paths) {
+  const firstUrlPath = paths.find(path => path.endsWith("url") || path.endsWith("mcp_url"));
+  return Boolean(firstUrlPath && fieldValue(firstUrlPath));
+}
+
+function integrationStatusText(name) {
+  const result = state.integrationChecks[name];
+  return result ? `${result.status} · ${result.detail || ""}` : "尚未检测";
+}
+
+function customSkills() {
+  const value = state.values["skills.custom"];
+  return Array.isArray(value) ? value : [];
+}
+
+function customMcpServices() {
+  const value = state.values["mcp_services.custom"];
+  return Array.isArray(value) ? value : [];
+}
+
+function renderReasonBox(placeholder) {
+  return `
+    <div class="modal-reason-box">
+      <label for="modal-change-reason">变更原因</label>
+      <textarea id="modal-change-reason" rows="3" placeholder="${escapeHtml(placeholder)}"></textarea>
+      <div id="modal-save-error" class="danger-text"></div>
+    </div>
+  `;
 }
 
 function renderForm(title, fields) {
@@ -1530,12 +2008,13 @@ function renderModuleGuide(menu) {
 }
 
 function renderInput(field) {
-  const value = fieldValue(field.path);
+  const value = state.values[field.path];
+  const displayValue = fieldValue(field.path);
   const id = `field-${field.path}`;
   if (field.secret) {
     return `
       <div class="secret-input">
-        <input id="${id}" disabled value="${escapeHtml(value)}">
+        <input id="${id}" disabled value="${escapeHtml(displayValue)}">
         <input data-path="${field.path}" type="password" placeholder="输入新密钥后保存">
       </div>
     `;
@@ -1550,10 +2029,13 @@ function renderInput(field) {
     `;
   }
   if (field.input === "textarea") {
-    return `<textarea id="${id}" data-path="${field.path}" class="prompt-textarea" rows="7">${escapeHtml(value)}</textarea>`;
+    return `<textarea id="${id}" data-path="${field.path}" class="prompt-textarea" rows="7">${escapeHtml(displayValue)}</textarea>`;
+  }
+  if (field.input === "json") {
+    return `<textarea id="${id}" data-path="${field.path}" class="json-textarea" rows="10">${escapeHtml(formatJsonFieldValue(value))}</textarea>`;
   }
   const inputType = field.input === "number" ? "number" : "text";
-  return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(value)}">`;
+  return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(displayValue)}">`;
 }
 
 function fieldValue(path) {
@@ -1567,8 +2049,12 @@ function fieldValue(path) {
 }
 
 function collectChanges() {
+  return collectChangesFrom(document);
+}
+
+function collectChangesFrom(root) {
   const changes = {};
-  document.querySelectorAll("[data-path]").forEach(input => {
+  root.querySelectorAll("[data-path]").forEach(input => {
     const path = input.getAttribute("data-path");
     if (!path) return;
     if (input.type === "password" && !input.value) return;
@@ -1585,7 +2071,19 @@ function collectChanges() {
 
 function fieldComparableValue(value) {
   if (Array.isArray(value)) return value.join("\n");
+  if (value && typeof value === "object" && !("configured" in value)) {
+    return formatJsonFieldValue(value);
+  }
   return String(value ?? "");
+}
+
+function formatJsonFieldValue(value) {
+  if (value === undefined || value === null || value === "") return "[]";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 async function previewChanges() {
@@ -1653,6 +2151,49 @@ async function applyChanges(changes) {
     ]);
   } catch (err) {
     error.textContent = err.message || "保存失败";
+  }
+}
+
+async function saveModalConfig(defaultReason) {
+  const body = document.getElementById("modal-body");
+  const error = document.getElementById("modal-save-error");
+  const changes = collectChangesFrom(body);
+  if (!Object.keys(changes).length) {
+    if (error) error.textContent = "没有检测到配置变更";
+    return;
+  }
+  await applyConfigPayload(changes, reasonFromModal(defaultReason), error);
+}
+
+function reasonFromModal(defaultReason) {
+  const reason = document.getElementById("modal-change-reason")?.value.trim() || "";
+  return reason || defaultReason;
+}
+
+async function applyConfigPayload(changes, reason, errorNode) {
+  if (!reason) {
+    if (errorNode) errorNode.textContent = "变更原因不能为空";
+    return;
+  }
+  try {
+    const result = await api("/admin/api/config/apply", {
+      method: "POST",
+      body: JSON.stringify({ changes, reason })
+    });
+    await loadConfig();
+    closeModal();
+    await render();
+    showModal("保存成功", `
+      <p>配置已保存。</p>
+      <p><strong>Audit ID</strong> ${escapeHtml(result.audit_id || "-")}</p>
+      ${result.restart_required ? "<p class=\"warn-text\">本次变更包含需重启生效的配置。</p>" : ""}
+    `, [
+      { label: "关闭", className: "secondary", onClick: closeModal }
+    ]);
+  } catch (err) {
+    if (errorNode) {
+      errorNode.textContent = err.message || "保存失败";
+    }
   }
 }
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -135,6 +134,34 @@ class ResourcesConfig(BaseModel):
     ticket_records_dir: str = "zendesk-cli/工单记录"
     attachments_dir: str = "工单附件"
     state_dir: str = ".state"
+
+
+class CustomSkillConfig(BaseModel):
+    name: str = ""
+    description: str = ""
+    content: str = ""
+    enabled: bool = True
+
+
+class SkillsConfig(BaseModel):
+    enabled: list[str] = Field(
+        default_factory=lambda: ["dify_support_ticket"],
+    )
+    custom: list[CustomSkillConfig] = Field(default_factory=list)
+
+
+class CustomMcpServiceConfig(BaseModel):
+    name: str = ""
+    label: str = ""
+    description: str = ""
+    mcp_url: str = ""
+    mcp_api_key: str = ""
+    request_timeout_seconds: int = 35
+    enabled: bool = True
+
+
+class McpServicesConfig(BaseModel):
+    custom: list[CustomMcpServiceConfig] = Field(default_factory=list)
 
 
 class TriggerDeciderConfig(BaseModel):
@@ -351,6 +378,7 @@ class AppConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
     trigger_decider: TriggerDeciderConfig = Field(default_factory=TriggerDeciderConfig)
     silence_waker: SilenceWakerConfig = Field(default_factory=SilenceWakerConfig)
     waiting_poller: WaitingPollerConfig = Field(default_factory=WaitingPollerConfig)
@@ -364,6 +392,7 @@ class AppConfig(BaseModel):
         default_factory=NotificationServiceConfig,
     )
     sandbox_worker: SandboxWorkerConfig = Field(default_factory=SandboxWorkerConfig)
+    mcp_services: McpServicesConfig = Field(default_factory=McpServicesConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)

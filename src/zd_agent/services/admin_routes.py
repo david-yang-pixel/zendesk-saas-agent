@@ -179,6 +179,29 @@ def _cfg_value(cfg: AppConfig, path: str) -> Any:
     return cur
 
 
+def _integration_spec(name: str, cfg: AppConfig) -> dict[str, Any] | None:
+    spec = INTEGRATION_SPECS.get(name)
+    if spec is not None:
+        return {
+            "label": spec["label"],
+            "url": str(_cfg_value(cfg, spec["url_path"]) or "").strip().rstrip("/"),
+            "api_key": str(_cfg_value(cfg, spec["key_path"]) or "").strip(),
+            "timeout_seconds": float(_cfg_value(cfg, spec["timeout_path"]) or 10),
+            "kind": spec["kind"],
+        }
+    for service in cfg.mcp_services.custom:
+        if service.name == name:
+            return {
+                "label": service.label or service.name,
+                "url": service.mcp_url.strip().rstrip("/"),
+                "api_key": service.mcp_api_key.strip(),
+                "timeout_seconds": float(service.request_timeout_seconds or 10),
+                "kind": "mcp",
+                "enabled": service.enabled,
+            }
+    return None
+
+
 def _current_admin(request: web.Request) -> str | None:
     return admin_auth(request.app).validate_session(_session_token(request))
 
@@ -1320,15 +1343,16 @@ async def _probe_integration(
     name: str,
     cfg: AppConfig,
 ) -> dict[str, Any]:
-    spec = INTEGRATION_SPECS.get(name)
+    spec = _integration_spec(name, cfg)
     checked_at = datetime.now(timezone.utc).isoformat()
     if spec is None:
         raise ValueError("unsupported_integration")
 
-    url = str(_cfg_value(cfg, spec["url_path"]) or "").strip().rstrip("/")
-    api_key = str(_cfg_value(cfg, spec["key_path"]) or "").strip()
-    timeout_seconds = float(_cfg_value(cfg, spec["timeout_path"]) or 10)
-    configured = bool(url and api_key)
+    enabled = bool(spec.get("enabled", True))
+    url = str(spec["url"]).strip().rstrip("/")
+    api_key = str(spec.get("api_key") or "").strip()
+    timeout_seconds = float(spec.get("timeout_seconds") or 10)
+    configured = bool(enabled and url)
     base = {
         "ok": True,
         "integration": name,
@@ -1336,13 +1360,13 @@ async def _probe_integration(
         "configured": configured,
         "reachable": False,
         "status": "missing_config" if not configured else "unknown",
-        "detail": "URL or API key is not configured" if not configured else "",
+        "detail": "Service disabled or URL is not configured" if not configured else "",
         "checked_at": checked_at,
     }
     if not configured:
         return base
 
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         async with httpx.AsyncClient(
             timeout=min(max(timeout_seconds, 3), 20),

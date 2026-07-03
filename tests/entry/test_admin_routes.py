@@ -12,7 +12,7 @@ import pytest
 from aiohttp import web
 
 from zd_agent.services import admin_routes
-from zd_agent.config import AppConfig
+from zd_agent.config import AppConfig, CustomMcpServiceConfig
 from zd_agent.services.admin_routes import (
     ADMIN_HANDLERS_KEY,
     _load_index_html,
@@ -153,6 +153,8 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     for symbol in ["run-record-card", "record-expand", "round-timeline", "tool-call-row", "event-trace"]:
         assert symbol in app_js
         assert symbol in css
+    for text in ["原始事件", "扫描文件", "加载更多"]:
+        assert text in app_js
     for symbol in ["module-guide", "summary-strip", "raw-json", "notice-card", "toast"]:
         assert symbol in app_js or symbol in css
     assert ".run-record-row" in css
@@ -196,8 +198,19 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "点击卡片查看配置" in app_js
     assert "config-section-tile" in app_js
     assert "config-section-card" in app_js
+    assert "系统提示词" in app_js
+    assert "Skills" in app_js
+    assert "skills.enabled" in app_js
+    assert "skills.custom" in app_js
+    assert "mcp_services.custom" in app_js
+    assert "openIntegrationConfig" in app_js
+    assert "openCustomMcpConfig" in app_js
+    assert "openSkillManager" in app_js
+    assert "openMcpManager" in app_js
+    assert "custom_mcp_call" in app_js
     assert "zendesk.mention_aliases" in app_js
     assert "fieldComparableValue" in app_js
+    assert "json-textarea" in app_js
     assert "触发判定与等待策略" in app_js
     assert "主模型与判定模型" in app_js
     assert "判定模型放在「模型与运行」里" in app_js
@@ -1059,6 +1072,66 @@ async def test_admin_integration_check_reports_reachability_and_writes_audit(tmp
     assert body["status"] == "ok"
     assert audit_body["items"][0]["action"] == "integration_check"
     assert "super-secret-key" not in audit.text
+
+
+@pytest.mark.asyncio
+async def test_admin_integration_check_supports_custom_mcp_services(tmp_path) -> None:
+    app = _app(tmp_path)
+    cfg = app_config(app)
+    cfg.mcp_services.custom = [
+        CustomMcpServiceConfig(
+            name="linear_mcp",
+            label="Linear MCP",
+            description="Issue tracking",
+            mcp_url="https://linear.example.test/custom",
+            mcp_api_key="linear-secret-key",
+            request_timeout_seconds=5,
+            enabled=True,
+        ),
+    ]
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": "admin123",
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://linear.example.test/custom/mcp"
+        assert request.headers["authorization"] == "Bearer linear-secret-key"
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.services.admin_routes.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        response = await app[ADMIN_HANDLERS_KEY]["integration_check"](
+            _Request(
+                app=app,
+                cookies=cookie,
+                payload={"integration": "linear_mcp"},
+            )
+        )
+
+    body = json.loads(response.text)
+    audit = await app[ADMIN_HANDLERS_KEY]["audit_logs"](
+        _Request(app=app, cookies=cookie, query={"action": "integration_check"})
+    )
+
+    assert response.status == 200
+    assert body["configured"] is True
+    assert body["reachable"] is True
+    assert body["label"] == "Linear MCP"
+    assert "linear-secret-key" not in audit.text
 
 
 @pytest.mark.asyncio
