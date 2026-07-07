@@ -235,15 +235,25 @@ def apply_session_finished(
     finished_at = now or datetime.now(timezone.utc)
     ticket_state.last_agent_finish_ts = finished_at
 
+    reply_sent = bool(getattr(session, "reply_sent", False))
     completed_with_reply = (
         session.status == SessionStatus.COMPLETED
-        and bool(getattr(session, "reply_sent", False))
+        and reply_sent
+    )
+    completed_without_reply_from_processing = (
+        ticket_state.state == "processing"
+        and session.status == SessionStatus.COMPLETED
+        and not reply_sent
     )
     failed_from_processing = (
         ticket_state.state == "processing"
         and session.status == SessionStatus.FAILED
     )
-    if completed_with_reply or failed_from_processing:
+    if (
+        completed_with_reply
+        or completed_without_reply_from_processing
+        or failed_from_processing
+    ):
         new_state = "processed" if completed_with_reply else "in_silence_window"
         logger.info(
             "session_finished_state_reset",
@@ -251,10 +261,10 @@ def apply_session_finished(
             from_state=ticket_state.state,
             to_state=new_state,
             session_status=session.status.value,
-            reply_sent=bool(getattr(session, "reply_sent", False)),
+            reply_sent=reply_sent,
         )
         ticket_state.state = new_state
-        if session.status == SessionStatus.FAILED:
+        if not completed_with_reply:
             ticket_state.silence_window_end = None
 
     state.set(session.ticket_id, ticket_state)

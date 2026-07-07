@@ -8,8 +8,8 @@ Verdict types (6 total)
 - **no_message**       — 没有任何客户文字消息（只 formResponse）。仅当 messages
                          空 + 无截图 时返回。
 - **greeting**         — 纯打招呼/寒暄（"hi" / "在吗" / "any update?"）
-- **insufficient_info** — 说了问题但缺关键信息（错误细节 / 复现步骤等）
-- **substantial_issue** — 已陈述具体问题 + 足够上下文可以开始排查
+- **insufficient_info** — 还无法判断客户具体要解决什么
+- **substantial_issue** — 已表达可处理诉求/问题，可以进入 agent 排查或回答
 - **request_human**    — 客户明确要求转人工（"human" / "人工" / "找真人"）
                          最高优先级中断信号。
 - **self_resolved**    — 客户表达问题已自行解决 / 不需再帮助
@@ -127,6 +127,137 @@ _FAILURE_SIGNAL_KEYWORDS = (
     "不能",
     "失败",
 )
+_BILLING_REQUEST_KEYWORDS = (
+    "refund",
+    "charge",
+    "charged",
+    "invoice",
+    "billing",
+    "payment",
+    "subscription renewal",
+    "renewal",
+    "退款",
+    "退费",
+    "扣费",
+    "收费",
+    "账单",
+    "帳單",
+    "发票",
+    "發票",
+    "付款",
+    "续费",
+    "續費",
+)
+_REFUND_RISK_KEYWORDS = (
+    "refund",
+    "charge",
+    "charged",
+    "payment failed",
+    "unexpected charge",
+    "overcharged",
+    "退款",
+    "退费",
+    "扣费",
+    "多扣",
+    "乱扣",
+    "未授权扣款",
+    "未授權扣款",
+)
+_ACTIONABLE_DOMAIN_KEYWORDS = (
+    "account",
+    "api",
+    "app",
+    "application",
+    "billing",
+    "chatflow",
+    "dataset",
+    "document",
+    "documents",
+    "email",
+    "invoice",
+    "jina",
+    "knowledge",
+    "knowledge base",
+    "kb",
+    "model",
+    "node",
+    "plugin",
+    "quota",
+    "rerank",
+    "subscription",
+    "tool",
+    "workflow",
+    "workspace",
+    "账号",
+    "账户",
+    "帳號",
+    "应用",
+    "應用",
+    "插件",
+    "模型",
+    "知识库",
+    "知識庫",
+    "工作流",
+    "文档",
+    "文件",
+    "账单",
+    "帳單",
+    "订阅",
+    "訂閱",
+    "额度",
+    "积分",
+)
+_ACTIONABLE_REQUEST_PHRASES = (
+    "can i",
+    "can we",
+    "could you",
+    "how can i",
+    "how do i",
+    "how to",
+    "i need",
+    "i want",
+    "please help",
+    "please check",
+    "what is",
+    "where can i",
+    "where do i",
+    "why",
+    "帮我",
+    "幫我",
+    "请问",
+    "請問",
+    "请帮",
+    "請幫",
+    "如何",
+    "怎么",
+    "怎麼",
+    "为什么",
+    "為什麼",
+    "在哪里",
+    "在哪裡",
+    "能不能",
+    "可以",
+    "需要",
+    "想要",
+)
+_GENERIC_HELP_ONLY_MESSAGES = frozenset({
+    "can you help me",
+    "could you help me",
+    "help",
+    "help me",
+    "please help",
+    "please help me",
+    "i need help",
+    "i have a question",
+    "i have an issue",
+    "there is a problem",
+    "帮我看看",
+    "幫我看看",
+    "需要帮助",
+    "需要幫助",
+    "有问题",
+    "有問題",
+})
 
 
 _PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在 Zendesk 工单上发了以下完整消息上下文（按时间升序）：
@@ -139,8 +270,10 @@ _PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在
 
 1. **"no_message"**：没有任何文字消息（仅在客户消息列表为空 + 没有截图时返回，理论上你看到此 prompt 不太会命中）
 2. **"greeting"**：纯打招呼/寒暄（"hi" / "hello" / "在吗" / "any update?" / 表情符等）
-3. **"insufficient_info"**：说了问题但关键信息缺失（提"报错"没贴错误 / 没说具体功能点 / 描述太模糊）
-4. **"substantial_issue"**：已陈述具体问题 + 足够关键信息可以开始排查
+3. **"insufficient_info"**：还无法判断客户具体要解决什么，只知道客户在打招呼、泛泛求助或说"有问题/帮我看看"但没有任何业务对象或诉求方向
+4. **"substantial_issue"**：客户已经表达了可处理诉求/问题/请求，agent 可以进入处理链路
+   - 包括退款/账单/订阅/积分、功能使用咨询、how-to、账号问题、API、Workflow、Knowledge Base、模型、插件、报错、卡住、缺失、不显示等
+   - 即使缺少截图、错误全文、workspace id、复现步骤，也仍归 substantial_issue；agent 会在处理过程中按场景补问最小必要信息
 5. **"request_human"**：客户明确要求转人工或希望人参与
    - 例："human" / "人工" / "找真人" / "let me talk to someone real" / "I need a person to help me"
    - 注意：客户**仅仅说"急"或"在吗"**不算请求人工，那是 greeting
@@ -154,9 +287,9 @@ _PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在
 - 截图模糊 / 看不清重点 → insufficient_info
 
 同时给出 completeness（0-100）：
-- 0-30: 没说具体问题
-- 30-60: 有模糊问题陈述，信息缺
-- 60-80: 有问题陈述，信息基本齐
+- 0-30: 没说具体要解决什么
+- 30-60: 只有模糊诉求，无法判断帮助方向
+- 60-80: 已知道诉求/问题方向，可以开始处理但可能缺少部分细节
 - 80-100: 信息非常完整
 
 **另外** 判断 high_risk_category（agent 不能自动公开回复，需人工 review 的工单）：
@@ -215,6 +348,41 @@ def _should_upgrade_account_email_issue(messages: list[str]) -> bool:
     has_change = any(keyword in text for keyword in _ACCOUNT_CHANGE_KEYWORDS)
     has_failure = any(keyword in text for keyword in _FAILURE_SIGNAL_KEYWORDS)
     return has_email and has_change and has_failure
+
+
+def _normalize_customer_text(messages: list[str]) -> str:
+    text = "\n".join(messages[-3:]).lower()
+    return " ".join(text.strip().strip(".!?,。！？，").split())
+
+
+def _detect_actionable_request(messages: list[str]) -> str | None:
+    if not messages:
+        return None
+
+    text = _normalize_customer_text(messages)
+    if not text or text in _GENERIC_HELP_ONLY_MESSAGES:
+        return None
+
+    if _should_upgrade_account_email_issue(messages):
+        return "account_email"
+
+    if any(keyword in text for keyword in _BILLING_REQUEST_KEYWORDS):
+        return "billing_request"
+
+    has_domain = any(keyword in text for keyword in _ACTIONABLE_DOMAIN_KEYWORDS)
+    has_failure = any(keyword in text for keyword in _FAILURE_SIGNAL_KEYWORDS)
+    has_request = any(keyword in text for keyword in _ACTIONABLE_REQUEST_PHRASES)
+
+    if has_domain and (has_failure or has_request):
+        return "domain_request"
+    if has_failure and len(text) >= 18:
+        return "failure_signal"
+    return None
+
+
+def _detect_refund_risk(messages: list[str]) -> bool:
+    text = _normalize_customer_text(messages)
+    return any(keyword in text for keyword in _REFUND_RISK_KEYWORDS)
 
 
 async def _call_llm(
@@ -357,18 +525,29 @@ async def classify_messages(
             logger.warning("pre_check_unknown_high_risk", raw=high_risk_raw)
 
     reason = str(parsed.get("reason", ""))
-    if verdict == "insufficient_info" and _should_upgrade_account_email_issue(recent):
+    actionable_kind = _detect_actionable_request(recent)
+    if verdict == "insufficient_info" and actionable_kind:
         logger.info(
-            "verdict_override_account_email_issue",
+            "verdict_override_actionable_request",
             previous_verdict=verdict,
             previous_completeness=completeness,
+            actionable_kind=actionable_kind,
         )
         verdict = "substantial_issue"
         completeness = max(completeness, 65)
-        reason = (
-            "客户已说明账号邮箱变更失败/报错，具备明确功能和失败现象，可开始排查；"
-            "缺少错误文本可在处理中补问。"
-        )
+        if actionable_kind == "account_email":
+            reason = (
+                "客户已说明账号邮箱变更失败/报错，具备明确功能和失败现象，可开始排查；"
+                "缺少错误文本可在处理中补问。"
+            )
+        else:
+            reason = (
+                "客户已表达明确诉求或问题方向，可进入 agent 处理；"
+                "缺少细节可在处理中按场景补问。"
+            )
+
+    if high_risk is None and _detect_refund_risk(recent):
+        high_risk = "refund"
 
     return PreCheckVerdict(
         verdict=verdict,  # type: ignore[arg-type]

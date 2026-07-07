@@ -81,6 +81,35 @@ async def test_ask_path_calls_send_ask_and_increments_when_sent(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_substantial_issue_enters_silence_without_ask(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    send_ask = AsyncMock(return_value=True)
+
+    await handle_post_verdict_dispatch(
+        ticket_id=12345,
+        verdict=_verdict("substantial_issue", completeness=65),
+        customer_msgs=[{"body": "I need a refund for my subscription renewal."}],
+        ticket_info={"id": 12345},
+        latest_cid="cid-1",
+        latest_ts=_now(),
+        existing=None,
+        state=state,
+        log_path=Path(tmp_path) / "trigger.jsonl",
+        source="zendesk_webhook",
+        now=_now(),
+        cfg=_cfg(),
+        escalate_fn=AsyncMock(),
+        send_ask_fn=send_ask,
+    )
+
+    rec = state.get(12345)
+    assert rec is not None
+    assert rec.state == "in_silence_window"
+    assert rec.last_verdict == "substantial_issue"
+    send_ask.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_max_ask_count_escalates_without_sending_ask(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     existing = TicketState(

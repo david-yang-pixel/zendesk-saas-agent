@@ -45,13 +45,13 @@ async def test_classify_substantial_issue():
 async def test_classify_insufficient():
     llm_resp = (
         '{"verdict": "insufficient_info", "completeness": 45, '
-        '"reason": "no error text or wid"}'
+        '"reason": "unclear request"}'
     )
     with patch(
         "zd_agent.trigger.decider._call_llm", AsyncMock(return_value=llm_resp),
     ):
         v = await classify_messages(
-            messages=["knowledge retrieval broken"],
+            messages=["can you help me?"],
             model="gpt-5.4-mini", api_key="x",
         )
     assert v.verdict == "insufficient_info"
@@ -78,6 +78,81 @@ async def test_account_email_change_error_upgrades_to_substantial_issue():
     assert v.verdict == "substantial_issue"
     assert v.completeness == 65
     assert "账号邮箱变更失败" in v.reason
+
+
+@pytest.mark.asyncio
+async def test_actionable_refund_request_upgrades_to_substantial_issue():
+    llm_resp = (
+        '{"verdict": "insufficient_info", "completeness": 45, '
+        '"reason": "missing invoice id"}'
+    )
+    with patch(
+        "zd_agent.trigger.decider._call_llm", AsyncMock(return_value=llm_resp),
+    ):
+        v = await classify_messages(
+            messages=["I need a refund for my subscription renewal."],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "substantial_issue"
+    assert v.completeness == 65
+    assert v.high_risk_category == "refund"
+    assert "明确诉求" in v.reason
+
+
+@pytest.mark.asyncio
+async def test_actionable_how_to_request_upgrades_to_substantial_issue():
+    llm_resp = (
+        '{"verdict": "insufficient_info", "completeness": 50, '
+        '"reason": "missing workspace id"}'
+    )
+    with patch(
+        "zd_agent.trigger.decider._call_llm", AsyncMock(return_value=llm_resp),
+    ):
+        v = await classify_messages(
+            messages=["How do I configure Jina rerank in Knowledge Base?"],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "substantial_issue"
+    assert v.completeness == 65
+    assert "明确诉求" in v.reason
+
+
+@pytest.mark.asyncio
+async def test_billing_how_to_request_is_not_refund_risk():
+    llm_resp = (
+        '{"verdict": "insufficient_info", "completeness": 50, '
+        '"reason": "missing workspace id"}'
+    )
+    with patch(
+        "zd_agent.trigger.decider._call_llm", AsyncMock(return_value=llm_resp),
+    ):
+        v = await classify_messages(
+            messages=["How do I update the billing address on my subscription?"],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "substantial_issue"
+    assert v.high_risk_category is None
+
+
+@pytest.mark.asyncio
+async def test_generic_help_request_stays_insufficient_info():
+    llm_resp = (
+        '{"verdict": "insufficient_info", "completeness": 35, '
+        '"reason": "no concrete topic"}'
+    )
+    with patch(
+        "zd_agent.trigger.decider._call_llm", AsyncMock(return_value=llm_resp),
+    ):
+        v = await classify_messages(
+            messages=["Can you help me?"],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "insufficient_info"
+    assert v.completeness == 35
 
 
 @pytest.mark.asyncio
