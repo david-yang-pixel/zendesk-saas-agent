@@ -19,6 +19,10 @@ class VerdictClassificationResult:
     images_used: int
 
 
+def _count_message_images(customer_msgs: list[dict]) -> int:
+    return sum(len(message.get("image_urls") or []) for message in customer_msgs)
+
+
 async def classify_ticket_messages(
     *,
     ticket_id: int,
@@ -26,6 +30,7 @@ async def classify_ticket_messages(
     model: str,
     api_key: str,
     base_url: str | None = None,
+    enable_vision_input: bool = False,
     collect_recent_image_data_urls_fn: CollectImagesFn | None = None,
     classify_messages_fn: ClassifyMessagesFn | None = None,
 ) -> VerdictClassificationResult:
@@ -37,13 +42,20 @@ async def classify_ticket_messages(
     classify_messages_fn = classify_messages_fn or classify_messages
 
     bodies = [message.get("body") or "" for message in customer_msgs]
-    image_data_urls = await collect_recent_image_data_urls_fn(customer_msgs)
+    image_count = _count_message_images(customer_msgs)
+    image_data_urls = (
+        await collect_recent_image_data_urls_fn(customer_msgs)
+        if enable_vision_input
+        else []
+    )
     verdict = await classify_messages_fn(
         messages=bodies,
         model=model,
         api_key=api_key,
         base_url=base_url,
         image_data_urls=image_data_urls,
+        image_count=image_count,
+        enable_vision_input=enable_vision_input,
     )
     logger.info(
         "trigger_verdict",

@@ -214,7 +214,13 @@ async def run_subagent(
                 )
 
         async for event in agent_loop(
-            sub_session, provider, message_store, sub_registry, guardrails, tool_schemas,
+            sub_session,
+            provider,
+            message_store,
+            sub_registry,
+            guardrails,
+            tool_schemas,
+            enable_vision_input=sub_llm_cfg.enable_vision_input,
         ):
             if (
                 isinstance(event, LoopProgress)

@@ -26,6 +26,7 @@ class AgentConfig(BaseModel):
 class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o"
+    enable_vision_input: bool = False
     # subagent_model：subagent 用的模型（默认空 = 用主 model 字段，向后兼容）。
     # 设成 mini 类模型可大幅省 token 成本：subagent 干"go fetch this"机械活，
     # mini 完全够用；主 agent 决策、整合、写 reply 才需要强推理模型。
@@ -166,6 +167,7 @@ class McpServicesConfig(BaseModel):
 
 class TriggerDeciderConfig(BaseModel):
     llm_model: str = "gpt-5.4-mini"
+    enable_vision_input: bool = False
     silence_minutes_default: int = 0
     silence_extend_to_minutes: int = 1
     rapid_burst_window_seconds: int = 30

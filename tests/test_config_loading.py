@@ -10,6 +10,7 @@ agent:
 llm:
   provider: openai
   model: gpt-5.4
+  enable_vision_input: true
 resources:
   base_dir: /opt/zd-agent/resources
   saas_codebase_dir: saas源代码
@@ -23,6 +24,7 @@ zendesk:
     - "@yonggang"
 trigger_decider:
   llm_model: gpt-5.4-mini
+  enable_vision_input: true
   silence_minutes_default: 0
   silence_extend_to_minutes: 1
   rapid_burst_window_seconds: 30
@@ -132,7 +134,9 @@ def test_config_loads_resources_section(saas_env, saas_config_file):
 
 def test_config_loads_trigger_decider_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
+    assert cfg.llm.enable_vision_input is True
     assert cfg.trigger_decider.llm_model == "gpt-5.4-mini"
+    assert cfg.trigger_decider.enable_vision_input is True
     assert cfg.trigger_decider.silence_minutes_default == 0
     assert cfg.trigger_decider.silence_extend_to_minutes == 1
     assert cfg.trigger_decider.rapid_burst_window_seconds == 30

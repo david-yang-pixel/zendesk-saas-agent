@@ -28,6 +28,7 @@ async def test_classify_ticket_messages_collects_images_and_calls_decider() -> N
         model="gpt-test",
         api_key="sk-test",
         base_url="https://example.com/v1",
+        enable_vision_input=True,
         collect_recent_image_data_urls_fn=collect_images,
         classify_messages_fn=classify,
     )
@@ -42,6 +43,42 @@ async def test_classify_ticket_messages_collects_images_and_calls_decider() -> N
         api_key="sk-test",
         base_url="https://example.com/v1",
         image_data_urls=["data:image/png;base64,AAA"],
+        image_count=1,
+        enable_vision_input=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_classify_ticket_messages_skips_image_download_when_vision_disabled() -> None:
+    verdict = PreCheckVerdict(
+        verdict="insufficient_info",
+        completeness=50,
+        reason="image-only",
+    )
+    collect_images = AsyncMock(return_value=["data:image/png;base64,AAA"])
+    classify = AsyncMock(return_value=verdict)
+
+    result = await classify_ticket_messages(
+        ticket_id=12345,
+        customer_msgs=[
+            {"body": "[客户附图]", "image_urls": ["https://example.com/a.png"]},
+        ],
+        model="text-only-model",
+        api_key="sk-test",
+        collect_recent_image_data_urls_fn=collect_images,
+        classify_messages_fn=classify,
+    )
+
+    assert result.images_used == 0
+    collect_images.assert_not_awaited()
+    classify.assert_awaited_once_with(
+        messages=["[客户附图]"],
+        model="text-only-model",
+        api_key="sk-test",
+        base_url=None,
+        image_data_urls=[],
+        image_count=1,
+        enable_vision_input=False,
     )
 
 
@@ -67,4 +104,6 @@ async def test_classify_ticket_messages_handles_missing_body() -> None:
         api_key="sk-test",
         base_url=None,
         image_data_urls=[],
+        image_count=0,
+        enable_vision_input=False,
     )

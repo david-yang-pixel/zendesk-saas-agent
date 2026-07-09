@@ -104,7 +104,22 @@ def _is_image_url_error(exc: Exception) -> bool:
     if isinstance(exc, BadRequestError) and getattr(exc, "code", None) == "invalid_image_url":
         return True
     err_str = str(exc).lower()
-    return "invalid_image_url" in err_str
+    return any(
+        marker in err_str
+        for marker in (
+            "invalid_image_url",
+            "image input",
+            "image_url",
+            "images are not supported",
+            "does not support images",
+            "doesn't support images",
+            "does not support vision",
+            "multimodal",
+            "multi-modal",
+            "unsupported content type",
+            "unsupported message content",
+        )
+    )
 
 
 def _strip_images_from_messages(messages: list[dict[str, Any]]) -> int:
@@ -126,7 +141,7 @@ def _strip_images_from_messages(messages: list[dict[str, Any]]) -> int:
         removed += img_count
         new_content.append({
             "type": "text",
-            "text": f"（⚠️ {img_count} 张截图因网络超时无法加载，请仅基于文字内容分析问题）",
+            "text": f"（⚠️ {img_count} 张截图无法被当前模型读取，请仅基于文字内容分析问题）",
         })
         msg["content"] = new_content
     return removed
@@ -467,6 +482,8 @@ async def agent_loop(
     registry: ToolRegistry,
     guardrails: Guardrails,
     tool_schemas: list[ToolSchema],
+    *,
+    enable_vision_input: bool = False,
 ) -> AsyncGenerator[AgentEvent, None]:
     """LLM ↔ 工具循环，通过 yield 产出进度事件（不打印控制台）。"""
     session.status = SessionStatus.RUNNING
@@ -560,7 +577,7 @@ async def agent_loop(
                                 ticket_id=session.ticket_id,
                                 attempt=conn_attempts,
                                 delay=delay,
-                                error=str(e)[:200],
+                                error_type=type(e).__name__,
                             )
                             await asyncio.sleep(delay)
                             continue
@@ -577,7 +594,7 @@ async def agent_loop(
                     "image_url_fallback",
                     ticket_id=session.ticket_id,
                     removed_count=removed,
-                    error=str(chat_err),
+                    error_type=type(chat_err).__name__,
                 )
                 response = await _chat_with_retry()
             llm_elapsed = time.monotonic() - llm_start
@@ -636,7 +653,19 @@ async def agent_loop(
                 yield event
 
             if session.image_urls and not session.images_injected:
-                await _inject_images(session, message_store)
+                if enable_vision_input:
+                    await _inject_images(session, message_store)
+                else:
+                    message_store.append_user(
+                        f"[系统提醒] 工单包含 {len(session.image_urls)} 张截图，"
+                        "但当前主模型视觉输入已关闭。请仅依据文字内容分析；"
+                        "如果截图内容会改变结论，向客户索取文字版报错或关键信息。"
+                    )
+                    logger.info(
+                        "images_skipped_by_config",
+                        ticket_id=session.ticket_id,
+                        count=len(session.image_urls),
+                    )
                 session.images_injected = True
 
             _inject_subagent_convergence_reminder(
@@ -687,7 +716,7 @@ async def agent_loop(
                 logger.warning(
                     "image_url_fallback_summary",
                     ticket_id=session.ticket_id,
-                    error=str(chat_err),
+                    error_type=type(chat_err).__name__,
                 )
                 summary_response = await provider.chat(
                     message_store.to_api_messages(),

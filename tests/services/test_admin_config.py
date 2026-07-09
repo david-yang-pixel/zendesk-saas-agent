@@ -14,6 +14,7 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
 
     assert by_path["llm.base_url"]["editable"] is True
     assert by_path["llm.model"]["input"] == "text"
+    assert by_path["llm.enable_vision_input"]["input"] == "boolean"
     assert by_path["llm.timeout"]["input"] == "number"
     assert by_path["openai.api_key"]["secret"] is True
     assert by_path["openai.api_key"]["editable"] is True
@@ -22,6 +23,8 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["prompts.agent_extra_instructions"]["label"] == "系统提示词"
     assert by_path["retry.max_attempts"]["group"] == "模型与运行"
     assert by_path["trigger_decider.llm_model"]["group"] == "模型与运行"
+    assert by_path["trigger_decider.enable_vision_input"]["group"] == "模型与运行"
+    assert by_path["trigger_decider.enable_vision_input"]["input"] == "boolean"
     assert by_path["zendesk.mention_trigger"]["label"] == "主 @mention 触发词"
     assert by_path["zendesk.mention_aliases"]["input"] == "textarea"
     assert by_path["zendesk.mention_aliases"]["group"] == "触发配置"

@@ -143,7 +143,9 @@ const FIELD_SECTIONS = {
         "llm.base_url",
         "llm.model",
         "llm.subagent_model",
-        "trigger_decider.llm_model"
+        "llm.enable_vision_input",
+        "trigger_decider.llm_model",
+        "trigger_decider.enable_vision_input"
       ]
     },
     {

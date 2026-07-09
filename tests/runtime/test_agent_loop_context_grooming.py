@@ -64,6 +64,29 @@ class _ScriptedProvider(_RecordingProvider):
         return self._responses.pop(0)
 
 
+class _UnsupportedImageProvider(_RecordingProvider):
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSchema] | None = None,
+        temperature: float = 0.2,
+    ) -> LLMResponse:
+        self.calls.append(copy.deepcopy(messages))
+        if len(self.calls) == 1:
+            raise ValueError(
+                "model does not support image input "
+                "data:image/png;base64,SECRET-CUSTOMER-CONTENT"
+            )
+        return LLMResponse(
+            content="done",
+            tool_calls=[],
+            finish_reason="stop",
+            prompt_tokens=10,
+            completion_tokens=2,
+            raw={"role": "assistant", "content": "done"},
+        )
+
+
 class _NoopTool(Tool):
     name = "run_subagents_parallel"
     description = "fake subagent batch"
@@ -216,6 +239,99 @@ async def test_agent_loop_grooms_context_before_timeout_retry(monkeypatch: pytes
         msg for msg in retry_messages if msg.get("name") == "knowledge_search"
     )
     assert "[... 输出已精简 ...]" in retry_tool["content"]
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_retries_without_images_when_model_rejects_image_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[tuple[str, dict[str, Any]]] = []
+
+    def capture_warning(event: str, **fields: Any) -> None:
+        warnings.append((event, fields))
+
+    monkeypatch.setattr(agent_loop_module.logger, "warning", capture_warning)
+    provider = _UnsupportedImageProvider()
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user(
+        [
+            {"type": "text", "text": "please inspect this screenshot"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,abc", "detail": "low"},
+            },
+        ]
+    )
+
+    await _drain_loop(store, provider)
+
+    assert len(provider.calls) == 2
+    retry_messages = provider.calls[1]
+    assert not any(
+        isinstance(msg.get("content"), list)
+        and any(
+            isinstance(part, dict) and part.get("type") == "image_url"
+            for part in msg["content"]
+        )
+        for msg in retry_messages
+    )
+    assert any(
+        "无法被当前模型读取" in str(msg.get("content", ""))
+        for msg in retry_messages
+    )
+    fallback_warning = next(
+        fields for event, fields in warnings if event == "image_url_fallback"
+    )
+    assert "SECRET-CUSTOMER-CONTENT" not in str(fallback_warning)
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_skips_image_injection_when_vision_is_disabled() -> None:
+    provider = _ScriptedProvider([
+        _subagent_response("call-subagents"),
+        LLMResponse(
+            content="done",
+            tool_calls=[],
+            finish_reason="stop",
+            prompt_tokens=10,
+            completion_tokens=2,
+            raw={"role": "assistant", "content": "done"},
+        ),
+    ])
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user("please inspect the attached screenshot")
+    registry = ToolRegistry()
+    registry.register(_NoopTool())
+    session = AgentSession(ticket_id=2931)
+    session.image_urls = [{"url": "https://example.com/screenshot.png"}]
+
+    events = [
+        event
+        async for event in agent_loop(
+            session,
+            provider,
+            store,
+            registry,
+            _guardrails(),
+            [],
+            enable_vision_input=False,
+        )
+    ]
+
+    assert events[-1].status == "completed"
+    assert session.images_injected is True
+    assert len(provider.calls) == 2
+    assert not any(
+        "image_url" in str(message)
+        for call in provider.calls
+        for message in call
+    )
+    assert any(
+        "视觉输入已关闭" in str(message.get("content", ""))
+        for message in provider.calls[1]
+    )
 
 
 @pytest.mark.asyncio

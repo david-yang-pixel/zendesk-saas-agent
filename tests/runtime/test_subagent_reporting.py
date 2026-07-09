@@ -47,7 +47,13 @@ async def test_run_subagent_reports_child_run_round_tool_and_finish(monkeypatch)
         message_store.append_assistant({"role": "assistant", "content": "final child answer"})
         yield LoopFinished(status="completed", total_rounds=1, total_tokens=13, elapsed_seconds=0.2)
 
-    cfg = SimpleNamespace(llm=SimpleNamespace(model="gpt-test", subagent_model=""))
+    cfg = SimpleNamespace(
+        llm=SimpleNamespace(
+            model="gpt-test",
+            subagent_model="",
+            enable_vision_input=False,
+        )
+    )
     parent = AgentSession(ticket_id=2861)
     parent.remote_log_run_id = 123
 
@@ -110,7 +116,13 @@ async def test_run_subagent_closes_child_reporter_when_loop_raises(monkeypatch):
         raise RuntimeError("boom")
         yield
 
-    cfg = SimpleNamespace(llm=SimpleNamespace(model="gpt-test", subagent_model=""))
+    cfg = SimpleNamespace(
+        llm=SimpleNamespace(
+            model="gpt-test",
+            subagent_model="",
+            enable_vision_input=False,
+        )
+    )
     parent = AgentSession(ticket_id=2861)
     parent.remote_log_run_id = 123
 

@@ -166,16 +166,19 @@ async def test_empty_messages_returns_no_message():
 
 @pytest.mark.asyncio
 async def test_llm_error_fallback():
+    sensitive_error = "timeout data:image/png;base64,SECRET-CUSTOMER-CONTENT"
     with patch(
         "zd_agent.trigger.decider._call_llm",
-        AsyncMock(side_effect=RuntimeError("timeout")),
-    ):
+        AsyncMock(side_effect=RuntimeError(sensitive_error)),
+    ), patch("zd_agent.trigger.decider.logger.warning") as warning:
         v = await classify_messages(
             messages=["x"], model="gpt-5.4-mini", api_key="x",
         )
     assert v.verdict == "insufficient_info"
     assert v.completeness == 50
     assert "LLM error" in v.reason
+    assert sensitive_error not in v.reason
+    assert sensitive_error not in str(warning.call_args)
 
 
 @pytest.mark.asyncio
@@ -307,6 +310,7 @@ async def test_vision_request_shape_with_images():
             messages=["看下截图"],
             model="gpt-5.4-mini",
             api_key="x",
+            enable_vision_input=True,
             image_data_urls=[
                 "data:image/png;base64,AAAA",
                 "data:image/jpeg;base64,BBBB",
@@ -342,9 +346,92 @@ async def test_vision_with_images_no_text_messages():
             messages=["[客户附图]"],
             model="gpt-5.4-mini",
             api_key="x",
+            enable_vision_input=True,
             image_data_urls=["data:image/png;base64,AAAA"],
         )
     assert v.verdict == "substantial_issue"
+
+
+@pytest.mark.asyncio
+async def test_vision_disabled_skips_image_parts_for_any_model():
+    captured = []
+
+    async def fake_llm(*, user_content, model, api_key, base_url=None, timeout=60.0):
+        captured.append(user_content)
+        return (
+            '{"verdict": "insufficient_info", "completeness": 50, '
+            '"reason": "模型不可看图，需客户补充文字说明"}'
+        )
+
+    with patch("zd_agent.trigger.decider._call_llm", fake_llm):
+        v = await classify_messages(
+            messages=["看下截图"],
+            model="any-text-only-model",
+            api_key="x",
+            image_data_urls=["data:image/png;base64,AAAA"],
+        )
+
+    assert v.verdict == "insufficient_info"
+    assert captured
+    prompt = captured[0]
+    assert isinstance(prompt, str)
+    assert "关闭了触发判定视觉输入" in prompt
+    assert "data:image/png" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_vision_disabled_uses_image_count_without_downloaded_data():
+    captured = []
+
+    async def fake_llm(*, user_content, model, api_key, base_url=None, timeout=60.0):
+        captured.append(user_content)
+        return (
+            '{"verdict": "insufficient_info", "completeness": 50, '
+            '"reason": "只有截图事实，没有文字问题"}'
+        )
+
+    with patch("zd_agent.trigger.decider._call_llm", fake_llm):
+        v = await classify_messages(
+            messages=[],
+            model="text-only-model",
+            api_key="x",
+            image_count=2,
+            image_data_urls=[],
+        )
+
+    assert v.verdict == "insufficient_info"
+    assert captured
+    prompt = captured[0]
+    assert isinstance(prompt, str)
+    assert "客户还附了 2 张截图" in prompt
+
+
+@pytest.mark.asyncio
+async def test_vision_enabled_reports_unavailable_images_without_claiming_disabled():
+    captured = []
+
+    async def fake_llm(*, user_content, model, api_key, base_url=None, timeout=60.0):
+        captured.append(user_content)
+        return (
+            '{"verdict": "insufficient_info", "completeness": 50, '
+            '"reason": "截图不可用，需要文字说明"}'
+        )
+
+    with patch("zd_agent.trigger.decider._call_llm", fake_llm):
+        verdict = await classify_messages(
+            messages=["see screenshot"],
+            model="vision-model",
+            api_key="x",
+            image_count=1,
+            image_data_urls=[],
+            enable_vision_input=True,
+        )
+
+    assert verdict.verdict == "insufficient_info"
+    prompt = captured[0]
+    assert isinstance(prompt, str)
+    assert "视觉输入已开启，但截图内容未能加载" in prompt
+    assert "关闭了触发判定视觉输入" not in prompt
 
 
 # ============================================================================

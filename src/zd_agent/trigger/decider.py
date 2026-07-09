@@ -27,7 +27,8 @@ High-risk category（与 verdict 正交的附加 flag）
 
 Vision
 ------
-当 ``image_data_urls`` 非空时，请求作为 multimodal 发出，LLM 看图判断。
+当 ``image_data_urls`` 非空且判定模型支持视觉输入时，请求作为 multimodal 发出；
+如果判定模型不支持视觉输入，只发送文本和“客户有截图”的事实，避免模型报错。
 
 Fast-path
 ---------
@@ -259,8 +260,6 @@ _GENERIC_HELP_ONLY_MESSAGES = frozenset({
     "有问题",
     "有問題",
 })
-
-
 _PROMPT_TEMPLATE = """你是 Dify SaaS support 的触发判定模块。客户在 Zendesk 工单上发了以下完整消息上下文（按时间升序）：
 
 <客户消息>
@@ -456,9 +455,7 @@ async def _call_llm(
             },
         )
     if resp.status_code != 200:
-        raise RuntimeError(
-            f"LLM call failed: {resp.status_code} {resp.text[:300]}"
-        )
+        raise RuntimeError(f"LLM call failed with status {resp.status_code}")
     data = resp.json()
     return data["choices"][0]["message"]["content"]
 
@@ -470,6 +467,8 @@ async def classify_messages(
     api_key: str,
     base_url: str | None = None,
     image_data_urls: list[str] | None = None,
+    image_count: int | None = None,
+    enable_vision_input: bool = False,
 ) -> PreCheckVerdict:
     """Classify the full customer-message context via LLM (with fast-path).
 
@@ -483,9 +482,10 @@ async def classify_messages(
     所有错误路径 fallback 到 ``insufficient_info`` + completeness=50。
     """
     image_data_urls = image_data_urls or []
+    available_image_count = image_count if image_count is not None else len(image_data_urls)
 
     # Fast-path 1: 完全没消息也没图
-    if not messages and not image_data_urls:
+    if not messages and available_image_count <= 0:
         return PreCheckVerdict(
             verdict="no_message",
             completeness=0,
@@ -505,16 +505,46 @@ async def classify_messages(
     # 主路径：LLM 分类
     recent = messages if messages else []
     joined = "\n---\n".join(recent) if recent else "(无文字消息)"
-    image_hint = (
-        f"\n\n客户还附了 {len(image_data_urls)} 张截图（已附在下方，请你看图判断）。\n"
-        if image_data_urls
-        else ""
-    )
+    send_image_data_urls = image_data_urls if enable_vision_input else []
+    if available_image_count > 0 and not enable_vision_input:
+        logger.info(
+            "vision_skipped_by_config",
+            model=model,
+            image_count=available_image_count,
+        )
+    elif available_image_count > 0 and not send_image_data_urls:
+        logger.warning(
+            "vision_images_unavailable",
+            model=model,
+            image_count=available_image_count,
+        )
+
+    if send_image_data_urls:
+        image_hint = (
+            f"\n\n客户还附了 {len(send_image_data_urls)} 张截图"
+            "（已附在下方，请你看图判断）。\n"
+        )
+    elif available_image_count > 0 and not enable_vision_input:
+        image_hint = (
+            f"\n\n客户还附了 {available_image_count} 张截图；"
+            "但当前配置关闭了触发判定视觉输入，不能直接看图。"
+            "请只基于文字内容和“客户有截图”这个事实判断："
+            "如果文字已描述具体问题/诉求，归 substantial_issue；"
+            "如果只知道有截图但没有问题方向，归 insufficient_info。\n"
+        )
+    elif available_image_count > 0:
+        image_hint = (
+            f"\n\n客户附了 {available_image_count} 张截图，"
+            "视觉输入已开启，但截图内容未能加载。"
+            "请只基于文字内容判断；如果文字不足以确定问题，归 insufficient_info。\n"
+        )
+    else:
+        image_hint = ""
     prompt_text = _PROMPT_TEMPLATE.format(messages=joined, image_hint=image_hint)
 
-    if image_data_urls:
+    if send_image_data_urls:
         parts: list[dict] = [{"type": "text", "text": prompt_text}]
-        for url in image_data_urls:
+        for url in send_image_data_urls:
             parts.append({
                 "type": "image_url",
                 "image_url": {"url": url},
@@ -531,18 +561,19 @@ async def classify_messages(
             base_url=base_url,
         )
     except Exception as e:
-        logger.warning("pre_check_llm_error", error=str(e))
+        error_type = type(e).__name__
+        logger.warning("pre_check_llm_error", error_type=error_type)
         fallback = _actionable_fallback_from_messages(
             recent,
             "LLM error",
-            error=str(e),
+            error=error_type,
         )
         if fallback:
             return fallback
         return PreCheckVerdict(
             verdict="insufficient_info",
             completeness=50,
-            reason=f"LLM error: {e}",
+            reason=f"LLM error: {error_type}",
         )
 
     try:

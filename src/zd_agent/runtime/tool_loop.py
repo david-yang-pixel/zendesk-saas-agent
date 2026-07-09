@@ -78,7 +78,8 @@ async def run_tool_loop(
     provider = llm._provider
     message_store = MessageStore(provider)
     message_store.raw = session.messages
-    model_name = get_config().llm.model
+    llm_config = get_config().llm
+    model_name = llm_config.model
 
     tool_schemas = [
         ToolSchema(name=t.name, description=t.description, parameters=t.parameters)
@@ -113,7 +114,13 @@ async def run_tool_loop(
 
     try:
         async for event in agent_loop(
-            session, provider, message_store, registry, guardrails, tool_schemas,
+            session,
+            provider,
+            message_store,
+            registry,
+            guardrails,
+            tool_schemas,
+            enable_vision_input=llm_config.enable_vision_input,
         ):
             match event:
                 case LoopProgress():
