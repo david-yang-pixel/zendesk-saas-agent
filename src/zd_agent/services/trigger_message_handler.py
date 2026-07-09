@@ -135,6 +135,7 @@ async def handle_trigger_message(
         customer_msgs=customer_msgs,
         model=cfg.trigger_decider.llm_model,
         api_key=env.openai_api_key,
+        base_url=cfg.llm.base_url,
     )
 
     if post_verdict_dispatch_fn is None:

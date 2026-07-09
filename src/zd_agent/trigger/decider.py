@@ -44,6 +44,7 @@ from typing import Literal
 import httpx
 
 from zd_agent.log import get_logger
+from zd_agent.runtime.openai_compat import chat_completions_url
 
 logger = get_logger(module="trigger.decider")
 
@@ -385,11 +386,53 @@ def _detect_refund_risk(messages: list[str]) -> bool:
     return any(keyword in text for keyword in _REFUND_RISK_KEYWORDS)
 
 
+def _json_candidate(raw: str) -> str:
+    text = raw.strip()
+    lines = text.splitlines()
+    if (
+        len(lines) >= 3
+        and lines[0].strip().startswith("```")
+        and lines[-1].strip() == "```"
+    ):
+        return "\n".join(lines[1:-1]).strip()
+    return text
+
+
+def _actionable_fallback_from_messages(
+    messages: list[str],
+    reason: str,
+    *,
+    error: str | None = None,
+) -> PreCheckVerdict | None:
+    actionable_kind = _detect_actionable_request(messages)
+    if not actionable_kind:
+        return None
+
+    logger.info(
+        "verdict_fallback_actionable_request",
+        actionable_kind=actionable_kind,
+        error=(error or "")[:200],
+    )
+    fallback_reason = (
+        f"{reason}, but the latest customer messages already contain "
+        "an actionable support request."
+    )
+    high_risk = "refund" if _detect_refund_risk(messages) else None
+    return PreCheckVerdict(
+        verdict="substantial_issue",
+        completeness=65,
+        reason=fallback_reason,
+        high_risk_category=high_risk,
+        high_risk_reason=fallback_reason if high_risk else "",
+    )
+
+
 async def _call_llm(
     *,
     user_content,
     model: str,
     api_key: str,
+    base_url: str | None = None,
     timeout: float = 60.0,
 ) -> str:
     """Call OpenAI chat.completions, return the raw content string.
@@ -399,7 +442,7 @@ async def _call_llm(
     """
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(
-            "https://api.openai.com/v1/chat/completions",
+            chat_completions_url(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -425,6 +468,7 @@ async def classify_messages(
     messages: list[str],
     model: str,
     api_key: str,
+    base_url: str | None = None,
     image_data_urls: list[str] | None = None,
 ) -> PreCheckVerdict:
     """Classify the full customer-message context via LLM (with fast-path).
@@ -481,10 +525,20 @@ async def classify_messages(
 
     try:
         raw = await _call_llm(
-            user_content=user_content, model=model, api_key=api_key,
+            user_content=user_content,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
         )
     except Exception as e:
         logger.warning("pre_check_llm_error", error=str(e))
+        fallback = _actionable_fallback_from_messages(
+            recent,
+            "LLM error",
+            error=str(e),
+        )
+        if fallback:
+            return fallback
         return PreCheckVerdict(
             verdict="insufficient_info",
             completeness=50,
@@ -492,9 +546,16 @@ async def classify_messages(
         )
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(_json_candidate(raw))
     except Exception:
         logger.warning("pre_check_invalid_json", raw=raw[:200])
+        fallback = _actionable_fallback_from_messages(
+            recent,
+            "invalid JSON from LLM",
+            error=raw,
+        )
+        if fallback:
+            return fallback
         return PreCheckVerdict(
             verdict="insufficient_info",
             completeness=50,

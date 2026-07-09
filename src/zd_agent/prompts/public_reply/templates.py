@@ -336,6 +336,7 @@ async def build_ask_body(
     customer_messages: list[str],
     model: str,
     api_key: str,
+    base_url: str | None = None,
 ) -> tuple[str, str]:
     """给 trigger_consumer 用：按 verdict + ask_count 选模板生成 body。
 
@@ -357,6 +358,7 @@ async def build_ask_body(
             customer_messages=customer_messages,
             model=model,
             api_key=api_key,
+            base_url=base_url,
         )
         if body is not None:
             return body, template_name

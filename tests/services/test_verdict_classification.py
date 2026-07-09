@@ -27,6 +27,7 @@ async def test_classify_ticket_messages_collects_images_and_calls_decider() -> N
         ],
         model="gpt-test",
         api_key="sk-test",
+        base_url="https://example.com/v1",
         collect_recent_image_data_urls_fn=collect_images,
         classify_messages_fn=classify,
     )
@@ -39,6 +40,7 @@ async def test_classify_ticket_messages_collects_images_and_calls_decider() -> N
         messages=["first", "second"],
         model="gpt-test",
         api_key="sk-test",
+        base_url="https://example.com/v1",
         image_data_urls=["data:image/png;base64,AAA"],
     )
 
@@ -53,6 +55,7 @@ async def test_classify_ticket_messages_handles_missing_body() -> None:
         customer_msgs=[{}, {"body": None}],
         model="gpt-test",
         api_key="sk-test",
+        base_url=None,
         collect_recent_image_data_urls_fn=AsyncMock(return_value=[]),
         classify_messages_fn=classify,
     )
@@ -62,5 +65,6 @@ async def test_classify_ticket_messages_handles_missing_body() -> None:
         messages=["", ""],
         model="gpt-test",
         api_key="sk-test",
+        base_url=None,
         image_data_urls=[],
     )

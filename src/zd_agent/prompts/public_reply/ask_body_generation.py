@@ -6,6 +6,7 @@ from typing import Final
 import httpx
 
 from zd_agent.log import get_logger
+from zd_agent.runtime.openai_compat import chat_completions_url
 
 logger = get_logger(module="prompts.public_reply.ask_body")
 
@@ -159,6 +160,7 @@ async def generate_ask_body_with_llm(
     customer_messages: list[str],
     model: str,
     api_key: str,
+    base_url: str | None = None,
     timeout: float = 10.0,
 ) -> str | None:
     scenario = _scenario_instruction(
@@ -177,7 +179,7 @@ async def generate_ask_body_with_llm(
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                chat_completions_url(base_url),
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",

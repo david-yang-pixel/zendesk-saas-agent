@@ -179,6 +179,22 @@ async def test_llm_error_fallback():
 
 
 @pytest.mark.asyncio
+async def test_llm_error_fallback_keeps_actionable_chinese_bug_substantial():
+    with patch(
+        "zd_agent.trigger.decider._call_llm",
+        AsyncMock(side_effect=RuntimeError("401 invalid api key")),
+    ):
+        v = await classify_messages(
+            messages=["为什么有些 swagger api 工具调用，并发调用会丢失鉴权信息，严重 bug"],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "substantial_issue"
+    assert v.completeness == 65
+    assert "LLM error" in v.reason
+
+
+@pytest.mark.asyncio
 async def test_invalid_json_fallback():
     with patch(
         "zd_agent.trigger.decider._call_llm",
@@ -189,6 +205,42 @@ async def test_invalid_json_fallback():
         )
     assert v.verdict == "insufficient_info"
     assert v.completeness == 50
+    assert "invalid JSON" in v.reason
+
+
+@pytest.mark.asyncio
+async def test_fenced_json_from_openai_compatible_model_is_parsed():
+    raw = """```json
+{
+  "verdict": "substantial_issue",
+  "completeness": 65,
+  "high_risk_category": null,
+  "reason": "客户明确描述 swagger API 工具并发调用丢失鉴权信息的具体 bug"
+}
+```"""
+    with patch("zd_agent.trigger.decider._call_llm", AsyncMock(return_value=raw)):
+        v = await classify_messages(
+            messages=["为什么有些 swagger api 工具调用，并发调用会丢失鉴权信息，严重 bug"],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "substantial_issue"
+    assert v.completeness == 65
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_fallback_keeps_actionable_chinese_bug_substantial():
+    with patch(
+        "zd_agent.trigger.decider._call_llm",
+        AsyncMock(return_value="not json at all"),
+    ):
+        v = await classify_messages(
+            messages=["为什么有些 swagger api 工具调用，并发调用会丢失鉴权信息，严重 bug"],
+            model="gpt-5.4-mini",
+            api_key="x",
+        )
+    assert v.verdict == "substantial_issue"
+    assert v.completeness == 65
     assert "invalid JSON" in v.reason
 
 
@@ -223,7 +275,7 @@ async def test_all_customer_messages_sent_to_llm():
     many = [f"msg {i}" for i in range(10)]
     captured_content = []
 
-    async def fake_llm(*, user_content, model, api_key, timeout=60.0):
+    async def fake_llm(*, user_content, model, api_key, base_url=None, timeout=60.0):
         captured_content.append(user_content)
         return '{"verdict": "greeting", "completeness": 20, "reason": "x"}'
 
@@ -243,7 +295,7 @@ async def test_vision_request_shape_with_images():
     """有 image_data_urls 时，user_content 应是多模态 parts 列表。"""
     captured = []
 
-    async def fake_llm(*, user_content, model, api_key, timeout=60.0):
+    async def fake_llm(*, user_content, model, api_key, base_url=None, timeout=60.0):
         captured.append(user_content)
         return (
             '{"verdict": "substantial_issue", "completeness": 75, '
@@ -277,7 +329,7 @@ async def test_vision_request_shape_with_images():
 @pytest.mark.asyncio
 async def test_vision_with_images_no_text_messages():
     """客户只发图片没有文字也能跑——常见的 #2260 情形。"""
-    async def fake_llm(*, user_content, model, api_key, timeout=60.0):
+    async def fake_llm(*, user_content, model, api_key, base_url=None, timeout=60.0):
         # 仍是多模态 parts
         assert isinstance(user_content, list)
         return (

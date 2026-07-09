@@ -53,6 +53,7 @@ async def send_ask_template_best_effort(
             customer_messages=customer_bodies,
             model=cfg.trigger_decider.llm_model,
             api_key=env.openai_api_key,
+            base_url=cfg.llm.base_url,
         )
     except Exception as e:
         logger.error(

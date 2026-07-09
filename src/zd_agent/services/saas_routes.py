@@ -122,6 +122,7 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
         fetch_messages_fn=_fetch,
         model=cfg.trigger_decider.llm_model,
         api_key=env.openai_api_key,
+        base_url=cfg.llm.base_url,
         skip_llm=True,
     )
     status = "fresh" if check.continue_send else "stale_context"

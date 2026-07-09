@@ -38,6 +38,7 @@ from typing import Awaitable, Callable
 import httpx
 
 from zd_agent.log import get_logger
+from zd_agent.runtime.openai_compat import chat_completions_url
 
 logger = get_logger(module="runtime.pre_send_check")
 
@@ -169,6 +170,7 @@ async def is_substantive_llm(
     *,
     model: str,
     api_key: str,
+    base_url: str | None = None,
     timeout: float = 8.0,
 ) -> bool:
     """LLM 判断短文本灰区消息是否实质性。
@@ -180,7 +182,7 @@ async def is_substantive_llm(
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                chat_completions_url(base_url),
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
@@ -236,6 +238,7 @@ async def pre_send_check_or_abort(
     fetch_messages_fn: FetchMessagesFn,
     model: str = "gpt-5.4-mini",
     api_key: str = "",
+    base_url: str | None = None,
     skip_llm: bool = False,
 ) -> FreshnessResult:
     """发送前再 fetch 客户消息 + 检查是否新增实质性消息。
@@ -339,7 +342,10 @@ async def pre_send_check_or_abort(
 
             body = (msg.get("body") or "").strip()
             substantive = await is_substantive_llm(
-                body, model=model, api_key=api_key,
+                body,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
             )
             if substantive:
                 logger.info(

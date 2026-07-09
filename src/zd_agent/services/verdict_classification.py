@@ -25,6 +25,7 @@ async def classify_ticket_messages(
     customer_msgs: list[dict],
     model: str,
     api_key: str,
+    base_url: str | None = None,
     collect_recent_image_data_urls_fn: CollectImagesFn | None = None,
     classify_messages_fn: ClassifyMessagesFn | None = None,
 ) -> VerdictClassificationResult:
@@ -41,6 +42,7 @@ async def classify_ticket_messages(
         messages=bodies,
         model=model,
         api_key=api_key,
+        base_url=base_url,
         image_data_urls=image_data_urls,
     )
     logger.info(

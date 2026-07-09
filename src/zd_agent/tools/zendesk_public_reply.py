@@ -385,6 +385,7 @@ async def _check_freshness_before_relay(
         fetch_messages_fn=_fetch,
         model=cfg.trigger_decider.llm_model,
         api_key=env.openai_api_key,
+        base_url=cfg.llm.base_url,
         skip_llm=True,
     )
 
@@ -791,6 +792,7 @@ class ZendeskPublicReply(Tool):
                     fetch_messages_fn=_fetch,
                     model=cfg.trigger_decider.llm_model,
                     api_key=env.openai_api_key,
+                    base_url=cfg.llm.base_url,
                 )
             except Exception as e:
                 logger.warning(

@@ -513,8 +513,12 @@ class TestAskBodyGeneration:
                 customer_messages=["hi"],
                 model="m",
                 api_key="k",
+                base_url="https://ark.cn-beijing.volces.com/api/coding/v3",
             )
 
+        assert async_post.await_args.args[0] == (
+            "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+        )
         request_json = async_post.await_args.kwargs["json"]
         prompt = request_json["messages"][0]["content"]
         assert "Ask one concise category question first." in prompt
