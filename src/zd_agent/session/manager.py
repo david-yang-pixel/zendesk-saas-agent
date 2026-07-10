@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Final
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
@@ -24,6 +25,7 @@ logger = get_logger(module="session_manager")
 # 回调签名：(session) → coroutine。在 session 完成后异步触发，主要给 saas_app
 # 用来更新 trigger state（last_agent_finish_ts）实现 post-agent cooldown。
 SessionFinishedCallback = Callable[[AgentSession], Awaitable[None]]
+MAX_COMPLETED_SESSIONS: Final = 100
 
 
 @dataclass
@@ -66,7 +68,9 @@ class SessionManager:
         # ticket_id → _TrackedSession
         self._active: dict[int, _TrackedSession] = {}
         # 已完成的 session 记录（供 status 查看最近结果）
-        self._completed: list[_TrackedSession] = []
+        self._completed: deque[_TrackedSession] = deque(
+            maxlen=MAX_COMPLETED_SESSIONS,
+        )
         self._lock = asyncio.Lock()
         self._on_finished = on_finished
 
@@ -92,6 +96,7 @@ class SessionManager:
         hint: str = "",
         dry_run: bool = False,
         trigger_type: str = "auto",
+        delivery_attempt_id: str = "",
     ) -> AgentSession:
         """派发工单处理任务
 
@@ -110,6 +115,7 @@ class SessionManager:
             session = AgentSession(
                 ticket_id=ticket_id, hint=hint, dry_run=dry_run,
                 trigger_type=trigger_type,
+                delivery_attempt_id=delivery_attempt_id,
             )
 
             tracked = _TrackedSession(session=session)
@@ -231,7 +237,7 @@ class SessionManager:
     def get_recent_completed(self, limit: int = 20) -> list[SessionInfo]:
         """获取最近完成的 session 列表"""
         result = []
-        for tracked in self._completed[-limit:]:
+        for tracked in list(self._completed)[-limit:]:
             s = tracked.session
             result.append(SessionInfo(
                 ticket_id=s.ticket_id,

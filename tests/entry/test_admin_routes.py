@@ -18,9 +18,14 @@ from zd_agent.services.admin_routes import (
     _load_index_html,
     register_admin_routes,
 )
-from zd_agent.services.app_context import app_config, install_saas_app_context
+from zd_agent.services.app_context import (
+    admin_config,
+    app_config,
+    install_saas_app_context,
+)
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
+TEST_ADMIN_PASSWORD = "test-admin-password"
 
 
 class _Request:
@@ -60,8 +65,27 @@ def _app(tmp_path) -> web.Application:
         state=MagicMock(),
         webhook_dedup=MagicMock(),
     )
-    register_admin_routes(app=app, cfg=cfg, state_dir=tmp_path / ".state")
+    register_admin_routes(
+        app=app,
+        cfg=cfg,
+        state_dir=tmp_path / ".state",
+        initial_admin_password=TEST_ADMIN_PASSWORD,
+    )
     return app
+
+
+async def _change_default_password(app, cookie: dict[str, str]) -> dict[str, str]:
+    response = await app[ADMIN_HANDLERS_KEY]["password"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "current_password": TEST_ADMIN_PASSWORD,
+                "new_password": "new-admin-password",
+            },
+        )
+    )
+    return {"zd_admin_session": response.cookies["zd_admin_session"].value}
 
 
 def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
@@ -130,7 +154,7 @@ def test_admin_shell_uses_chinese_management_navigation_and_sso_login() -> None:
     assert "生产环境管理后台" not in html
     assert "使用 Google 登录" in html
     assert "使用飞书登录" in html
-    assert "admin123" in html
+    assert "admin123" not in html
     assert "Storage Configuration" not in app_js
     assert "Deployment Status" not in app_js
     assert "Operations" not in html
@@ -171,6 +195,8 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert "查看完整日志" in app_js
     assert "renderOverviewShell" in app_js
     assert "quick: shouldQuickLoadRunRecords()" not in app_js
+    assert "quick: true" in app_js
+    assert "refreshRunRecordsInBackground();" in app_js
     assert "quick: false" in app_js
     assert "renderRecentRunsIntoOverview" in app_js
     assert "renderRunRecordsShell" in app_js
@@ -243,7 +269,7 @@ def test_admin_storage_config_page_is_not_blank() -> None:
 async def test_admin_static_asset_serves_known_files_and_rejects_unknown(tmp_path) -> None:
     app = _app(tmp_path)
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
 
@@ -279,7 +305,7 @@ async def test_admin_login_sets_session_cookie(tmp_path) -> None:
     app = _app(tmp_path)
     request = _Request(
         app=app,
-        payload={"username": "admin", "password": "admin123"},
+        payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
     )
 
     response = await app[ADMIN_HANDLERS_KEY]["login"](request)
@@ -289,12 +315,154 @@ async def test_admin_login_sets_session_cookie(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_login_honors_password_login_disabled(tmp_path) -> None:
+    app = _app(tmp_path)
+    admin_config(app).apply(
+        app_config(app),
+        {
+            "reason": "disable password login",
+            "changes": {"admin_auth.password_login_enabled": False},
+        },
+        actor="test",
+        ip="127.0.0.1",
+    )
+
+    response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app,
+            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
+        ),
+    )
+
+    assert response.status == 403
+    assert json.loads(response.text)["error"] == "password_login_disabled"
+    assert "zd_admin_session" not in response.cookies
+
+
+@pytest.mark.asyncio
+async def test_admin_login_rate_limits_failures_per_ip_and_username(tmp_path) -> None:
+    app = _app(tmp_path)
+    request = _Request(
+        app=app,
+        payload={"username": "admin", "password": "wrong"},
+        remote="203.0.113.10",
+    )
+
+    responses = [
+        await app[ADMIN_HANDLERS_KEY]["login"](request)
+        for _attempt in range(6)
+    ]
+    other_ip_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app,
+            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
+            remote="203.0.113.11",
+        ),
+    )
+
+    assert [response.status for response in responses[:5]] == [401] * 5
+    assert responses[5].status == 429
+    assert json.loads(responses[5].text)["error"] == "too_many_attempts"
+    assert int(responses[5].headers["Retry-After"]) > 0
+    assert other_ip_response.status == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_login_does_not_trust_spoofed_forwarded_ip_from_public_peer(
+    tmp_path,
+) -> None:
+    app = _app(tmp_path)
+
+    responses = [
+        await app[ADMIN_HANDLERS_KEY]["login"](
+            _Request(
+                app=app,
+                payload={"username": "admin", "password": "wrong"},
+                remote="8.8.8.8",
+                headers={"X-Forwarded-For": f"198.51.100.{attempt}"},
+            ),
+        )
+        for attempt in range(1, 7)
+    ]
+
+    assert [response.status for response in responses[:5]] == [401] * 5
+    assert responses[5].status == 429
+
+
+@pytest.mark.asyncio
+async def test_admin_login_does_not_use_untrusted_x_forwarded_for_behind_proxy(
+    tmp_path,
+) -> None:
+    app = _app(tmp_path)
+
+    responses = [
+        await app[ADMIN_HANDLERS_KEY]["login"](
+            _Request(
+                app=app,
+                payload={"username": "admin", "password": "wrong"},
+                remote="127.0.0.1",
+                headers={"X-Forwarded-For": f"198.51.100.{attempt}"},
+            ),
+        )
+        for attempt in range(1, 7)
+    ]
+
+    assert [response.status for response in responses[:5]] == [401] * 5
+    assert responses[5].status == 429
+
+
+@pytest.mark.asyncio
+async def test_admin_login_uses_x_real_ip_from_loopback_proxy(tmp_path) -> None:
+    app = _app(tmp_path)
+
+    responses = [
+        await app[ADMIN_HANDLERS_KEY]["login"](
+            _Request(
+                app=app,
+                payload={"username": "admin", "password": "wrong"},
+                remote="127.0.0.1",
+                headers={"X-Real-IP": f"198.51.100.{attempt}"},
+            ),
+        )
+        for attempt in range(1, 7)
+    ]
+
+    assert [response.status for response in responses] == [401] * 6
+
+
+@pytest.mark.asyncio
+async def test_admin_login_does_not_trust_x_real_ip_from_private_peer(tmp_path) -> None:
+    app = _app(tmp_path)
+
+    responses = [
+        await app[ADMIN_HANDLERS_KEY]["login"](
+            _Request(
+                app=app,
+                payload={"username": "admin", "password": "wrong"},
+                remote="10.0.0.5",
+                headers={"X-Real-IP": f"198.51.100.{attempt}"},
+            ),
+        )
+        for attempt in range(1, 7)
+    ]
+
+    assert [response.status for response in responses[:5]] == [401] * 5
+    assert responses[5].status == 429
+
+
+def test_admin_client_ip_falls_back_without_recursion() -> None:
+    request = _Request(app={}, remote="")
+
+    assert admin_routes._login_rate_limit_ip(request) == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_admin_config_requires_default_password_change(tmp_path) -> None:
     app = _app(tmp_path)
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
         _Request(
             app=app,
-            payload={"username": "admin", "password": "admin123"},
+            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
         )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
@@ -311,16 +479,21 @@ async def test_admin_config_requires_default_password_change(tmp_path) -> None:
             app=app,
             cookies=cookie,
             payload={
-                "current_password": "admin123",
+                "current_password": TEST_ADMIN_PASSWORD,
                 "new_password": "new-admin-password",
             },
         )
     )
+    new_cookie = {
+        "zd_admin_session": password_response.cookies["zd_admin_session"].value,
+    }
     allowed_response = await app[ADMIN_HANDLERS_KEY]["config_schema"](
-        _Request(app=app, cookies=cookie)
+        _Request(app=app, cookies=new_cookie)
     )
 
     assert password_response.status == 200
+    assert "zd_admin_session" in password_response.cookies
+    assert cookie["zd_admin_session"] != new_cookie["zd_admin_session"]
     assert allowed_response.status == 200
 
 
@@ -363,20 +536,11 @@ async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
         _Request(
             app=app,
-            payload={"username": "admin", "password": "admin123"},
+            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
         )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
 
     response = await app[ADMIN_HANDLERS_KEY]["run_records"](
         _Request(
@@ -451,20 +615,11 @@ async def test_admin_run_records_ignore_internal_events_and_normalize_agent_done
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
         _Request(
             app=app,
-            payload={"username": "admin", "password": "admin123"},
+            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
         )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
 
     response = await app[ADMIN_HANDLERS_KEY]["run_records"](
         _Request(app=app, cookies=cookie, query={"limit": "200"})
@@ -539,20 +694,11 @@ async def test_admin_run_records_collapse_agent_lifecycle_to_one_ticket_run(tmp_
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
         _Request(
             app=app,
-            payload={"username": "admin", "password": "admin123"},
+            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
         )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
 
     response = await app[ADMIN_HANDLERS_KEY]["run_records"](
         _Request(app=app, cookies=cookie, query={"limit": "200"})
@@ -652,20 +798,11 @@ async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> 
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
         _Request(
             app=app,
-            payload={"username": "admin", "password": "admin123"},
+            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
         )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
 
     response = await app[ADMIN_HANDLERS_KEY]["run_records"](
         _Request(app=app, cookies=cookie, query={"limit": "200"})
@@ -990,19 +1127,10 @@ def test_admin_run_records_only_reads_archive_meta_for_returned_page(
 async def test_admin_audit_logs_support_filters_and_summary(tmp_path) -> None:
     app = _app(tmp_path)
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
 
     response = await app[ADMIN_HANDLERS_KEY]["audit_logs"](
         _Request(app=app, cookies=cookie, query={"action": "admin_password_changed"})
@@ -1030,19 +1158,10 @@ async def test_admin_integration_check_reports_reachability_and_writes_audit(tmp
     cfg.signoz.mcp_url = "https://signoz.example.test/mcp"
     cfg.signoz.mcp_api_key = "super-secret-key"
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer super-secret-key"
@@ -1090,19 +1209,10 @@ async def test_admin_integration_check_supports_custom_mcp_services(tmp_path) ->
         ),
     ]
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "https://linear.example.test/custom/mcp"
@@ -1140,19 +1250,10 @@ async def test_admin_deploy_status_includes_runtime_metadata_and_pending_restart
     monkeypatch.setenv("GITHUB_SHA", "abc123")
     app = _app(tmp_path)
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": "admin123"})
+        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
-    await app[ADMIN_HANDLERS_KEY]["password"](
-        _Request(
-            app=app,
-            cookies=cookie,
-            payload={
-                "current_password": "admin123",
-                "new_password": "new-admin-password",
-            },
-        )
-    )
+    cookie = await _change_default_password(app, cookie)
     await app[ADMIN_HANDLERS_KEY]["config_apply"](
         _Request(
             app=app,

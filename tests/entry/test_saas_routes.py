@@ -1,6 +1,7 @@
 """Tests for SaaS aiohttp route registration."""
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -72,6 +73,43 @@ async def test_pre_send_freshness_rejects_bad_api_key() -> None:
     response = await handle_pre_send_freshness(request)
 
     assert response.status == 401
+
+
+@pytest.mark.asyncio
+async def test_pre_send_freshness_blocks_when_ticket_fetch_returns_none(
+    monkeypatch,
+) -> None:
+    app = web.Application()
+    cfg = MagicMock()
+    cfg.public_reply.browser_relay_api_key = "relay-secret"
+    install_saas_app_context(
+        app=app,
+        cfg=cfg,
+        manager=MagicMock(),
+        trigger_queue=MagicMock(),
+        state=MagicMock(),
+        webhook_dedup=MagicMock(),
+    )
+    monkeypatch.setattr(
+        "zd_agent.services.ticket_messages._fetch_customer_messages",
+        AsyncMock(return_value=([], None)),
+    )
+    request = _Request(
+        app=app,
+        headers={"Authorization": "Bearer relay-secret"},
+        payload={
+            "ticket_id": 1,
+            "snapshot_customer_message_count": 0,
+        },
+    )
+
+    response = await handle_pre_send_freshness(request)
+    payload = json.loads(response.text)
+
+    assert response.status == 200
+    assert payload["status"] == "stale_context"
+    assert payload["continue_send"] is False
+    assert payload["reason"] == "fetch_error: RuntimeError"
 
 
 @pytest.mark.asyncio

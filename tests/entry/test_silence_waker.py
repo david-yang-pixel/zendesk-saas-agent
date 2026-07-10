@@ -107,6 +107,27 @@ async def test_scan_once_wakes_many(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_queue_failure_leaves_ticket_retryable(tmp_path):
+    class FailingQueue:
+        async def put(self, message):
+            raise OSError("disk unavailable")
+
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    past = _now() - timedelta(seconds=1)
+    state.set("1", TicketState(
+        state="in_silence_window",
+        first_seen=past,
+        silence_window_end=past,
+        last_verdict="substantial_issue",
+    ))
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        await scan_once(state=state, trigger_queue=FailingQueue())
+
+    assert state.get("1").state == "in_silence_window"
+
+
+@pytest.mark.asyncio
 async def test_run_silence_waker_loop_can_be_cancelled(tmp_path):
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()

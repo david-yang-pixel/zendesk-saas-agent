@@ -245,14 +245,14 @@ def apply_session_finished(
         and session.status == SessionStatus.COMPLETED
         and not reply_sent
     )
-    failed_from_processing = (
+    unsuccessful_from_processing = (
         ticket_state.state == "processing"
-        and session.status == SessionStatus.FAILED
+        and session.status in (SessionStatus.FAILED, SessionStatus.TIMEOUT)
     )
     if (
         completed_with_reply
         or completed_without_reply_from_processing
-        or failed_from_processing
+        or unsuccessful_from_processing
     ):
         new_state = "processed" if completed_with_reply else "in_silence_window"
         logger.info(
@@ -265,7 +265,7 @@ def apply_session_finished(
         )
         ticket_state.state = new_state
         if not completed_with_reply:
-            ticket_state.silence_window_end = None
+            ticket_state.silence_window_end = finished_at
 
     state.set(session.ticket_id, ticket_state)
     return True

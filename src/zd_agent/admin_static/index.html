@@ -41,9 +41,9 @@
         </div>
         <div class="field-stack">
           <label for="login-pass">密码</label>
-          <input id="login-pass" type="password" value="admin123" autocomplete="current-password">
+          <input id="login-pass" type="password" autocomplete="current-password">
         </div>
-        <p class="login-hint">默认账号 <code>admin</code>，初始密码 <code>admin123</code>。首次进入后需要修改密码。</p>
+        <p class="login-hint">默认账号 <code>admin</code>。首次启动的一次性密码保存在服务器状态目录，登录后需要立即修改。</p>
         <button class="btn primary full" onclick="login()">登录管理后台</button>
         <div id="login-msg" class="form-message danger-text" role="alert"></div>
       </section>

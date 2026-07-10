@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-from datetime import datetime, timezone
-from pathlib import Path
-
 from zd_agent.config import get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
-from zd_agent.runtime.archive_meta import build_archive_meta
 from zd_agent.runtime.guardrails import Guardrails
-from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 from zd_agent.runtime.llm_client import LLMClient
-from zd_agent.runtime.prompt_loader import build_system_prompt
+from zd_agent.runtime.runner_archive import ensure_archive as _ensure_archive
 from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
 from zd_agent.runtime.tool_loop import run_tool_loop
 from zd_agent.session.agent_session import AgentSession, SessionStatus
@@ -32,6 +25,34 @@ _FAILURE_NOTE_TEMPLATE = (
     "**Reason:** {reason}\n\n"
     "Please handle this ticket manually or retry by mentioning {mention}."
 )
+
+
+async def _capture_customer_message_snapshot(session: AgentSession) -> None:
+    from zd_agent.services.ticket_messages import _fetch_customer_messages
+
+    customer_messages, ticket = await _fetch_customer_messages(session.ticket_id)
+    if ticket is None:
+        logger.warning(
+            "customer_message_snapshot_unavailable",
+            ticket_id=session.ticket_id,
+        )
+        raise RuntimeError(
+            f"customer-message snapshot unavailable for #{session.ticket_id}"
+        )
+
+    session.customer_msgs_snapshot_count = len(customer_messages)
+    session.customer_msgs_snapshot_last_id = (
+        str(customer_messages[-1].get("id") or "")
+        if customer_messages
+        else ""
+    )
+    session.customer_msgs_snapshot_captured = True
+    logger.info(
+        "customer_message_snapshot_captured",
+        ticket_id=session.ticket_id,
+        customer_message_count=session.customer_msgs_snapshot_count,
+        customer_last_message_id=session.customer_msgs_snapshot_last_id or None,
+    )
 
 
 async def _send_ack_note(ticket_id: int) -> None:
@@ -88,6 +109,39 @@ async def run_agent(session: AgentSession) -> None:
     4. 清理 sandbox
     """
     cfg = get_config()
+    guardrails = Guardrails(config=cfg.agent.guardrails)
+
+    try:
+        await _capture_customer_message_snapshot(session)
+    except Exception as e:
+        logger.error(
+            "agent_error",
+            ticket_id=session.ticket_id,
+            session_id=session.session_id,
+            stage="customer_message_snapshot",
+            error=str(e),
+            exc_info=True,
+        )
+        session.status = SessionStatus.FAILED
+        session.error_message = str(e)
+        if not session.dry_run:
+            await _send_error_note(session.ticket_id, str(e))
+        logger.info(
+            "agent_done",
+            ticket_id=session.ticket_id,
+            session_id=session.session_id,
+            status=session.status.value,
+            rounds=session.round_count,
+            prompt_tokens=session.token_usage.prompt_tokens,
+            completion_tokens=session.token_usage.completion_tokens,
+            total_tokens=session.token_usage.total_tokens,
+            elapsed=f"{guardrails.elapsed_seconds:.1f}s",
+            reply_sent=session.reply_sent,
+            archived=session.archived,
+            model=cfg.llm.model,
+        )
+        _ensure_archive(session, guardrails)
+        return
 
     # 创建 sandbox（根据配置自动选择 Local 或 Docker）
     sandbox = create_sandbox()
@@ -98,9 +152,6 @@ async def run_agent(session: AgentSession) -> None:
 
     # 创建 LLM 客户端
     llm = LLMClient()
-
-    # 创建护栏
-    guardrails = Guardrails(config=cfg.agent.guardrails)
 
     # P2-8: 预拉客户画像（best-effort，超时/失败不影响主流程）
     from zd_agent.runtime.customer_profile import prefetch_customer_profile
@@ -241,42 +292,3 @@ async def run_agent(session: AgentSession) -> None:
                 status=session.status.value,
                 path=str(session.sandbox_dir),
             )
-
-
-def _ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
-    """保底归档：确保每次处理都有 meta.json（即使 LLM 没有调用 archive_ticket）"""
-    cfg = get_config()
-    archive_dir = Path(cfg.knowledge.archive_dir) / str(session.ticket_id)
-    meta_path = archive_dir / "meta.json"
-
-    if meta_path.exists():
-        return
-
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    now = datetime.now(timezone.utc).isoformat()
-
-    meta = build_archive_meta(
-        session=session,
-        archived_at=now,
-        elapsed_seconds=guardrails.elapsed_seconds,
-    )
-
-    try:
-        meta_path.write_text(
-            json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8",
-        )
-        # 同时保存分析和回复草稿
-        if session.analysis:
-            (archive_dir / "analysis.md").write_text(
-                guard_against_stale_no_image_claim(session.analysis, session),
-                encoding="utf-8",
-            )
-        if session.reply_draft:
-            (archive_dir / "reply.md").write_text(
-                guard_against_stale_no_image_claim(session.reply_draft, session),
-                encoding="utf-8",
-            )
-
-        logger.info("auto_archive_created", ticket_id=session.ticket_id, path=str(archive_dir))
-    except Exception as e:
-        logger.warning("auto_archive_failed", ticket_id=session.ticket_id, error=str(e))

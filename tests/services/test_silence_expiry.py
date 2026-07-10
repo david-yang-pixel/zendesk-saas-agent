@@ -97,16 +97,27 @@ async def test_public_nudge_failure_does_not_mark_sent(tmp_path) -> None:
         ),
     )
 
-    result = await handle_silence_expired_ask(
-        ticket_id=12345,
-        state=state,
-        log_path=tmp_path / "trigger.jsonl",
-        nudge_message_fn=MagicMock(return_value=("en", "More details?")),
-        cfg=_cfg(enable_public_nudge=True),
-        fetch_customer_messages_fn=AsyncMock(return_value=([], {})),
-        send_public_nudge_fn=AsyncMock(return_value=False),
-        now=_now(),
-    )
+    send_nudge = AsyncMock(return_value=False)
+    with pytest.raises(RuntimeError, match="public reply delivery failed"):
+        await handle_silence_expired_ask(
+            ticket_id=12345,
+            state=state,
+            log_path=tmp_path / "trigger.jsonl",
+            nudge_message_fn=MagicMock(return_value=("en", "More details?")),
+            cfg=_cfg(enable_public_nudge=True),
+            fetch_customer_messages_fn=AsyncMock(return_value=([
+                {"id": "message-1", "body": "Hello"},
+            ], {})),
+            send_public_nudge_fn=send_nudge,
+            now=_now(),
+        )
 
-    assert result.action == "public_nudge_failed"
     assert state.get(12345).nudge_sent_at is None
+    send_nudge.assert_awaited_once_with(
+        ticket_id=12345,
+        body="More details?",
+        lang="en",
+        snapshot_customer_message_count=1,
+        snapshot_customer_last_message_id="message-1",
+        delivery_attempt_id="",
+    )

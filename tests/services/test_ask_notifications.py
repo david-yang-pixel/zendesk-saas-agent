@@ -1,5 +1,5 @@
 """Tests for public ask template side-effect helper."""
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -62,6 +62,7 @@ async def test_ask_template_builds_from_form_name_and_sends_public_reply() -> No
         messaging_app_id="app-1",
         snapshot_customer_message_count=2,
         snapshot_customer_last_message_id="m2",
+        delivery_attempt_id="",
     )
 
 

@@ -79,6 +79,9 @@ async def set_escalated_to_human(
         ticket_id=ticket_id,
         reason=reason,
         customer_name=customer_name,
+        delivery_attempt_id=(
+            f"{source}:{ticket_id}:{latest_cid or verdict_str}:handoff"
+        ),
     )
 
     await escalation_notifications.send_feishu_escalation_best_effort(

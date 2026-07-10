@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import time
@@ -14,7 +15,7 @@ from typing import Any
 import httpx
 from aiohttp import web
 
-from zd_agent.config import AppConfig
+from zd_agent.config import AppConfig, EnvSettings
 from zd_agent.services.admin_auth import AdminAuthStore
 from zd_agent.services.admin_config import AdminConfigStore
 from zd_agent.services.app_context import (
@@ -162,10 +163,26 @@ _RUN_RECORD_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 def _remote_ip(request: web.Request) -> str:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
-    return request.remote or ""
+    return _trusted_client_ip(request)
+
+
+def _login_rate_limit_ip(request: web.Request) -> str:
+    return _trusted_client_ip(request)
+
+
+def _trusted_client_ip(request: web.Request) -> str:
+    peer_ip = (request.remote or "").strip()
+    try:
+        peer_address = ipaddress.ip_address(peer_ip)
+    except ValueError:
+        return "unknown"
+    if peer_address.is_loopback:
+        forwarded_ip = request.headers.get("X-Real-IP", "").strip()
+        try:
+            return str(ipaddress.ip_address(forwarded_ip))
+        except ValueError:
+            pass
+    return str(peer_address)
 
 
 def _session_token(request: web.Request) -> str:
@@ -1424,13 +1441,24 @@ async def handle_admin_static(request: web.Request) -> web.Response:
 
 
 async def handle_admin_login(request: web.Request) -> web.Response:
+    effective = admin_config(request.app).effective_config(app_config(request.app))["values"]
+    if not _truthy(effective.get("admin_auth.password_login_enabled", True)):
+        return _json_error("password_login_disabled", status=403)
     try:
         payload = await request.json()
     except Exception:
         return _json_error("bad_request", status=400)
     username = str(payload.get("username") or "").strip()
     password = str(payload.get("password") or "")
-    result = admin_auth(request.app).verify_password(username, password)
+    result = admin_auth(request.app).verify_login(
+        username=username,
+        password=password,
+        remote_ip=_login_rate_limit_ip(request),
+    )
+    if result.rate_limited:
+        response = _json_error("too_many_attempts", status=429)
+        response.headers["Retry-After"] = str(result.retry_after_seconds)
+        return response
     if not result.ok:
         return _json_error("invalid_credentials", status=401)
     token = admin_auth(request.app).create_session(username)
@@ -1502,7 +1530,18 @@ async def handle_admin_password(request: web.Request) -> web.Response:
         ip=_remote_ip(request),
         action="admin_password_changed",
     )
-    return web.json_response({"ok": True})
+    token = admin_auth(request.app).create_session(username or "")
+    response = web.json_response({"ok": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="Lax",
+        secure=_request_is_secure(request),
+        path="/",
+        max_age=24 * 60 * 60,
+    )
+    return response
 
 
 async def handle_admin_config_schema(request: web.Request) -> web.Response:
@@ -1674,10 +1713,19 @@ def register_admin_routes(
     app: web.Application,
     cfg: AppConfig,
     state_dir: Path,
+    initial_admin_password: str | None = None,
 ) -> None:
     """Register admin UI and JSON API routes."""
     state_dir.mkdir(parents=True, exist_ok=True)
-    auth_store = AdminAuthStore(state_dir / "admin_auth.json")
+    env_password = EnvSettings().zd_admin_initial_password.strip()
+    auth_store = AdminAuthStore(
+        state_dir / "admin_auth.json",
+        initial_password=(
+            initial_admin_password
+            if initial_admin_password is not None
+            else env_password or None
+        ),
+    )
     config_store = AdminConfigStore(state_dir)
     install_admin_context(app=app, auth_store=auth_store, config_store=config_store)
 

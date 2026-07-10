@@ -817,10 +817,11 @@ async function renderRunRecords(options = {}) {
   setContent(renderRunRecordsShell());
   try {
     const payload = await loadRunRecords(state.runLimit, state.runFilters, {
-      quick: false,
+      quick: true,
       detail: false
     });
     renderRunRecordsContent(payload);
+    refreshRunRecordsInBackground();
   } catch (err) {
     setContent(errorHtml(err.message || "运行记录加载失败"));
   }
@@ -2235,7 +2236,7 @@ async function renderDeployStatus() {
       ${metricCard("待重启", deploy.pending_restart ? "有" : "无", deploy.pending_restart ? "存在需重启配置" : "配置已生效", deploy.pending_restart ? "warn-text" : "success-text")}
     </div>
     <div class="auth-method-grid">
-      ${authMethodCard("账号密码登录", deploy.admin_auth?.password_login?.enabled, "默认账号 admin，初始密码 admin123")}
+      ${authMethodCard("账号密码登录", deploy.admin_auth?.password_login?.enabled, "默认账号 admin，首次启动使用服务器生成的一次性密码")}
       ${authMethodCard("Google SSO", deploy.admin_auth?.google_sso?.enabled, authStatus(deploy.admin_auth?.google_sso))}
       ${authMethodCard("飞书 SSO", deploy.admin_auth?.feishu_sso?.enabled, authStatus(deploy.admin_auth?.feishu_sso))}
     </div>

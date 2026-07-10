@@ -81,6 +81,39 @@ async def test_ask_path_calls_send_ask_and_increments_when_sent(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_ask_send_failure_is_retryable_and_does_not_advance_state(
+    tmp_path,
+) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    existing = TicketState(
+        state="waiting_for_issue",
+        first_seen=_now(),
+        ask_count=2,
+    )
+    state.set(12345, existing)
+
+    with pytest.raises(RuntimeError, match="public ask delivery failed"):
+        await handle_post_verdict_dispatch(
+            ticket_id=12345,
+            verdict=_verdict("greeting"),
+            customer_msgs=[{"id": "cid-1", "body": "hello"}],
+            ticket_info={"id": 12345},
+            latest_cid="cid-1",
+            latest_ts=_now(),
+            existing=existing,
+            state=state,
+            log_path=Path(tmp_path) / "trigger.jsonl",
+            source="zendesk_webhook",
+            now=_now(),
+            cfg=_cfg(),
+            escalate_fn=AsyncMock(),
+            send_ask_fn=AsyncMock(return_value=False),
+        )
+
+    assert state.get(12345) == existing
+
+
+@pytest.mark.asyncio
 async def test_substantial_issue_enters_silence_without_ask(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     send_ask = AsyncMock(return_value=True)

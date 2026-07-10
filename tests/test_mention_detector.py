@@ -1,12 +1,34 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from types import SimpleNamespace
-
-from zd_agent.mention.detector import configured_mention_triggers, is_any_mention, is_mention
+from zd_agent.mention.detector import (
+    configured_mention_triggers,
+    get_self_user_id,
+    is_any_mention,
+    is_mention,
+)
 
 
 class TestIsMention(unittest.TestCase):
+    def test_zero_agent_user_id_is_resolved_and_logged_once(self) -> None:
+        cfg = SimpleNamespace(zendesk=SimpleNamespace(agent_user_id=0))
+        clear_cache = getattr(get_self_user_id, "cache_clear", lambda: None)
+        clear_cache()
+
+        try:
+            with (
+                patch("zd_agent.config.get_config", return_value=cfg) as get_config,
+                patch("zd_agent.mention.detector.logger.info") as log_info,
+            ):
+                self.assertIsNone(get_self_user_id())
+                self.assertIsNone(get_self_user_id())
+
+            get_config.assert_called_once_with()
+            log_info.assert_called_once_with("self_user_id_resolved", user_id=None)
+        finally:
+            clear_cache()
+
     def test_detects_mention_in_internal_note(self) -> None:
         comment = {"is_public": False, "body": "Hey @support-agent can you look at this?"}
         self.assertTrue(is_mention(comment, "@support-agent"))

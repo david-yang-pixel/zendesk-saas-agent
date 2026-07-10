@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from time import time_ns
 from typing import Optional
 
+from zd_agent.log import get_logger
 from zd_agent.services.atomic_write import atomic_write_text
+
+
+logger = get_logger(module="trigger.state_store")
 
 
 VALID_STATES = {
@@ -19,6 +24,10 @@ VALID_STATES = {
     "abandoned",            # customer gone too long
     "escalated_to_human",   # 已转人工：agent 完全退出此工单，4 个 entry 入口 skip
 }
+
+
+class TicketStateCorruptedError(RuntimeError):
+    pass
 
 
 @dataclass
@@ -91,6 +100,7 @@ class TicketStateTracker:
     def __init__(self, path: Path | str):
         self.path = Path(path)
         self._data: dict[str, TicketState] = {}
+        self._serialized: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
@@ -98,19 +108,52 @@ class TicketStateTracker:
             return
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            self._data = {}
+        except json.JSONDecodeError as error:
+            self._quarantine(f"{type(error).__name__}: {error}")
             return
-        try:
-            self._data = {str(k): TicketState.from_dict(v) for k, v in raw.items()}
-        except Exception:
-            self._data = {}
+        if not isinstance(raw, dict):
+            self._quarantine("expected a JSON object at the top level")
+            return
 
-    def _save(self) -> None:
-        serialized = {k: v.to_dict() for k, v in self._data.items()}
+        loaded: dict[str, TicketState] = {}
+        serialized: dict[str, dict] = {}
+        try:
+            for key, value in raw.items():
+                if not isinstance(value, dict):
+                    raise TypeError(f"ticket {key} state must be a JSON object")
+                ticket_state = TicketState.from_dict(value)
+                if ticket_state.state not in VALID_STATES:
+                    raise ValueError(
+                        f"ticket {key} has invalid state: {ticket_state.state}",
+                    )
+                normalized_key = str(key)
+                loaded[normalized_key] = ticket_state
+                serialized[normalized_key] = ticket_state.to_dict()
+        except (TypeError, ValueError) as error:
+            self._quarantine(f"{type(error).__name__}: {error}")
+            return
+        self._data = loaded
+        self._serialized = serialized
+
+    def _quarantine(self, reason: str) -> None:
+        quarantine_path = self.path.with_name(
+            f"{self.path.name}.corrupt-{time_ns()}",
+        )
+        self.path.replace(quarantine_path)
+        logger.error(
+            "ticket_state_file_quarantined",
+            path=str(self.path),
+            quarantine_path=str(quarantine_path),
+            reason=reason,
+        )
+        raise TicketStateCorruptedError(
+            f"ticket state file is corrupted and was quarantined: {quarantine_path}",
+        )
+
+    def _save(self, serialized: dict[str, dict]) -> None:
         atomic_write_text(
             self.path,
-            json.dumps(serialized, ensure_ascii=False, indent=2),
+            json.dumps(serialized, ensure_ascii=False, separators=(",", ":")),
         )
 
     def get(self, ticket_id: str | int) -> Optional[TicketState]:
@@ -119,12 +162,26 @@ class TicketStateTracker:
     def set(self, ticket_id: str | int, state: TicketState) -> None:
         if state.state not in VALID_STATES:
             raise ValueError(f"invalid state: {state.state}")
-        self._data[str(ticket_id)] = state
-        self._save()
+        key = str(ticket_id)
+        serialized = state.to_dict()
+        if self._serialized.get(key) == serialized:
+            self._data[key] = state
+            return
+        next_serialized = dict(self._serialized)
+        next_serialized[key] = serialized
+        self._save(next_serialized)
+        self._data[key] = state
+        self._serialized = next_serialized
 
     def delete(self, ticket_id: str | int) -> None:
-        self._data.pop(str(ticket_id), None)
-        self._save()
+        key = str(ticket_id)
+        if key not in self._data:
+            return
+        next_serialized = dict(self._serialized)
+        next_serialized.pop(key, None)
+        self._save(next_serialized)
+        self._data.pop(key)
+        self._serialized = next_serialized
 
     def list_by_state(self, state: str) -> list[str]:
         return [k for k, v in self._data.items() if v.state == state]

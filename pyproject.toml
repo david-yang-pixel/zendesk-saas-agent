@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "openai",
+    "httpcore>=1.0.9,<1.1",
     "httpx[socks]",
     "typer",
     "pydantic>=2.0",
@@ -37,7 +38,11 @@ build-backend = "hatchling.build"
 dev = [
     "pytest",
     "pytest-asyncio",
+    "ruff>=0.14,<0.15",
 ]
+
+[tool.ruff.lint]
+external = ["ANY", "SIZ"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

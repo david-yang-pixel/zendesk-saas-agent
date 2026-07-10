@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from typing import Any
 
 from zd_agent.log import get_logger
 from zd_agent.services.trigger_state_machine import apply_silence_window_expired
@@ -18,21 +19,37 @@ def _now() -> datetime:
 async def scan_once(
     *,
     state: TicketStateTracker,
-    trigger_queue: asyncio.Queue,
+    trigger_queue: Any,
 ) -> int:
     """Single scan pass. Returns the count of tickets advanced."""
     tickets_in_silence = state.list_by_state("in_silence_window")
     now = _now()
     advanced = 0
     for ticket_id in tickets_in_silence:
+        record = state.get(ticket_id)
+        if (
+            record is None
+            or record.silence_window_end is None
+            or record.silence_window_end > now
+        ):
+            continue
+
+        source = (
+            "silence_waker"
+            if record.last_verdict == "substantial_issue"
+            else "silence_expired_ask"
+        )
+        await trigger_queue.put({
+            "source": source,
+            "ticket_id": int(ticket_id),
+            "_queue_key": (
+                f"silence:{ticket_id}:{source}:"
+                f"{record.silence_window_end.isoformat()}"
+            ),
+        })
         transition = apply_silence_window_expired(state, ticket_id, now=now)
         if transition is None:
             continue
-
-        await trigger_queue.put({
-            "source": transition.queue_source,
-            "ticket_id": transition.ticket_id,
-        })
         if transition.queue_source == "silence_waker":
             logger.info(
                 "silence_expired_dispatch",
@@ -52,7 +69,7 @@ async def scan_once(
 async def run_silence_waker(
     *,
     state: TicketStateTracker,
-    trigger_queue: asyncio.Queue,
+    trigger_queue: Any,
     scan_interval_seconds: int,
 ) -> None:
     """Infinite loop: scan_once -> sleep -> repeat. Catches exceptions per iter."""

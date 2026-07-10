@@ -15,6 +15,9 @@ async def send_public_nudge_best_effort(
     ticket_id: int,
     body: str,
     lang: str,
+    snapshot_customer_message_count: int,
+    snapshot_customer_last_message_id: str | None,
+    delivery_attempt_id: str = "",
 ) -> bool:
     """Send the public nudge and preserve poller visibility with a tag."""
     try:
@@ -24,6 +27,9 @@ async def send_public_nudge_best_effort(
             ticket_id=ticket_id,
             body=body,
             reply_type="ask",
+            snapshot_customer_message_count=snapshot_customer_message_count,
+            snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+            delivery_attempt_id=delivery_attempt_id,
         )
         if not success:
             raise RuntimeError(message)

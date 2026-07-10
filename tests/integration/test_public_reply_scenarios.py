@@ -34,7 +34,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,6 +42,7 @@ import pytest
 
 from zd_agent.config import AppConfig, FeishuConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
 from zd_agent.services.trigger_actions import post_verdict_dispatch_action
+from zd_agent.services.verdict_dispatch import PublicAskDeliveryError
 from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -404,12 +405,13 @@ class TestAskCountSafetyAcrossRounds:
             state="waiting_for_issue", first_seen=_now(), ask_count=5,
         )
         state.set(5000, existing)
-        await _run_dispatch(
-            state=state,
-            verdict=_make_verdict(kind="greeting"),
-            existing=existing,
-            tmp_path=tmp_path,
-            mock_send=AsyncMock(return_value=False),  # 模拟发送失败
-        )
+        with pytest.raises(PublicAskDeliveryError):
+            await _run_dispatch(
+                state=state,
+                verdict=_make_verdict(kind="greeting"),
+                existing=existing,
+                tmp_path=tmp_path,
+                mock_send=AsyncMock(return_value=False),  # 模拟发送失败
+            )
         # 5 → 5（没涨）
         assert state.get(5000).ask_count == 5

@@ -28,6 +28,8 @@ async def test_public_nudge_replies_and_tags_ticket() -> None:
             ticket_id=9999,
             body="Could you share more details?",
             lang="en",
+            snapshot_customer_message_count=2,
+            snapshot_customer_last_message_id="message-2",
         )
 
     assert sent is True
@@ -35,6 +37,9 @@ async def test_public_nudge_replies_and_tags_ticket() -> None:
         ticket_id=9999,
         body="Could you share more details?",
         reply_type="ask",
+        snapshot_customer_message_count=2,
+        snapshot_customer_last_message_id="message-2",
+        delivery_attempt_id="",
     )
     mock_mcp.assert_awaited_once()
     assert mock_mcp.await_args.args[0] == "update_ticket_metadata"
@@ -56,6 +61,8 @@ async def test_public_nudge_tag_failure_still_counts_as_sent() -> None:
             ticket_id=9999,
             body="Could you share more details?",
             lang="en",
+            snapshot_customer_message_count=1,
+            snapshot_customer_last_message_id="message-1",
         )
 
     assert sent is True
@@ -76,6 +83,8 @@ async def test_public_nudge_reply_failure_is_retryable_failure() -> None:
             ticket_id=9999,
             body="Could you share more details?",
             lang="en",
+            snapshot_customer_message_count=1,
+            snapshot_customer_last_message_id="message-1",
         )
 
     assert sent is False

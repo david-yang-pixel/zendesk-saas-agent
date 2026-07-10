@@ -13,6 +13,7 @@ import base64
 import hashlib
 import hmac
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -20,6 +21,7 @@ from aiohttp import web
 
 from zd_agent.services.zendesk_webhook import handle_zendesk_webhook
 from zd_agent.services.app_context import install_saas_app_context, trigger_queue
+from zd_agent.services.app_context import TRIGGER_QUEUE_KEY, webhook_dedup
 from zd_agent.services.webhook_dedup import WebhookDedup
 
 
@@ -51,10 +53,15 @@ def _build_app(tmp_path) -> web.Application:
     return app
 
 
-async def _post(app: web.Application, body: dict) -> web.Response:
+async def _post(
+    app: web.Application,
+    body: dict,
+    *,
+    timestamp: str | None = None,
+) -> web.Response:
     """Drive handle_zendesk_webhook with a synthetic signed request."""
     raw = json.dumps(body).encode("utf-8")
-    ts = "1700000000"
+    ts = timestamp or str(int(time.time()))
     sig = _sign("topsecret", ts, raw)
 
     # Minimal Request stand-in: aiohttp lets us go through Application but
@@ -165,8 +172,27 @@ async def test_classic_webhook_uses_initial_wait_window(tmp_path):
     app = _build_app(tmp_path)
 
     with patch("zd_agent.services.zendesk_webhook.time.time", return_value=1000.0):
-        r = await _post(app, {"ticket_id": 2278, "latest_comment_id": 1})
+        r = await _post(
+            app,
+            {"ticket_id": 2278, "latest_comment_id": 1},
+            timestamp="1000",
+        )
 
     assert r.status == 200 and r.text == "ok"
     queued = trigger_queue(app).get_nowait()
     assert queued["available_at"] == 1060.0
+
+
+@pytest.mark.asyncio
+async def test_failed_queue_write_does_not_mark_webhook_processed(tmp_path):
+    class FailingQueue:
+        async def put(self, message):
+            raise OSError("disk unavailable")
+
+    app = _build_app(tmp_path)
+    app[TRIGGER_QUEUE_KEY] = FailingQueue()
+
+    response = await _post(app, {"ticket_id": 2278, "latest_comment_id": 1})
+
+    assert response.status == 503
+    assert len(webhook_dedup(app)) == 0

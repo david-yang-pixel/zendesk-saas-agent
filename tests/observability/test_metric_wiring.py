@@ -142,6 +142,17 @@ class TestAgentPublicReplySentWiring:
                 new=AsyncMock(),
             ),
             patch(
+                "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+                new=AsyncMock(return_value={
+                    "success": True,
+                    "data": {"comments": []},
+                }),
+            ),
+            patch(
+                "zd_agent.tools.zendesk_public_reply._check_freshness_before_relay",
+                new=AsyncMock(return_value=MagicMock(continue_send=True)),
+            ),
+            patch(
                 "zd_agent.observability.metrics.emit_agent_public_reply_sent",
             ) as mock_emit,
         ):
@@ -150,6 +161,7 @@ class TestAgentPublicReplySentWiring:
                 body="Hi! Could you describe the issue?",
                 reply_type="ask",
                 conversation_id="conv-1",
+                snapshot_customer_message_count=0,
             )
 
         assert success is True
@@ -203,6 +215,17 @@ class TestAgentPublicReplySentWiring:
                 new=AsyncMock(),
             ),
             patch(
+                "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+                new=AsyncMock(return_value={
+                    "success": True,
+                    "data": {"comments": []},
+                }),
+            ),
+            patch(
+                "zd_agent.tools.zendesk_public_reply._check_freshness_before_relay",
+                new=AsyncMock(return_value=MagicMock(continue_send=True)),
+            ),
+            patch(
                 "zd_agent.observability.metrics.emit_agent_public_reply_sent",
                 side_effect=RuntimeError("logger broken"),
             ),
@@ -212,6 +235,7 @@ class TestAgentPublicReplySentWiring:
                 body="hi",
                 reply_type="ask",
                 conversation_id="conv-1",
+                snapshot_customer_message_count=0,
             )
 
         # 主流程仍成功

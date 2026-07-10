@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import time
+from datetime import datetime
 
 from aiohttp import web
 
@@ -14,13 +15,37 @@ from zd_agent.services.app_context import app_config, trigger_queue, webhook_ded
 from zd_agent.services.trigger_delay import with_trigger_delay
 
 logger = get_logger(module="services.zendesk_webhook")
+SIGNATURE_MAX_AGE_SECONDS = 300
+
+
+def _signature_timestamp_seconds(timestamp: str) -> float:
+    try:
+        return float(int(timestamp))
+    except ValueError:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("signature timestamp must include a timezone")
+        return parsed.timestamp()
 
 
 def verify_zendesk_signature(
-    *, secret: str, timestamp: str, body: bytes, signature: str,
+    *,
+    secret: str,
+    timestamp: str,
+    body: bytes,
+    signature: str,
+    max_age_seconds: int = SIGNATURE_MAX_AGE_SECONDS,
+    now: float | None = None,
 ) -> bool:
     """Verify HMAC-SHA256 signature per Zendesk webhook spec."""
     if not secret or not timestamp or signature is None:
+        return False
+    try:
+        timestamp_seconds = _signature_timestamp_seconds(timestamp)
+    except (OverflowError, ValueError):
+        return False
+    current_time = time.time() if now is None else now
+    if abs(current_time - timestamp_seconds) > max_age_seconds:
         return False
     mac = hmac.new(
         secret.encode("utf-8"),
@@ -52,25 +77,32 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     if not ticket_id:
         return web.Response(status=400, text="missing ticket_id")
 
-    body_hash = hashlib.sha256(body).hexdigest()[:16]
+    body_hash = hashlib.sha256(body).hexdigest()
     comment_id = event.get("latest_comment_id")
     key = f"{ticket_id}:{body_hash}"
     dedup = webhook_dedup(request.app)
     if dedup.seen(key):
         logger.info("zendesk_webhook_dup", key=key, comment_id=comment_id)
         return web.Response(status=200, text="dup")
-    dedup.add(key)
-
     queue = trigger_queue(request.app)
-    await queue.put(
-        with_trigger_delay(
-            {
-                "source": "zendesk_webhook",
-                "ticket_id": ticket_id,
-                "event": event,
-            },
-            delay_seconds=cfg.public_reply.silent_initial_wait_seconds,
-            now_fn=time.time,
-        )
+    message = with_trigger_delay(
+        {
+            "source": "zendesk_webhook",
+            "ticket_id": ticket_id,
+            "event": event,
+            "_queue_key": f"zendesk:{key}",
+        },
+        delay_seconds=cfg.public_reply.silent_initial_wait_seconds,
+        now_fn=time.time,
     )
+    try:
+        await queue.put(message)
+    except Exception as error:
+        logger.error(
+            "zendesk_webhook_enqueue_failed",
+            ticket_id=ticket_id,
+            error_type=type(error).__name__,
+        )
+        return web.Response(status=503, text="queue unavailable")
+    dedup.add(key)
     return web.Response(status=200, text="ok")

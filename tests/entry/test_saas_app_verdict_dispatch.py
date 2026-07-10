@@ -19,6 +19,7 @@ import pytest
 
 from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig
 from zd_agent.services.trigger_actions import post_verdict_dispatch_action
+from zd_agent.services.verdict_dispatch import PublicAskDeliveryError
 from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -363,11 +364,12 @@ class TestAskPath:
             state="waiting_for_issue", first_seen=_now(), ask_count=3,
         )
         state.set(12345, existing)
-        await _dispatch(
-            state=state, verdict=_make_verdict(kind="greeting"),
-            existing=existing, tmp_path=tmp_path,
-            send_ask_returns=False,
-        )
+        with pytest.raises(PublicAskDeliveryError):
+            await _dispatch(
+                state=state, verdict=_make_verdict(kind="greeting"),
+                existing=existing, tmp_path=tmp_path,
+                send_ask_returns=False,
+            )
         # 发送失败 → ask_count 保持 3 不变
         assert state.get(12345).ask_count == 3
 

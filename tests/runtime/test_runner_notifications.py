@@ -18,6 +18,7 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
     monkeypatch.setattr(runner, "get_config", lambda: cfg)
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
     monkeypatch.setattr(runner, "_ensure_archive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
 
     class FakeSandbox:
         async def create(self, ticket_id):

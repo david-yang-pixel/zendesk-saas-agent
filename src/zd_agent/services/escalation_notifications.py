@@ -15,6 +15,7 @@ async def send_handoff_reply_best_effort(
     ticket_id: int,
     reason: str,
     customer_name: str = "",
+    delivery_attempt_id: str = "",
 ) -> bool:
     """Send the customer-facing handoff reply unless a human already took over."""
     if reason == "human_takeover_detected":
@@ -33,6 +34,7 @@ async def send_handoff_reply_best_effort(
             ticket_id=ticket_id,
             body=handoff_body,
             reply_type="handoff",
+            delivery_attempt_id=delivery_attempt_id,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(

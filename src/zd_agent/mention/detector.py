@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import re
+from functools import cache
 
 from zd_agent.log import get_logger
 
 logger = get_logger(module="mention.detector")
-
-_self_user_id: int | None = None
 
 
 def configured_mention_triggers(zendesk_cfg: object) -> list[str]:
@@ -48,17 +47,15 @@ def _contains_raw_mention(body: str, trigger: str) -> bool:
     return re.search(pattern, body, flags=re.IGNORECASE) is not None
 
 
+@cache
 def get_self_user_id() -> int | None:
     """获取 agent 自身的 Zendesk user_id（来自配置，首次调用时缓存）。"""
-    global _self_user_id
-    if _self_user_id is not None:
-        return _self_user_id
     try:
         from zd_agent.config import get_config
         configured_id = int(get_config().zendesk.agent_user_id or 0)
-        _self_user_id = configured_id or None
-        logger.info("self_user_id_resolved", user_id=_self_user_id)
-        return _self_user_id
+        self_user_id = configured_id or None
+        logger.info("self_user_id_resolved", user_id=self_user_id)
+        return self_user_id
     except Exception as e:
         logger.warning("self_user_id_failed", error=str(e))
         return None

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from zd_agent.services.waiting_poller import scan_once, _process_one
+from zd_agent.services.waiting_poller import scan_once
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -52,7 +52,11 @@ async def test_new_customer_msg_pushes_queue(state, queue):
             abandoned_hours=24, greeting_alert_minutes=30,
         )
     msg = queue.get_nowait()
-    assert msg == {"source": "poller_new_msg", "ticket_id": 1}
+    assert msg == {
+        "source": "poller_new_msg",
+        "ticket_id": 1,
+        "_queue_key": "poller_new_msg:1:NEW_CID",
+    }
 
 
 @pytest.mark.asyncio

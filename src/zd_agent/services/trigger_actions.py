@@ -16,6 +16,7 @@ async def handle_silence_expired_ask_action(
     state: Any,
     log_path: Path,
     nudge_message_fn: Any,
+    delivery_attempt_id: str = "",
 ) -> None:
     """Delegate silence-expired ask handling to the orchestration service."""
     await handle_silence_expired_ask(
@@ -23,6 +24,7 @@ async def handle_silence_expired_ask_action(
         state=state,
         log_path=log_path,
         nudge_message_fn=nudge_message_fn,
+        delivery_attempt_id=delivery_attempt_id,
     )
 
 
@@ -36,6 +38,7 @@ async def send_ask_template_action(
     source: str,
     conversation_id: str | None = None,
     messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
 ) -> bool:
     """Delegate public ask template sending to the notification service."""
     return await send_ask_template_best_effort(
@@ -46,6 +49,7 @@ async def send_ask_template_action(
         source=source,
         conversation_id=conversation_id,
         messaging_app_id=messaging_app_id,
+        delivery_attempt_id=delivery_attempt_id,
     )
 
 
@@ -103,6 +107,7 @@ async def post_verdict_dispatch_action(
     cfg: Any,
     conversation_id: str | None = None,
     messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
     escalate_fn: Any = set_escalated_to_human_action,
     send_ask_fn: Any = send_ask_template_action,
 ) -> None:
@@ -122,6 +127,7 @@ async def post_verdict_dispatch_action(
         cfg=cfg,
         conversation_id=conversation_id,
         messaging_app_id=messaging_app_id,
+        delivery_attempt_id=delivery_attempt_id,
         escalate_fn=escalate_fn,
         send_ask_fn=send_ask_fn,
     )

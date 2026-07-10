@@ -164,6 +164,7 @@ async def _process_one(
             await trigger_queue.put({
                 "source": "poller_new_msg",
                 "ticket_id": ticket_id,
+                "_queue_key": f"poller_new_msg:{ticket_id}:{latest_cid}",
             })
             return
 

@@ -105,6 +105,38 @@ async def test_scan_once_dispatches_mention(queue, tracker):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_marks_processed_only_after_durable_put(tracker):
+    class FailingQueue:
+        async def put(self, _message):
+            raise RuntimeError("queue unavailable")
+
+    fake_call, _state = _mcp_call(
+        search_resp={"results": [_ticket(2316)]},
+        comments_by_ticket={
+            2316: {"comments": [_comment("c-durable", "@saas-agent please check")]},
+        },
+    )
+
+    with patch("zd_agent.services.mention_poller.get_config") as cfg_mock, patch(
+        "zd_agent.services.mention_poller.call_zendesk_tool",
+        side_effect=fake_call,
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+
+        with pytest.raises(RuntimeError, match="queue unavailable"):
+            await scan_once(
+                trigger_queue=FailingQueue(),
+                tracker=tracker,
+                last_poll_unix=time.time() - 600,
+            )
+
+    assert not tracker.is_processed("c-durable")
+
+
+@pytest.mark.asyncio
 async def test_scan_once_dispatches_mention_alias(queue, tracker):
     """@yonggang alias should dispatch while preserving @saas-agent support."""
     fake_call, _state = _mcp_call(

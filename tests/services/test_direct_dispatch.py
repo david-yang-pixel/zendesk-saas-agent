@@ -61,11 +61,13 @@ async def test_direct_source_dispatches_with_hint(tmp_path) -> None:
     assert result.handled is True
     assert result.dispatched is True
     assert result.action == "dispatch"
+    assert state.get(12345).state == "processing"
     manager.dispatch.assert_awaited_once_with(
         12345,
         dry_run=False,
         trigger_type="webhook-mention",
         hint="please rerun",
+        delivery_attempt_id="mention:12345",
     )
 
 

@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
+from zd_agent.services.trigger_errors import PublicReplyDeliveryError
 from zd_agent.trigger.decision_log import log_decision
 
 logger = get_logger(module="services.silence_expiry")
@@ -36,6 +37,7 @@ async def handle_silence_expired_ask(
     send_public_nudge_fn: SendPublicNudgeFn | None = None,
     send_silence_alert_fn: SendSilenceAlertFn | None = None,
     now: datetime | None = None,
+    delivery_attempt_id: str = "",
 ) -> SilenceExpiredAskResult:
     """Handle a silence-expired ask event and mark nudge state when sent."""
     cfg = cfg or get_config()
@@ -62,6 +64,9 @@ async def handle_silence_expired_ask(
         form_data_from_msgs_fn = extract_form_data_from_msgs
 
     customer_msgs, _ticket = await fetch_customer_messages_fn(ticket_id)
+    from zd_agent.services.ask_notifications import message_snapshot
+
+    snapshot_count, snapshot_last_id = message_snapshot(customer_msgs or [])
     form = form_data_from_msgs_fn(customer_msgs or [])
     customer_name = form.get("name", "")
     lang, body = nudge_message_fn(customer_name=customer_name)
@@ -80,9 +85,12 @@ async def handle_silence_expired_ask(
             ticket_id=ticket_id,
             body=body,
             lang=lang,
+            snapshot_customer_message_count=snapshot_count,
+            snapshot_customer_last_message_id=snapshot_last_id,
+            delivery_attempt_id=delivery_attempt_id,
         )
         if not sent:
-            return SilenceExpiredAskResult(action="public_nudge_failed")
+            raise PublicReplyDeliveryError(ticket_id)
 
         log_decision(
             log_path=log_path,

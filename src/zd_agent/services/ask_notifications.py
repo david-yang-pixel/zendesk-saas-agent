@@ -7,7 +7,7 @@ from zd_agent.services.ticket_messages import extract_form_data_from_msgs
 logger = get_logger(module="services.ask_notifications")
 
 
-def _message_snapshot(customer_msgs: list[dict]) -> tuple[int, str | None]:
+def message_snapshot(customer_msgs: list[dict]) -> tuple[int, str | None]:
     msgs = customer_msgs or []
     if not msgs:
         return 0, None
@@ -31,6 +31,7 @@ async def send_ask_template_best_effort(
     source: str,
     conversation_id: str | None = None,
     messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
 ) -> bool:
     """Build and send a public ask reply without mutating trigger state."""
     from zd_agent.config import EnvSettings, get_config
@@ -43,7 +44,7 @@ async def send_ask_template_best_effort(
     form = extract_form_data_from_msgs(customer_msgs or [])
     customer_name = (form.get("name", "") or "").strip()
     customer_bodies = [m.get("body", "") for m in (customer_msgs or [])]
-    snapshot_count, snapshot_last_id = _message_snapshot(customer_msgs or [])
+    snapshot_count, snapshot_last_id = message_snapshot(customer_msgs or [])
 
     try:
         body, template_name = await build_ask_body(
@@ -84,6 +85,7 @@ async def send_ask_template_best_effort(
         messaging_app_id=messaging_app_id,
         snapshot_customer_message_count=snapshot_count,
         snapshot_customer_last_message_id=snapshot_last_id,
+        delivery_attempt_id=delivery_attempt_id,
     )
     if not success:
         logger.warning(

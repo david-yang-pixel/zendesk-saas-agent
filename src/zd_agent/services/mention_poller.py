@@ -125,7 +125,6 @@ async def scan_once(
             if not matched_trigger:
                 continue
 
-            tracker.mark_processed(comment_id)
             body = (comment.get("body") or "")[:500]
             hint = f"[来自 @mention 的请求]\n{body}"
             await trigger_queue.put({
@@ -133,7 +132,9 @@ async def scan_once(
                 "ticket_id": int(tid),
                 "comment_id": comment_id,
                 "hint": hint,
+                "_queue_key": f"mention:{comment_id}",
             })
+            tracker.mark_processed(comment_id)
             logger.info(
                 "mention_poller_dispatched",
                 ticket_id=tid, comment_id=comment_id,

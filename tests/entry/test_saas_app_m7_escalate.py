@@ -521,6 +521,7 @@ class TestTriggerSkipEscalated:
             dry_run=False,
             trigger_type="webhook-mention",
             hint="处理一下",
+            delivery_attempt_id="mention:9999",
         )
 
     @pytest.mark.asyncio

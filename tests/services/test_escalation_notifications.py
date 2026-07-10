@@ -37,6 +37,7 @@ async def test_handoff_reply_uses_customer_name() -> None:
     kwargs = mock_send.call_args.kwargs
     assert kwargs["ticket_id"] == 9999
     assert kwargs["reply_type"] == "handoff"
+    assert kwargs["delivery_attempt_id"] == ""
     assert "Alice" in kwargs["body"]
 
 

@@ -16,7 +16,7 @@ from zd_agent.services.agent_management import (
     update_agent_config,
 )
 from zd_agent.services.app_context import app_config
-from zd_agent.services.ticket_messages import _fetch_customer_messages
+from zd_agent.services.ticket_messages import fetch_customer_messages_for_freshness
 from zd_agent.services.zendesk_messaging_webhook import (
     handle_zendesk_messaging_webhook,
 )
@@ -99,7 +99,11 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
     expected_token = (cfg.public_reply.browser_relay_api_key or "").strip()
     auth = request.headers.get("Authorization", "")
     token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-    if not expected_token or token != expected_token:
+    if (
+        not expected_token
+        or not token
+        or not hmac.compare_digest(expected_token, token)
+    ):
         return web.json_response({"ok": False, "status": "unauthorized"}, status=401)
 
     try:
@@ -110,9 +114,8 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"ok": False, "status": "bad_request"}, status=400)
 
-    async def _fetch() -> list[dict]:
-        msgs, _ticket = await _fetch_customer_messages(ticket_id)
-        return msgs or []
+    async def _fetch() -> list[dict[str, Any]]:
+        return await fetch_customer_messages_for_freshness(ticket_id)
 
     env = EnvSettings()
     check = await pre_send_check_or_abort(

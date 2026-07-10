@@ -82,6 +82,20 @@ async def test_no_customer_messages_logs_skip(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ticket_fetch_failure_is_retryable(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="ticket fetch failed"):
+        await handle_trigger_message(
+            msg={"ticket_id": 12345, "source": "zendesk_webhook"},
+            manager=MagicMock(),
+            state=TicketStateTracker(tmp_path / "tickets.json"),
+            cfg=_cfg(),
+            env=SimpleNamespace(openai_api_key="sk-test"),
+            log_path=tmp_path / "trigger.jsonl",
+            fetch_customer_messages_fn=AsyncMock(return_value=([], None)),
+        )
+
+
+@pytest.mark.asyncio
 async def test_customer_message_classifies_and_dispatches_verdict(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     manager = MagicMock()

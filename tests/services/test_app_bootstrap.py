@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import stat
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,8 +17,9 @@ from zd_agent.services.app_context import (
     trigger_queue,
     webhook_dedup,
 )
+from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.session.agent_session import AgentSession, SessionStatus
-from zd_agent.trigger.state_store import TicketState
+from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
 def _cfg(tmp_path) -> AppConfig:
@@ -36,6 +38,9 @@ def test_prepare_saas_app_runtime_installs_context(tmp_path) -> None:
 
     assert runtime.state_dir == tmp_path / ".state"
     assert runtime.state_dir.exists()
+    assert stat.S_IMODE(runtime.state_dir.stat().st_mode) == 0o700
+    assert isinstance(runtime.trigger_queue, DurableTriggerQueue)
+    assert (runtime.state_dir / "trigger_queue.sqlite3").exists()
     assert app_config(app) is cfg
     assert trigger_queue(app) is runtime.trigger_queue
     assert ticket_state(app) is runtime.state
@@ -68,3 +73,30 @@ async def test_prepare_saas_app_runtime_wires_session_finish_callback(tmp_path) 
     assert rec is not None
     assert rec.state == "processed"
     assert rec.last_agent_finish_ts is not None
+
+
+@pytest.mark.asyncio
+async def test_prepare_saas_app_runtime_recovers_processing_ticket(tmp_path) -> None:
+    cfg = _cfg(tmp_path)
+    state_dir = tmp_path / ".state"
+    state_dir.mkdir()
+    stored = TicketStateTracker(state_dir / "tickets.json")
+    stored.set(
+        "2809",
+        TicketState(
+            state="processing",
+            first_seen=datetime.now(timezone.utc),
+        ),
+    )
+
+    runtime = prepare_saas_app_runtime(
+        app=web.Application(),
+        cfg=cfg,
+        manager=MagicMock(),
+    )
+    recovered = await runtime.trigger_queue.get()
+
+    assert recovered["ticket_id"] == 2809
+    assert recovered["source"] == "startup_recovery"
+    assert recovered["_queue_key"] == "startup-recovery:2809"
+    await runtime.trigger_queue.ack(recovered)

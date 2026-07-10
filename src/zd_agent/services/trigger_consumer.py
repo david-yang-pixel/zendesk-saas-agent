@@ -1,17 +1,71 @@
 """Background worker for trigger queue messages."""
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from zd_agent.config import EnvSettings, get_config
 from zd_agent.log import get_logger
 from zd_agent.services.trigger_delay import wait_for_trigger_availability
+from zd_agent.services.trigger_errors import TriggerDeferredError
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 
 logger = get_logger(module="services.trigger_consumer")
 
 HandleMessageFn = Callable[..., Awaitable[Any]]
+
+
+async def _ack_message(queue: Any, message: dict[str, Any]) -> None:
+    ack = getattr(queue, "ack", None)
+    if callable(ack):
+        await ack(message)
+        return
+    task_done = getattr(queue, "task_done", None)
+    if callable(task_done):
+        task_done()
+
+
+async def _retry_message(
+    queue: Any,
+    message: dict[str, Any],
+    error: BaseException,
+) -> bool | None:
+    retry = getattr(queue, "retry", None)
+    if not callable(retry):
+        return None
+    return bool(await retry(message, str(error)))
+
+
+async def _release_message(queue: Any, message: dict[str, Any]) -> bool:
+    release = getattr(queue, "release", None)
+    if not callable(release):
+        return False
+    await release(message)
+    return True
+
+
+async def _defer_message(
+    queue: Any,
+    message: dict[str, Any],
+    error: TriggerDeferredError,
+) -> bool:
+    defer = getattr(queue, "defer", None)
+    if callable(defer):
+        await defer(message, error.delay_seconds, error.reason)
+        return True
+    put = getattr(queue, "put", None)
+    if not callable(put):
+        return False
+    delayed = {
+        key: value
+        for key, value in message.items()
+        if not key.startswith("_queue_")
+    }
+    delayed["available_at"] = time.time() + error.delay_seconds
+    await put(delayed)
+    return True
 
 
 def default_trigger_log_path(cfg: Any) -> Path:
@@ -44,7 +98,8 @@ async def run_trigger_consumer(
     while True:
         msg = await queue.get()
         try:
-            await wait_for_trigger_availability(msg)
+            if not getattr(queue, "schedules_available_at", False):
+                await wait_for_trigger_availability(msg)
             await handle_message_fn(
                 msg=msg,
                 manager=manager,
@@ -56,11 +111,39 @@ async def run_trigger_consumer(
                 post_verdict_dispatch_fn=post_verdict_dispatch_fn,
                 escalate_fn=escalate_fn,
             )
+        except TriggerDeferredError as error:
+            deferred = await _defer_message(queue, msg, error)
+            logger.info(
+                "trigger_consumer_deferred",
+                ticket_id=msg.get("ticket_id"),
+                source=msg.get("source"),
+                reason=error.reason,
+                delay_seconds=error.delay_seconds,
+                deferred=deferred,
+                attempts=msg.get("_queue_attempts"),
+            )
+        except asyncio.CancelledError:
+            released = await asyncio.shield(_release_message(queue, msg))
+            logger.info(
+                "trigger_consumer_cancelled",
+                ticket_id=msg.get("ticket_id"),
+                source=msg.get("source"),
+                released=released,
+                attempts=msg.get("_queue_attempts"),
+            )
+            raise
         except Exception as e:
+            retried = await _retry_message(queue, msg, e)
             logger.error(
                 "trigger_consumer_error",
-                error=str(e), msg=msg,
+                error=str(e),
+                ticket_id=msg.get("ticket_id"),
+                source=msg.get("source"),
+                retried=retried,
+                attempts=msg.get("_queue_attempts"),
             )
+        else:
+            await _ack_message(queue, msg)
 
 
 async def run_saas_trigger_consumer(

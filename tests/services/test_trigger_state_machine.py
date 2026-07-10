@@ -44,7 +44,7 @@ def test_completed_reply_marks_ticket_processed_from_any_waiting_state(tmp_path)
     assert rec.last_agent_finish_ts == now
 
 
-def test_failed_processing_rolls_back_to_silence_window_and_clears_end(tmp_path):
+def test_failed_processing_schedules_immediate_retry(tmp_path):
     tracker = _state(tmp_path)
     tracker.set("2809", _ticket_state("processing"))
     session = AgentSession(ticket_id=2809)
@@ -57,11 +57,11 @@ def test_failed_processing_rolls_back_to_silence_window_and_clears_end(tmp_path)
     assert changed is True
     assert rec is not None
     assert rec.state == "in_silence_window"
-    assert rec.silence_window_end is None
+    assert rec.silence_window_end == now
     assert rec.last_agent_finish_ts == now
 
 
-def test_completed_without_reply_rolls_back_to_silence_window(tmp_path):
+def test_completed_without_reply_schedules_immediate_retry(tmp_path):
     tracker = _state(tmp_path)
     tracker.set("2811", _ticket_state("processing"))
     session = AgentSession(ticket_id=2811)
@@ -75,7 +75,24 @@ def test_completed_without_reply_rolls_back_to_silence_window(tmp_path):
     assert changed is True
     assert rec is not None
     assert rec.state == "in_silence_window"
-    assert rec.silence_window_end is None
+    assert rec.silence_window_end == now
+    assert rec.last_agent_finish_ts == now
+
+
+def test_timeout_processing_schedules_immediate_retry(tmp_path):
+    tracker = _state(tmp_path)
+    tracker.set("2812", _ticket_state("processing"))
+    session = AgentSession(ticket_id=2812)
+    session.status = SessionStatus.TIMEOUT
+    now = datetime(2026, 6, 5, tzinfo=timezone.utc)
+
+    changed = apply_session_finished(tracker, session, now=now)
+
+    rec = tracker.get("2812")
+    assert changed is True
+    assert rec is not None
+    assert rec.state == "in_silence_window"
+    assert rec.silence_window_end == now
     assert rec.last_agent_finish_ts == now
 
 

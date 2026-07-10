@@ -56,6 +56,9 @@ async def test_set_escalated_to_human_writes_state_and_skips_handoff_for_takeove
     mock_handoff.assert_awaited_once()
     assert mock_handoff.await_args.kwargs["reason"] == "human_takeover_detected"
     assert mock_handoff.await_args.kwargs["customer_name"] == "Alice"
+    assert mock_handoff.await_args.kwargs["delivery_attempt_id"] == (
+        "zendesk_webhook:9999:cid-1:handoff"
+    )
 
 
 @pytest.mark.asyncio

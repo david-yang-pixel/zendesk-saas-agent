@@ -114,8 +114,6 @@ def is_substantive_heuristic(msg: dict) -> bool | None:
         # 没文字 + 没图 = 空消息，不算实质
         return False
 
-    body_lower = body.lower()
-
     # 2. IGNORE_LIST 精确命中 → 非实质
     body_normalized = body.strip().strip(".!?,。！？，").lower()
     if body_normalized in _IGNORE_LIST:
@@ -261,12 +259,11 @@ async def pre_send_check_or_abort(
     except Exception as e:
         logger.warning(
             "pre_send_fetch_error",
-            ticket_id=ticket_id, error=str(e)[:200],
+            ticket_id=ticket_id, error_type=type(e).__name__,
         )
-        # fetch 失败保守放行（避免无限阻塞）
         return FreshnessResult(
-            continue_send=True,
-            reason=f"fetch_error: {e}",
+            continue_send=False,
+            reason=f"fetch_error: {type(e).__name__}",
         )
 
     current_count = len(current)

@@ -11,7 +11,7 @@
     - 都是寒暄 → continue
     - 灰区 + LLM 判 substantive → abort
     - 灰区 + LLM 判 non-substantive → continue
-    - fetch 失败 → continue（保守放行）
+    - fetch 失败 → abort（阻断过期公开回复）
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from zd_agent.runtime.pre_send_check import (
-    FreshnessResult,
     is_substantive_heuristic,
     is_substantive_llm,
     pre_send_check_or_abort,
@@ -356,8 +355,7 @@ class TestPreSendCheckOrAbort:
         assert result.continue_send is True
 
     @pytest.mark.asyncio
-    async def test_fetch_error_continues_conservatively(self) -> None:
-        """fetch 失败保守放行（避免阻塞所有回复）"""
+    async def test_fetch_error_blocks_public_reply(self) -> None:
         async def _bad_fetch():
             raise RuntimeError("zendesk API timeout")
 
@@ -367,5 +365,5 @@ class TestPreSendCheckOrAbort:
             snapshot_last_id="m1",
             fetch_messages_fn=_bad_fetch,
         )
-        assert result.continue_send is True
+        assert result.continue_send is False
         assert "fetch_error" in result.reason

@@ -5,11 +5,15 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from zd_agent.log import get_logger
+from zd_agent.services.trigger_errors import PublicReplyDeliveryError
 
 logger = get_logger(module="services.verdict_dispatch")
 
 EscalateFn = Callable[..., Awaitable[None]]
 SendAskFn = Callable[..., Awaitable[bool]]
+
+
+PublicAskDeliveryError = PublicReplyDeliveryError
 
 
 async def handle_post_verdict_dispatch(
@@ -30,6 +34,7 @@ async def handle_post_verdict_dispatch(
     send_ask_fn: SendAskFn,
     conversation_id: str | None = None,
     messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
 ) -> None:
     """Dispatch a pre-check verdict into state transitions and side effects."""
     from zd_agent.services.trigger_state_machine import (
@@ -185,7 +190,29 @@ async def handle_post_verdict_dispatch(
         source=source,
         conversation_id=conversation_id,
         messaging_app_id=messaging_app_id,
+        delivery_attempt_id=delivery_attempt_id,
     )
+
+    if not sent:
+        log_decision(
+            log_path=log_path,
+            ticket_id=ticket_id,
+            verdict=verdict_str,
+            completeness=verdict.completeness,
+            action="ask_customer_failed",
+            extra={
+                "source": source,
+                "ask_count": ask_count_now,
+            },
+        )
+        logger.warning(
+            "trigger_ask_customer_failed",
+            ticket_id=ticket_id,
+            verdict=verdict_str,
+            ask_count=ask_count_now,
+            source=source,
+        )
+        raise PublicReplyDeliveryError(ticket_id, kind="ask")
 
     transition = apply_verdict_waiting_for_issue(
         state,

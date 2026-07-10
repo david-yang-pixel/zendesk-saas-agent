@@ -49,6 +49,7 @@ class AgentSession:
     ticket_id: int
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     trigger_type: str = "cli"
+    delivery_attempt_id: str = ""
     status: SessionStatus = SessionStatus.QUEUED
 
     # Sandbox
@@ -102,6 +103,7 @@ class AgentSession:
     # 仅 public reply 路径使用；internal reply 不需要（同事看见草稿后会自己决定）。
     customer_msgs_snapshot_count: int = 0
     customer_msgs_snapshot_last_id: str = ""
+    customer_msgs_snapshot_captured: bool = False
 
     # ───── P2-8 (2026-05-17) 客户画像预拉 ─────
     # runner.py 在 build_system_prompt 之前调用 prefetch_customer_profile()，

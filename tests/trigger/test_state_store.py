@@ -1,10 +1,11 @@
 """Test TicketStateTracker persistence + state semantics."""
 from datetime import datetime, timezone
-from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from zd_agent.trigger.state_store import (
+    TicketStateCorruptedError,
     TicketState,
     TicketStateTracker,
     VALID_STATES,
@@ -87,11 +88,20 @@ def test_datetime_roundtrip(tmp_path):
     assert rec.last_comment_ts.isoformat() == now.isoformat()
 
 
-def test_corrupted_json_yields_empty_store(tmp_path):
+def test_corrupted_json_is_quarantined_and_reported(tmp_path):
     path = tmp_path / "tickets.json"
     path.write_text("not json at all", encoding="utf-8")
-    store = TicketStateTracker(path)
-    assert len(store) == 0
+
+    with patch("zd_agent.trigger.state_store.logger.error") as log_error, pytest.raises(
+        TicketStateCorruptedError,
+    ):
+        TicketStateTracker(path)
+
+    assert not path.exists()
+    quarantined = list(tmp_path.glob("tickets.json.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == "not json at all"
+    log_error.assert_called_once()
 
 
 def test_atomic_save_writes_via_tmp_file(tmp_path):

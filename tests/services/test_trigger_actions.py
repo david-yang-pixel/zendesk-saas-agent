@@ -31,6 +31,7 @@ async def test_send_ask_template_action_delegates(monkeypatch) -> None:
         source="zendesk_webhook",
         conversation_id="conv-1",
         messaging_app_id="app-1",
+        delivery_attempt_id="",
     )
 
     assert result is True
@@ -42,6 +43,7 @@ async def test_send_ask_template_action_delegates(monkeypatch) -> None:
         source="zendesk_webhook",
         conversation_id="conv-1",
         messaging_app_id="app-1",
+        delivery_attempt_id="",
     )
 
 
@@ -58,6 +60,7 @@ async def test_silence_expired_ask_action_delegates(monkeypatch, tmp_path) -> No
         state="state",
         log_path=tmp_path / "trigger.jsonl",
         nudge_message_fn="nudge",
+        delivery_attempt_id="",
     )
 
     handle_silence.assert_awaited_once_with(
@@ -65,6 +68,7 @@ async def test_silence_expired_ask_action_delegates(monkeypatch, tmp_path) -> No
         state="state",
         log_path=tmp_path / "trigger.jsonl",
         nudge_message_fn="nudge",
+        delivery_attempt_id="",
     )
 
 

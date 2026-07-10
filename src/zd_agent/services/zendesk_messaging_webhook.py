@@ -1,9 +1,7 @@
 """Zendesk Messaging webhook handler."""
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
 import json
 import time
 from typing import Any
@@ -14,6 +12,7 @@ from zd_agent.log import get_logger
 from zd_agent.services.app_context import app_config, trigger_queue, webhook_dedup
 from zd_agent.services.messaging_context import save_messaging_context
 from zd_agent.services.trigger_delay import with_trigger_delay
+from zd_agent.services.zendesk_webhook import verify_zendesk_signature
 
 logger = get_logger(module="services.zendesk_messaging_webhook")
 
@@ -24,15 +23,12 @@ def verify_messaging_signature(
     *, secret: str, timestamp: str, body: bytes, signature: str,
 ) -> bool:
     """Verify HMAC-SHA256 signature per Zendesk webhook spec."""
-    if not secret or not timestamp or signature is None:
-        return False
-    mac = hmac.new(
-        secret.encode("utf-8"),
-        timestamp.encode("utf-8") + body,
-        hashlib.sha256,
+    return verify_zendesk_signature(
+        secret=secret,
+        timestamp=timestamp,
+        body=body,
+        signature=signature,
     )
-    expected = base64.b64encode(mac.digest()).decode("utf-8")
-    return hmac.compare_digest(expected, signature)
 
 
 def _extract_ticket_id(event_payload: dict[str, Any]) -> str:
@@ -99,7 +95,11 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     try:
         event = json.loads(body)
     except Exception:
-        logger.warning("zendesk_messaging_webhook_bad_json", body_preview=body[:200])
+        logger.warning(
+            "zendesk_messaging_webhook_bad_json",
+            body_size=len(body),
+            body_sha256=hashlib.sha256(body).hexdigest(),
+        )
         return web.Response(status=400, text="bad json")
 
     event_id = event.get("id") or ""
@@ -127,15 +127,14 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
         return web.Response(status=400, text="missing ticket_id")
 
     dedup = webhook_dedup(request.app)
-    dedup_key = f"messaging:{event_id}"
+    event_key = str(event_id) if event_id else f"body:{hashlib.sha256(body).hexdigest()}"
+    dedup_key = f"messaging:{event_key}"
     if dedup.seen(dedup_key):
         logger.info(
             "zendesk_messaging_webhook_dup",
             event_id=event_id, ticket_id=ticket_id, msg_id=msg_id,
         )
         return web.Response(status=200, text="dup")
-    dedup.add(dedup_key)
-
     try:
         save_messaging_context(
             ticket_id=ticket_id,
@@ -150,24 +149,33 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
         )
 
     queue = trigger_queue(request.app)
-    await queue.put(
-        with_trigger_delay(
-            {
-                "source": "messaging_webhook",
-                "ticket_id": ticket_id,
-                "conversation_id": conversation_id,
-                "messaging_app_id": messaging_app_id,
-                "event": event,
-            },
-            delay_seconds=cfg.public_reply.silence_window_seconds,
-            now_fn=time.time,
-        )
+    message = with_trigger_delay(
+        {
+            "source": "messaging_webhook",
+            "ticket_id": ticket_id,
+            "conversation_id": conversation_id,
+            "messaging_app_id": messaging_app_id,
+            "event": event,
+            "_queue_key": dedup_key,
+        },
+        delay_seconds=cfg.public_reply.silence_window_seconds,
+        now_fn=time.time,
     )
+    try:
+        await queue.put(message)
+    except Exception as error:
+        logger.error(
+            "zendesk_messaging_webhook_enqueue_failed",
+            event_id=event_id,
+            ticket_id=ticket_id,
+            error_type=type(error).__name__,
+        )
+        return web.Response(status=503, text="queue unavailable")
+    dedup.add(dedup_key)
     logger.info(
         "zendesk_messaging_webhook_enqueued",
         event_id=event_id, ticket_id=ticket_id, msg_id=msg_id,
         has_conversation_id=bool(conversation_id),
         has_messaging_app_id=bool(messaging_app_id),
-        body_preview=(event.get("event", {}).get("message", {}).get("body") or "")[:80],
     )
     return web.Response(status=200, text="ok")

@@ -11,6 +11,7 @@ from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
 from zd_agent.services.human_takeover_dispatch import handle_human_takeover_dispatch
 from zd_agent.services.silence_expiry import handle_silence_expired_ask
 from zd_agent.services.trigger_gates import handle_trigger_entry_gate
+from zd_agent.services.trigger_errors import TriggerDeferredError
 from zd_agent.services.verdict_classification import classify_ticket_messages
 
 logger = get_logger(module="services.trigger_message_handler")
@@ -62,6 +63,8 @@ async def handle_trigger_message(
         cfg=cfg,
     )
     if entry_gate.handled:
+        if entry_gate.action == "paused":
+            raise TriggerDeferredError("paused")
         return TriggerMessageResult(True, entry_gate.action, ticket_id, source)
 
     direct_dispatch = await handle_direct_dispatch_source(
@@ -82,6 +85,9 @@ async def handle_trigger_message(
             state=state,
             log_path=log_path,
             nudge_message_fn=nudge_message,
+            delivery_attempt_id=str(
+                msg.get("_queue_key") or f"silence_expired_ask:{ticket_id}"
+            ),
         )
         return TriggerMessageResult(True, "silence_expired_ask", ticket_id, source)
 
@@ -90,7 +96,7 @@ async def handle_trigger_message(
     )
     customer_msgs, ticket_info = await fetch_customer_messages_fn(ticket_id)
     if ticket_info is None:
-        return TriggerMessageResult(True, "fetch_failed", ticket_id, source)
+        raise RuntimeError(f"ticket fetch failed for #{ticket_id}")
 
     if not customer_msgs:
         logger.info("trigger_skip_no_customer_msg", ticket_id=ticket_id)
@@ -156,5 +162,9 @@ async def handle_trigger_message(
         cfg=cfg,
         conversation_id=msg.get("conversation_id") or None,
         messaging_app_id=msg.get("messaging_app_id") or None,
+        delivery_attempt_id=str(
+            msg.get("_queue_key")
+            or f"{source}:{ticket_id}:{customer_activity.latest_cid or customer_activity.latest_ts}"
+        ),
     )
     return TriggerMessageResult(True, "verdict_dispatched", ticket_id, source)

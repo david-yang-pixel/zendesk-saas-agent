@@ -783,17 +783,23 @@ async def agent_loop(
                         )
                         message_store.append_tool_result(tc.id, tc.name, out)
                         logger.info(
-                            "guardrail_summary_reply_sent",
+                            "guardrail_summary_reply_result",
                             ticket_id=session.ticket_id,
                             tool=tc.name,
                             success=tc_result.success,
                         )
+                        if not tc_result.success:
+                            raise RuntimeError(
+                                f"Forced summary reply tool {tc.name} failed: "
+                                f"{tc_result.error or 'unknown error'}"
+                            )
                     except Exception as exc:
                         logger.error(
                             "guardrail_summary_reply_failed",
                             ticket_id=session.ticket_id,
                             tool=tc.name, error=str(exc),
                         )
+                        raise
 
             session.status = SessionStatus.COMPLETED
             yield LoopFinished(
@@ -820,14 +826,17 @@ async def agent_loop(
                 session.status = SessionStatus.TIMEOUT
             else:
                 session.status = SessionStatus.FAILED
-            session.error_message = e.reason
+            failure_reason = (
+                f"{e.reason}; forced summary failed: {summary_err}"
+            )
+            session.error_message = failure_reason
             session.analysis += f"\n\n⚠️ 处理被护栏终止: {e.reason}"
             yield LoopFinished(
                 status="guardrail",
                 total_rounds=guardrails.current_round,
                 total_tokens=guardrails.total_tokens,
                 elapsed_seconds=guardrails.elapsed_seconds,
-                reason=e.reason,
+                reason=failure_reason,
             )
 
     except Exception as e:
