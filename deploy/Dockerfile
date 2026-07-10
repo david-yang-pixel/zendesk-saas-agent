@@ -54,7 +54,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 
 # Note: real deployment mounts /resources volume and /app/.env (read-only)
-# The CLI 'zd-agent serve' entrypoint starts the aiohttp webhook server
-# + scheduler + silence_waker. Make sure that command exists; fall back to
-# a module invocation if it doesn't.
-CMD ["uv", "run", "zd-agent", "serve"]
+CMD ["/app/.venv/bin/zd-agent", "serve"]

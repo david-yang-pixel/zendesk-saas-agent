@@ -51,6 +51,13 @@ def test_ghcr_deploy_script_keeps_secret_out_of_source_and_retags_latest() -> No
     assert "curl -fsS \"$HEALTH_URL\"" in text
 
 
+def test_docker_runtime_starts_prebuilt_agent_without_dependency_sync() -> None:
+    text = (ROOT / "deploy" / "Dockerfile").read_text()
+
+    assert 'CMD ["/app/.venv/bin/zd-agent", "serve"]' in text
+    assert 'CMD ["uv", "run"' not in text
+
+
 def test_github_action_deploys_main_image_over_ssh_after_build() -> None:
     text = WORKFLOW.read_text()
     workflow = yaml.safe_load(text)
@@ -76,6 +83,16 @@ def test_github_action_deploys_main_image_over_ssh_after_build() -> None:
     assert "packages: write" not in yaml.dump(deploy_job)
     assert "set -x" not in text
     assert "printenv" not in text
+
+
+def test_github_action_retries_transient_server_git_fetch_failures() -> None:
+    text = WORKFLOW.read_text()
+
+    assert "for attempt in 1 2 3; do" in text
+    assert "if timeout 30s git fetch origin main; then" in text
+    assert 'echo "git fetch failed after ${attempt} attempts" >&2' in text
+    assert "sleep $((attempt * 5))" in text
+    assert "timeout-minutes: 10" in text
 
 
 def test_github_action_sends_success_email_only_after_deploy() -> None:

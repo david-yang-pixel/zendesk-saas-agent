@@ -58,6 +58,7 @@ jobs:
       contents: read
       packages: read
     environment: production
+    timeout-minutes: 10
 
     steps:
       - name: Deploy on server
@@ -101,7 +102,17 @@ jobs:
             cat <<'REMOTE'
           set -euo pipefail
           cd /opt/zd-agent/code
-          git fetch origin main
+          for attempt in 1 2 3; do
+            if timeout 30s git fetch origin main; then
+              break
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              echo "git fetch failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+            echo "git fetch attempt ${attempt} failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
           git switch main
           git merge --ff-only origin/main
           ./deploy/deploy-ghcr.sh "$DEPLOY_TAG"
