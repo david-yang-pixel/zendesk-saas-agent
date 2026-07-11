@@ -105,11 +105,16 @@ def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
 
 def test_admin_static_assets_are_split_from_html_shell() -> None:
     html = _load_index_html()
+    shell_asset = admin_routes._load_static_asset("shell.css")
 
     assert "系统摘要" not in html
     assert '/admin/static/styles.css' in html
+    assert '/admin/static/shell.css' in html
     assert '/admin/static/app.js' in html
     assert "最近运行事件" not in html
+    assert shell_asset is not None
+    assert shell_asset[1] == "text/css"
+    assert ".nav-group-label" in shell_asset[0]
 
 
 def test_admin_table_layout_keeps_rows_as_vertical_items() -> None:
@@ -150,7 +155,6 @@ def test_admin_shell_uses_chinese_management_navigation_and_sso_login() -> None:
     assert "管理后台" in html
     assert "auth-shell" in html
     assert "/admin/static/dify-logo.svg" in html
-    assert "/admin/static/dify-logo-on-blue.svg" in html
     assert "生产环境管理后台" not in html
     assert "使用 Google 登录" in html
     assert "使用飞书登录" in html
@@ -158,6 +162,57 @@ def test_admin_shell_uses_chinese_management_navigation_and_sso_login() -> None:
     assert "Storage Configuration" not in app_js
     assert "Deployment Status" not in app_js
     assert "Operations" not in html
+
+
+def test_admin_shell_uses_focused_auth_and_grouped_responsive_navigation() -> None:
+    html = _load_index_html()
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+    css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("styles.css")
+        .read_text(encoding="utf-8")
+        + resources.files("zd_agent.admin_static")
+        .joinpath("shell.css")
+        .read_text(encoding="utf-8")
+    )
+
+    for symbol in [
+        "auth-panel",
+        "login-form",
+        "mobile-nav-toggle",
+        "sidebar-backdrop",
+        "page-context",
+    ]:
+        assert symbol in html
+    for symbol in [
+        "MENU_GROUPS",
+        "MENU_ICONS",
+        "toggleSidebar",
+        "aria-current",
+        "SIDEBAR_FOCUSABLE",
+        "syncSidebarAccessibility",
+        "handleSidebarKeydown",
+        "syncOverlayAccessibility",
+        "handleOverlayKeydown",
+        "resetLoginPassword",
+        "resetPasswordChangeFields",
+        "!isMobile",
+        'backdrop?.classList.remove("visible")',
+        ".inert",
+    ]:
+        assert symbol in app_js
+    for symbol in ["nav-group-label", ".sidebar.open", ".sidebar-backdrop.visible"]:
+        assert symbol in css
+    assert "const MENUS" not in app_js
+    assert "event.target === event.currentTarget" in app_js
+    assert "@media (max-width: 1100px)" in css
+    assert ".integration-grid {" in css
+    assert "把工单自动化控制权收回到一个地方" not in html
+    assert "auth-visual" not in html
 
 
 def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:

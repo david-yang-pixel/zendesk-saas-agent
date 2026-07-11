@@ -3,142 +3,163 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f7fb">
+  <meta name="description" content="zd-agent 管理后台">
   <title>zd-agent 管理后台</title>
   <link rel="stylesheet" href="/admin/static/styles.css">
+  <link rel="stylesheet" href="/admin/static/shell.css">
 </head>
 <body>
   <div id="login" class="login-wrap">
-    <div class="auth-shell">
-      <section class="auth-visual" aria-label="zd-agent 管理后台">
-        <img class="auth-logo-on-blue" src="/admin/static/dify-logo-on-blue.svg" width="200" height="89" alt="Dify">
-        <div>
-          <div class="auth-kicker">zd-agent 管理后台</div>
-          <h1>把工单自动化控制权收回到一个地方</h1>
-          <p>配置触发、模型、工具、回复策略和审计变更，保持线上 agent 可控、可查、可回滚。</p>
+    <main class="auth-shell auth-stage">
+      <header class="auth-product">
+        <img class="auth-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
+        <div class="auth-product-copy">
+          <strong>zd-agent</strong>
+          <span>Agent 管理后台</span>
         </div>
-        <div class="auth-preview" aria-hidden="true">
-          <div class="preview-row strong"><span></span><b>Agent 运行中</b><em>live</em></div>
-          <div class="preview-row"><span></span><b>Zendesk MCP</b><em>connected</em></div>
-          <div class="preview-row"><span></span><b>审计日志</b><em>enabled</em></div>
-        </div>
-      </section>
-      <section class="auth-card">
-        <div class="auth-brand">
-          <img class="auth-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
-          <div>
-            <h2>登录管理后台</h2>
-            <p>使用已启用的登录方式进入控制台</p>
-          </div>
+        <span class="auth-environment"><span class="status-dot"></span>服务在线</span>
+      </header>
+      <section class="auth-panel" aria-labelledby="login-title">
+        <div class="auth-heading">
+          <span class="auth-eyebrow">安全访问</span>
+          <h1 id="login-title">登录管理后台</h1>
+          <p>使用已启用的登录方式进入 Agent 控制台。</p>
         </div>
         <div class="sso-grid" aria-label="SSO 登录方式">
-          <button class="btn sso google" onclick="showSsoHint('Google')"><span>G</span>使用 Google 登录</button>
-          <button class="btn sso feishu" onclick="showSsoHint('飞书')"><span>飞</span>使用飞书登录</button>
+          <button type="button" class="btn sso google" onclick="showSsoHint('Google')"><span>G</span>使用 Google 登录</button>
+          <button type="button" class="btn sso feishu" onclick="showSsoHint('飞书')"><span>飞</span>使用飞书登录</button>
         </div>
         <div class="divider"><span>账号密码</span></div>
-        <div class="field-stack">
-          <label for="login-user">账号</label>
-          <input id="login-user" value="admin" autocomplete="username">
-        </div>
-        <div class="field-stack">
-          <label for="login-pass">密码</label>
-          <input id="login-pass" type="password" autocomplete="current-password">
-        </div>
-        <p class="login-hint">默认账号 <code>admin</code>。首次启动的一次性密码保存在服务器状态目录，登录后需要立即修改。</p>
-        <button class="btn primary full" onclick="login()">登录管理后台</button>
-        <div id="login-msg" class="form-message danger-text" role="alert"></div>
+        <form id="login-form" class="auth-form" onsubmit="event.preventDefault(); login()">
+          <div class="field-stack">
+            <label for="login-user">账号</label>
+            <input id="login-user" value="admin" autocomplete="username">
+          </div>
+          <div class="field-stack">
+            <label for="login-pass">密码</label>
+            <div class="password-input-wrap">
+              <input id="login-pass" type="password" autocomplete="current-password">
+              <button type="button" class="password-toggle" aria-label="显示密码" onclick="togglePassword('login-pass', this)">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.1 12s3.6-7 9.9-7 9.9 7 9.9 7-3.6 7-9.9 7-9.9-7-9.9-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+          <p class="login-hint">默认账号 <code>admin</code>。首次登录后需要修改初始化密码。</p>
+          <button type="submit" class="btn primary full">登录管理后台</button>
+          <div id="login-msg" class="form-message danger-text" role="alert"></div>
+        </form>
       </section>
-    </div>
+      <footer class="auth-footer"><span>仅限授权管理员访问</span><span>受保护连接</span></footer>
+    </main>
   </div>
 
   <div id="password-change" class="login-wrap hidden">
-    <div class="auth-shell compact">
-      <section class="auth-visual" aria-label="安全设置">
-        <img class="auth-logo-on-blue" src="/admin/static/dify-logo-on-blue.svg" width="200" height="89" alt="Dify">
-        <div>
-          <div class="auth-kicker">首次登录</div>
-          <h1>先换掉默认密码</h1>
-          <p>默认凭据只能用于初始化。保存新密码后会进入管理后台。</p>
+    <main class="auth-shell auth-stage">
+      <header class="auth-product">
+        <img class="auth-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
+        <div class="auth-product-copy">
+          <strong>zd-agent</strong>
+          <span>Agent 管理后台</span>
         </div>
-      </section>
-      <section class="auth-card">
-        <div class="auth-brand">
-          <img class="auth-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
-          <div>
-            <h2>修改初始密码</h2>
-            <p>新密码至少 8 位</p>
+        <span class="auth-environment"><span class="status-dot"></span>首次登录</span>
+      </header>
+      <section class="auth-panel" aria-labelledby="password-change-title">
+        <div class="auth-heading">
+          <span class="auth-eyebrow">账号安全</span>
+          <h1 id="password-change-title">修改初始密码</h1>
+          <p>设置至少 8 位的新密码后进入管理后台。</p>
+        </div>
+        <form id="password-change-form" class="auth-form" onsubmit="event.preventDefault(); completePasswordChange()">
+          <div class="field-stack">
+            <label for="change-current">当前密码</label>
+            <input id="change-current" type="password" autocomplete="current-password">
           </div>
-        </div>
-        <div class="field-stack">
-          <label for="change-current">当前密码</label>
-          <input id="change-current" type="password" autocomplete="current-password">
-        </div>
-        <div class="field-stack">
-          <label for="change-new">新密码</label>
-          <input id="change-new" type="password" placeholder="至少 8 位" autocomplete="new-password">
-        </div>
-        <div class="field-stack">
-          <label for="change-confirm">确认新密码</label>
-          <input id="change-confirm" type="password" autocomplete="new-password">
-        </div>
-        <div class="button-row">
-          <button class="btn primary" onclick="completePasswordChange()">保存新密码</button>
-          <button class="btn" onclick="logout()">退出登录</button>
-        </div>
-        <div id="change-msg" class="form-message danger-text" role="alert"></div>
+          <div class="field-stack">
+            <label for="change-new">新密码</label>
+            <input id="change-new" type="password" placeholder="至少 8 位" autocomplete="new-password">
+          </div>
+          <div class="field-stack">
+            <label for="change-confirm">确认新密码</label>
+            <input id="change-confirm" type="password" autocomplete="new-password">
+          </div>
+          <div class="button-row">
+            <button type="submit" class="btn primary">保存新密码</button>
+            <button type="button" class="btn secondary" onclick="logout()">退出登录</button>
+          </div>
+          <div id="change-msg" class="form-message danger-text" role="alert"></div>
+        </form>
       </section>
-    </div>
+      <footer class="auth-footer"><span>密码不会以明文保存</span><span>受保护连接</span></footer>
+    </main>
   </div>
 
   <div id="app" class="shell hidden">
-    <aside class="sidebar">
+    <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="closeSidebar(true)"></div>
+    <aside id="sidebar" class="sidebar" aria-label="主导航">
       <div class="sidebar-brand">
         <div class="sidebar-logo-row">
           <img class="sidebar-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
           <div>
             <div class="sidebar-title">zd-agent</div>
-            <div class="sidebar-subtitle">管理后台</div>
+            <div class="sidebar-subtitle">Agent 管理后台</div>
           </div>
         </div>
+        <button type="button" class="icon-btn sidebar-close" aria-label="关闭导航" onclick="closeSidebar(true)">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></svg>
+        </button>
       </div>
       <nav id="nav" class="nav" aria-label="主菜单"></nav>
       <div class="sidebar-footer">
-        <div>
-          <div><span class="status-dot"></span>Agent 健康</div>
-          <div id="side-image-tag" class="side-meta">zd-agent:latest</div>
+        <div class="sidebar-health">
+          <span class="status-dot"></span>
+          <div><strong>Agent 服务正常</strong><span id="side-image-tag" class="side-meta">zd-agent:latest</span></div>
         </div>
-        <button class="btn secondary full" onclick="logout()">退出登录</button>
+        <button type="button" class="btn secondary full sidebar-logout" onclick="logout()">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
+          退出登录
+        </button>
       </div>
     </aside>
-    <main class="main">
+    <main id="main-content" class="main">
       <header class="page-header">
-        <div>
-          <h1 id="page-title">总览</h1>
-          <p id="page-subtitle"></p>
+        <div class="page-context">
+          <button id="mobile-nav-toggle" type="button" class="icon-btn mobile-nav-toggle" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false" onclick="toggleSidebar()">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </button>
+          <div class="page-heading">
+            <span class="page-eyebrow">Agent 控制台</span>
+            <h1 id="page-title" tabindex="-1">总览</h1>
+            <p id="page-subtitle"></p>
+          </div>
         </div>
-        <div id="page-actions" class="button-row"></div>
+        <div class="page-command-bar">
+          <div class="live-state"><span class="status-dot"></span>服务正常</div>
+          <div id="page-actions" class="button-row"></div>
+        </div>
       </header>
       <section id="content" class="content" aria-live="polite"></section>
     </main>
   </div>
 
-  <div id="detail-drawer" class="drawer-backdrop hidden" onclick="closeDrawer()">
+  <div id="detail-drawer" class="drawer-backdrop hidden" aria-hidden="true" onclick="closeDrawer()">
     <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" onclick="event.stopPropagation()">
       <header class="drawer-header">
         <div>
           <h2 id="drawer-title">详情</h2>
           <p id="drawer-subtitle"></p>
         </div>
-        <button class="btn secondary" onclick="closeDrawer()">关闭</button>
+        <button type="button" class="icon-btn" aria-label="关闭详情" onclick="closeDrawer()"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
       </header>
       <div id="drawer-body" class="drawer-body"></div>
     </aside>
   </div>
 
-  <div id="modal-backdrop" class="modal-backdrop hidden" onclick="closeModal()">
+  <div id="modal-backdrop" class="modal-backdrop hidden" aria-hidden="true" onclick="closeModal()">
     <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" onclick="event.stopPropagation()">
       <header class="modal-header">
         <h2 id="modal-title">确认</h2>
-        <button class="icon-btn" aria-label="关闭" onclick="closeModal()">×</button>
+        <button type="button" class="icon-btn" aria-label="关闭" onclick="closeModal()"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></svg></button>
       </header>
       <div id="modal-body" class="modal-body"></div>
       <footer id="modal-actions" class="modal-actions"></footer>

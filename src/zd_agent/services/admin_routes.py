@@ -31,6 +31,7 @@ ADMIN_STATIC_FILES = {
     "app.js": "application/javascript",
     "dify-logo-on-blue.svg": "image/svg+xml",
     "dify-logo.svg": "image/svg+xml",
+    "shell.css": "text/css",
     "styles.css": "text/css",
 }
 SENSITIVE_KEY_RE = re.compile(

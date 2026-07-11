@@ -1,14 +1,30 @@
-const MENUS = [
-  "总览",
-  "运行记录",
-  "触发配置",
-  "回复策略",
-  "模型与运行",
-  "工具与集成",
-  "存储配置",
-  "部署状态",
-  "审计日志"
+const MENU_GROUPS = [
+  { label: "工作台", items: ["总览", "运行记录"] },
+  { label: "Agent 配置", items: ["触发配置", "回复策略", "模型与运行", "工具与集成", "存储配置"] },
+  { label: "系统", items: ["部署状态", "审计日志"] }
 ];
+
+const MENU_ICONS = {
+  "总览": '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+  "运行记录": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19h16M5 15l4-4 3 3 6-7"/><path d="M18 7h-4M18 7v4"/></svg>',
+  "触发配置": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6"/><path d="M5.1 15a8 8 0 0 0 13.4 2M18.9 9A8 8 0 0 0 5.5 7"/></svg>',
+  "回复策略": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></svg>',
+  "模型与运行": '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>',
+  "工具与集成": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2v6M12 16v6M4.9 4.9l4.2 4.2M14.9 14.9l4.2 4.2M2 12h6M16 12h6M4.9 19.1l4.2-4.2M14.9 9.1l4.2-4.2"/><circle cx="12" cy="12" r="4"/></svg>',
+  "存储配置": '<svg aria-hidden="true" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg>',
+  "部署状态": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7Z"/><path d="m4 7 8 4 8-4M12 11v10"/></svg>',
+  "审计日志": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 7h6M9 11h6M9 15h4"/></svg>'
+};
+
+const PASSWORD_ICONS = {
+  visible: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.1 12s3.6-7 9.9-7 9.9 7 9.9 7-3.6 7-9.9 7-9.9-7-9.9-7Z"/><circle cx="12" cy="12" r="3"/></svg>',
+  hidden: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 4.2A10 10 0 0 1 12 4c6.3 0 9.9 8 9.9 8a16 16 0 0 1-2.1 3.1M6.6 6.6C3.8 8.5 2.1 12 2.1 12S5.7 20 12 20a10 10 0 0 0 4.1-.9"/></svg>'
+};
+
+const SIDEBAR_FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+let sidebarReturnFocus = null;
+let drawerReturnFocus = null;
+let modalReturnFocus = null;
 
 const SUBTITLES = {
   "总览": "服务健康、今日处理和关键状态摘要",
@@ -433,18 +449,23 @@ async function api(path, options = {}) {
 }
 
 function showLogin() {
+  closeSidebar();
+  resetLoginPassword();
+  resetPasswordChangeFields();
   document.getElementById("login").classList.remove("hidden");
   document.getElementById("password-change").classList.add("hidden");
   document.getElementById("app").classList.add("hidden");
 }
 
 function showPasswordChange() {
+  closeSidebar();
   document.getElementById("login").classList.add("hidden");
   document.getElementById("password-change").classList.remove("hidden");
   document.getElementById("app").classList.add("hidden");
 }
 
 function showApp() {
+  closeSidebar();
   document.getElementById("login").classList.add("hidden");
   document.getElementById("password-change").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
@@ -455,22 +476,125 @@ function showSsoHint(provider) {
   msg.textContent = `${provider} SSO 需要先在「部署状态」里配置并启用。`;
 }
 
+function togglePassword(inputId, button) {
+  const input = document.getElementById(inputId);
+  const willShow = input.type === "password";
+  input.type = willShow ? "text" : "password";
+  button.setAttribute("aria-label", willShow ? "隐藏密码" : "显示密码");
+  button.innerHTML = willShow ? PASSWORD_ICONS.hidden : PASSWORD_ICONS.visible;
+}
+
+function resetLoginPassword() {
+  const input = document.getElementById("login-pass");
+  const button = document.querySelector(".password-toggle");
+  if (!input || !button) return;
+  input.value = "";
+  input.type = "password";
+  button.setAttribute("aria-label", "显示密码");
+  button.innerHTML = PASSWORD_ICONS.visible;
+}
+
+function resetPasswordChangeFields() {
+  ["change-current", "change-new", "change-confirm"].forEach(id => {
+    const input = document.getElementById(id);
+    if (!input) return;
+    input.value = "";
+    input.type = "password";
+  });
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById("sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  const toggle = document.getElementById("mobile-nav-toggle");
+  if (sidebar.classList.contains("open")) {
+    closeSidebar(true);
+    return;
+  }
+  sidebarReturnFocus = document.activeElement;
+  const isOpen = sidebar.classList.toggle("open");
+  backdrop.classList.toggle("visible", isOpen);
+  toggle.setAttribute("aria-expanded", String(isOpen));
+  syncSidebarAccessibility();
+  requestAnimationFrame(() => sidebar.querySelector(".sidebar-close")?.focus());
+}
+
+function closeSidebar(restoreFocus = false) {
+  const sidebar = document.getElementById("sidebar");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  const toggle = document.getElementById("mobile-nav-toggle");
+  sidebar?.classList.remove("open");
+  backdrop?.classList.remove("visible");
+  toggle?.setAttribute("aria-expanded", "false");
+  syncSidebarAccessibility();
+  const returnFocus = sidebarReturnFocus;
+  sidebarReturnFocus = null;
+  if (restoreFocus && returnFocus instanceof HTMLElement) {
+    requestAnimationFrame(() => returnFocus.focus());
+  }
+}
+
+function syncSidebarAccessibility() {
+  const sidebar = document.getElementById("sidebar");
+  const main = document.getElementById("main-content");
+  if (!sidebar || !main) return;
+  const isMobile = window.matchMedia("(max-width: 900px)").matches;
+  const backdrop = document.getElementById("sidebar-backdrop");
+  const toggle = document.getElementById("mobile-nav-toggle");
+  if (!isMobile) {
+    sidebar.classList.remove("open");
+    backdrop?.classList.remove("visible");
+    toggle?.setAttribute("aria-expanded", "false");
+    sidebarReturnFocus = null;
+  }
+  const isOpen = isMobile && sidebar.classList.contains("open");
+  sidebar.inert = isMobile && !isOpen;
+  sidebar.setAttribute("aria-hidden", String(isMobile && !isOpen));
+  main.inert = isMobile && isOpen;
+  document.body.classList.toggle("sidebar-open", isMobile && isOpen);
+}
+
+function handleSidebarKeydown(event) {
+  const sidebar = document.getElementById("sidebar");
+  if (!sidebar?.classList.contains("open") || !window.matchMedia("(max-width: 900px)").matches) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSidebar(true);
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = Array.from(sidebar.querySelectorAll(SIDEBAR_FOCUSABLE)).filter(element => !element.inert && element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !sidebar.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 async function login() {
   const msg = document.getElementById("login-msg");
+  const password = document.getElementById("login-pass").value;
   msg.textContent = "";
   try {
     const result = await api("/admin/api/auth/login", {
       method: "POST",
       body: JSON.stringify({
         username: document.getElementById("login-user").value,
-        password: document.getElementById("login-pass").value
+        password
       })
     });
     if (result.force_password_change) {
-      document.getElementById("change-current").value = document.getElementById("login-pass").value;
+      document.getElementById("change-current").value = password;
+      resetLoginPassword();
       showPasswordChange();
       return;
     }
+    resetLoginPassword();
     await init();
   } catch {
     msg.textContent = "登录失败，请检查账号和密码";
@@ -551,20 +675,39 @@ async function loadDeployStatus() {
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.innerHTML = "";
-  MENUS.forEach(menu => {
-    const btn = document.createElement("button");
-    btn.textContent = menu;
-    btn.className = menu === state.activeMenu ? "active" : "";
-    btn.onclick = () => {
-      state.activeMenu = menu;
-      renderNav();
-      void render();
-    };
-    nav.appendChild(btn);
+  MENU_GROUPS.forEach(group => {
+    const section = document.createElement("section");
+    section.className = "nav-group";
+
+    const label = document.createElement("div");
+    label.className = "nav-group-label";
+    label.textContent = group.label;
+    section.appendChild(label);
+
+    group.items.forEach(menu => {
+      const btn = document.createElement("button");
+      const isActive = menu === state.activeMenu;
+      btn.type = "button";
+      btn.className = isActive ? "active" : "";
+      btn.setAttribute("aria-current", isActive ? "page" : "false");
+      btn.innerHTML = `<span class="nav-icon">${MENU_ICONS[menu]}</span><span>${menu}</span>`;
+      btn.onclick = () => {
+        const wasMobileDrawerOpen = document.getElementById("sidebar").classList.contains("open");
+        state.activeMenu = menu;
+        closeSidebar();
+        renderNav();
+        void render().then(() => {
+          if (wasMobileDrawerOpen) document.getElementById("page-title").focus();
+        });
+      };
+      section.appendChild(btn);
+    });
+    nav.appendChild(section);
   });
 }
 
 async function render() {
+  document.title = `${state.activeMenu} · zd-agent`;
   document.getElementById("page-title").textContent = state.activeMenu;
   document.getElementById("page-subtitle").textContent = SUBTITLES[state.activeMenu] || "";
   setPageActions();
@@ -1439,7 +1582,7 @@ function renderSkillSummaryCard() {
   return `
     <div class="integration-card action-card skill-card" role="button" tabindex="0"
       onclick="openSkillManager()"
-      onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault(); openSkillManager();}">
+      onkeydown="if(event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')){event.preventDefault(); openSkillManager();}">
       <div class="integration-card-head">
         <div>
           <strong>Skills</strong>
@@ -1468,7 +1611,7 @@ function renderIntegrationCard(name, label, description) {
   return `
     <div class="integration-card action-card" role="button" tabindex="0"
       onclick="openIntegrationConfig(${jsArg(name)})"
-      onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault(); openIntegrationConfig(${jsArg(name)});}">
+      onkeydown="if(event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')){event.preventDefault(); openIntegrationConfig(${jsArg(name)});}">
       <div class="integration-card-head">
         <div>
           <strong>${escapeHtml(label)}</strong>
@@ -1499,7 +1642,7 @@ function renderCustomMcpCard(service) {
   return `
     <div class="integration-card action-card custom-mcp-card" role="button" tabindex="0"
       onclick="openCustomMcpConfig(${jsArg(name)})"
-      onkeydown="if(event.key === 'Enter' || event.key === ' '){event.preventDefault(); openCustomMcpConfig(${jsArg(name)});}">
+      onkeydown="if(event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')){event.preventDefault(); openCustomMcpConfig(${jsArg(name)});}">
       <div class="integration-card-head">
         <div>
           <strong>${escapeHtml(label)}</strong>
@@ -2443,17 +2586,33 @@ function openAuditDetail(index) {
 }
 
 function openDrawer(title, subtitle, body) {
+  const drawer = document.getElementById("detail-drawer");
+  const wasHidden = drawer.classList.contains("hidden");
+  if (wasHidden) drawerReturnFocus = document.activeElement;
   document.getElementById("drawer-title").textContent = title;
   document.getElementById("drawer-subtitle").textContent = subtitle || "";
   document.getElementById("drawer-body").innerHTML = body;
-  document.getElementById("detail-drawer").classList.remove("hidden");
+  drawer.classList.remove("hidden");
+  drawer.setAttribute("aria-hidden", "false");
+  syncOverlayAccessibility();
+  if (wasHidden) drawer.querySelector('[aria-label="关闭详情"]')?.focus();
 }
 
 function closeDrawer() {
-  document.getElementById("detail-drawer").classList.add("hidden");
+  const drawer = document.getElementById("detail-drawer");
+  if (drawer.classList.contains("hidden")) return;
+  drawer.classList.add("hidden");
+  drawer.setAttribute("aria-hidden", "true");
+  syncOverlayAccessibility();
+  if (document.getElementById("modal-backdrop").classList.contains("hidden")) {
+    drawerReturnFocus?.focus?.();
+  }
+  drawerReturnFocus = null;
 }
 
 function showModal(title, body, actions) {
+  const modal = document.getElementById("modal-backdrop");
+  const wasHidden = modal.classList.contains("hidden");
   document.getElementById("modal-title").textContent = title;
   document.getElementById("modal-body").innerHTML = body;
   const footer = document.getElementById("modal-actions");
@@ -2465,11 +2624,56 @@ function showModal(title, body, actions) {
     button.onclick = action.onClick;
     footer.appendChild(button);
   });
-  document.getElementById("modal-backdrop").classList.remove("hidden");
+  if (wasHidden) modalReturnFocus = document.activeElement;
+  modal.classList.remove("hidden");
+  modal.setAttribute("aria-hidden", "false");
+  syncOverlayAccessibility();
+  if (wasHidden) modal.querySelector('[aria-label="关闭"]')?.focus();
 }
 
 function closeModal() {
-  document.getElementById("modal-backdrop").classList.add("hidden");
+  const modal = document.getElementById("modal-backdrop");
+  if (modal.classList.contains("hidden")) return;
+  modal.classList.add("hidden");
+  modal.setAttribute("aria-hidden", "true");
+  syncOverlayAccessibility();
+  modalReturnFocus?.focus?.();
+  modalReturnFocus = null;
+}
+
+function syncOverlayAccessibility() {
+  const drawerOpen = !document.getElementById("detail-drawer").classList.contains("hidden");
+  const modalOpen = !document.getElementById("modal-backdrop").classList.contains("hidden");
+  document.getElementById("app").inert = drawerOpen || modalOpen;
+}
+
+function handleOverlayKeydown(event) {
+  const modal = document.getElementById("modal-backdrop");
+  const drawer = document.getElementById("detail-drawer");
+  const overlay = !modal.classList.contains("hidden")
+    ? modal
+    : !drawer.classList.contains("hidden")
+      ? drawer
+      : null;
+  if (!overlay) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (overlay === modal) closeModal();
+    else closeDrawer();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = Array.from(overlay.querySelectorAll(SIDEBAR_FOCUSABLE)).filter(element => !element.inert && element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !overlay.contains(document.activeElement))) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function showToast(message, tone = "info") {
@@ -2709,10 +2913,10 @@ function escapeHtml(value) {
 }
 
 document.addEventListener("keydown", event => {
-  if (event.key === "Escape") {
-    closeDrawer();
-    closeModal();
-  }
+  handleSidebarKeydown(event);
+  handleOverlayKeydown(event);
 });
+
+window.addEventListener("resize", syncSidebarAccessibility);
 
 init();

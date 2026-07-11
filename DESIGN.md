@@ -1,141 +1,119 @@
 # zd-agent Admin Design System
 
-## 1. Atmosphere & Identity
+## 1. Product Character
 
-The admin console should feel like a calm Dify control room: bright, precise, and operational. The signature is a soft blue command surface, with Dify blue used only for brand, active navigation, focus, and primary actions. Information density is allowed, but hierarchy must stay clear through spacing, tonal surfaces, and tabular alignment.
+The admin console is an agent control plane, not a marketing site. It should feel calm, precise, and trustworthy during repeated operational work. The visual language is bright and compact: white work surfaces, a pale-blue navigation rail, dark ink text, and Dify blue reserved for current state, focus, and primary commands.
 
-## 2. Color
+The login screen uses the same control-plane identity. It presents one focused authentication surface instead of a promotional split hero. The authenticated shell prioritizes navigation clarity, scan speed, and stable geometry across every module.
 
-### Palette
+## 2. Color Tokens
 
-| Role | Token | Light | Usage |
+| Role | Token | Value | Usage |
 |------|-------|-------|-------|
-| Brand primary | --brand | #0033FF | Dify brand, primary CTA, active nav |
-| Brand hover | --brand-hover | #1746FF | Hover and pressed states |
-| Brand soft | --brand-soft | #EEF4FF | Selected surface, subtle highlight |
-| Background | --bg | #F5F8FF | App canvas |
-| Background wash | --bg-wash | #EAF3FF | Sidebar and login atmosphere |
-| Surface | --surface | #FFFFFF | Cards, forms, modal bodies |
-| Surface raised | --surface-raised | #FBFDFF | Secondary panels and details |
-| Surface blue | --surface-blue | #F2F7FF | Blue-tinted detail regions |
-| Text primary | --text | #0B1F3A | Headings and body |
-| Text secondary | --muted | #5E6F8C | Hints, metadata |
-| Text tertiary | --faint | #8796AF | Disabled and quiet metadata |
-| Border | --border | #D9E6F7 | Cards and dividers |
-| Border strong | --border-strong | #BBD0EC | Inputs and controls |
-| Success | --success | #14813D | Healthy state |
-| Warning | --warn | #A04E0A | Pending or caution state |
-| Danger | --danger | #D92D20 | Error state |
+| Brand | `--brand` | `#155EEF` | Primary actions, active navigation, focus |
+| Brand strong | `--brand-strong` | `#004EEB` | Pressed state |
+| Brand soft | `--brand-soft` | `#EAF2FF` | Selected and highlighted surfaces |
+| Canvas | `--canvas` | `#F4F7FB` | Main application background |
+| Navigation | `--nav-bg` | `#EDF5FF` | Desktop sidebar and mobile drawer |
+| Surface | `--surface` | `#FFFFFF` | Panels, forms, dialogs |
+| Surface quiet | `--surface-quiet` | `#F8FAFD` | Secondary rows and grouped controls |
+| Text | `--ink` | `#13213A` | Headings and primary content |
+| Text secondary | `--ink-muted` | `#60708A` | Descriptions and metadata |
+| Text tertiary | `--ink-faint` | `#8A98AD` | Disabled and low-priority metadata |
+| Border | `--line` | `#D9E3F0` | Panel and row boundaries |
+| Border strong | `--line-strong` | `#BDCCE0` | Inputs and active controls |
+| Success | `--success` | `#16803F` | Healthy and successful states |
+| Warning | `--warning` | `#A15C07` | Delayed and caution states |
+| Danger | `--danger` | `#D92D20` | Errors and destructive actions |
 
-### Rules
-
-- Blue is functional, not decorative. Use it for identity, state, focus, and primary actions.
-- Text must stay high-contrast on light surfaces.
-- Status colors appear only in badges, metrics, and event dots.
+Blue must remain functional. Large blue fields, decorative gradients, colored blobs, and one-hue page composition are not part of this system.
 
 ## 3. Typography
 
-### Scale
+Primary stack: `Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif`.
 
-| Level | Size | Weight | Line Height | Usage |
-|-------|------|--------|-------------|-------|
-| Page title | 28px | 800 | 1.2 | Main page heading |
-| Section title | 17px | 760 | 1.35 | Card and panel headers |
-| Metric | 30px | 820 | 1.1 | KPI values |
-| Body | 14px | 450 | 1.55 | Default UI text |
-| Label | 13px | 720 | 1.4 | Form labels, table headers |
-| Caption | 12px | 650 | 1.4 | Pills, metadata |
-| Mono | 12px | 500 | 1.55 | JSON, paths, logs |
+| Role | Size | Weight | Line height |
+|------|------|--------|-------------|
+| Page title | 24px | 760 | 1.25 |
+| Auth title | 24px | 760 | 1.25 |
+| Section title | 16px | 700 | 1.4 |
+| Metric | 28px | 760 | 1.15 |
+| Body | 14px | 450 | 1.55 |
+| Label | 13px | 650 | 1.4 |
+| Caption | 12px | 550 | 1.45 |
+| Mono | 12px | 500 | 1.55 |
 
-### Font Stack
+Letter spacing is always `0`. Compact panels never use display-scale typography.
 
-- Primary: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif
-- Mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
+## 4. Layout
 
-## 4. Spacing & Layout
-
-### Base Unit
-
-All spacing derives from a base of 4px.
-
-| Token | Value | Usage |
-|-------|-------|-------|
-| --space-2 | 8px | Tight inline gaps |
-| --space-3 | 12px | Control padding |
-| --space-4 | 16px | Compact cards |
-| --space-5 | 20px | Card body |
-| --space-6 | 24px | Page groups |
-| --space-8 | 32px | Major regions |
-| --space-10 | 40px | Login shell and wide regions |
-
-### Grid
-
-- Sidebar width: 280px on desktop.
-- Main content max width: 1680px.
-- Cards use responsive grids: 4 columns on desktop, 2 on tablet, 1 on mobile.
-- Data tables may overflow horizontally, but content must not overlap.
+- Base spacing unit: 4px.
+- Desktop sidebar: 248px fixed width.
+- Desktop page header: 72px minimum height, sticky below the viewport edge.
+- Main content: fluid width with 24px desktop gutters and a 1680px maximum working area.
+- Login panel: 440px maximum width, vertically centered with a small brand header.
+- Cards and panels: maximum 8px radius.
+- Inputs and buttons: 6px radius, 40px standard height.
+- Data tables retain stable grid tracks and scroll horizontally when required.
+- Below 900px the sidebar becomes an overlay drawer; page content remains full width.
+- Below 560px authentication actions and page-header controls stack without overflow.
 
 ## 5. Components
 
-### Auth shell
+### Authentication panel
 
-- Structure: split layout with a brand panel and an auth form panel.
-- States: login, password change, SSO unavailable hint, error message.
-- Accessibility: visible labels, autocomplete, keyboard focus rings.
-- Motion: mount fade/translate, reduced motion disables transition.
+- One white panel containing brand, title, SSO actions, credentials form, and feedback.
+- Password controls include a visible label, browser autocomplete, and a visibility toggle.
+- SSO actions are full-width rows on small screens and two equal columns on wider screens.
+- Login and password-change states share the same visual frame.
+- Errors reserve layout space and use `role="alert"`.
 
-### Button
+### Navigation shell
 
-- Variants: primary, secondary, SSO, danger, compact, icon.
-- States: default, hover, active, focus, disabled.
-- Primary uses --brand and --brand-hover.
+- Sidebar contains brand lockup, grouped navigation, and a compact service-status footer.
+- Groups are `工作台`, `Agent 配置`, and `系统`.
+- Each destination has a Lucide-style line icon and text label.
+- Active navigation uses a soft-blue background, blue icon, and dark text rather than a large solid-blue block.
+- Mobile navigation uses a menu button, backdrop, focus-safe drawer, and closes after selection.
 
-### Sidebar
+### Page header
 
-- Structure: brand lockup, nav list, health footer.
-- States: active nav, hover nav, responsive top section on mobile.
-- Active item uses brand blue with subtle shadow.
+- Sticky white surface with title, subtitle, live health indicator, and page actions.
+- The title block and action block have stable layout boundaries.
+- Action buttons wrap only when required; mobile stacks them below the title.
 
-### Card and metric
+### Controls
 
-- Structure: header plus body, or metric label/value/description.
-- Radius: 14px for large panels, 12px for compact cards.
-- Depth: mixed tonal surfaces and soft blue-tinted shadow.
+- Primary button: solid brand blue, white text.
+- Secondary button: white or quiet surface, strong border.
+- Icon button: square 36px control with an accessible label and tooltip where meaning is unfamiliar.
+- Every control has hover, active, focus-visible, disabled, loading, and error behavior.
 
-### Run table
+### Content surfaces
 
-- Structure: horizontally scrollable table with fixed minimum row grid.
-- States: collapsed row, expanded row, detail timeline, empty state.
-- Table cells must truncate instead of overlap.
+- Panels use white surfaces, 1px borders, and restrained shadows only for elevation.
+- Repeated item cards may use 8px radius; full page sections remain unframed.
+- Cards are never nested inside decorative cards.
+- Metrics, filters, tables, configuration groups, drawers, and dialogs reuse the same color and spacing tokens.
 
-### Drawer and modal
+## 6. Motion and Accessibility
 
-- Structure: fixed overlay, raised surface, sticky header, scrollable body.
-- States: open, close, Escape close.
-- Backdrop uses a blue-tinted blur for focus isolation.
+- Micro interactions: 140ms ease-out.
+- Drawer and dialog transitions: 200ms ease-out using only transform and opacity.
+- No decorative animation.
+- `prefers-reduced-motion: reduce` removes nonessential transitions.
+- Focus rings use a 2px brand outline with 2px offset.
+- Text and controls meet WCAG AA contrast.
+- All forms use explicit labels; icon buttons use accessible names; current navigation uses `aria-current="page"`.
 
-## 6. Motion & Interaction
+## 7. Depth
 
-| Type | Duration | Easing | Usage |
-|------|----------|--------|-------|
-| Micro | 140ms | ease-out | Buttons, nav hover |
-| Standard | 220ms | ease-in-out | Drawer, modal, card hover |
-| Emphasis | 360ms | cubic-bezier(0.16, 1, 0.3, 1) | Auth shell entry |
-
-Rules:
-
-- Animate transform, opacity, and color only.
-- Every clickable element must have hover and focus states.
-- Respect prefers-reduced-motion.
-
-## 7. Depth & Surface
-
-Strategy: mixed tonal-shift with restrained shadow.
+Depth is primarily tonal and border-based.
 
 | Level | Value | Usage |
 |-------|-------|-------|
-| Subtle | 0 1px 2px rgba(20, 54, 105, 0.05) | Rows and small controls |
-| Card | 0 12px 32px rgba(31, 68, 122, 0.08) | Cards and panels |
-| Prominent | 0 24px 70px rgba(14, 48, 105, 0.16) | Auth card, drawer, modal |
+| Control | `0 1px 2px rgba(15, 35, 65, 0.05)` | Inputs and buttons |
+| Panel | `0 8px 24px rgba(28, 55, 92, 0.07)` | Auth panel and raised content |
+| Overlay | `0 20px 48px rgba(15, 35, 65, 0.16)` | Drawer and modal |
 
-Large empty surfaces must use a tonal wash or subtle grid texture, not a flat blank fill.
+The page canvas stays quiet. Empty regions use spacing and subtle tonal separation rather than gradients, textures, or decoration.
