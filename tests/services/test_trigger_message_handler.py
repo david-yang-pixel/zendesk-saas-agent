@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -9,9 +10,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
+from zd_agent.services.trigger_errors import TriggerDeferredError
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 from zd_agent.trigger.decider import PreCheckVerdict
-from zd_agent.trigger.state_store import TicketStateTracker
+from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
 def _cfg() -> AppConfig:
@@ -96,6 +98,43 @@ async def test_ticket_fetch_failure_is_retryable(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_customer_message_during_cooldown_is_deferred_without_consuming_it(
+    tmp_path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        12345,
+        TicketState(
+            state="processed",
+            first_seen=now - timedelta(minutes=10),
+            last_agent_finish_ts=now - timedelta(seconds=20),
+            last_customer_comment_id="cid-1",
+        ),
+    )
+
+    with pytest.raises(TriggerDeferredError) as exc_info:
+        await handle_trigger_message(
+            msg={"ticket_id": 12345, "source": "zendesk_webhook"},
+            manager=MagicMock(),
+            state=state,
+            cfg=_cfg(),
+            env=SimpleNamespace(openai_api_key="sk-test"),
+            log_path=tmp_path / "trigger.jsonl",
+            fetch_customer_messages_fn=AsyncMock(return_value=(
+                [{"id": "cid-2", "body": "new issue", "created_at": now.isoformat()}],
+                {"id": 12345},
+            )),
+            escalate_fn=AsyncMock(),
+            detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+        )
+
+    assert exc_info.value.reason == "post_agent_cooldown"
+    assert 0 < exc_info.value.delay_seconds <= 180
+    assert state.get(12345).last_customer_comment_id == "cid-1"
+
+
+@pytest.mark.asyncio
 async def test_customer_message_classifies_and_dispatches_verdict(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     manager = MagicMock()
@@ -133,3 +172,42 @@ async def test_customer_message_classifies_and_dispatches_verdict(tmp_path) -> N
     assert kwargs["verdict"] is verdict
     assert kwargs["latest_cid"] == "cid-1"
     assert kwargs["source"] == "zendesk_webhook"
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_reenters_takeover_and_classification_gates(
+    tmp_path,
+) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    fetch_messages = AsyncMock(return_value=(
+        [{"id": "cid-1", "body": "issue detail", "created_at": "2026-06-05T06:00:00Z"}],
+        {"id": 12345},
+    ))
+    detect_takeover = AsyncMock(return_value=(False, ""))
+    verdict = PreCheckVerdict(
+        verdict="substantial_issue",
+        completeness=90,
+        reason="has detail",
+    )
+    classify = AsyncMock(return_value=SimpleNamespace(verdict=verdict))
+    post_verdict = AsyncMock()
+
+    result = await handle_trigger_message(
+        msg={"ticket_id": 12345, "source": "startup_recovery"},
+        manager=MagicMock(),
+        state=state,
+        cfg=_cfg(),
+        env=SimpleNamespace(openai_api_key="sk-test"),
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=fetch_messages,
+        classify_ticket_messages_fn=classify,
+        post_verdict_dispatch_fn=post_verdict,
+        escalate_fn=AsyncMock(),
+        detect_human_takeover_fn=detect_takeover,
+    )
+
+    assert result.action == "verdict_dispatched"
+    fetch_messages.assert_awaited_once()
+    detect_takeover.assert_awaited_once()
+    classify.assert_awaited_once()
+    assert post_verdict.await_args.kwargs["source"] == "startup_recovery"

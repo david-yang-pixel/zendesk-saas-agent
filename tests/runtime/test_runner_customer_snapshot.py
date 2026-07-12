@@ -102,9 +102,18 @@ async def test_run_agent_stops_when_customer_snapshot_is_unavailable(
     create_sandbox = MagicMock()
     ensure_archive = MagicMock()
     log_info = MagicMock()
+    reporter = MagicMock()
+    reporter.enabled = True
+    reporter.report_run_start = AsyncMock(return_value=42)
+    reporter.report_run_finish = AsyncMock()
+    reporter.close = AsyncMock()
     monkeypatch.setattr(runner, "create_sandbox", create_sandbox)
     monkeypatch.setattr(runner, "_ensure_archive", ensure_archive)
     monkeypatch.setattr(runner.logger, "info", log_info)
+    monkeypatch.setattr(
+        "zd_agent.runtime.runner_reporting.LogReporter",
+        lambda: reporter,
+    )
 
     session = AgentSession(ticket_id=2809, dry_run=True)
     await runner.run_agent(session)
@@ -114,3 +123,9 @@ async def test_run_agent_stops_when_customer_snapshot_is_unavailable(
     create_sandbox.assert_not_called()
     ensure_archive.assert_called_once()
     assert any(call.args == ("agent_done",) for call in log_info.call_args_list)
+    reporter.report_run_start.assert_awaited_once()
+    reporter.report_run_finish.assert_awaited_once()
+    finish_event = reporter.report_run_finish.await_args.args[1]
+    assert finish_event.status == "error"
+    assert "customer-message snapshot" in finish_event.reason
+    reporter.close.assert_awaited_once()

@@ -75,13 +75,15 @@ async def set_escalated_to_human(
 
     form = extract_form_data_from_msgs(customer_msgs or [])
     customer_name = (form.get("name", "") or "").strip()
-    await escalation_notifications.send_handoff_reply_best_effort(
-        ticket_id=ticket_id,
-        reason=reason,
-        customer_name=customer_name,
-        delivery_attempt_id=(
-            f"{source}:{ticket_id}:{latest_cid or verdict_str}:handoff"
-        ),
+    handoff_reply_sent = (
+        await escalation_notifications.send_handoff_reply_best_effort(
+            ticket_id=ticket_id,
+            reason=reason,
+            customer_name=customer_name,
+            delivery_attempt_id=(
+                f"{source}:{ticket_id}:{latest_cid or verdict_str}:handoff"
+            ),
+        )
     )
 
     await escalation_notifications.send_feishu_escalation_best_effort(
@@ -90,6 +92,7 @@ async def set_escalated_to_human(
         source=source,
         customer_phrase=customer_phrase,
         agent_last_reply=agent_last_reply,
+        handoff_reply_sent=handoff_reply_sent,
     )
 
     await escalation_notifications.add_zendesk_escalation_tag_best_effort(

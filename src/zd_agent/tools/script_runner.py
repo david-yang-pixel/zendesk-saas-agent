@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from pathlib import Path
 from typing import Any
 
 from zd_agent.integrations.sandbox_worker import (
@@ -112,10 +113,7 @@ class SandboxExec(Tool):
 
     # 白名单：只允许这些命令开头的指令
     ALLOWED_PREFIXES = {
-        "ls", "cat", "head", "tail", "wc", "find", "grep", "rg",
-        "file", "stat", "du", "diff", "tree", "echo", "pwd",
-        "git", "python -c", "python3 -c",
-        "zendesk",
+        "cat", "head", "tail", "stat", "echo", "pwd",
     }
 
     BLOCKED_PATTERNS = {
@@ -129,7 +127,8 @@ class SandboxExec(Tool):
     }
 
     SHELL_CONTROL_OPERATORS = {
-        ";", "&&", "||", "|", "`", "$(", ">", "<", "\n", "\r",
+        ";", "&", "||", "|", "`", "$", ">", "<", "*", "?", "[", "]",
+        "~", "{", "}", "(", ")", "!", "\n", "\r",
     }
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
@@ -160,9 +159,7 @@ class SandboxExec(Tool):
 
         # 白名单检查：命令必须以允许的前缀开头
         cmd_base = cmd_lower.split()[0] if cmd_lower.split() else ""
-        allowed = any(
-            cmd_lower.startswith(prefix) for prefix in self.ALLOWED_PREFIXES
-        ) or cmd_base in self.ALLOWED_PREFIXES
+        allowed = cmd_base in self.ALLOWED_PREFIXES
         if not allowed:
             return ToolResult(
                 success=False,
@@ -224,8 +221,7 @@ def _first_external_path_reference(
         value = token.split("=", 1)[1] if token.startswith("--") and "=" in token else token
         if value.startswith("-"):
             continue
-        if value.startswith("/") or value.startswith("..") or "../" in value:
-            candidates.add(value)
+        candidates.add(value)
 
     for candidate in sorted(candidates):
         path = Path(candidate) if candidate.startswith("/") else work_dir / candidate

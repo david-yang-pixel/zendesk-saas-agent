@@ -51,9 +51,16 @@ async def test_run_batch_sessions_returns_cli_summary():
     manager = MagicMock()
     manager.dispatch_batch = AsyncMock(return_value=[session_a, session_b])
     manager.wait_all = AsyncMock()
-    manager_cls = MagicMock(return_value=manager)
+    cfg = MagicMock()
+    configured_manager = MagicMock(return_value=manager)
 
-    with patch("zd_agent.services.cli_sessions.SessionManager", manager_cls):
+    with (
+        patch("zd_agent.services.cli_sessions.get_config", return_value=cfg),
+        patch(
+            "zd_agent.services.cli_sessions.create_configured_session_manager",
+            configured_manager,
+        ),
+    ):
         results = await run_batch_sessions(
             ticket_ids=[1, 2],
             hint="h",
@@ -66,6 +73,7 @@ async def test_run_batch_sessions_returns_cli_summary():
         dry_run=True,
     )
     manager.wait_all.assert_awaited_once_with()
+    configured_manager.assert_called_once_with(cfg)
     assert results == [
         {
             "ticket_id": 1,

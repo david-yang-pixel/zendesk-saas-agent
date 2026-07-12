@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from zd_agent.config import AppConfig
 from zd_agent.services.admin_config import AdminConfigStore
 
@@ -271,6 +273,22 @@ def test_restart_required_overrides_wait_for_restart(tmp_path) -> None:
     assert cfg.zendesk.poll_interval_seconds == 60
     assert store.effective_config(cfg)["values"]["zendesk.poll_interval_seconds"] == 120
     assert restarted_cfg.zendesk.poll_interval_seconds == 120
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "agent.max_concurrent_sessions",
+        "waiting_poller.abandoned_hours",
+        "waiting_poller.greeting_alert_minutes",
+    ],
+)
+def test_constructor_bound_runtime_fields_require_restart(path: str) -> None:
+    from zd_agent.services.admin_config import FIELD_SPECS
+
+    spec = next(field for field in FIELD_SPECS if field.path == path)
+
+    assert spec.restart_required is True
 
 
 def test_apply_parses_zendesk_mention_aliases(tmp_path) -> None:

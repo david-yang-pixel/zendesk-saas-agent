@@ -34,8 +34,11 @@ def main(
 ) -> None:
     """Zendesk 工单自动处理 Agent"""
     from zd_agent.config import EnvSettings, get_config
+    from zd_agent.services.app_bootstrap import apply_saved_admin_config
+
     env = EnvSettings()
     cfg = get_config()
+    apply_saved_admin_config(cfg)
     jsonl_dir = cfg.logging.log_dir if cfg.logging.jsonl_enabled else None
     setup_logging(
         json_output=json_log, log_level=env.zd_log_level, jsonl_dir=jsonl_dir,
@@ -94,7 +97,7 @@ def run(
         console.print("[bold green]回复草稿:[/bold green]\n")
         console.print(session.reply_draft.strip())
     elif session.analysis and not session.reply_sent:
-        console.print(f"\n[yellow]提示：Agent 没有调用 zendesk_internal_reply 生成正式回复。[/yellow]")
+        console.print("\n[yellow]提示：Agent 没有调用 zendesk_internal_reply 生成正式回复。[/yellow]")
         console.print("[yellow]上方的分析结果即为 Agent 的最终输出。[/yellow]")
 
 
@@ -150,18 +153,15 @@ def serve(
     dry_run: bool = typer.Option(False, "--dry-run", help="只分析不发送回复"),
 ) -> None:
     """启动 SaaS Webhook 服务（接收 Zendesk webhook，自动处理工单）"""
+    from zd_agent.services.app_bootstrap import create_configured_session_manager
     from zd_agent.services.saas_app import run_saas_app
-    from zd_agent.session.manager import SessionManager
 
     cfg = get_config()
+    manager = create_configured_session_manager(cfg)
     console.print("[bold green]Starting zd-agent SaaS service...[/bold green]")
     console.print(f"  Webhook host: {cfg.webhook.listen_host}:{cfg.webhook.listen_port}")
     console.print(f"  Zendesk path: {cfg.webhook.zendesk_path}")
 
-    # SessionManager 内部每个 session 自建 tool registry（见 runtime/runner.py）
-    manager = SessionManager(
-        max_concurrent=cfg.agent.max_concurrent_sessions,
-    )
     run_saas_app(manager)
 
 
@@ -171,10 +171,11 @@ def webhook(
     port: int = typer.Option(8080, "--port", "-p", help="监听端口"),
 ) -> None:
     """启动 Webhook HTTP 服务器（接收外部系统推送）"""
+    from zd_agent.services.app_bootstrap import create_configured_session_manager
     from zd_agent.services.webhook_server import run_webhook_server
-    from zd_agent.session.manager import SessionManager
 
     cfg = get_config()
+    manager = create_configured_session_manager(cfg)
     console.print(f"[bold green]Webhook 服务器启动[/bold green]  {host}:{port}")
     console.print("  POST /webhook/zendesk — 接收工单推送")
     console.print("  GET  /health — 健康检查")
@@ -182,8 +183,6 @@ def webhook(
     if cfg.repos.auto_fetch:
         console.print(f"  仓库定时 fetch: {cfg.repos.fetch_cron}")
     console.print()
-
-    manager = SessionManager()
 
     async def _run() -> None:
         await run_webhook_server(host=host, port=port, manager=manager)

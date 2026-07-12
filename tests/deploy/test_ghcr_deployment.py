@@ -37,6 +37,21 @@ def test_github_action_builds_and_pushes_main_and_sha_tags() -> None:
     assert "${{ env.IMAGE_NAME }}:sha-${{ github.sha }}" in text
 
 
+def test_github_action_gates_image_build_on_quality_checks() -> None:
+    text = WORKFLOW.read_text()
+    workflow = yaml.safe_load(text)
+    quality_job = workflow["jobs"]["quality"]
+
+    assert workflow["jobs"]["build"]["needs"] == "quality"
+    assert quality_job["if"] == "github.ref == 'refs/heads/main'"
+    assert quality_job["permissions"] == {"contents": "read"}
+    assert "astral-sh/setup-uv@v6" in text
+    assert "version: \"0.10.7\"" in text
+    assert "uv sync --frozen --dev" in text
+    assert "uv run ruff check src" in text
+    assert "uv run pytest -q" in text
+
+
 def test_ghcr_deploy_script_keeps_secret_out_of_source_and_retags_latest() -> None:
     text = DEPLOY_SCRIPT.read_text()
 

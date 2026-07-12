@@ -266,7 +266,7 @@ class OfficialDocsRead(Tool):
 
 
 def _format_search_results(query: str, entries: list[OfficialDocEntry]) -> str:
-    lines = [f"# 官方文档搜索结果", f"查询: {query}", ""]
+    lines = ["# 官方文档搜索结果", f"查询: {query}", ""]
     for idx, entry in enumerate(entries, start=1):
         lines.append(f"{idx}. [{entry.title}]({entry.url})")
         lines.append(f"   - 来源: {entry.source}")

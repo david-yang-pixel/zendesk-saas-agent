@@ -141,7 +141,7 @@ async def test_agent_config_rejects_bad_api_key(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_models_passes_model_key_and_query(monkeypatch) -> None:
+async def test_agent_models_rejects_request_level_base_url_override(monkeypatch) -> None:
     class _Env:
         hc_client_api_key = "hc-secret"
         openai_api_key = "env-model-key"
@@ -173,8 +173,5 @@ async def test_agent_models_passes_model_key_and_query(monkeypatch) -> None:
 
     response = await handle_agent_models(request)
 
-    assert response.status == 200
-    list_models.assert_awaited_once()
-    assert list_models.await_args.kwargs["target"] == "subagent"
-    assert list_models.await_args.kwargs["base_url"] == "https://llm.example.test/v1"
-    assert list_models.await_args.kwargs["api_key"] == "user-model-key"
+    assert response.status == 400
+    list_models.assert_not_awaited()

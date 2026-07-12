@@ -77,7 +77,7 @@ def _format_pr_search_output(
     if not items:
         return ToolResult(output=f"未找到与「{query}」相关的 GitHub PR（repo: {repo}）")
 
-    lines = [f"# GitHub PR 搜索结果", f"Repo: {repo}", f"Query: {query}", ""]
+    lines = ["# GitHub PR 搜索结果", f"Repo: {repo}", f"Query: {query}", ""]
     for item in items[:limit]:
         number = item.get("number", "N/A")
         title = item.get("title", "(无标题)")

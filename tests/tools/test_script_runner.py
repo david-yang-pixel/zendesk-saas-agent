@@ -121,3 +121,115 @@ async def test_sandbox_exec_rejects_shell_control_operators(sandbox_session):
 
     assert result.success is False
     assert "shell control operator" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo safe & touch pwned",
+        "cat $HOME/.ssh/id_rsa",
+        "cat *",
+        "cat [a-z]",
+    ],
+)
+@pytest.mark.asyncio
+async def test_sandbox_exec_rejects_shell_expansion_and_background_execution(
+    sandbox_session,
+    command,
+):
+    worker = AsyncMock(return_value={"success": True, "output": "unexpected"})
+    with patch(
+        "zd_agent.tools.script_runner.call_sandbox_worker_tool",
+        worker,
+    ):
+        result = await SandboxExec().execute({"command": command}, sandbox_session)
+
+    assert result.success is False
+    assert "shell control operator" in (result.error or "")
+    worker.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_exec_rejects_python_code_execution(sandbox_session):
+    result = await SandboxExec().execute(
+        {"command": "python -c pass"},
+        sandbox_session,
+    )
+
+    assert result.success is False
+    assert "白名单" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_exec_rejects_paths_outside_sandbox(sandbox_session):
+    result = await SandboxExec().execute(
+        {"command": "cat /etc/passwd"},
+        sandbox_session,
+    )
+
+    assert result.success is False
+    assert "/etc/passwd" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_exec_rejects_relative_symlink_outside_sandbox(
+    sandbox_session,
+    tmp_path,
+):
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("private", encoding="utf-8")
+    (tmp_path / "outside-link").symlink_to(outside)
+    worker = AsyncMock(return_value={"success": True, "output": "unexpected"})
+
+    with patch(
+        "zd_agent.tools.script_runner.call_sandbox_worker_tool",
+        worker,
+    ):
+        result = await SandboxExec().execute(
+            {"command": "cat outside-link"},
+            sandbox_session,
+        )
+
+    assert result.success is False
+    assert "outside-link" in (result.error or "")
+    worker.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_exec_does_not_accept_command_name_prefixes(sandbox_session):
+    result = await SandboxExec().execute(
+        {"command": "github --version"},
+        sandbox_session,
+    )
+
+    assert result.success is False
+    assert "白名单" in (result.error or "")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "find . -exec touch pwned +",
+        "git status",
+        "rg --pre 'touch pwned' pattern .",
+        "zendesk ticket show 1",
+        "grep -R secret .",
+        "tree -l .",
+        "du -L .",
+    ],
+)
+@pytest.mark.asyncio
+async def test_sandbox_exec_rejects_commands_with_execution_or_network_hooks(
+    sandbox_session,
+    command,
+):
+    worker = AsyncMock(return_value={"success": True, "output": "unexpected"})
+    with patch(
+        "zd_agent.tools.script_runner.call_sandbox_worker_tool",
+        worker,
+    ):
+        result = await SandboxExec().execute({"command": command}, sandbox_session)
+
+    assert result.success is False
+    assert "白名单" in (result.error or "")
+    worker.assert_not_awaited()

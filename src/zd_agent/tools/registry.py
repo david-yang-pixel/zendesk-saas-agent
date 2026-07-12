@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from zd_agent.tools.archive import ArchiveTicket
-from zd_agent.tools.base import Tool, ToolRegistry
+from zd_agent.tools.base import ToolRegistry
 from zd_agent.tools.classify import ClassifyTicket
 from zd_agent.tools.custom_mcp import CustomMcpCall
 from zd_agent.tools.git_source import (

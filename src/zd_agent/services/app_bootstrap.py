@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from zd_agent.config import AppConfig
 from zd_agent.log import get_logger
 from zd_agent.services.app_context import install_saas_app_context
 from zd_agent.services.app_lifecycle import wire_session_finished_callback
@@ -14,6 +15,9 @@ from zd_agent.services.admin_config import AdminConfigStore
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.webhook_dedup import WebhookDedup
 from zd_agent.trigger.state_store import TicketStateTracker
+
+if TYPE_CHECKING:
+    from zd_agent.session.manager import SessionManager
 
 logger = get_logger(module="services.app_bootstrap")
 
@@ -25,17 +29,29 @@ class SaasAppRuntime:
     state: TicketStateTracker
 
 
-def prepare_saas_app_runtime(
-    *,
-    app: web.Application,
-    cfg: Any,
-    manager: Any,
-) -> SaasAppRuntime:
-    """Create shared runtime dependencies and install them into the app."""
+def apply_saved_admin_config(cfg: AppConfig) -> Path:
     state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_dir.chmod(0o700)
     AdminConfigStore(state_dir).apply_saved(cfg)
+    return state_dir
+
+
+def create_configured_session_manager(cfg: AppConfig) -> SessionManager:
+    from zd_agent.session.manager import SessionManager
+
+    apply_saved_admin_config(cfg)
+    return SessionManager(max_concurrent=cfg.agent.max_concurrent_sessions)
+
+
+def prepare_saas_app_runtime(
+    *,
+    app: web.Application,
+    cfg: AppConfig,
+    manager: SessionManager,
+) -> SaasAppRuntime:
+    """Create shared runtime dependencies and install them into the app."""
+    state_dir = apply_saved_admin_config(cfg)
 
     trigger_queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
     state = TicketStateTracker(state_dir / "tickets.json")

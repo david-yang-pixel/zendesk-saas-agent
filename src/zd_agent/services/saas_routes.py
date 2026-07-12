@@ -75,11 +75,18 @@ async def handle_agent_models(request: web.Request) -> web.Response:
     unauthorized = _require_management_auth(request)
     if unauthorized is not None:
         return unauthorized
+    if request.query.get("base_url"):
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "request-level base_url overrides are not allowed",
+            },
+            status=400,
+        )
     return web.json_response(
         await list_agent_models(
             app_config(request.app),
             target=request.query.get("target"),
-            base_url=request.query.get("base_url"),
             api_key=request.headers.get("X-Agent-Model-Api-Key"),
             env=EnvSettings(),
         )

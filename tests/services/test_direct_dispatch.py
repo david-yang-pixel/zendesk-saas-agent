@@ -43,6 +43,27 @@ async def test_non_direct_source_is_not_handled(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_startup_recovery_reenters_normal_takeover_gates(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    manager = MagicMock()
+    manager.dispatch = AsyncMock()
+
+    result = await handle_direct_dispatch_source(
+        ticket_id=12345,
+        msg={"source": "startup_recovery"},
+        manager=manager,
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        now=_now(),
+    )
+
+    assert result.handled is False
+    assert result.dispatched is False
+    manager.dispatch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_direct_source_dispatches_with_hint(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     manager = MagicMock()

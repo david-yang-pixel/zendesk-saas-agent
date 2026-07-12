@@ -624,7 +624,7 @@ class ZendeskGetTicket(Tool):
                 lines.extend([
                     "## 回复语言建议（初步检测，仅供参考）",
                     f"- 以下为基于字符统计的初步检测结果，仅供参考{source_label}",
-                    f"- 请你结合对话全文独立判断客户实际使用的语言，并使用该语言撰写回复",
+                    "- 请你结合对话全文独立判断客户实际使用的语言，并使用该语言撰写回复",
                     (
                         f"- 初步检测: {reply_language_hint['language']} "
                         f"({ _language_label(reply_language_hint['language']) })"
@@ -1087,8 +1087,6 @@ class ZendeskInternalReply(Tool):
     is_write_operation = True
 
     async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        from zd_agent.tools.html_renderer import render_internal_note
-
         if "body" not in args:
             return ToolResult(success=False, error="body is required")
         if "summary" not in args:
@@ -1169,9 +1167,6 @@ class ZendeskInternalReply(Tool):
         plain_body = _prepend_internal_reply_banner(body_md)
         plain_body = _append_mention_footer(plain_body)
 
-        # HTML 版（摘要卡片 + 正文）
-        html_body = render_internal_note(summary, body_md)
-
         session.reply_draft = plain_body
 
         if session.dry_run:
@@ -1208,8 +1203,6 @@ class ZendeskInternalReply(Tool):
 # B 路径辅助函数 (2026-05-26)：从 agent 写的结构化 body 里抽客户面 Suggested
 # Reply 段，丢给 public_reply。匹配 ## Suggested Reply / ## 客户回复建议
 # 等中英文标题（含 emoji 前缀如 ## 💬 Suggested Reply）。
-import re as _re
-
 _SUGGESTED_REPLY_HEADERS = (
     "Suggested Reply",
     "客户回复建议",
@@ -1244,12 +1237,12 @@ def _extract_suggested_reply_section(body_md: str) -> str:
         # 同时匹配：(a) "## [emoji ]Header" markdown 标准
         #          (b) "[emoji ]Header" 行首裸标题（实际 agent 输出）
         # 用同义的捕获：(?:##\s+)?\s*(?:emoji\s+)? 然后 header 文本
-        pattern = _re.compile(
+        pattern = re.compile(
             r"(?:^|\n)(?:##\s+)?(?:[💬📋🔍✅⚠️]+\s+)?"
-            + _re.escape(header)
+            + re.escape(header)
             + r"\s*\n+(.*?)"
             + next_section,
-            _re.DOTALL,
+            re.DOTALL,
         )
         m = pattern.search(body_md)
         if m:

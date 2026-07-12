@@ -3,13 +3,17 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import stat
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
 
 from zd_agent.config import AppConfig
-from zd_agent.services.app_bootstrap import prepare_saas_app_runtime
+from zd_agent.services.admin_config import AdminConfigStore
+from zd_agent.services.app_bootstrap import (
+    create_configured_session_manager,
+    prepare_saas_app_runtime,
+)
 from zd_agent.services.app_context import (
     app_config,
     session_manager,
@@ -46,6 +50,32 @@ def test_prepare_saas_app_runtime_installs_context(tmp_path) -> None:
     assert ticket_state(app) is runtime.state
     assert webhook_dedup(app) is not None
     assert session_manager(app) is manager
+
+
+def test_configured_session_manager_loads_saved_concurrency_before_creation(
+    tmp_path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    store = AdminConfigStore(tmp_path / ".state")
+    store.apply(
+        cfg,
+        {
+            "changes": {"agent.max_concurrent_sessions": 11},
+            "reason": "qa",
+        },
+        actor="qa",
+        ip="127.0.0.1",
+    )
+    manager = MagicMock()
+
+    with patch(
+        "zd_agent.session.manager.SessionManager",
+        return_value=manager,
+    ) as manager_cls:
+        result = create_configured_session_manager(cfg)
+
+    assert result is manager
+    manager_cls.assert_called_once_with(max_concurrent=11)
 
 
 @pytest.mark.asyncio

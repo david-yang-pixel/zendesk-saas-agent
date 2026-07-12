@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 from aiohttp import web
 

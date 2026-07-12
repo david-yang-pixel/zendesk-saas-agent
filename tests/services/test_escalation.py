@@ -65,6 +65,7 @@ async def test_set_escalated_to_human_writes_state_and_skips_handoff_for_takeove
 async def test_customer_requested_emits_metric(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     mock_metric = MagicMock()
+    mock_feishu = AsyncMock(return_value=True)
 
     with (
         patch(
@@ -73,7 +74,7 @@ async def test_customer_requested_emits_metric(tmp_path) -> None:
         ),
         patch(
             "zd_agent.services.escalation_notifications.send_feishu_escalation_best_effort",
-            AsyncMock(return_value=False),
+            mock_feishu,
         ),
         patch(
             "zd_agent.services.escalation_notifications.add_zendesk_escalation_tag_best_effort",
@@ -102,3 +103,44 @@ async def test_customer_requested_emits_metric(tmp_path) -> None:
     mock_metric.assert_called_once()
     assert mock_metric.call_args.kwargs["ticket_id"] == 9999
     assert mock_metric.call_args.kwargs["customer_phrase"] == "human please"
+    assert mock_feishu.await_args.kwargs["handoff_reply_sent"] is True
+
+
+@pytest.mark.asyncio
+async def test_handoff_delivery_failure_is_forwarded_to_operator_alert(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    mock_feishu = AsyncMock(return_value=True)
+
+    with (
+        patch(
+            "zd_agent.services.escalation_notifications.send_handoff_reply_best_effort",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "zd_agent.services.escalation_notifications.send_feishu_escalation_best_effort",
+            mock_feishu,
+        ),
+        patch(
+            "zd_agent.services.escalation_notifications.add_zendesk_escalation_tag_best_effort",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        await set_escalated_to_human(
+            ticket_id=9999,
+            reason="customer_requested",
+            existing=None,
+            state=state,
+            log_path=Path(tmp_path) / "trigger.jsonl",
+            source="zendesk_webhook",
+            now=_now(),
+            verdict_str="request_human",
+            latest_cid="cid-1",
+            latest_ts=_now(),
+            completeness=100,
+            customer_phrase="human please",
+        )
+
+    rec = state.get(9999)
+    assert rec is not None
+    assert rec.state == "escalated_to_human"
+    assert mock_feishu.await_args.kwargs["handoff_reply_sent"] is False

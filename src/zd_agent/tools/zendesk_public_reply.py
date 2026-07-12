@@ -415,6 +415,11 @@ class ZendeskPublicReply(Tool):
                 success=False,
                 error=f"invalid ticket_id: {ticket_id!r}",
             )
+        if ticket_id != session.ticket_id:
+            return ToolResult(
+                success=False,
+                error="ticket_id does not match the active agent session",
+            )
         if "body" not in args:
             return ToolResult(success=False, error="body is required")
         if not isinstance(raw_body, str):

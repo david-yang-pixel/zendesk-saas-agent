@@ -180,12 +180,12 @@ async def run_scheduler(
     from apscheduler.triggers.cron import CronTrigger
     from apscheduler.triggers.interval import IntervalTrigger
 
-    from zd_agent.session.manager import SessionManager
+    from zd_agent.services.app_bootstrap import create_configured_session_manager
 
     cfg = get_config()
+    _manager = create_configured_session_manager(cfg)
     interval = poll_interval or cfg.zendesk.poll_interval_seconds
 
-    _manager = SessionManager()
     _dry_run = dry_run
 
     from zd_agent.mention.tracker import MentionTracker

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from zd_agent.config import get_config
 from zd_agent.runtime.runner import run_agent
+from zd_agent.services.app_bootstrap import create_configured_session_manager
 from zd_agent.session.agent_session import AgentSession
-from zd_agent.session.manager import SessionManager
 
 
 async def run_ticket_session(
@@ -27,7 +28,7 @@ async def run_batch_sessions(
     dry_run: bool,
 ) -> list[dict[str, Any]]:
     """Run a batch of tickets and return CLI summary rows."""
-    manager = SessionManager()
+    manager = create_configured_session_manager(get_config())
     sessions = await manager.dispatch_batch(
         ticket_ids,
         hint=hint,

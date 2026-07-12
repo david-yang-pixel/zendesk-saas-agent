@@ -8,6 +8,7 @@ from zd_agent.log import get_logger
 from zd_agent.runtime.guardrails import Guardrails
 from zd_agent.runtime.llm_client import LLMClient
 from zd_agent.runtime.runner_archive import ensure_archive as _ensure_archive
+from zd_agent.runtime.runner_reporting import report_preflight_failure
 from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
 from zd_agent.runtime.tool_loop import run_tool_loop
 from zd_agent.session.agent_session import AgentSession, SessionStatus
@@ -124,6 +125,12 @@ async def run_agent(session: AgentSession) -> None:
         )
         session.status = SessionStatus.FAILED
         session.error_message = str(e)
+        await report_preflight_failure(
+            session,
+            guardrails,
+            model=cfg.llm.model,
+            reason=str(e),
+        )
         if not session.dry_run:
             await _send_error_note(session.ticket_id, str(e))
         logger.info(

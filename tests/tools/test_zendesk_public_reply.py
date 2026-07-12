@@ -209,7 +209,7 @@ def _make_cfg(enabled: bool = True, relay: bool = False) -> AppConfig:
 
 def _make_session(dry_run: bool = False) -> MagicMock:
     s = MagicMock()
-    s.ticket_id = 12345
+    s.ticket_id = 42
     s.dry_run = dry_run
     s.reply_draft = ""
     s.reply_sent = False
@@ -233,7 +233,7 @@ class TestExecute:
             return_value=_make_cfg(enabled=False),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "test", "reply_type": "ask"}, sess,
+                {"ticket_id": 42, "body": "test", "reply_type": "ask"}, sess,
             )
         assert not r.success
         assert "kill switch" in r.error.lower() or "disabled" in r.error.lower()
@@ -262,6 +262,28 @@ class TestExecute:
         assert not r.success
         assert "ticket_id" in r.error
 
+    @pytest.mark.asyncio
+    async def test_cross_ticket_public_reply_is_rejected(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": sess.ticket_id + 1,
+                    "body": "A support engineer will follow up.",
+                    "reply_type": "handoff",
+                    "conversation_id": "conversation-other-ticket",
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert result.error == "ticket_id does not match the active agent session"
+
         with patch(
             "zd_agent.tools.zendesk_public_reply.get_config",
             return_value=_make_cfg(),
@@ -281,7 +303,7 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": ["hi"], "reply_type": "ask"}, sess,
+                {"ticket_id": 42, "body": ["hi"], "reply_type": "ask"}, sess,
             )
         assert not r.success
         assert "body" in r.error
@@ -292,7 +314,7 @@ class TestExecute:
         ):
             r = await tool.execute(
                 {
-                    "ticket_id": 1,
+                    "ticket_id": 42,
                     "body": "hi",
                     "reply_type": "ask",
                     "conversation_id": 123,
@@ -308,7 +330,7 @@ class TestExecute:
         ):
             r = await tool.execute(
                 {
-                    "ticket_id": 1,
+                    "ticket_id": 42,
                     "body": "hi",
                     "reply_type": "ask",
                     "messaging_app_id": 123,
@@ -327,7 +349,7 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "reply_type": "ask"}, sess,
+                {"ticket_id": 42, "reply_type": "ask"}, sess,
             )
         assert not r.success
         assert r.error == "body is required"
@@ -337,7 +359,7 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "hi"}, sess,
+                {"ticket_id": 42, "body": "hi"}, sess,
             )
         assert not r.success
         assert r.error == "reply_type is required"
@@ -351,7 +373,7 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "   ", "reply_type": "ask"}, sess,
+                {"ticket_id": 42, "body": "   ", "reply_type": "ask"}, sess,
             )
         assert not r.success
         assert "empty" in r.error
@@ -365,7 +387,7 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "hi", "reply_type": "rude"}, sess,
+                {"ticket_id": 42, "body": "hi", "reply_type": "rude"}, sess,
             )
         assert not r.success
         assert "reply_type" in r.error
@@ -379,7 +401,7 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
-                {"ticket_id": 1, "body": "Hi customer", "reply_type": "ask"}, sess,
+                {"ticket_id": 42, "body": "Hi customer", "reply_type": "ask"}, sess,
             )
         assert r.success
         assert "Dry Run" in r.output
@@ -1045,7 +1067,7 @@ class TestPreSendCheckIntegration:
         ):
             r = await tool.execute(
                 {
-                    "ticket_id": 1,
+                    "ticket_id": 42,
                     "body": "test",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
@@ -1077,7 +1099,7 @@ class TestPreSendCheckIntegration:
         ):
             r = await tool.execute(
                 {
-                    "ticket_id": 1,
+                    "ticket_id": 42,
                     "body": "transferred",
                     "reply_type": "handoff",
                     "conversation_id": "conv-1",
@@ -1115,7 +1137,7 @@ class TestPreSendCheckIntegration:
         ):
             r = await tool.execute(
                 {
-                    "ticket_id": 1,
+                    "ticket_id": 42,
                     "body": "ask",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
@@ -1145,7 +1167,7 @@ class TestPreSendCheckIntegration:
         ):
             result = await tool.execute(
                 {
-                    "ticket_id": 1,
+                    "ticket_id": 42,
                     "body": "ask",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
@@ -1174,7 +1196,7 @@ class TestPreSendCheckIntegration:
         ):
             result = await tool.execute(
                 {
-                    "ticket_id": 1,
+                    "ticket_id": 42,
                     "body": "ask",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",

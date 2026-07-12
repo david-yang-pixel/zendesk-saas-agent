@@ -15,6 +15,8 @@ from zd_agent.services.trigger_consumer import (
     run_saas_trigger_consumer,
     run_trigger_consumer,
 )
+from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
+from zd_agent.services.trigger_errors import TriggerDeferredError
 
 
 @pytest.mark.asyncio
@@ -245,3 +247,53 @@ async def test_run_trigger_consumer_releases_cancelled_durable_message(tmp_path)
     await asyncio.wait_for(released.wait(), timeout=1)
     assert len(queue.released) == 1
     assert queue.released[0]["_queue_attempts"] == 4
+
+
+@pytest.mark.asyncio
+async def test_deferred_durable_message_remains_pending_without_retry_consumption(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    now = [1000.0]
+    queue = DurableTriggerQueue(
+        tmp_path / "trigger_queue.sqlite3",
+        now_fn=lambda: now[0],
+    )
+    await queue.put({"ticket_id": 2808, "source": "zendesk_webhook"})
+    deferred = asyncio.Event()
+    original_defer = queue.defer
+
+    async def observed_defer(message, delay_seconds, reason):
+        await original_defer(message, delay_seconds, reason)
+        deferred.set()
+
+    monkeypatch.setattr(queue, "defer", observed_defer)
+
+    async def defer_message(**_kwargs):
+        raise TriggerDeferredError("post_agent_cooldown", delay_seconds=160)
+
+    task = asyncio.create_task(
+        run_trigger_consumer(
+            queue,
+            MagicMock(),
+            MagicMock(),
+            cfg=MagicMock(),
+            env=MagicMock(),
+            log_path=tmp_path / "trigger_log.jsonl",
+            handle_message_fn=defer_message,
+            silence_expired_ask_fn=MagicMock(),
+            post_verdict_dispatch_fn=MagicMock(),
+            escalate_fn=MagicMock(),
+        )
+    )
+
+    await asyncio.wait_for(deferred.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert await queue.pending_count() == 1
+    now[0] = 1161.0
+    recovered = await queue.get()
+    assert recovered["_queue_attempts"] == 0
+    await queue.ack(recovered)

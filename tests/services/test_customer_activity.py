@@ -82,7 +82,7 @@ def test_processed_ticket_new_customer_comment_emits_reopen_metric(tmp_path) -> 
     )
 
 
-def test_post_agent_cooldown_advances_comment_id_and_logs_skip(tmp_path) -> None:
+def test_post_agent_cooldown_keeps_comment_pending_and_logs_defer(tmp_path) -> None:
     state = _state(tmp_path)
     state.set(
         12345,
@@ -108,13 +108,14 @@ def test_post_agent_cooldown_advances_comment_id_and_logs_skip(tmp_path) -> None
 
     assert result.handled is True
     assert result.action == "post_agent_cooldown"
-    assert state.get(12345).last_customer_comment_id == "cid-2"
+    assert result.defer_seconds == 160
+    assert state.get(12345).last_customer_comment_id == "cid-1"
 
     [record] = log_path.read_text(encoding="utf-8").splitlines()
     payload = json.loads(record)
     assert payload["ticket"] == "12345"
     assert payload["verdict"] == "post_agent_cooldown"
-    assert payload["action"] == "skip"
+    assert payload["action"] == "defer"
 
 
 def test_allowed_activity_returns_latest_context(tmp_path) -> None:

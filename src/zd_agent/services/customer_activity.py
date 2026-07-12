@@ -28,6 +28,7 @@ class CustomerActivityResult:
     latest_ts: datetime
     existing: Any
     now: datetime
+    defer_seconds: float = 0.0
 
 
 def handle_customer_activity_gate(
@@ -89,20 +90,23 @@ def handle_customer_activity_gate(
         now=now,
     )
     if cooldown.should_skip:
-        existing.last_customer_comment_id = latest_cid
-        state.set(ticket_id, existing)
+        defer_seconds = max(
+            1.0,
+            cooldown.cooldown_seconds - (cooldown.elapsed_seconds or 0.0),
+        )
         logger.info(
-            "trigger_skip_post_agent_cooldown",
+            "trigger_defer_post_agent_cooldown",
             ticket_id=ticket_id,
             comment_id=latest_cid,
             elapsed_s=round(cooldown.elapsed_seconds or 0, 1),
             cooldown_s=cooldown.cooldown_seconds,
+            defer_s=round(defer_seconds, 1),
         )
         decision_log.log_decision(
             log_path=log_path,
             ticket_id=ticket_id,
             verdict="post_agent_cooldown",
-            action="skip",
+            action="defer",
         )
         return CustomerActivityResult(
             handled=True,
@@ -112,6 +116,7 @@ def handle_customer_activity_gate(
             latest_ts=latest_ts,
             existing=existing,
             now=now,
+            defer_seconds=defer_seconds,
         )
 
     return CustomerActivityResult(

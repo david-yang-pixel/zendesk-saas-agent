@@ -68,6 +68,7 @@ async def send_feishu_escalation_best_effort(
     source: str,
     customer_phrase: str = "",
     agent_last_reply: str = "",
+    handoff_reply_sent: bool | None = None,
 ) -> bool:
     """Push the internal escalation card through notification-service MCP."""
     if reason == "human_takeover_detected":
@@ -90,6 +91,10 @@ async def send_feishu_escalation_best_effort(
             reason_lines.append(f"**客户原话**: {customer_phrase[:200]}")
         if agent_last_reply:
             reason_lines.append(f"**Agent 上次回复**: {agent_last_reply[:200]}")
+        if handoff_reply_sent is False:
+            reason_lines.append(
+                "**投递告警**: 客户未收到转人工通知，请立即人工回复。"
+            )
         reason_lines.append(f"**source**: {source}")
 
         payload = await push_notification_card(

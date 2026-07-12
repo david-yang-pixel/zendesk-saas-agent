@@ -6,6 +6,7 @@ import pytest
 
 from zd_agent.config import AppConfig
 from zd_agent.services.agent_management import (
+    _fetch_openai_compatible_models,
     build_agent_config_manifest,
     build_agent_tools_manifest,
     list_agent_models,
@@ -165,3 +166,36 @@ async def test_list_agent_models_merges_provider_models_with_defaults() -> None:
     assert model_ids[:2] == ["gpt-5.5", "provider-model"]
     assert model_ids.count("gpt-5.5") == 1
     assert "gpt-5.4-mini" in model_ids
+
+
+@pytest.mark.asyncio
+async def test_provider_model_fetch_disables_environment_proxy_trust(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"data": []}
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            observed.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args) -> None:
+            return None
+
+        async def get(self, *_args, **_kwargs) -> FakeResponse:
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "zd_agent.services.agent_management.httpx.AsyncClient",
+        FakeClient,
+    )
+
+    assert await _fetch_openai_compatible_models("https://example.test/v1", "key") == []
+    assert observed["trust_env"] is False

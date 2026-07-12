@@ -133,6 +133,11 @@ async def handle_trigger_message(
         cooldown_seconds=cfg.trigger_decider.post_agent_cooldown_seconds,
     )
     if customer_activity.handled:
+        if customer_activity.action == "post_agent_cooldown":
+            raise TriggerDeferredError(
+                "post_agent_cooldown",
+                delay_seconds=customer_activity.defer_seconds,
+            )
         return TriggerMessageResult(True, customer_activity.action, ticket_id, source)
 
     classify_ticket_messages_fn = classify_ticket_messages_fn or classify_ticket_messages

@@ -153,6 +153,30 @@ async def test_feishu_escalation_sends_reason_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_feishu_escalation_warns_when_customer_handoff_was_not_delivered() -> None:
+    push = AsyncMock(return_value={"success": True, "output": "pushed"})
+
+    with (
+        patch(
+            "zd_agent.config.get_config",
+            return_value=_make_cfg(),
+        ),
+        patch("zd_agent.services.escalation_notifications.push_notification_card", push),
+    ):
+        sent = await send_feishu_escalation_best_effort(
+            ticket_id=9999,
+            reason="customer_requested",
+            source="zendesk_webhook",
+            handoff_reply_sent=False,
+        )
+
+    assert sent is True
+    content = push.await_args.kwargs["content"]
+    assert "客户未收到转人工通知" in content
+    assert "立即人工回复" in content
+
+
+@pytest.mark.asyncio
 async def test_feishu_escalation_failure_is_best_effort() -> None:
     push = AsyncMock(
         return_value={"success": False, "code": "FEISHU_API_ERROR", "error": "feishu err"},
