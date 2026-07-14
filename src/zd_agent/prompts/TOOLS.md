@@ -166,7 +166,7 @@ Step 10-14: 单一证据源直接工具排查；多证据源默认 run_subagents
   ↓
 Step 15-18: 文档/历史/GitHub/日志等跨源核查交给 subagent 并行摘要 (知识)
   ↓
-Step 19: zendesk_public_reply（客户可见回复）或 zendesk_internal_reply（仅内部分析）
+Step 19: zendesk_public_reply（客户可见回复；需要人工/SRE 时也先发 handoff）或仅在公开通道不可用/安全例外时使用 zendesk_internal_reply
 Step 20: archive_ticket
 Step 22: feishu_push ticket_done（content 用固定字段摘要，不要粘贴完整客户回复）
 ```
@@ -176,6 +176,7 @@ Step 22: feishu_push ticket_done（content 用固定字段摘要，不要粘贴�
 - ❌ 串行调用 `run_subagent` 5 次查相同阶段的不同源 → 应该 `run_subagents_parallel`
 - ❌ 在不知道 Workspace ID 的情况下跑 SQL → 先跟客户确认或读已有评论找到 ID
 - ❌ 用 `zendesk_internal_reply` 当客户回复 → 客户看不到；客户可见回复必须直接 `zendesk_public_reply`
+- ❌ 需要人工或 SRE 介入时直接沉默升级 → 需要人工或 SRE 介入时，先用 `zendesk_public_reply` 说明客户安全的升级原因和下一步，再通知内部团队
 - ❌ 成功 `zendesk_public_reply` 后再写 Internal Note → 重复且客户不可见，处理摘要交给 `archive_ticket`
 - ❌ 用 `zendesk_internal_reply` 多次写半成品 → 一次写完整三段
 - ❌ 反复调 `zendesk_get_ticket` → 拉一次就够，后续用 session 里的信息

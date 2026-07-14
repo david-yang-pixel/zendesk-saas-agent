@@ -29,12 +29,19 @@ async def send_handoff_reply_best_effort(
     try:
         from zd_agent.tools.zendesk_public_reply import send_public_reply
 
-        handoff_body = handoff_template(customer_name=customer_name)
+        handoff_body = handoff_template(
+            customer_name=customer_name,
+            reason=reason,
+        )
         success, msg = await send_public_reply(
             ticket_id=ticket_id,
             body=handoff_body,
             reply_type="handoff",
             delivery_attempt_id=delivery_attempt_id,
+            internal_analysis=(
+                f"Escalation reason: {reason}. A customer-safe explanation was "
+                "sent before the internal escalation."
+            ),
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(

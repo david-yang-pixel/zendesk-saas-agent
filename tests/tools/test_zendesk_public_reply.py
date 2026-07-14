@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -55,43 +56,110 @@ def _available_duplicate_check(
 # ---------- footer helpers ----------
 
 class TestFooterAppend:
+    def test_tool_description_explains_automatic_handoff_hours(self) -> None:
+        assert "上海时间 09:00（含）到 18:00（不含）" in ZendeskPublicReply.description
+        assert "不要在 body 里重复写工作时间" in ZendeskPublicReply.description
+
     def test_append_standard_footer_for_ask(self) -> None:
         out = _append_footer("Hello world", "ask")
-        # 身份标识必须有（合规）
-        assert "Dify SaaS Agent" in out
-        # 面向客户说明由 Dify AI 发送，同时保留内部 marker
-        assert "This message is sent by Dify AI" in out
-        assert "tell me your question" in out
+        # 身份标识必须有（合规），但不使用 emoji / Markdown 分隔线制造噪音。
+        assert "Dify AI Support" in out
+        assert "This reply was sent by Dify AI Support." in out
         # 仍保留 'human' 关键词（trigger_decider fast-path 检测要靠它）
         assert '"human"' in out
-        # "support engineer" 替代之前的 "teammate"
         assert "support engineer" in out
-        # 视觉顺序：正向邀请必须在 escape hatch 之前
-        assert out.find("tell me your question") < out.find('"human"')
-        assert out.startswith("Hello world\n\u200b\n---\n🤖")
+        assert "🤖" not in out
+        assert "---" not in out
+        assert out.startswith("Hello world\n\u200b\nThis reply was sent")
 
     def test_append_solution_uses_same_standard_footer(self) -> None:
         out_ask = _append_footer("body", "ask")
         out_solution = _append_footer("body", "solution")
         assert out_ask == out_solution
 
-    def test_append_handoff_footer_uses_standard_disclosure(self) -> None:
-        out = _append_footer("Notified human teammate.", "handoff")
-        assert "This message is sent by Dify AI (Dify SaaS Agent)." in out
-        assert "Please tell me your question, and I'll help find an answer." in out
-        assert 'reply with "human" and a support engineer will take it from here.' in out
+    def test_append_handoff_footer_confirms_human_followup(self) -> None:
+        out = _append_footer(
+            "Notified human teammate.",
+            "handoff",
+            now=datetime(2026, 7, 14, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+        assert "This reply was sent by Dify AI Support." in out
+        assert "A human support engineer will follow up in this ticket." in out
+        assert 'Reply "human"' not in out
+
+    @pytest.mark.parametrize(
+        ("hour", "minute"),
+        [(9, 0), (17, 59)],
+    )
+    def test_handoff_during_shanghai_support_hours(
+        self,
+        hour: int,
+        minute: int,
+    ) -> None:
+        out = _append_footer(
+            "A support engineer will review this case.",
+            "handoff",
+            now=datetime(
+                2026,
+                7,
+                14,
+                hour,
+                minute,
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ),
+        )
+
+        assert "9:00 AM to 6:00 PM Shanghai time (UTC+8)" in out
+        assert "submitted during this window" in out
+        assert "reply as soon as possible" in out
+        assert "next support window" not in out
+
+    @pytest.mark.parametrize(
+        ("hour", "minute"),
+        [(8, 59), (18, 0)],
+    )
+    def test_handoff_outside_shanghai_support_hours(
+        self,
+        hour: int,
+        minute: int,
+    ) -> None:
+        out = _append_footer(
+            "A support engineer will review this case.",
+            "handoff",
+            now=datetime(
+                2026,
+                7,
+                14,
+                hour,
+                minute,
+                tzinfo=ZoneInfo("Asia/Shanghai"),
+            ),
+        )
+
+        assert "9:00 AM to 6:00 PM Shanghai time (UTC+8)" in out
+        assert "currently outside these hours" in out
+        assert "next support window begins" in out
+        assert "do not need to open another ticket" in out
+
+    def test_handoff_converts_utc_to_shanghai_time(self) -> None:
+        out = _append_footer(
+            "A support engineer will review this case.",
+            "handoff",
+            now=datetime(2026, 7, 14, 1, 0, tzinfo=timezone.utc),
+        )
+
+        assert "submitted during this window" in out
 
     def test_append_closed_footer_mentions_reopen(self) -> None:
         out = _append_footer("Glad it's resolved!", "closed")
-        assert "feel free to reply here or open a new ticket" in out
+        assert "Reply here or open a new ticket if the issue returns." in out
         assert "reply with" not in out
 
     def test_idempotent_if_body_already_has_footer(self) -> None:
         """LLM 不小心写了 footer 也不重复追加。"""
         body_with_footer = "Hello" + _FOOTER_STANDARD
         out = _append_footer(body_with_footer, "ask")
-        # 不应该出现两次 "Dify SaaS Agent"
-        assert out.count("Dify SaaS Agent") == 1
+        assert out.count("Dify AI Support") == 1
 
     def test_all_reply_types_covered(self) -> None:
         assert _VALID_REPLY_TYPES == {"ask", "solution", "handoff", "closed"}
@@ -150,6 +218,28 @@ class TestStripDocsMdSuffix:
 
 
 class TestReplyBodyFormatting:
+    def test_removes_markdown_decoration_and_keeps_readable_sections(self) -> None:
+        body = (
+            "## **Error mechanism confirmed**\n"
+            "The `PluginInvokeError` came from the **serverless runtime**.\n"
+            "💡 Recommended next steps\n"
+            "1. Create a new `conversation_id`.\n"
+            "2. Retry the request."
+        )
+
+        out = _format_reply_body(body)
+
+        assert out == (
+            "Error mechanism confirmed:\n\n"
+            "The PluginInvokeError came from the serverless runtime.\n\n"
+            "Recommended next steps:\n\n"
+            "1. Create a new conversation_id.\n"
+            "2. Retry the request."
+        )
+        assert "**" not in out
+        assert "`" not in out
+        assert "💡" not in out
+
     def test_adds_blank_lines_around_sections_lists_and_signature(self) -> None:
         body = (
             "Hi cg,\n"
@@ -167,8 +257,8 @@ class TestReplyBodyFormatting:
         out = _format_reply_body(body)
 
         assert "Hi cg,\n\nI checked" in out
-        assert "Evidence from your app `客服工具`:\n\n- 2026" in out
-        assert "`609.042s`.\n\nRecommended next steps:" in out
+        assert "Evidence from your app 客服工具:\n\n- 2026" in out
+        assert "609.042s.\n\nRecommended next steps:" in out
         assert "Recommended next steps:\n\n1. In the LLM node" in out
         assert "2. Reduce the context passed into the LLM node.\n\nBest regards," in out
         assert "Best regards,\nDify Support" in out
@@ -181,7 +271,7 @@ class TestReplyBodyFormatting:
 
         assert "Hi cg,\n\u200b\nI checked it." in out
         assert "Recommended next steps:\n\u200b\n1. Retry." in out
-        assert "Dify Support\n\u200b\n---\n🤖" in out
+        assert "Dify Support\n\u200b\nThis reply was sent by Dify AI Support." in out
 
     def test_append_footer_preserves_visual_blank_lines_for_messaging(self) -> None:
         out = _append_footer(
@@ -405,7 +495,7 @@ class TestExecute:
             )
         assert r.success
         assert "Dry Run" in r.output
-        assert "Dify SaaS Agent" in sess.reply_draft  # footer 追加了
+        assert "Dify AI Support" in sess.reply_draft  # footer 追加了
         assert sess.reply_sent is False
 
     @pytest.mark.asyncio
@@ -481,7 +571,12 @@ class TestExecute:
         assert r.success
         assert "already delivered" in r.output
         assert sess.reply_sent is True
-        mock_mcp.assert_awaited_once()
+        assert mock_mcp.await_count == 3
+        assert [call.args[0] for call in mock_mcp.await_args_list] == [
+            "get_ticket_comments",
+            "get_ticket_comments",
+            "add_internal_note",
+        ]
         mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -839,7 +934,12 @@ class TestExecute:
 
         assert success is True
         assert "already delivered" in msg
-        mock_mcp.assert_awaited_once()
+        assert mock_mcp.await_count == 3
+        assert [call.args[0] for call in mock_mcp.await_args_list] == [
+            "get_ticket_comments",
+            "get_ticket_comments",
+            "add_internal_note",
+        ]
         mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -980,12 +1080,100 @@ class TestExecute:
         mock_relay.assert_awaited_once()
         kwargs = mock_relay.await_args.kwargs
         assert kwargs["ticket_id"] == 42
-        assert "Dify SaaS Agent" in kwargs["body"]
+        assert "Dify AI Support" in kwargs["body"]
         assert kwargs["url"] == "http://127.0.0.1:8097/mcp"
         assert kwargs["api_key"] == "test-relay-key"
         assert kwargs["timeout_seconds"] == 12
         # native messaging 不应退回 Support API ticket comment。
         mock_client.reply_ticket.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_public_reply_adds_internal_analysis_note(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        mock_relay = AsyncMock()
+        mcp_calls: list[tuple[str, dict]] = []
+
+        async def _call_mcp(name: str, arguments: dict):
+            mcp_calls.append((name, arguments))
+            if name == "get_ticket_comments":
+                return {"success": True, "data": {"comments": []}}
+            if name == "add_internal_note":
+                return {"success": True, "data": {"comment_id": 123}}
+            raise AssertionError(f"unexpected MCP tool: {name}")
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+            side_effect=_call_mcp,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Hi Alex,\n\nPlease retry the request now.",
+                    "reply_type": "solution",
+                    "conversation_id": "conv-1",
+                    "internal_analysis": (
+                        "Confirmed the failed run recovered. The customer can retry; "
+                        "monitor the next execution for recurrence."
+                    ),
+                },
+                sess,
+            )
+
+        assert result.success
+        note_calls = [args for name, args in mcp_calls if name == "add_internal_note"]
+        assert len(note_calls) == 1
+        note_body = note_calls[0]["body"]
+        assert "## Internal Analysis" in note_body
+        assert "Confirmed the failed run recovered." in note_body
+        assert "Public reply delivered" in note_body
+        assert "public-reply-analysis:" in note_body
+
+    @pytest.mark.asyncio
+    async def test_direct_public_reply_adds_default_internal_analysis_note(self) -> None:
+        mock_relay = AsyncMock()
+        mcp_calls: list[tuple[str, dict]] = []
+
+        async def _call_mcp(name: str, arguments: dict):
+            mcp_calls.append((name, arguments))
+            if name == "get_ticket_comments":
+                return {"success": True, "data": {"comments": []}}
+            if name == "add_internal_note":
+                return {"success": True, "data": {"comment_id": 456}}
+            raise AssertionError(f"unexpected MCP tool: {name}")
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+            side_effect=_call_mcp,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply._check_freshness_before_relay",
+            AsyncMock(return_value=MagicMock(continue_send=True)),
+        ):
+            success, _ = await send_public_reply(
+                ticket_id=42,
+                body="Please share the UTC timestamp of the latest failure.",
+                reply_type="ask",
+                conversation_id="conv-1",
+                snapshot_customer_message_count=0,
+                delivery_attempt_id="direct-note-attempt-42",
+            )
+
+        assert success
+        note_calls = [args for name, args in mcp_calls if name == "add_internal_note"]
+        assert len(note_calls) == 1
+        assert "minimum missing details" in note_calls[0]["body"]
 
     @pytest.mark.asyncio
     async def test_saved_native_messaging_context_is_used_for_tool_call(self) -> None:

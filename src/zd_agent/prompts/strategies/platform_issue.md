@@ -29,6 +29,7 @@ platform incident 信号处理：
    不要只查单个 tenant。
 3. 全局指标异常或多工单信号持续扩大时，升级 SRE，`feishu_push` 用 alert /
    ticket_escalate 携带 ticket 列表、时间窗、SigNoz/指标摘要和当前客户 draft。
+   升级 SRE 前先公开回复客户：说明已确认的平台影响、需要平台级调查的原因和后续跟进方式；不要泄露内部服务名、日志或未确认根因，也不要承诺未确认 ETA。
 
 ---
 

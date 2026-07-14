@@ -40,6 +40,15 @@ AskTemplateName = Literal["A", "B", "C", "D"]
 # 静态模板（A / B / D / E / G）
 # ---------------------------------------------------------------------------
 
+_SUPPORT_TOPICS = (
+    "For example:\n\n"
+    "- Billing or refunds\n"
+    "- Feature usage or how-to guidance\n"
+    "- Account or subscription changes\n"
+    "- Workflows, knowledge base, or API questions\n"
+    "- Errors or unexpected behavior"
+)
+
 def silent_template(*, customer_name: str = "") -> str:
     """A. Customer created ticket but hasn't sent any messages yet.
 
@@ -47,10 +56,9 @@ def silent_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}, thanks for reaching out. Could you please let us know "
-        "what you need help with? For example, is it related to billing/refund, "
-        "feature usage or how-to guidance, account/subscription changes, "
-        "workflows, knowledge base, API, or an error/bug?"
+        f"Hi{name_part},\n\n"
+        "Thank you for contacting Dify Support. Please let us know what you need "
+        f"help with.\n\n{_SUPPORT_TOPICS}"
     )
 
 
@@ -61,10 +69,9 @@ def greeting_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}, thanks for reaching out. Could you please let us know "
-        "what you need help with? For example, is it related to billing/refund, "
-        "feature usage or how-to guidance, account/subscription changes, "
-        "workflows, knowledge base, API, or an error/bug?"
+        f"Hi{name_part},\n\n"
+        "Thank you for contacting Dify Support. Please let us know what you need "
+        f"help with.\n\n{_SUPPORT_TOPICS}"
     )
 
 
@@ -76,23 +83,49 @@ def retry_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Hi{name_part}, I still need to know what you need help with before I can continue. "
-        "For example, is it related to billing/refund, feature usage or how-to guidance, "
-        "account/subscription changes, workflows, knowledge base, API, or an error/bug?"
+        f"Hi{name_part},\n\n"
+        "I still need to know what you need help with before I can continue. "
+        f"Please send the relevant details.\n\n{_SUPPORT_TOPICS}"
     )
 
 
-def handoff_template(*, customer_name: str = "") -> str:
+def _customer_safe_handoff_reason(reason: str) -> str:
+    """Map internal escalation codes to a customer-safe explanation."""
+    normalized = (reason or "").strip().lower()
+    if normalized == "customer_requested":
+        return "You asked to work with a human support engineer."
+    if normalized == "max_asks_reached":
+        return (
+            "The available details are not enough to confirm the next action "
+            "safely, so this case needs additional review."
+        )
+    if any(token in normalized for token in ("sre", "engineering", "incident")):
+        return (
+            "Our checks indicate that this issue requires platform-level "
+            "investigation by our engineering team."
+        )
+    if any(token in normalized for token in ("billing", "refund", "finance")):
+        return "This request requires review by our billing team."
+    if any(
+        token in normalized
+        for token in ("account", "security", "deletion", "transfer", "high_risk")
+    ):
+        return (
+            "This request involves an account-sensitive action that requires "
+            "manual review."
+        )
+    return "This case requires additional review before we can confirm the next step."
+
+
+def handoff_template(*, customer_name: str = "", reason: str = "") -> str:
     """E. Agent giving up, notifying customer that a human is taking over.
 
     触发：state→escalated_to_human（任何原因，包括 customer_requested /
     max_asks_reached / high_risk_category / low_confidence / agent_error）。
     """
     name_part = f" {customer_name}" if customer_name else ""
-    return (
-        f"Hi{name_part}, I'll let a human teammate take this from here. "
-        "They'll follow up shortly. Thanks for your patience!"
-    )
+    reason_text = _customer_safe_handoff_reason(reason)
+    return f"Hi{name_part},\n\n{reason_text}"
 
 
 def closed_template(*, customer_name: str = "") -> str:
@@ -102,8 +135,9 @@ def closed_template(*, customer_name: str = "") -> str:
     """
     name_part = f" {customer_name}" if customer_name else ""
     return (
-        f"Glad to hear that{name_part}! "
-        "Closing this ticket — feel free to reply here or open a new ticket anytime."
+        f"Hi{name_part},\n\n"
+        "I'm glad the issue is resolved. You can reply here or open a new ticket "
+        "if it returns."
     )
 
 

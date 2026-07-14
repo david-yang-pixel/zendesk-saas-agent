@@ -119,3 +119,10 @@ async def test_forced_summary_reply_failure_does_not_complete_session() -> None:
     assert isinstance(events[-1], LoopFinished)
     assert events[-1].status == "guardrail"
     assert "browser relay unavailable" in session.error_message
+    combined_messages = "\n".join(
+        str(message.get("content") or "") for message in store.raw
+    )
+    assert (
+        '如需 SE/SRE/人工兜底 → 必须调 zendesk_public_reply(reply_type="handoff")'
+        in combined_messages
+    )

@@ -3,11 +3,12 @@
 
 Why a separate tool from :class:`zendesk.ZendeskInternalReply`
 ------------------------------------------------------------
-Internal Note 与 Public Reply 是两类**完全不同**的对外动作：
+Internal Note 与 Public Reply 是两类**完全不同**的内容：
 
 - **Internal Note** 给 Support Engineer 看，agent 写"草稿 + 分析 + 引导"三段式
   HTML 卡片，可以随便写、SE 审完发不发是 SE 的事；**风险低**。
-- **Public Reply** 客户**直接看到**，agent 说错话不能撤回，**风险高**。
+- **Public Reply** 客户**直接看到**，agent 说错话不能撤回，**风险高**。每次确认
+  公开回复送达后，系统会另外写入一条幂等的 Internal Analysis，供工程师追踪。
 
 为防止 agent 把两个语境混淆（用 internal 风格写 public reply 给客户读到内部摘要
 卡片是灾难），把 public reply 做成**完全独立的工具**，参数 schema、措辞约束、
@@ -21,8 +22,8 @@ footer 处理都不一样。
    原因：模板一致性 + 国际化默认 + LLM 英文质量最稳。
 3. **reply_type 区分场景**：ask / solution / handoff 统一使用标准 AI 声明；
    closed 使用收尾声明。
-4. **不做 HTML 渲染**：public reply 是给客户读的，纯文本 / Markdown 已经够，不要
-   学 Internal Note 那样塞复杂 HTML 卡片。
+4. **使用易读纯文本**：public reply 不使用 Markdown 标题、粗体、反引号、emoji
+   或装饰性分隔线；只保留短段落和必要列表。
 5. **kill switch**：``cfg.public_reply.enabled = false`` 时工具直接 return 失败，
    出问题一秒下线无需 redeploy。
 """
@@ -42,6 +43,9 @@ from zd_agent.runtime.reply_audit import (
     public_reply_privacy_blockers,
 )
 from zd_agent.services.messaging_context import get_messaging_context
+from zd_agent.services.public_reply_internal_note import (
+    ensure_post_public_internal_note,
+)
 from zd_agent.services.public_reply_delivery_store import (
     PublicReplyDeliveryStore,
 )
@@ -167,6 +171,7 @@ async def send_public_reply(
     snapshot_customer_message_count: int | None = None,
     snapshot_customer_last_message_id: str | None = None,
     delivery_attempt_id: str | None = None,
+    internal_analysis: str = "",
 ) -> tuple[bool, str]:
     """直接发 public reply 的公共入口（不需要 AgentSession）。
 
@@ -304,6 +309,13 @@ async def send_public_reply(
             "public_reply_sent_direct" if sent_now else "public_reply_already_delivered_direct",
             ticket_id=ticket_id, reply_type=reply_type,
         )
+        internal_note_sent = await ensure_post_public_internal_note(
+            ticket_id=ticket_id,
+            reply_type=reply_type,
+            body_with_footer=body_with_footer,
+            internal_analysis=internal_analysis,
+            zendesk_tool_caller=call_zendesk_tool,
+        )
         # M8 metric: 成功发出一条公共回复
         try:
             from zd_agent.observability.metrics import (
@@ -322,8 +334,12 @@ async def send_public_reply(
                 error_type=type(metric_error).__name__,
             )
         if sent_now:
-            return True, f"已发送 Public Reply 到工单 #{ticket_id}"
-        return True, f"Public Reply already delivered to ticket #{ticket_id}"
+            message = f"已发送 Public Reply 到工单 #{ticket_id}"
+        else:
+            message = f"Public Reply already delivered to ticket #{ticket_id}"
+        if not internal_note_sent:
+            message += "; internal analysis note delivery failed"
+        return True, message
     except Exception as e:  # noqa: BLE001 - public boundary returns a typed result.
         logger.error(
             "public_reply_direct_send_failed",
@@ -336,21 +352,27 @@ async def send_public_reply(
 class ZendeskPublicReply(Tool):
     """发送公开回复（客户可见）。**只用于 SaaS messaging 工单**。
 
-    与 ``zendesk_internal_reply`` 互斥：
+    客户回复和内部分析由本工具一次完成：
 
-    - Internal Reply 给同事看，不会触发客户邮件
     - Public Reply 给**客户**看 + Zendesk 会发邮件通知客户 / 在 messaging widget 显示
+    - 确认送达后自动写一条 Internal Analysis 给 Support Engineer 看
 
-    工具自动追加 footer（明示 AI 身份 + 提供"回复 human" 逃生口）。LLM
-    在 ``body`` 里**不需要**也**不应该**自己写 footer，写了会被检测到不重复加。
+    工具自动追加 footer。ask/solution 提供"回复 human"逃生口；handoff 根据上海
+    时间自动追加人工支持时段状态，并使用人工跟进专用 footer。LLM 在 ``body``
+    里**不需要**也**不应该**自己写 footer，写了会被检测到不重复加。
     """
 
     name = "zendesk_public_reply"
     description = (
         "向 SaaS messaging 工单发送 Public Reply（客户可见的公开评论）。"
-        "正文应该用 English（统一语言）。系统会自动追加 footer 注明 AI 身份并提示"
-        "客户可回复 'human' 转人工，**不要在 body 里自己写 footer**。"
+        "正文应该用 English（统一语言）。系统会自动追加 footer；ask/solution 会提示"
+        "客户可回复 'human' 转人工，handoff 会使用人工跟进专用 footer。"
+        "人工支持时间为上海时间 09:00（含）到 18:00（不含）；handoff 会自动追加"
+        "当前是否处于支持时段和排队说明，**不要在 body 里重复写工作时间或 footer**。"
+        "使用易读纯文本和短段落；不要使用 Markdown 标题、粗体、反引号、emoji"
+        "或装饰性分隔线。"
         "**不要包含源码路径、内部仓库路径、文件名+行号或内部代码实现位置**。"
+        "公开回复确认送达后，系统会自动写入 internal_analysis 作为内部备注。"
         "reply_type 决定 footer 措辞变体："
         "ask（向客户问问题，模板 A/B/C/D）/ "
         "solution（给出解决方案，模板 F）/ "
@@ -367,7 +389,9 @@ class ZendeskPublicReply(Tool):
             "body": {
                 "type": "string",
                 "description": (
-                    "公开回复正文，**English only**，Markdown 格式。"
+                    "公开回复正文，**English only**，易读纯文本格式。先给结论，"
+                    "再用短段落和必要的 '- ' 列表说明步骤；不要使用 Markdown 标题、"
+                    "粗体、反引号、emoji 或装饰性分隔线。"
                     "不要包含 footer——系统会自动追加。不要包含源码路径、"
                     "内部仓库路径、文件名+行号或内部代码实现位置。"
                 ),
@@ -391,6 +415,14 @@ class ZendeskPublicReply(Tool):
                 "type": "string",
                 "description": "Zendesk Messaging app id（系统通常自动填充）",
             },
+            "internal_analysis": {
+                "type": "string",
+                "description": (
+                    "客户不可见的内部分析。用中文简明记录分类、已确认事实、"
+                    "关键证据、仍未知内容和后续动作。公开回复成功后系统会自动"
+                    "把它写入 Internal Note；不要把这些内部信息写进 body。"
+                ),
+            },
         },
         "required": ["ticket_id", "body", "reply_type"],
     }
@@ -406,6 +438,7 @@ class ZendeskPublicReply(Tool):
         reply_type = args.get("reply_type")
         raw_conversation_id = args.get("conversation_id")
         raw_messaging_app_id = args.get("messaging_app_id")
+        raw_internal_analysis = args.get("internal_analysis", "")
 
         # 先做类型校验，再 strip，避免非法工具参数变成 AttributeError。
         if "ticket_id" not in args:
@@ -430,10 +463,13 @@ class ZendeskPublicReply(Tool):
             return ToolResult(success=False, error="conversation_id must be a string")
         if raw_messaging_app_id is not None and not isinstance(raw_messaging_app_id, str):
             return ToolResult(success=False, error="messaging_app_id must be a string")
+        if not isinstance(raw_internal_analysis, str):
+            return ToolResult(success=False, error="internal_analysis must be a string")
 
         body = raw_body.strip()
         conversation_id = (raw_conversation_id or "").strip() or None
         messaging_app_id = (raw_messaging_app_id or "").strip() or None
+        internal_analysis = raw_internal_analysis.strip()
 
         # 1. Kill switch（出问题一秒下线）
         cfg = get_config()
@@ -661,6 +697,13 @@ class ZendeskPublicReply(Tool):
                 "public_reply_sent" if sent_now else "public_reply_already_delivered",
                 ticket_id=ticket_id, reply_type=reply_type,
             )
+            internal_note_sent = await ensure_post_public_internal_note(
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                body_with_footer=body_with_footer,
+                internal_analysis=internal_analysis,
+                zendesk_tool_caller=call_zendesk_tool,
+            )
             # M8 metric: agent 通过 Tool 路径成功发出公共回复
             try:
                 from zd_agent.observability.metrics import (
@@ -679,18 +722,18 @@ class ZendeskPublicReply(Tool):
                     error_type=type(metric_error).__name__,
                 )
             if sent_now:
-                return ToolResult(
-                    output=(
-                        f"已发送 Public Reply 到工单 #{ticket_id}"
-                        f"（reply_type={reply_type}）"
-                    ),
+                output = (
+                    f"已发送 Public Reply 到工单 #{ticket_id}"
+                    f"（reply_type={reply_type}）"
                 )
-            return ToolResult(
-                output=(
+            else:
+                output = (
                     f"Public Reply already delivered to ticket #{ticket_id}"
                     f"（reply_type={reply_type}）"
-                ),
-            )
+                )
+            if not internal_note_sent:
+                output += "；公开回复已送达，但内部分析备注写入失败"
+            return ToolResult(output=output)
         except Exception as e:  # noqa: BLE001 - tool boundary returns ToolResult.
             logger.error(
                 "public_reply_send_failed",

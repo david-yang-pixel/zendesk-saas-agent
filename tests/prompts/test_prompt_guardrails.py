@@ -27,6 +27,30 @@ def test_prompt_forbids_source_paths_in_customer_visible_replies():
     assert "源码路径、SQL、日志、trace、内部判断只能写入 internal note" in prompt
 
 
+def test_prompt_requires_professional_readable_public_replies_and_internal_analysis():
+    prompt = _build()
+
+    assert "资深技术支持工程师" in prompt
+    assert "不用 Markdown 标题、粗体、反引号、emoji 或装饰性分隔线" in prompt
+    assert "公开回复成功后，系统会自动写入一条内部分析" in prompt
+
+
+def test_prompt_requires_customer_update_before_human_or_sre_escalation():
+    prompt = _build()
+
+    assert "需要 SRE、工程师、财务或人工审核时，先调用 `zendesk_public_reply`" in prompt
+    assert "公开说明已确认事实、升级原因和下一步" in prompt
+    assert "只有公开回复通道不可用，或说明原因本身会泄露安全或隐私信息时" in prompt
+
+
+def test_prompt_leaves_handoff_support_hours_to_the_send_layer():
+    prompt = _build()
+
+    assert "上海时间 09:00（含）到 18:00（不含）" in prompt
+    assert "handoff 的工作时间状态由发送层自动追加" in prompt
+    assert "不要在 body 里重复写工作时间" in prompt
+
+
 def test_core_router_requires_remote_tool_services():
     prompt = _build()
 

@@ -699,7 +699,11 @@ async def agent_loop(
                 f"[系统] {e.reason}。请基于目前收集到的所有信息，"
                 "立即输出你的最终分析。"
                 "**如有具体方案 → 必须调 zendesk_public_reply 把 reply 发给客户**；"
-                "**如还需 SE 兜底 → 调 zendesk_internal_reply 写 Internal Note 让 SE 接手**。"
+                "**如需 SE/SRE/人工兜底 → 必须调 "
+                'zendesk_public_reply(reply_type="handoff")，向客户说明已确认事实、'
+                "升级原因和下一步，并把内部证据放入 internal_analysis**。"
+                "只有公开回复通道不可用或存在安全/隐私泄露风险时，才调 "
+                "zendesk_internal_reply，并注明客户尚未收到通知。"
                 "不要再调其它工具（SigNoz / SQL / subagent 等都已禁用）。"
             )
             summary_start = time.monotonic()

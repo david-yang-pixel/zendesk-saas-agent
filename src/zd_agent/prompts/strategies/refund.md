@@ -68,4 +68,4 @@ WHERE taj.tenant_id = '<wid>'
 - SQL 查到清晰订阅状态 + 政策匹配明确 → `confidence=high`, `needs_human=False`
   （财务只需在 Stripe 实操，不需要再决策）
 - SQL 查不到 workspace 或政策模糊 → `confidence=low`, `needs_human=True`
-  （改走 `zendesk_internal_reply`，让 SE 介入）
+  低置信度也要先公开说明：当前还不能确认退款判定，需要 Support/Billing 进一步审核；用 `zendesk_public_reply(reply_type="handoff")`，随后自动写 Internal Analysis 并 `feishu_push ticket_escalate`。不要向客户暴露 SQL、内部错误或猜测。

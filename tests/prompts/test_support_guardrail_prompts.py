@@ -6,6 +6,9 @@ REFUND_STRATEGY_PROMPT = ROOT / "src/zd_agent/prompts/strategies/refund.md"
 REFUND_FLOW_PROMPT = ROOT / "src/zd_agent/prompts/refund/REFUND_FLOW.md"
 SOUL_PROMPT = ROOT / "src/zd_agent/prompts/SOUL.md"
 PLATFORM_PROMPT = ROOT / "src/zd_agent/prompts/strategies/platform_issue.md"
+AGENTS_PROMPT = ROOT / "src/zd_agent/prompts/AGENTS.md"
+DIFY_SUPPORT_PROMPT = ROOT / "src/zd_agent/prompts/skills/DIFY_SUPPORT_TICKET.md"
+TOOLS_PROMPT = ROOT / "src/zd_agent/prompts/TOOLS.md"
 
 
 def test_refund_prompts_require_owner_gate_before_eligibility() -> None:
@@ -42,3 +45,23 @@ def test_platform_issue_prompt_treats_batch_tickets_as_incident_signal() -> None
     assert "zendesk_search" in text
     assert "全局指标" in text
     assert "升级 SRE" in text
+
+
+def test_all_escalation_prompts_require_a_customer_safe_public_update_first() -> None:
+    agents = AGENTS_PROMPT.read_text(encoding="utf-8")
+    support = DIFY_SUPPORT_PROMPT.read_text(encoding="utf-8")
+    tools = TOOLS_PROMPT.read_text(encoding="utf-8")
+    platform = PLATFORM_PROMPT.read_text(encoding="utf-8")
+    refund_strategy = REFUND_STRATEGY_PROMPT.read_text(encoding="utf-8")
+    refund_flow = REFUND_FLOW_PROMPT.read_text(encoding="utf-8")
+
+    assert "先公开回复客户" in agents
+    assert "先公开回复客户" in support
+    assert "需要人工或 SRE 介入时，先用 `zendesk_public_reply`" in tools
+    assert "升级 SRE 前先公开回复客户" in platform
+    assert "低置信度也要先公开说明" in refund_strategy
+    assert "低置信度也要先公开说明" in refund_flow
+
+    assert "不可重现 platform_issue 需 SRE drill down | `zendesk_internal_reply`" not in agents
+    assert "改走 `zendesk_internal_reply`" not in refund_strategy
+    assert "什么情况依然 escalate 不公开回复" not in refund_flow

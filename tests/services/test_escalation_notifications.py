@@ -39,6 +39,26 @@ async def test_handoff_reply_uses_customer_name() -> None:
     assert kwargs["reply_type"] == "handoff"
     assert kwargs["delivery_attempt_id"] == ""
     assert "Alice" in kwargs["body"]
+    assert "asked to work with a human support engineer" in kwargs["body"]
+    assert "customer_requested" in kwargs["internal_analysis"]
+
+
+@pytest.mark.asyncio
+async def test_sre_handoff_publicly_explains_the_review_reason() -> None:
+    mock_send = AsyncMock(return_value=(True, "ok"))
+
+    with patch("zd_agent.tools.zendesk_public_reply.send_public_reply", mock_send):
+        sent = await send_handoff_reply_best_effort(
+            ticket_id=9999,
+            reason="sre_investigation",
+            customer_name="Alice",
+        )
+
+    assert sent is True
+    kwargs = mock_send.call_args.kwargs
+    assert "platform-level investigation" in kwargs["body"].lower()
+    assert "engineering team" in kwargs["body"].lower()
+    assert "sre_investigation" in kwargs["internal_analysis"]
 
 
 @pytest.mark.asyncio

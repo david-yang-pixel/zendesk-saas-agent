@@ -167,12 +167,10 @@ dashboard 实际点退款（或不操作）。**财务不需要再写客户回�
 - 给客户清晰的具体原因（不要打太极）
 - 给一个 alternative（暂停 / 切换 plan / credit），除非客户已明确不接受
 
-## ⚠️ 什么情况依然 escalate 不公开回复
+## ⚠️ 需要人工审核的场景（仍先公开说明）
 
-- 客户**情绪激动**（emotional 类）—— 由 trigger_decider 标记，直接转人工
-  不走 agent，agent 看到 escalated 状态就不会进入了
-- 客户**SQL 查不到 workspace** / 数据严重异常 → Internal Note 标
-  `confidence=low + needs_human=True`，让 SE 介入而不是公开回复
+- 客户**情绪激动**（emotional 类）—— 由 trigger_decider 标记并自动发送客户安全的 handoff，再转人工；不要在公开回复中复述内部分类。
+- 客户**SQL 查不到 workspace** / 数据严重异常 → `confidence=low + needs_human=True`。低置信度也要先公开说明当前无法安全确认退款判定、需要 Support/Billing 审核，再由 `zendesk_public_reply` 自动写 Internal Analysis 并升级；不要暴露 SQL 或内部错误。
 
 ## 参考案例
 

@@ -82,15 +82,14 @@ class TestStaticTemplates:
         assert "Alice" in body
         body_lower = body.lower()
         assert "let us know what you need help with" in body_lower
-        assert "billing/refund" in body_lower
-        assert "feature usage or how-to guidance" in body_lower
-        assert "account/subscription changes" in body_lower
-        assert "workflows" in body_lower
-        assert "knowledge base" in body_lower
-        assert "api" in body_lower
-        assert "error/bug" in body_lower
+        assert "for example:\n\n- billing or refunds" in body_lower
+        assert "- feature usage or how-to guidance" in body_lower
+        assert "- account or subscription changes" in body_lower
+        assert "- workflows, knowledge base, or api questions" in body_lower
+        assert "- errors or unexpected behavior" in body_lower
         assert "what type of issue" not in body_lower
         assert "issue type" not in body_lower
+        assert "/" not in body
 
     def test_silent_template_no_name(self) -> None:
         """没拿到客户名 → 不留奇怪空格"""
@@ -104,13 +103,11 @@ class TestStaticTemplates:
         body_lower = body.lower()
         assert "what" in body_lower or "help" in body_lower
         assert "let us know what you need help with" in body_lower
-        assert "billing/refund" in body_lower
-        assert "feature usage or how-to guidance" in body_lower
-        assert "account/subscription changes" in body_lower
-        assert "workflows" in body_lower
-        assert "knowledge base" in body_lower
-        assert "api" in body_lower
-        assert "error/bug" in body_lower
+        assert "- billing or refunds" in body_lower
+        assert "- feature usage or how-to guidance" in body_lower
+        assert "- account or subscription changes" in body_lower
+        assert "- workflows, knowledge base, or api questions" in body_lower
+        assert "- errors or unexpected behavior" in body_lower
         assert "what type of issue" not in body_lower
         assert "issue type" not in body_lower
 
@@ -118,21 +115,40 @@ class TestStaticTemplates:
         body = retry_template(customer_name="Eve")
         body_lower = body.lower()
         assert "what you need help with" in body_lower
-        assert "billing/refund" in body_lower
-        assert "feature usage or how-to guidance" in body_lower
-        assert "account/subscription changes" in body_lower
-        assert "workflows" in body_lower
-        assert "knowledge base" in body_lower
-        assert "api" in body_lower
-        assert "error/bug" in body_lower
+        assert "- billing or refunds" in body_lower
+        assert "- feature usage or how-to guidance" in body_lower
+        assert "- account or subscription changes" in body_lower
+        assert "- workflows, knowledge base, or api questions" in body_lower
+        assert "- errors or unexpected behavior" in body_lower
         assert "what type of issue" not in body_lower
         assert "issue type" not in body_lower
 
     def test_handoff_template_mentions_human(self) -> None:
         """转人工通知必须明示 'human teammate'"""
-        body = handoff_template(customer_name="Frank")
+        body = handoff_template(
+            customer_name="Frank",
+            reason="customer_requested",
+        )
         assert "human" in body.lower()
         assert "Frank" in body
+
+    def test_handoff_template_explains_sre_reason_without_internal_details(self) -> None:
+        body = handoff_template(
+            customer_name="Frank",
+            reason="sre_investigation",
+        )
+
+        assert "platform-level investigation" in body.lower()
+        assert "engineering team" in body.lower()
+
+    def test_handoff_template_does_not_expose_unknown_raw_reason(self) -> None:
+        body = handoff_template(
+            customer_name="Frank",
+            reason="LLM error: internal-provider-secret",
+        )
+
+        assert "internal-provider-secret" not in body
+        assert "additional review" in body.lower()
 
     def test_handoff_no_name(self) -> None:
         body = handoff_template(customer_name="")
