@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: ghcr.io/yang-dify/zendesk-saas-agent
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 concurrency:
   group: zd-agent-${{ github.ref }}

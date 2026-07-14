@@ -20,7 +20,7 @@ def test_github_action_builds_and_pushes_main_and_sha_tags() -> None:
     assert "branches: [main]" in text
     assert "workflow_dispatch:" in text
     assert workflow["permissions"] == {"contents": "read"}
-    assert workflow["env"]["IMAGE_NAME"] == "ghcr.io/yang-dify/zendesk-saas-agent"
+    assert workflow["env"]["IMAGE_NAME"] == "ghcr.io/${{ github.repository }}"
     assert workflow["concurrency"] == {
         "group": "zd-agent-${{ github.ref }}",
         "cancel-in-progress": True,
@@ -70,6 +70,10 @@ def test_ghcr_deploy_script_keeps_secret_out_of_source_and_retags_latest() -> No
     text = DEPLOY_SCRIPT.read_text()
 
     assert os.access(DEPLOY_SCRIPT, os.X_OK)
+    assert (
+        'IMAGE="${ZD_AGENT_IMAGE:-ghcr.io/david-yang-pixel/zendesk-saas-agent}"'
+        in text
+    )
     assert "GHCR_PAT" in text
     assert "read:packages" in text
     assert "docker login ghcr.io" in text

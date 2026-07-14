@@ -9,7 +9,7 @@ set -euo pipefail
 #   read -rsp "GHCR PAT: " GHCR_PAT; echo
 #   GHCR_USERNAME=<github-user> GHCR_PAT="$GHCR_PAT" ./deploy/deploy-ghcr.sh main
 
-IMAGE="${ZD_AGENT_IMAGE:-ghcr.io/yang-dify/zendesk-saas-agent}"
+IMAGE="${ZD_AGENT_IMAGE:-ghcr.io/david-yang-pixel/zendesk-saas-agent}"
 TAG="${1:-${ZD_AGENT_IMAGE_TAG:-main}}"
 LOCAL_IMAGE="${ZD_AGENT_LOCAL_IMAGE:-zd-agent:latest}"
 SERVICE="${ZD_AGENT_SERVICE:-zd-agent}"

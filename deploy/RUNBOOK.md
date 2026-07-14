@@ -248,8 +248,8 @@ curl -fsS -H "X-API-Key: $DB_GATEWAY_API_KEY" https://<agent-public-domain>/db-g
 Push to `main` runs `.github/workflows/docker-image.yml`:
 
 1. build `deploy/Dockerfile`
-2. push `ghcr.io/yang-dify/zendesk-saas-agent:main`
-3. push `ghcr.io/yang-dify/zendesk-saas-agent:sha-<commit-sha>`
+2. push `ghcr.io/david-yang-pixel/zendesk-saas-agent:main`
+3. push `ghcr.io/david-yang-pixel/zendesk-saas-agent:sha-<commit-sha>`
 4. SSH to the server, fast-forward `/opt/zd-agent/code` to `origin/main`
 5. run `/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>`
 6. send a success email only after `deploy-ghcr.sh` finishes and `healthz` passes,
@@ -310,7 +310,7 @@ To deploy or roll back to an exact commit image:
 /opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>
 ```
 
-`deploy-ghcr.sh` pulls `ghcr.io/yang-dify/zendesk-saas-agent:<tag>`, retags it
+`deploy-ghcr.sh` pulls `ghcr.io/david-yang-pixel/zendesk-saas-agent:<tag>`, retags it
 as local `zd-agent:latest`, restarts `zd-agent`, and waits for
 `http://127.0.0.1:8080/healthz`.
 
