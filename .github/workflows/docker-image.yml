@@ -3,6 +3,8 @@ name: Build and deploy zd-agent image
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -12,12 +14,12 @@ env:
   IMAGE_NAME: ghcr.io/yang-dify/zendesk-saas-agent
 
 concurrency:
-  group: zd-agent-production
+  group: zd-agent-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   quality:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read

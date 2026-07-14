@@ -257,12 +257,19 @@ async def test_image_download_rejects_oversized_content_length_before_read() -> 
 
 
 @pytest.mark.asyncio
-async def test_image_download_enforces_total_wall_clock_deadline() -> None:
+async def test_image_download_enforces_total_wall_clock_deadline(monkeypatch) -> None:
+    async def validate_immediately(_url: str) -> None:
+        return None
+
     class SlowResponse(_Response):
         async def aiter_bytes(self):
             await asyncio.sleep(1)
             yield _PNG
 
+    monkeypatch.setattr(
+        "zd_agent.services.ticket_image_download.validate_image_download_url",
+        validate_immediately,
+    )
     response = SlowResponse(200)
     _StubAsyncClient.responses = [response]
 
@@ -275,6 +282,45 @@ async def test_image_download_enforces_total_wall_clock_deadline() -> None:
 
     assert result is None
     assert elapsed < 0.2
+    assert response.closed is True
+
+
+@pytest.mark.asyncio
+async def test_image_download_waits_for_async_stream_cleanup_after_timeout(
+    monkeypatch,
+) -> None:
+    async def validate_immediately(_url: str) -> None:
+        return None
+
+    class SlowResponse(_Response):
+        async def aiter_bytes(self):
+            await asyncio.sleep(1)
+            yield _PNG
+
+    class AsyncClosingStream(_StubStream):
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            await asyncio.sleep(0)
+            self.response.closed = True
+
+    def stream_with_async_close(self, method: str, url: str, **kwargs):
+        type(self).stream_calls.append((method, url, kwargs))
+        type(self).calls.append((url, kwargs))
+        return AsyncClosingStream(type(self).responses.pop(0))
+
+    monkeypatch.setattr(
+        "zd_agent.services.ticket_image_download.validate_image_download_url",
+        validate_immediately,
+    )
+    monkeypatch.setattr(_StubAsyncClient, "stream", stream_with_async_close)
+    response = SlowResponse(200)
+    _StubAsyncClient.responses = [response]
+
+    result = await _download_image_data_url(
+        "https://images.example.com/a.png",
+        timeout=0.01,
+    )
+
+    assert result is None
     assert response.closed is True
 
 

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import base64
 import re
+import sys
 from dataclasses import dataclass
 from urllib.parse import urljoin
 
 import httpx
-from anyio import move_on_after
+from anyio import CancelScope, move_on_after
 
 from zd_agent.config import EnvSettings, get_config
 from zd_agent.log import get_logger
@@ -75,7 +76,8 @@ async def _stream_image_response(
         if auth is None
         else client.stream("GET", url, auth=auth, follow_redirects=False)
     )
-    async with stream_context as response:
+    response = await stream_context.__aenter__()
+    try:
         if response.status_code != 200:
             return _snapshot_response(response, b"")
 
@@ -101,6 +103,12 @@ async def _stream_image_response(
                 return _snapshot_response(response, None)
             body.extend(chunk)
         return _snapshot_response(response, bytes(body))
+    finally:
+        # The total wall-clock deadline may cancel this task while streaming.
+        # Shield the context exit so httpx can release the response/connection
+        # before the timeout result is returned to the caller.
+        with CancelScope(shield=True):
+            await stream_context.__aexit__(*sys.exc_info())
 
 
 async def _request_image_with_redirects(
