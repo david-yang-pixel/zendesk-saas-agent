@@ -262,7 +262,7 @@ deployment:
 |---|---|
 | `ZD_AGENT_DEPLOY_HOST` | Server host/IP, for example `180.76.243.249` |
 | `ZD_AGENT_DEPLOY_USER` | SSH user that can run Docker and `systemctl restart zd-agent`; current server uses root |
-| `ZD_AGENT_DEPLOY_PORT` | Optional SSH port; defaults to `22` when empty |
+| `ZD_AGENT_DEPLOY_PORT` | SSH port; current server uses `22022` (the workflow defaults to `22` when empty) |
 | `ZD_AGENT_DEPLOY_SSH_KEY` | Private key for the deploy user |
 | `ZD_AGENT_DEPLOY_KNOWN_HOSTS` | Pinned SSH host key line for the server |
 
@@ -270,7 +270,7 @@ Generate `ZD_AGENT_DEPLOY_KNOWN_HOSTS` from a trusted network and verify the
 fingerprint before saving it as a secret:
 
 ```bash
-ssh-keyscan -p 22 180.76.243.249
+ssh-keyscan -p 22022 180.76.243.249
 ```
 
 Optional GitHub repository secrets or `production` environment secrets for
