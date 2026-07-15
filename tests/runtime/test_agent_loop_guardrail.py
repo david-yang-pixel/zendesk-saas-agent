@@ -84,6 +84,40 @@ class _FailingPublicReply(Tool):
         return ToolResult(success=False, error="browser relay unavailable")
 
 
+class _MalformedForcedSummaryProvider(_ForcedSummaryProvider):
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSchema] | None = None,
+        temperature: float = 0.2,
+    ) -> LLMResponse:
+        response = await super().chat(messages, tools, temperature)
+        response.tool_calls[0] = ToolCallRequest(
+            id="reply-1",
+            name="zendesk_public_reply",
+            arguments='{"ticket_id": 42, "body": "truncated',
+        )
+        return response
+
+
+class _SuccessfulPublicReply(Tool):
+    name = "zendesk_public_reply"
+    description = "fake public reply"
+    parameters: dict[str, Any] = {"type": "object", "properties": {}}
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute(
+        self,
+        args: dict[str, Any],
+        session: AgentSession,
+    ) -> ToolResult:
+        self.calls.append(args)
+        session.reply_sent = True
+        return ToolResult(success=True, output="sent")
+
+
 @pytest.mark.asyncio
 async def test_forced_summary_reply_failure_does_not_complete_session() -> None:
     provider = _ForcedSummaryProvider()
@@ -126,3 +160,46 @@ async def test_forced_summary_reply_failure_does_not_complete_session() -> None:
         '如需 SE/SRE/人工兜底 → 必须调 zendesk_public_reply(reply_type="handoff")'
         in combined_messages
     )
+
+
+@pytest.mark.asyncio
+async def test_malformed_forced_summary_reply_uses_deterministic_handoff() -> None:
+    provider = _MalformedForcedSummaryProvider()
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user("investigate ticket")
+    registry = ToolRegistry()
+    reply_tool = _SuccessfulPublicReply()
+    registry.register(reply_tool)
+    session = AgentSession(ticket_id=42)
+    guardrails = Guardrails(GuardrailsConfig(max_rounds=0))
+    schemas = [
+        ToolSchema(
+            name="zendesk_public_reply",
+            description="fake public reply",
+            parameters={"type": "object", "properties": {}},
+        ),
+    ]
+
+    events = [
+        event
+        async for event in agent_loop(
+            session,
+            provider,
+            store,
+            registry,
+            guardrails,
+            schemas,
+        )
+    ]
+
+    assert session.status == SessionStatus.COMPLETED
+    assert session.reply_sent is True
+    assert isinstance(events[-1], LoopFinished)
+    assert events[-1].status == "completed"
+    assert len(reply_tool.calls) == 1
+    [fallback] = reply_tool.calls
+    assert fallback["ticket_id"] == 42
+    assert fallback["reply_type"] == "handoff"
+    assert "technical support" in fallback["body"]
+    assert "automated investigation reached its processing limit" in fallback["internal_analysis"]

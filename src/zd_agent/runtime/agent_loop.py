@@ -782,6 +782,43 @@ async def agent_loop(
                         tc_result = await registry.execute(
                             tc.name, tc.arguments, session,
                         )
+                        if (
+                            tc.name == "zendesk_public_reply"
+                            and not tc_result.success
+                            and (tc_result.error or "").startswith("参数解析失败:")
+                        ):
+                            fallback_arguments = json.dumps(
+                                {
+                                    "ticket_id": session.ticket_id,
+                                    "body": (
+                                        "Thank you for the detailed report. We have "
+                                        "escalated this case to our technical support "
+                                        "team for further investigation. The automated "
+                                        "investigation reached its processing limit "
+                                        "before a verified diagnosis could be completed. "
+                                        "A teammate will review the collected evidence "
+                                        "and follow up with you."
+                                    ),
+                                    "reply_type": "handoff",
+                                    "internal_analysis": (
+                                        "The automated investigation reached its processing "
+                                        "limit and produced malformed reply arguments. "
+                                        "系统已发送确定性的 handoff 回复，需要人工审核已收集证据。"
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            )
+                            tc_result = await registry.execute(
+                                tc.name,
+                                fallback_arguments,
+                                session,
+                            )
+                            logger.info(
+                                "guardrail_summary_malformed_reply_recovered",
+                                ticket_id=session.ticket_id,
+                                tool=tc.name,
+                                success=tc_result.success,
+                            )
                         out = tc_result.output if tc_result.success else (
                             f"❌ {tc_result.error}"
                         )
