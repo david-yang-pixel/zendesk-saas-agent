@@ -58,6 +58,73 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_run_agent_writes_failure_note_when_tool_loop_times_out(monkeypatch):
+    from zd_agent.runtime import runner
+
+    cfg = MagicMock()
+    cfg.agent.guardrails = MagicMock()
+    cfg.llm.model = "test-model"
+    cfg.sandbox.cleanup_on_success = False
+    cfg.sandbox.cleanup_on_failure = False
+    monkeypatch.setattr(runner, "get_config", lambda: cfg)
+    monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
+    send_error_note = AsyncMock()
+    monkeypatch.setattr(runner, "_send_error_note", send_error_note)
+    notify_failure = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        runner,
+        "send_feishu_escalation_best_effort",
+        notify_failure,
+        raising=False,
+    )
+    monkeypatch.setattr(runner, "_ensure_archive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
+
+    class FakeSandbox:
+        async def create(self, ticket_id):
+            return f"/tmp/{ticket_id}"
+
+        async def cleanup(self):
+            raise AssertionError("cleanup should be disabled in this test")
+
+    async def fake_tool_loop(session, *_args, **_kwargs):
+        session.status = SessionStatus.TIMEOUT
+        session.error_message = "processing timeout after 600 seconds"
+
+    monkeypatch.setattr(runner, "create_sandbox", lambda: FakeSandbox())
+    monkeypatch.setattr(runner, "create_tool_registry", lambda: MagicMock())
+    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock())
+    monkeypatch.setattr(runner, "Guardrails", lambda config: MagicMock(elapsed_seconds=0))
+    monkeypatch.setattr(runner, "run_tool_loop", fake_tool_loop)
+    monkeypatch.setattr(
+        "zd_agent.runtime.customer_profile.prefetch_customer_profile",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        "zd_agent.tools.saas_version.resolve_deployed_version",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "zd_agent.runtime.prompt_loader.build_static_system_prompt",
+        lambda: "system",
+    )
+
+    session = AgentSession(ticket_id=3436)
+    await runner.run_agent(session)
+
+    send_error_note.assert_awaited_once_with(
+        3436,
+        "processing timeout after 600 seconds",
+    )
+    notify_failure.assert_awaited_once_with(
+        ticket_id=3436,
+        reason="processing timeout after 600 seconds",
+        source="agent_session_failure",
+        handoff_reply_sent=False,
+    )
+
+
+@pytest.mark.asyncio
 async def test_ticket_done_fallback_retries_after_failed_llm_feishu(monkeypatch):
     from zd_agent.services import feishu_notifications
 

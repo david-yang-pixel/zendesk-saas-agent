@@ -9,6 +9,9 @@ from zd_agent.runtime.guardrails import Guardrails
 from zd_agent.runtime.llm_client import LLMClient
 from zd_agent.runtime.runner_archive import ensure_archive as _ensure_archive
 from zd_agent.runtime.runner_reporting import report_preflight_failure
+from zd_agent.services.escalation_notifications import (
+    send_feishu_escalation_best_effort,
+)
 from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
 from zd_agent.runtime.tool_loop import run_tool_loop
 from zd_agent.session.agent_session import AgentSession, SessionStatus
@@ -101,6 +104,18 @@ async def _send_error_note(ticket_id: int, reason: str) -> None:
         logger.warning("error_note_failed", ticket_id=ticket_id, error=str(e))
 
 
+async def _report_agent_failure(session: AgentSession, reason: str) -> None:
+    """Leave deterministic Zendesk and Feishu traces for failed sessions."""
+    safe_reason = (reason or f"agent session ended with status {session.status.value}")[:1000]
+    await _send_error_note(session.ticket_id, safe_reason)
+    await send_feishu_escalation_best_effort(
+        ticket_id=session.ticket_id,
+        reason=safe_reason,
+        source="agent_session_failure",
+        handoff_reply_sent=bool(session.reply_sent),
+    )
+
+
 async def run_agent(session: AgentSession) -> None:
     """运行 Agent 处理单个工单的完整流程
 
@@ -132,7 +147,7 @@ async def run_agent(session: AgentSession) -> None:
             reason=str(e),
         )
         if not session.dry_run:
-            await _send_error_note(session.ticket_id, str(e))
+            await _report_agent_failure(session, str(e))
         logger.info(
             "agent_done",
             ticket_id=session.ticket_id,
@@ -246,6 +261,14 @@ async def run_agent(session: AgentSession) -> None:
     try:
         # 运行工具循环
         await run_tool_loop(session, llm, registry, guardrails, trigger_type=session.trigger_type)
+        if (
+            not session.dry_run
+            and session.status in (SessionStatus.FAILED, SessionStatus.TIMEOUT)
+        ):
+            await _report_agent_failure(
+                session,
+                session.error_message or "agent session failed without an error message",
+            )
 
     except Exception as e:
         logger.error(
@@ -259,7 +282,7 @@ async def run_agent(session: AgentSession) -> None:
         session.error_message = str(e)
         # 发送错误内部备注（dry_run 模式跳过）
         if not session.dry_run:
-            await _send_error_note(session.ticket_id, str(e))
+            await _report_agent_failure(session, str(e))
 
     finally:
         # 输出处理摘要
