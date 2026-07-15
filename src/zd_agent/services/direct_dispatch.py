@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +51,20 @@ async def handle_direct_dispatch_source(
         now=now,
     )
     if cooldown.should_skip:
+        action = "skip"
+        result_action = "skip_post_agent_cooldown"
+        if source == "silence_waker" and existing_state is not None:
+            remaining_seconds = max(
+                1.0,
+                cooldown.cooldown_seconds - (cooldown.elapsed_seconds or 0.0),
+            )
+            existing_state.state = "in_silence_window"
+            existing_state.silence_window_end = now + timedelta(
+                seconds=remaining_seconds,
+            )
+            state.set(ticket_id, existing_state)
+            action = "defer"
+            result_action = "defer_post_agent_cooldown"
         logger.info(
             "trigger_skip_post_agent_cooldown_direct",
             ticket_id=ticket_id,
@@ -63,11 +77,11 @@ async def handle_direct_dispatch_source(
             log_path=log_path,
             ticket_id=ticket_id,
             verdict=f"post_agent_cooldown_{source}",
-            action="skip",
+            action=action,
         )
         return DirectDispatchResult(
             handled=True,
-            action="skip_post_agent_cooldown",
+            action=result_action,
             cooldown_seconds=cooldown.cooldown_seconds,
             elapsed_seconds=cooldown.elapsed_seconds,
         )

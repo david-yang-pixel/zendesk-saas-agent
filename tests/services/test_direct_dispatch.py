@@ -128,3 +128,48 @@ async def test_direct_source_cooldown_skips_dispatch_and_logs_decision(tmp_path)
     assert payload["ticket"] == "12345"
     assert payload["verdict"] == "post_agent_cooldown_mention"
     assert payload["action"] == "skip"
+
+
+@pytest.mark.asyncio
+async def test_silence_waker_cooldown_requeues_instead_of_sticking_processing(
+    tmp_path,
+) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        3436,
+        TicketState(
+            state="processing",
+            first_seen=_now() - timedelta(minutes=20),
+            silence_window_end=_now() - timedelta(seconds=10),
+            last_verdict="substantial_issue",
+            last_agent_finish_ts=_now() - timedelta(seconds=20),
+        ),
+    )
+    manager = MagicMock()
+    manager.dispatch = AsyncMock()
+    log_path = tmp_path / "trigger.jsonl"
+
+    result = await handle_direct_dispatch_source(
+        ticket_id=3436,
+        msg={"source": "silence_waker"},
+        manager=manager,
+        state=state,
+        log_path=log_path,
+        cfg=_cfg(cooldown_seconds=180),
+        now=_now(),
+    )
+
+    assert result.handled is True
+    assert result.dispatched is False
+    assert result.action == "defer_post_agent_cooldown"
+    assert result.cooldown_seconds == 180
+    restored = state.get(3436)
+    assert restored is not None
+    assert restored.state == "in_silence_window"
+    assert restored.silence_window_end == _now() + timedelta(seconds=160)
+    manager.dispatch.assert_not_awaited()
+
+    [record] = log_path.read_text(encoding="utf-8").splitlines()
+    payload = json.loads(record)
+    assert payload["verdict"] == "post_agent_cooldown_silence_waker"
+    assert payload["action"] == "defer"
