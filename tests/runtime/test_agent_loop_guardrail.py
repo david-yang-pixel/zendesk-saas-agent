@@ -118,6 +118,23 @@ class _SuccessfulPublicReply(Tool):
         return ToolResult(success=True, output="sent")
 
 
+class _CircuitSummaryProvider(_ForcedSummaryProvider):
+    def __init__(self) -> None:
+        self.saw_circuit_prompt = False
+
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSchema] | None = None,
+        temperature: float = 0.2,
+    ) -> LLMResponse:
+        combined = "\n".join(str(message.get("content") or "") for message in messages)
+        if "SQL slow-query circuit" not in combined:
+            raise AssertionError("circuit must force a summary before another normal round")
+        self.saw_circuit_prompt = True
+        return await super().chat(messages, tools, temperature)
+
+
 @pytest.mark.asyncio
 async def test_forced_summary_reply_failure_does_not_complete_session() -> None:
     provider = _ForcedSummaryProvider()
@@ -203,3 +220,43 @@ async def test_malformed_forced_summary_reply_uses_deterministic_handoff() -> No
     assert fallback["reply_type"] == "handoff"
     assert "technical support" in fallback["body"]
     assert "automated investigation reached its processing limit" in fallback["internal_analysis"]
+
+
+@pytest.mark.asyncio
+async def test_open_slow_sql_circuit_forces_handoff_summary() -> None:
+    provider = _CircuitSummaryProvider()
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user("investigate ticket")
+    registry = ToolRegistry()
+    reply_tool = _SuccessfulPublicReply()
+    registry.register(reply_tool)
+    session = AgentSession(ticket_id=42)
+    session.slow_sql_failure_count = 3
+    session.slow_sql_circuit_open = True
+    guardrails = Guardrails(GuardrailsConfig(max_rounds=30))
+    schemas = [
+        ToolSchema(
+            name="zendesk_public_reply",
+            description="fake public reply",
+            parameters={"type": "object", "properties": {}},
+        ),
+    ]
+
+    events = [
+        event
+        async for event in agent_loop(
+            session,
+            provider,
+            store,
+            registry,
+            guardrails,
+            schemas,
+        )
+    ]
+
+    assert provider.saw_circuit_prompt is True
+    assert session.status == SessionStatus.COMPLETED
+    assert session.reply_sent is True
+    assert isinstance(events[-1], LoopFinished)
+    assert events[-1].status == "completed"

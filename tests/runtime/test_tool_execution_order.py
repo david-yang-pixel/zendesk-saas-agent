@@ -65,6 +65,17 @@ class _HangingTool(Tool):
         return ToolResult(output="too late")
 
 
+class _FailingSqlTool(Tool):
+    name = "sql_query"
+    description = "failing SQL query"
+    parameters = {"type": "object", "properties": {}}
+    concurrency_safe = True
+    group = "database_query"
+
+    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        return ToolResult(success=False, error="DB gateway query timed out")
+
+
 @pytest.mark.asyncio
 async def test_unsafe_tool_calls_run_serially() -> None:
     probe = _ConcurrencyProbe()
@@ -152,3 +163,27 @@ async def test_tool_call_timeout_is_reported_and_unblocks_batch(
     assert len(store.raw) == 1
     assert "工具执行超时" in store.raw[0]["content"]
     assert session.tool_call_log[0]["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_repeated_slow_sql_failures_open_session_circuit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_loop_module, "_SLOW_SQL_FAILURE_SECONDS", 0.0)
+    registry = ToolRegistry()
+    registry.register(_FailingSqlTool())
+    session = AgentSession(ticket_id=1)
+    store = MessageStore(_FakeProvider())
+    calls = [
+        ToolCallRequest(id=str(index), name="sql_query", arguments="{}")
+        for index in range(3)
+    ]
+
+    events = [
+        event
+        async for event in _execute_tool_calls(calls, registry, session, store, 1)
+    ]
+
+    assert len(events) == 3
+    assert session.slow_sql_failure_count == 3
+    assert session.slow_sql_circuit_open is True

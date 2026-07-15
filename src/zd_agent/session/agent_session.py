@@ -65,6 +65,8 @@ class AgentSession:
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     remote_log_run_id: int | None = None
     subagent_dispatch_count: int = 0
+    slow_sql_failure_count: int = 0
+    slow_sql_circuit_open: bool = False
 
     # 工单图片 URL（由 zendesk_get_ticket 收集，注入多模态消息供 LLM 查看）
     image_urls: list[dict[str, str]] = field(default_factory=list)

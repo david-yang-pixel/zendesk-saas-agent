@@ -39,6 +39,8 @@ _CONNECTION_MAX_RETRIES = 2
 _CONNECTION_BASE_DELAY = 5  # 网络瞬时抖动通常 5s 内恢复
 _PROACTIVE_CONTEXT_SNIP_TOKEN_THRESHOLD = 12_000
 _TOOL_CALL_TIMEOUT_SECONDS = 180.0
+_SLOW_SQL_FAILURE_SECONDS = 25.0
+_MAX_SLOW_SQL_FAILURES = 3
 _SUBAGENT_BATCH_TOOL_NAME = "run_subagents_parallel"
 _SUBAGENT_CONVERGENCE_REMINDER = (
     "[系统提醒] 并行证据收集已完成。请先基于当前已经拿到的 DB / 源码 / 日志 / "
@@ -240,6 +242,33 @@ def _assistant_message_dict(response: LLMResponse) -> dict[str, Any]:
     return msg
 
 
+def _record_slow_sql_failure(
+    session: AgentSession,
+    *,
+    tool_name: str,
+    success: bool,
+    elapsed: float,
+) -> None:
+    """Open a session-local circuit after repeated expensive SQL failures."""
+    if (
+        tool_name != "sql_query"
+        or success
+        or elapsed < _SLOW_SQL_FAILURE_SECONDS
+    ):
+        return
+
+    session.slow_sql_failure_count += 1
+    if session.slow_sql_failure_count >= _MAX_SLOW_SQL_FAILURES:
+        session.slow_sql_circuit_open = True
+    logger.warning(
+        "slow_sql_failure_recorded",
+        ticket_id=session.ticket_id,
+        elapsed=elapsed,
+        count=session.slow_sql_failure_count,
+        circuit_open=session.slow_sql_circuit_open,
+    )
+
+
 async def _run_tool_call(
     tc: ToolCallRequest,
     registry: ToolRegistry,
@@ -275,6 +304,12 @@ async def _run_tool_call(
             timeout_s=_TOOL_CALL_TIMEOUT_SECONDS,
             elapsed=elapsed,
         )
+        _record_slow_sql_failure(
+            session,
+            tool_name=tc.name,
+            success=False,
+            elapsed=elapsed,
+        )
         return ToolExecuted(
             round=current_round,
             tool_name=tc.name,
@@ -286,6 +321,12 @@ async def _run_tool_call(
             output=output[:4000],
         )
     elapsed = time.monotonic() - t0
+    _record_slow_sql_failure(
+        session,
+        tool_name=tc.name,
+        success=result.success,
+        elapsed=elapsed,
+    )
     output = result.output if result.success else f"❌ 错误: {result.error}"
     args_dict = _parse_tool_arguments(tc.arguments)
     session.log_tool_call(
@@ -490,6 +531,11 @@ async def agent_loop(
 
     try:
         while True:
+            if session.slow_sql_circuit_open:
+                raise GuardrailTriggered(
+                    "SQL slow-query circuit opened after "
+                    f"{session.slow_sql_failure_count} failed queries"
+                )
             guardrails.check_all()
 
             # 计算 message_store 当前 token 数（不算很贵，每轮一次）—
