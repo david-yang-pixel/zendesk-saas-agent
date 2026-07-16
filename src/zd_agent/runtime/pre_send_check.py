@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from enum import Enum
 from typing import Awaitable, Callable
 
 import httpx
@@ -47,6 +48,22 @@ logger = get_logger(module="runtime.pre_send_check")
 # 公共数据结构
 # ---------------------------------------------------------------------------
 
+class FreshnessRecoveryAction(str, Enum):
+    """Typed next step for a stale customer-message snapshot."""
+
+    REFRESH_CONTEXT = "refresh_context"
+
+
+@dataclass(frozen=True)
+class FreshnessRecovery:
+    """New customer context and the cursor that represents that context."""
+
+    action: FreshnessRecoveryAction
+    new_messages: tuple[dict, ...]
+    next_snapshot_count: int
+    next_snapshot_last_id: str
+
+
 @dataclass
 class FreshnessResult:
     """pre-send check 的结果。
@@ -57,6 +74,7 @@ class FreshnessResult:
     continue_send: bool
     reason: str = ""
     new_messages_count: int = 0
+    recovery: FreshnessRecovery | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +328,15 @@ async def pre_send_check_or_abort(
         snapshot_count=snapshot_count, current_count=current_count,
     )
 
+    recovery = FreshnessRecovery(
+        action=FreshnessRecoveryAction.REFRESH_CONTEXT,
+        new_messages=tuple(new_msgs),
+        next_snapshot_count=current_count,
+        next_snapshot_last_id=(
+            str(current[-1].get("id") or "") if current else ""
+        ),
+    )
+
     # 逐条评估新消息，遇任何一条实质性立刻 abort
     for i, msg in enumerate(new_msgs):
         verdict = is_substantive_heuristic(msg)
@@ -325,6 +352,7 @@ async def pre_send_check_or_abort(
                 continue_send=False,
                 reason="substantive_heuristic",
                 new_messages_count=new_count,
+                recovery=recovery,
             )
 
         if verdict is None:
@@ -335,6 +363,7 @@ async def pre_send_check_or_abort(
                     continue_send=False,
                     reason="substantive_llm_skipped",
                     new_messages_count=new_count,
+                    recovery=recovery,
                 )
 
             body = (msg.get("body") or "").strip()
@@ -354,6 +383,7 @@ async def pre_send_check_or_abort(
                     continue_send=False,
                     reason="substantive_llm",
                     new_messages_count=new_count,
+                    recovery=recovery,
                 )
         # verdict is False or LLM said non-substantive → 继续检查下一条
 

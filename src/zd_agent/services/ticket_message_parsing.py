@@ -91,7 +91,11 @@ def _messaging_customer_messages(
                 parts = []
                 for field in fields:
                     label = field.get("label", "") or field.get("name", "")
-                    value = field.get("value", "") or field.get("text", "")
+                    value = (
+                        field.get("value", "")
+                        or field.get("text", "")
+                        or field.get("email", "")
+                    )
                     if label or value:
                         parts.append(f"{label}: {value}".strip(": "))
                 body = "\n".join(parts)
@@ -124,5 +128,6 @@ def _messaging_customer_messages(
             "body": body,
             "public": True,
             "image_urls": image_urls,
+            "content_type": content_type,
         })
     return out

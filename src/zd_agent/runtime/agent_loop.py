@@ -27,6 +27,10 @@ from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, Tool
 from zd_agent.runtime.guardrails import GuardrailTriggered, Guardrails
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
 from zd_agent.runtime.messages import MessageStore
+from zd_agent.runtime.pre_send_check import (
+    FreshnessRecovery,
+    FreshnessRecoveryAction,
+)
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.tools.base import ToolRegistry
 
@@ -269,6 +273,58 @@ def _record_slow_sql_failure(
     )
 
 
+def _apply_freshness_recovery(
+    *,
+    result: Any,
+    session: AgentSession,
+    message_store: MessageStore,
+) -> None:
+    """Inject newly fetched customer messages before advancing the session cursor."""
+    recovery = (getattr(result, "metadata", None) or {}).get(
+        "freshness_recovery"
+    )
+    if not isinstance(recovery, FreshnessRecovery):
+        return
+    if recovery.action is not FreshnessRecoveryAction.REFRESH_CONTEXT:
+        return
+    if not recovery.new_messages or not recovery.next_snapshot_last_id:
+        logger.warning(
+            "freshness_recovery_invalid",
+            ticket_id=session.ticket_id,
+            next_snapshot_count=recovery.next_snapshot_count,
+            next_snapshot_last_id=recovery.next_snapshot_last_id,
+        )
+        return
+
+    rendered_messages = [
+        {
+            "id": message.get("id"),
+            "created_at": message.get("created_at"),
+            "content_type": message.get("content_type") or "text",
+            "body": message.get("body") or "",
+            "image_urls": message.get("image_urls") or [],
+        }
+        for message in recovery.new_messages
+    ]
+    message_store.append_user(
+        "[系统] 客户在本次分析期间补充了以下新消息。上一版回复已取消；"
+        "请先吸收这些内容，再重新生成客户回复。\n"
+        + json.dumps(rendered_messages, ensure_ascii=False)
+    )
+    # Cursor advancement is deliberately last: the context must already be in
+    # MessageStore before a subsequent send is allowed against the new cursor.
+    session.customer_msgs_snapshot_count = recovery.next_snapshot_count
+    session.customer_msgs_snapshot_last_id = recovery.next_snapshot_last_id
+    session.customer_msgs_snapshot_captured = True
+    logger.info(
+        "freshness_context_rebased",
+        ticket_id=session.ticket_id,
+        new_messages_count=len(recovery.new_messages),
+        snapshot_count=recovery.next_snapshot_count,
+        snapshot_last_id=recovery.next_snapshot_last_id,
+    )
+
+
 async def _run_tool_call(
     tc: ToolCallRequest,
     registry: ToolRegistry,
@@ -337,6 +393,11 @@ async def _run_tool_call(
         error=result.error,
     )
     message_store.append_tool_result(tc.id, tc.name, output)
+    _apply_freshness_recovery(
+        result=result,
+        session=session,
+        message_store=message_store,
+    )
     return ToolExecuted(
         round=current_round,
         tool_name=tc.name,

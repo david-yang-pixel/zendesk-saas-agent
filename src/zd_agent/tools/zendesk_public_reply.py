@@ -667,6 +667,7 @@ class ZendeskPublicReply(Tool):
                         f"{check.new_messages_count} new substantive message(s) "
                         f"({check.reason}). Re-analyze with fresh context."
                     ),
+                    metadata={"freshness_recovery": check.recovery},
                 )
 
         # 5. 真发送：只走 native messaging browser relay，不回退 Support API。
