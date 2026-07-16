@@ -44,7 +44,7 @@ from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 logger = get_logger(module="services.waiting_poller")
 
-_TARGET_STATES = ("in_silence_window", "waiting_for_issue")
+_TARGET_STATES = ("in_silence_window", "waiting_for_issue", "waiting_for_form")
 # 默认只关注新建状态的工单。一旦 Zendesk status 变成 open/pending/solved
 # poller 立刻让位停扫；唯一例外是带 AGENT_ASKED_TAG 的工单——表示 agent
 # 主动给客户发了 public ask 导致 status 自动翻 open，此时仍需继续追踪

@@ -41,7 +41,11 @@ async def classify_ticket_messages(
         collect_recent_image_data_urls_fn = _collect_recent_image_data_urls
     classify_messages_fn = classify_messages_fn or classify_messages
 
-    bodies = [message.get("body") or "" for message in customer_msgs]
+    issue_messages = [
+        message for message in customer_msgs
+        if message.get("content_type") != "formResponse"
+    ]
+    bodies = [message.get("body") or "" for message in issue_messages]
     image_count = _count_message_images(customer_msgs)
     image_data_urls = (
         await collect_recent_image_data_urls_fn(customer_msgs)

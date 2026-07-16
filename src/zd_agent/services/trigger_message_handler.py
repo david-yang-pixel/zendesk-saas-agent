@@ -124,6 +124,38 @@ async def handle_trigger_message(
     if takeover_dispatch.handled:
         return TriggerMessageResult(True, "human_takeover", ticket_id, source)
 
+    from zd_agent.services.ticket_message_parsing import (
+        conversation_has_pending_form,
+    )
+
+    conversation_events = ticket_info.get("_zd_agent_conversation_events") or []
+    if conversation_has_pending_form(conversation_events):
+        from datetime import datetime, timezone
+
+        from zd_agent.services.trigger_routing import latest_customer_message_context
+        from zd_agent.services.trigger_state_machine import apply_waiting_for_form
+
+        now = datetime.now(timezone.utc)
+        _, latest_cid, latest_ts = latest_customer_message_context(
+            customer_msgs,
+            now=now,
+        )
+        apply_waiting_for_form(
+            state,
+            ticket_id,
+            existing=state.get(ticket_id),
+            latest_cid=str(latest_cid or "") or None,
+            latest_ts=latest_ts,
+            now=now,
+        )
+        logger.info(
+            "trigger_waiting_for_answer_bot_form",
+            ticket_id=ticket_id,
+            source=source,
+            last_customer_comment_id=latest_cid,
+        )
+        return TriggerMessageResult(True, "waiting_for_form", ticket_id, source)
+
     customer_activity = handle_customer_activity_gate(
         ticket_id=ticket_id,
         customer_msgs=customer_msgs,

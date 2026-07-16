@@ -87,7 +87,8 @@ async def _fetch_customer_messages(
         )
         return [], None
 
-    ticket, comments = t, c
+    ticket, comments = dict(t), c
+    ticket["_zd_agent_conversation_events"] = events
     msgs = _customer_public_comments(ticket, comments)
     if events:
         msgs.extend(_messaging_customer_messages(events))

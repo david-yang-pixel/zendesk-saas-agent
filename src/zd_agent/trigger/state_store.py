@@ -17,6 +17,7 @@ logger = get_logger(module="trigger.state_store")
 
 VALID_STATES = {
     "waiting_for_issue",    # LLM judged greeting/insufficient, waiting for customer
+    "waiting_for_form",     # Answer Bot blocking form is not submitted yet
     "in_silence_window",    # LLM judged substantial issue, within silence period
     "processing",           # AgentSession running
     "processed",            # done (first pass or followup)

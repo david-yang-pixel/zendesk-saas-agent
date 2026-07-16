@@ -20,6 +20,7 @@ from zd_agent.services.ticket_images import (
     extract_inline_image_urls,
     filename_from_url,
 )
+from zd_agent.services.ticket_message_parsing import normalize_messaging_content
 from zd_agent.runtime.source_selector import suggest_sources
 from zd_agent.runtime.image_evidence import (
     guard_against_stale_no_image_claim,
@@ -124,14 +125,9 @@ def _language_label(language: str) -> str:
 
 def _extract_event_text(event: dict[str, Any]) -> str:
     content = event.get("content") or {}
-    content_type = content.get("type", "")
-    if content_type == "text":
-        return str(content.get("text", "")).strip()
-    if content_type == "html":
-        return str(content.get("body", "")).strip()
-    if content_type == "formResponse":
-        return str(content.get("text_fallback", "")).strip()
-    return ""
+    if content.get("type") == "formResponse":
+        return ""
+    return str(normalize_messaging_content(content)["body"]).strip()
 
 
 def _is_external_author(author_type: str) -> bool:
@@ -645,30 +641,8 @@ class ZendeskGetTicket(Tool):
                     author_type = (event.get("author") or {}).get("type", "")
                     created = event.get("created_at", "")
                     content = event.get("content") or {}
-                    content_type = content.get("type", "")
 
-                    body = ""
-                    if content_type == "text":
-                        body = content.get("text", "")
-                    elif content_type == "html":
-                        body = content.get("body", "")
-                    elif content_type == "image":
-                        body = f"[图片] {content.get('alt_text', '')}"
-                    elif content_type == "formResponse":
-                        body = content.get("text_fallback", "")
-                    elif content_type == "form":
-                        fields = content.get("fields", [])
-                        field_lines = []
-                        for f in fields:
-                            label = f.get("label") or f.get("name", "")
-                            val = f.get("text") or f.get("email") or ""
-                            if not val:
-                                selected = f.get("select") or []
-                                val = ", ".join(
-                                    item.get("label", "") for item in selected if item.get("label")
-                                )
-                            field_lines.append(f"  - {label}: {val}")
-                        body = "[表单]\n" + "\n".join(field_lines)
+                    body = normalize_messaging_content(content)["body"]
 
                     lines.append(f"\n### 消息 #{i} ({author} [{author_type}], {created})")
                     lines.append(body.strip() if body else "(空)")

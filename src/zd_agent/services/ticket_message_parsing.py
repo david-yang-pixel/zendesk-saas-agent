@@ -17,8 +17,20 @@ def _message_created_at_sort_key(message: dict[str, Any]) -> str:
 def extract_form_data_from_msgs(
     customer_msgs: list[dict[str, Any]],
 ) -> dict[str, str]:
-    out: dict[str, str] = {}
-    for message in customer_msgs:
+    for message in reversed(customer_msgs):
+        form_data = message.get("form_data")
+        if isinstance(form_data, dict):
+            normalized = {
+                key: str(value).strip()
+                for key, value in form_data.items()
+                if key in {"name", "email", "workspace_id"}
+                and str(value).strip()
+            }
+            if normalized:
+                return normalized
+
+    for message in reversed(customer_msgs):
+        out: dict[str, str] = {}
         body = message.get("body") or ""
         if "Name:" not in body and "Workspace ID:" not in body:
             continue
@@ -37,8 +49,9 @@ def extract_form_data_from_msgs(
                 out["email"] = value
             elif key in ("workspace id", "wid"):
                 out["workspace_id"] = value
-        break
-    return out
+        if out:
+            return out
+    return {}
 
 
 def _customer_public_comments(
@@ -65,6 +78,110 @@ def _strip_html(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
+def _form_field_value(field: dict[str, Any]) -> str:
+    for key in ("value", "text", "email"):
+        value = field.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    selected = field.get("select") or []
+    if isinstance(selected, list):
+        return ", ".join(
+            str(item.get("label") or item.get("value") or "").strip()
+            for item in selected
+            if isinstance(item, dict)
+            and (item.get("label") or item.get("value"))
+        )
+    return ""
+
+
+def _form_data(fields: list[dict[str, Any]]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for field in fields:
+        label = str(field.get("label") or "").strip()
+        name = str(field.get("name") or "").strip()
+        value = _form_field_value(field)
+        if not value:
+            continue
+        normalized = label.lower()
+        if normalized == "name" or name.endswith("requester.name"):
+            out["name"] = value
+        elif normalized == "email" or name.endswith("requester.email"):
+            out["email"] = value
+        elif normalized in {"workspace id", "wid"}:
+            out["workspace_id"] = value
+    return out
+
+
+def normalize_messaging_content(content: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one Zendesk Messaging content object exactly once."""
+    content_type = str(content.get("type") or "")
+    body = ""
+    image_urls: list[str] = []
+    form_data: dict[str, str] = {}
+    if content_type == "text":
+        body = str(content.get("text") or "")
+        image_urls.extend(extract_inline_image_urls(body))
+    elif content_type == "html":
+        raw_body = str(content.get("body") or "")
+        body = _strip_html(raw_body)
+        image_urls.extend(extract_inline_image_urls(raw_body))
+    elif content_type in {"form", "formResponse"}:
+        fields = [
+            field for field in (content.get("fields") or [])
+            if isinstance(field, dict)
+        ]
+        form_data = _form_data(fields)
+        body = str(content.get("text_fallback") or "")
+        if not body:
+            body = "\n".join(
+                f"{field.get('label') or field.get('name')}: "
+                f"{_form_field_value(field)}".rstrip()
+                for field in fields
+                if field.get("label") or field.get("name")
+            )
+        if content_type == "form" and body:
+            body = "[表单]\n" + body
+        image_urls.extend(extract_inline_image_urls(body))
+    elif content_type == "image":
+        alt = content.get("alt_text") or "image"
+        url = str(content.get("media_url") or "")
+        body = f"[客户附图 / Customer attached image: {alt}]"
+        if url:
+            body += f"\nURL: {url}"
+            image_urls.append(url)
+    elif content_type in {"file", "video"}:
+        alt = content.get("alt_text") or content_type
+        url = str(content.get("media_url") or "")
+        body = f"[客户附件 / Customer attached {content_type}: {alt}]"
+        if url:
+            body += f"\nURL: {url}"
+    else:
+        body = f"[unsupported message content type: {content_type}]"
+    return {
+        "content_type": content_type,
+        "body": body.strip(),
+        "form_data": form_data,
+        "image_urls": image_urls,
+    }
+
+
+def conversation_has_pending_form(events: list[dict[str, Any]]) -> bool:
+    """Return whether the latest blocking Answer Bot form is unanswered."""
+    pending = False
+    for event in events:
+        content = event.get("content") or {}
+        content_type = content.get("type")
+        if (
+            content_type == "form"
+            and content.get("block_chat_input") is True
+            and content.get("submitted") is False
+        ):
+            pending = True
+        elif content_type == "formResponse":
+            pending = False
+    return pending
+
+
 def _messaging_customer_messages(
     events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -74,47 +191,10 @@ def _messaging_customer_messages(
         if author.get("type") != "end-user":
             continue
         content = event.get("content") or {}
-        content_type = content.get("type", "")
-        body = ""
-        image_urls: list[str] = []
-        if content_type == "text":
-            body = content.get("text", "") or ""
-            image_urls.extend(extract_inline_image_urls(body))
-        elif content_type == "html":
-            raw_body = content.get("body", "") or ""
-            body = _strip_html(raw_body)
-            image_urls.extend(extract_inline_image_urls(raw_body))
-        elif content_type == "formResponse":
-            body = content.get("text_fallback") or ""
-            if not body:
-                fields = content.get("fields") or []
-                parts = []
-                for field in fields:
-                    label = field.get("label", "") or field.get("name", "")
-                    value = (
-                        field.get("value", "")
-                        or field.get("text", "")
-                        or field.get("email", "")
-                    )
-                    if label or value:
-                        parts.append(f"{label}: {value}".strip(": "))
-                body = "\n".join(parts)
-            image_urls.extend(extract_inline_image_urls(body))
-        elif content_type == "image":
-            alt = content.get("alt_text") or "image"
-            url = content.get("media_url", "")
-            body = f"[客户附图 / Customer attached image: {alt}]"
-            if url:
-                body += f"\nURL: {url}"
-                image_urls.append(url)
-        elif content_type in ("file", "video"):
-            alt = content.get("alt_text") or content.get("type")
-            url = content.get("media_url", "")
-            body = f"[客户附件 / Customer attached {content_type}: {alt}]"
-            if url:
-                body += f"\nURL: {url}"
-        else:
-            body = f"[unsupported message content type: {content_type}]"
+        normalized = normalize_messaging_content(content)
+        content_type = normalized["content_type"]
+        body = normalized["body"]
+        image_urls = list(normalized["image_urls"])
         image_urls.extend(collect_image_urls_from_attachments(event.get("attachments")))
         body = body.strip()
         if not body and image_urls:
@@ -129,5 +209,6 @@ def _messaging_customer_messages(
             "public": True,
             "image_urls": image_urls,
             "content_type": content_type,
+            "form_data": normalized["form_data"],
         })
     return out

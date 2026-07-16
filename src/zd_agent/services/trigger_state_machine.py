@@ -52,6 +52,30 @@ class EscalationTransition:
     escalated_at: datetime
 
 
+def apply_waiting_for_form(
+    state: TicketStateTracker,
+    ticket_id: str | int,
+    *,
+    existing: TicketState | None,
+    latest_cid: str | None,
+    latest_ts: datetime,
+    now: datetime,
+) -> None:
+    """Persist an Answer Bot readiness wait without customer-ask semantics."""
+    state.set(ticket_id, TicketState(
+        state="waiting_for_form",
+        first_seen=existing.first_seen if existing else now,
+        last_customer_comment_id=latest_cid,
+        last_comment_ts=latest_ts,
+        last_eval_at=now,
+        last_verdict="waiting_for_form",
+        ask_count=existing.ask_count if existing else 0,
+        last_agent_finish_ts=(
+            existing.last_agent_finish_ts if existing else None
+        ),
+    ))
+
+
 def apply_escalated_to_human(
     state: TicketStateTracker,
     ticket_id: str | int,
