@@ -23,6 +23,8 @@ from zd_agent.services.zendesk_webhook import handle_zendesk_webhook
 
 logger = get_logger(module="services.saas_routes")
 
+PUBLIC_PRE_SEND_FRESHNESS_PATH = "/webhook/relay-pre-send-freshness"
+
 
 async def handle_healthz(request: web.Request) -> web.Response:
     return web.Response(status=200, text="ok")
@@ -193,9 +195,19 @@ def register_saas_routes(*, app: web.Application, cfg: Any) -> None:
     app.router.add_get("/agent/models", handle_agent_models)
     app.router.add_get("/agent/tools", handle_agent_tools)
     app.router.add_post("/internal/pre-send-freshness", handle_pre_send_freshness)
+    # Stable production route: never let a missing/overridden config value
+    # silently remove the relay's final Send gate. The handler still requires
+    # the browser-relay Bearer token for every request.
+    app.router.add_post(
+        PUBLIC_PRE_SEND_FRESHNESS_PATH,
+        handle_pre_send_freshness,
+    )
     callback_url = getattr(cfg.public_reply, "freshness_callback_url", "")
     if isinstance(callback_url, str) and callback_url.strip():
         callback_path = urlparse(callback_url).path
-        if callback_path and callback_path != "/internal/pre-send-freshness":
+        if callback_path and callback_path not in {
+            "/internal/pre-send-freshness",
+            PUBLIC_PRE_SEND_FRESHNESS_PATH,
+        }:
             app.router.add_post(callback_path, handle_pre_send_freshness)
     app.router.add_get("/healthz", handle_healthz)

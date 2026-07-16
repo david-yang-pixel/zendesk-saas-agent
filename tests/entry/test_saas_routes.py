@@ -9,6 +9,7 @@ from aiohttp import web
 
 from zd_agent.services.app_context import install_saas_app_context
 from zd_agent.services.saas_routes import (
+    PUBLIC_PRE_SEND_FRESHNESS_PATH,
     handle_agent_config,
     handle_agent_models,
     handle_pre_send_freshness,
@@ -36,7 +37,7 @@ def test_register_saas_routes_installs_expected_routes() -> None:
     assert "/webhook/zendesk" in route_paths
     assert "/webhook/zendesk-messaging" in route_paths
     assert "/internal/pre-send-freshness" in route_paths
-    assert "/webhook/relay-pre-send-freshness" in route_paths
+    assert PUBLIC_PRE_SEND_FRESHNESS_PATH in route_paths
     assert "/agent/config" in route_paths
     assert "/agent/models" in route_paths
     assert "/agent/tools" in route_paths
@@ -44,6 +45,19 @@ def test_register_saas_routes_installs_expected_routes() -> None:
     assert "/teleport-auth" not in route_paths
     assert "/internal/teleport-auth/issue" not in route_paths
     assert "/webhook/feishu" not in route_paths
+
+
+def test_public_freshness_route_is_registered_without_url_config() -> None:
+    app = web.Application()
+    cfg = MagicMock()
+    cfg.webhook.zendesk_path = "/webhook/zendesk"
+    cfg.webhook.zendesk_messaging_path = "/webhook/zendesk-messaging"
+    cfg.public_reply.freshness_callback_url = ""
+
+    register_saas_routes(app=app, cfg=cfg)
+
+    route_paths = {route.resource.canonical for route in app.router.routes()}
+    assert PUBLIC_PRE_SEND_FRESHNESS_PATH in route_paths
 
 
 class _Request:

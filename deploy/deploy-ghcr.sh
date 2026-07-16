@@ -15,6 +15,7 @@ LOCAL_IMAGE="${ZD_AGENT_LOCAL_IMAGE:-zd-agent:latest}"
 SERVICE="${ZD_AGENT_SERVICE:-zd-agent}"
 HEALTH_URL="${ZD_AGENT_HEALTH_URL:-http://127.0.0.1:8080/healthz}"
 HEALTH_TIMEOUT_SECONDS="${ZD_AGENT_HEALTH_TIMEOUT_SECONDS:-45}"
+FRESHNESS_ROUTE_URL="${ZD_AGENT_FRESHNESS_ROUTE_URL:-http://127.0.0.1:8080/webhook/relay-pre-send-freshness}"
 
 REMOTE_IMAGE="${IMAGE}:${TAG}"
 
@@ -35,6 +36,14 @@ systemctl restart "$SERVICE"
 echo "Waiting for health check: ${HEALTH_URL}"
 for ((attempt = 1; attempt <= HEALTH_TIMEOUT_SECONDS; attempt++)); do
   if curl -fsS "$HEALTH_URL"; then
+    freshness_status="$({ curl -sS -o /dev/null -w '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' --data '{}' \
+      "$FRESHNESS_ROUTE_URL" || true; } 2>/dev/null)"
+    if [[ "$freshness_status" != "401" ]]; then
+      echo "Freshness callback route check failed: expected 401, got ${freshness_status:-none}" >&2
+      sleep 1
+      continue
+    fi
     echo
     echo "Deployment complete: ${REMOTE_IMAGE} -> ${LOCAL_IMAGE}"
     exit 0

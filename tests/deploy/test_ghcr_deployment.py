@@ -82,6 +82,9 @@ def test_ghcr_deploy_script_keeps_secret_out_of_source_and_retags_latest() -> No
     assert 'LOCAL_IMAGE="${ZD_AGENT_LOCAL_IMAGE:-zd-agent:latest}"' in text
     assert "systemctl restart \"$SERVICE\"" in text
     assert "curl -fsS \"$HEALTH_URL\"" in text
+    assert "ZD_AGENT_FRESHNESS_ROUTE_URL" in text
+    assert "/webhook/relay-pre-send-freshness" in text
+    assert '[[ "$freshness_status" != "401" ]]' in text
 
 
 def test_docker_runtime_starts_prebuilt_agent_without_dependency_sync() -> None:

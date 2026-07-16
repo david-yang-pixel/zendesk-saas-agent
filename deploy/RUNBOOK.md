@@ -44,6 +44,7 @@
 
 > 改 `config.yaml` 后直接 `systemctl restart zd-agent` 即生效（配置挂载为只读 volume，无需 rebuild 镜像）。
 > 应急回退 public reply：改 `enabled: false` → restart，最快止血。
+> CI/CD 还会从服务器本机请求 freshness callback；未带 Bearer 必须返回 401，否则部署判失败。
 
 ### 2. Clone repo on server
 
