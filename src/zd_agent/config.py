@@ -353,6 +353,9 @@ class PublicReplyConfig(BaseModel):
     browser_relay_url: str = ""
     browser_relay_api_key: str = ""
     browser_relay_timeout_seconds: int = 90
+    # Public HTTPS endpoint the remote browser relay calls immediately before
+    # clicking Send. Required when browser_relay_url is not loopback.
+    freshness_callback_url: str = ""
 
 
 class PromptOverridesConfig(BaseModel):
@@ -425,6 +428,7 @@ class EnvSettings(BaseSettings):
     zendesk_browser_relay_url: str = ""
     zendesk_browser_relay_api_key: str = ""
     zendesk_browser_relay_timeout_seconds: int | None = None
+    zendesk_freshness_callback_url: str = ""
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
     anthropic_api_key: str = ""
     zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
@@ -593,6 +597,10 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     if env.zendesk_browser_relay_timeout_seconds is not None:
         cfg.public_reply.browser_relay_timeout_seconds = (
             env.zendesk_browser_relay_timeout_seconds
+        )
+    if env.zendesk_freshness_callback_url:
+        cfg.public_reply.freshness_callback_url = (
+            env.zendesk_freshness_callback_url.rstrip("/")
         )
     return cfg
 

@@ -279,6 +279,9 @@ class TestPreSendCheckOrAbort:
         )
         assert result.continue_send is True
         assert result.new_messages_count == 1
+        assert result.recovery is not None
+        assert result.recovery.next_snapshot_count == 2
+        assert result.recovery.next_snapshot_last_id == "m2"
 
     @pytest.mark.asyncio
     async def test_multiple_new_msgs_abort_on_first_substantive(self) -> None:

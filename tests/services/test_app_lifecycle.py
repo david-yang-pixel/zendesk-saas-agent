@@ -57,12 +57,14 @@ def _cfg() -> AppConfig:
 
 @pytest.mark.asyncio
 async def test_wire_session_finished_callback_marks_reply_session_processed(tmp_path) -> None:
+    session = AgentSession(ticket_id=2808, trigger_type="webhook-mention")
     state = TicketStateTracker(tmp_path / "tickets.json")
     state.set(
         "2808",
         TicketState(
-            state="waiting_for_issue",
+            state="processing",
             first_seen=datetime.now(timezone.utc),
+            active_session_id=session.session_id,
         ),
     )
     manager = MagicMock()
@@ -70,7 +72,6 @@ async def test_wire_session_finished_callback_marks_reply_session_processed(tmp_
     wire_session_finished_callback(manager=manager, state=state)
 
     callback = manager.set_on_finished.call_args.args[0]
-    session = AgentSession(ticket_id=2808, trigger_type="webhook-mention")
     session.status = SessionStatus.COMPLETED
     session.reply_sent = True
     await callback(session)

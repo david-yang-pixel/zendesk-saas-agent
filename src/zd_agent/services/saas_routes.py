@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import hmac
 from typing import Any
+from urllib.parse import urlparse
 
 from aiohttp import web
 
 from zd_agent.config import EnvSettings
 from zd_agent.log import get_logger
-from zd_agent.runtime.pre_send_check import pre_send_check_or_abort
 from zd_agent.services.agent_management import (
     build_agent_config_manifest,
     build_agent_tools_manifest,
@@ -16,7 +16,6 @@ from zd_agent.services.agent_management import (
     update_agent_config,
 )
 from zd_agent.services.app_context import app_config
-from zd_agent.services.ticket_messages import fetch_customer_messages_for_freshness
 from zd_agent.services.zendesk_messaging_webhook import (
     handle_zendesk_messaging_webhook,
 )
@@ -115,26 +114,56 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
 
     try:
         payload = await request.json()
-        ticket_id = int(payload.get("ticket_id"))
-        snapshot_count = int(payload.get("snapshot_customer_message_count"))
-        snapshot_last_id = payload.get("snapshot_customer_last_message_id") or None
+        raw_ticket_id = payload.get("ticket_id")
+        ticket_id = int(raw_ticket_id)
+        raw_snapshot_count = payload.get("snapshot_customer_message_count")
+        snapshot_count = (
+            None
+            if raw_snapshot_count is None
+            else int(raw_snapshot_count)
+        )
+        raw_snapshot_last_id = payload.get("snapshot_customer_last_message_id")
+        if (
+            ticket_id <= 0
+            or isinstance(raw_ticket_id, bool)
+            or isinstance(raw_snapshot_count, bool)
+            or (snapshot_count is not None and snapshot_count < 0)
+            or (
+                raw_snapshot_last_id is not None
+                and not isinstance(raw_snapshot_last_id, str)
+            )
+            or len(raw_snapshot_last_id or "") > 512
+            or (snapshot_count is None and raw_snapshot_last_id)
+        ):
+            raise ValueError("invalid freshness snapshot")
+        snapshot_last_id = raw_snapshot_last_id or None
     except Exception:
         return web.json_response({"ok": False, "status": "bad_request"}, status=400)
 
-    async def _fetch() -> list[dict[str, Any]]:
-        return await fetch_customer_messages_for_freshness(ticket_id)
+    # This is the last check before the relay clicks Zendesk Send. Use the
+    # complete readiness gate rather than a message-only comparison: a new
+    # Answer Bot blocking form is a system event and otherwise remains unseen.
+    from zd_agent.tools.zendesk_public_reply import _check_public_reply_readiness
 
-    env = EnvSettings()
-    check = await pre_send_check_or_abort(
+    check = await _check_public_reply_readiness(
         ticket_id=ticket_id,
         snapshot_count=snapshot_count,
         snapshot_last_id=snapshot_last_id,
-        fetch_messages_fn=_fetch,
-        model=cfg.trigger_decider.llm_model,
-        api_key=env.openai_api_key,
-        base_url=cfg.llm.base_url,
         skip_llm=True,
+        cfg=cfg,
     )
+    # The caller cannot persist a cursor learned only by this remote final
+    # callback.  Do not let a harmless late "thanks" through here: aborting
+    # forces the owning path to fetch it itself and durably advance its cursor.
+    # This is intentionally stricter than the initial local freshness gate.
+    if check.continue_send and check.new_messages_count > 0:
+        return web.json_response({
+            "ok": True,
+            "status": "stale_context",
+            "continue_send": False,
+            "reason": "new_customer_message_at_relay",
+            "new_messages_count": check.new_messages_count,
+        })
     status = "fresh" if check.continue_send else "stale_context"
     logger.info(
         "pre_send_freshness_checked",
@@ -164,4 +193,9 @@ def register_saas_routes(*, app: web.Application, cfg: Any) -> None:
     app.router.add_get("/agent/models", handle_agent_models)
     app.router.add_get("/agent/tools", handle_agent_tools)
     app.router.add_post("/internal/pre-send-freshness", handle_pre_send_freshness)
+    callback_url = getattr(cfg.public_reply, "freshness_callback_url", "")
+    if isinstance(callback_url, str) and callback_url.strip():
+        callback_path = urlparse(callback_url).path
+        if callback_path and callback_path != "/internal/pre-send-freshness":
+            app.router.add_post(callback_path, handle_pre_send_freshness)
     app.router.add_get("/healthz", handle_healthz)

@@ -71,7 +71,7 @@ async def test_customer_requested_emits_metric(tmp_path) -> None:
         patch(
             "zd_agent.services.escalation_notifications.send_handoff_reply_best_effort",
             AsyncMock(return_value=True),
-        ),
+        ) as mock_handoff,
         patch(
             "zd_agent.services.escalation_notifications.send_feishu_escalation_best_effort",
             mock_feishu,
@@ -103,7 +103,9 @@ async def test_customer_requested_emits_metric(tmp_path) -> None:
     mock_metric.assert_called_once()
     assert mock_metric.call_args.kwargs["ticket_id"] == 9999
     assert mock_metric.call_args.kwargs["customer_phrase"] == "human please"
-    assert mock_feishu.await_args.kwargs["handoff_reply_sent"] is True
+    mock_feishu.assert_not_awaited()
+    assert mock_handoff.await_args.kwargs["source"] == "zendesk_webhook"
+    assert mock_handoff.await_args.kwargs["customer_phrase"] == "human please"
 
 
 @pytest.mark.asyncio

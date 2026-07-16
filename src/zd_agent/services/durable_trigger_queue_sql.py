@@ -6,6 +6,7 @@ CREATE_TABLE_SQL = (
     "status TEXT NOT NULL,"
     "available_at REAL NOT NULL,"
     "attempts INTEGER NOT NULL DEFAULT 0,"
+    "deferrals INTEGER NOT NULL DEFAULT 0,"
     "last_error TEXT NOT NULL DEFAULT '',"
     "claim_token TEXT NOT NULL DEFAULT '',"
     "lease_until REAL NOT NULL DEFAULT 0,"
@@ -27,7 +28,7 @@ INSERT_SQL = (
     "VALUES (?,?,'pending',?,0,?,?)"
 )
 SELECT_READY_SQL = (
-    "SELECT id,event_key,payload,attempts FROM trigger_events "
+    "SELECT id,event_key,payload,attempts,deferrals FROM trigger_events "
     "WHERE status = 'pending' AND available_at <= ? "
     "ORDER BY available_at,id LIMIT 1"
 )
@@ -52,11 +53,12 @@ RELEASE_SQL = (
 )
 REVIVE_DEAD_LETTER_SQL = (
     "UPDATE trigger_events SET payload = ?, status = 'pending', available_at = ?, "
-    "attempts = 0, last_error = '', claim_token = '', lease_until = 0, updated_at = ? "
+    "attempts = 0, deferrals = 0, last_error = '', claim_token = '', "
+    "lease_until = 0, updated_at = ? "
     "WHERE event_key = ? AND status = 'dead_letter'"
 )
 SELECT_DEAD_LETTERS_SQL = (
-    "SELECT id,event_key,payload,attempts,last_error FROM trigger_events "
+    "SELECT id,event_key,payload,attempts,deferrals,last_error FROM trigger_events "
     "WHERE status = 'dead_letter' ORDER BY updated_at DESC LIMIT ?"
 )
 DELETE_CLAIM_SQL = (

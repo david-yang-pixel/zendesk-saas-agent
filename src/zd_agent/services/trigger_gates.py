@@ -67,6 +67,33 @@ def handle_trigger_entry_gate(
     existing_state = state.get(ticket_id)
     if (
         existing_state is not None
+        and existing_state.state == "processing"
+        and existing_state.active_session_id
+        and source != "startup_recovery"
+    ):
+        logger.info(
+            "trigger_coalesced_into_active_session",
+            ticket_id=ticket_id,
+            source=source,
+            active_session_id=existing_state.active_session_id,
+        )
+        decision_log.log_decision(
+            log_path=log_path,
+            ticket_id=ticket_id,
+            verdict="active_session_processing",
+            action="coalesce",
+            extra={
+                "source": source,
+                "active_session_id": existing_state.active_session_id,
+            },
+        )
+        return TriggerGateResult(
+            handled=True,
+            action="active_session_processing",
+        )
+
+    if (
+        existing_state is not None
         and existing_state.state == "escalated_to_human"
         and source != "mention"
     ):

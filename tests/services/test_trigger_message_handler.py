@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -177,6 +178,7 @@ async def test_customer_message_classifies_and_dispatches_verdict(tmp_path) -> N
 @pytest.mark.asyncio
 async def test_startup_recovery_reenters_takeover_and_classification_gates(
     tmp_path,
+    monkeypatch,
 ) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     fetch_messages = AsyncMock(return_value=(
@@ -191,6 +193,13 @@ async def test_startup_recovery_reenters_takeover_and_classification_gates(
     )
     classify = AsyncMock(return_value=SimpleNamespace(verdict=verdict))
     post_verdict = AsyncMock()
+    monkeypatch.setattr(
+        "zd_agent.services.messaging_context.get_messaging_context",
+        lambda _ticket_id: {
+            "conversation_id": "conversation-restored",
+            "app_id": "app-restored",
+        },
+    )
 
     result = await handle_trigger_message(
         msg={"ticket_id": 12345, "source": "startup_recovery"},
@@ -211,3 +220,106 @@ async def test_startup_recovery_reenters_takeover_and_classification_gates(
     detect_takeover.assert_awaited_once()
     classify.assert_awaited_once()
     assert post_verdict.await_args.kwargs["source"] == "startup_recovery"
+    assert post_verdict.await_args.kwargs["conversation_id"] == (
+        "conversation-restored"
+    )
+    assert post_verdict.await_args.kwargs["messaging_app_id"] == "app-restored"
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_without_messages_does_not_overwrite_newer_state(
+    tmp_path,
+) -> None:
+    """A stale startup worker must not resurrect a ticket after human takeover."""
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    now = datetime.now(timezone.utc)
+    state.set(
+        12345,
+        TicketState(
+            state="processing",
+            first_seen=now,
+            active_session_id="crashed-session",
+        ),
+    )
+    before_fetch = state.get(12345)
+    assert before_fetch is not None
+
+    async def fetch(_ticket_id: int):
+        current = state.get(12345)
+        assert current is not None
+        current.state = "processing"
+        current.active_session_id = "new-live-session"
+        state.set(12345, current)
+        return [], {"id": 12345}
+
+    result = await handle_trigger_message(
+        msg={"ticket_id": 12345, "source": "startup_recovery"},
+        manager=MagicMock(),
+        state=state,
+        cfg=_cfg(),
+        env=MagicMock(),
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=fetch,
+        escalate_fn=AsyncMock(),
+        post_verdict_dispatch_fn=AsyncMock(),
+    )
+
+    assert result.action == "startup_recovery_waiting"
+    assert state.get(12345).state == "processing"
+    assert state.get(12345).active_session_id == "new-live-session"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_webhooks_allow_only_one_verdict_operation(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    classifier_calls = 0
+
+    async def classify(**_kwargs):
+        nonlocal classifier_calls
+        classifier_calls += 1
+        entered.set()
+        await release.wait()
+        return SimpleNamespace(verdict=PreCheckVerdict(
+            verdict="substantial_issue", completeness=90, reason="detail",
+        ))
+
+    async def fetch(_ticket_id: int):
+        return ([{"id": "m1", "body": "it fails", "created_at": "2026-06-05T06:00:00Z"}], {"id": 12345})
+
+    kwargs = dict(
+        msg={"ticket_id": 12345, "source": "zendesk_webhook", "_queue_key": "event-a"},
+        manager=MagicMock(), state=state, cfg=_cfg(),
+        env=SimpleNamespace(openai_api_key="sk-test"), log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=fetch, classify_ticket_messages_fn=classify,
+        post_verdict_dispatch_fn=AsyncMock(), escalate_fn=AsyncMock(),
+        detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+    )
+    first = asyncio.create_task(handle_trigger_message(**kwargs))
+    await entered.wait()
+    with pytest.raises(TriggerDeferredError) as deferred:
+        await handle_trigger_message(**{**kwargs, "msg": {**kwargs["msg"], "_queue_key": "event-b"}})
+    assert deferred.value.reason == "active_session_processing"
+    release.set()
+    assert (await first).action == "verdict_dispatched"
+    assert classifier_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_classifier_failure_releases_verdict_operation_claim(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    async def fetch(_ticket_id: int):
+        return ([{"id": "m1", "body": "it fails", "created_at": "2026-06-05T06:00:00Z"}], {"id": 12345})
+
+    with pytest.raises(RuntimeError, match="classifier down"):
+        await handle_trigger_message(
+            msg={"ticket_id": 12345, "source": "zendesk_webhook", "_queue_key": "event-a"},
+            manager=MagicMock(), state=state, cfg=_cfg(),
+            env=SimpleNamespace(openai_api_key="sk-test"), log_path=tmp_path / "trigger.jsonl",
+            fetch_customer_messages_fn=fetch,
+            classify_ticket_messages_fn=AsyncMock(side_effect=RuntimeError("classifier down")),
+            post_verdict_dispatch_fn=AsyncMock(), escalate_fn=AsyncMock(),
+            detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+        )
+    assert state.get(12345) is None

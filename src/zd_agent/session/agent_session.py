@@ -84,6 +84,9 @@ class AgentSession:
     reviewer_checklist: str = ""
     fix_status: str = ""
     reply_sent: bool = False
+    # Frozen reply type that actually owns the durable delivery attempt.  A
+    # handoff is an ownership transfer, not merely different customer prose.
+    public_reply_type: str = ""
     archived: bool = False
     error_message: str = ""
 
@@ -108,6 +111,7 @@ class AgentSession:
     customer_msgs_snapshot_last_id: str = ""
     customer_msgs_snapshot_captured: bool = False
     freshness_rebase_count: int = 0
+    freshness_fetch_error_count: int = 0
 
     # ───── P2-8 (2026-05-17) 客户画像预拉 ─────
     # runner.py 在 build_system_prompt 之前调用 prefetch_customer_profile()，

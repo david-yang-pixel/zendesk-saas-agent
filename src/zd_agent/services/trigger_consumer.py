@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -20,7 +21,13 @@ HandleMessageFn = Callable[..., Awaitable[Any]]
 async def _ack_message(queue: Any, message: dict[str, Any]) -> None:
     ack = getattr(queue, "ack", None)
     if callable(ack):
-        await ack(message)
+        acknowledged = await ack(message)
+        if acknowledged is False:
+            logger.warning(
+                "trigger_consumer_ack_lost_lease",
+                ticket_id=message.get("ticket_id"),
+                source=message.get("source"),
+            )
         return
     task_done = getattr(queue, "task_done", None)
     if callable(task_done):
@@ -35,15 +42,18 @@ async def _retry_message(
     retry = getattr(queue, "retry", None)
     if not callable(retry):
         return None
-    return bool(await retry(message, str(error)))
+    retried = await retry(message, str(error))
+    if retried is None:
+        return None
+    return bool(retried)
 
 
 async def _release_message(queue: Any, message: dict[str, Any]) -> bool:
     release = getattr(queue, "release", None)
     if not callable(release):
         return False
-    await release(message)
-    return True
+    released = await release(message)
+    return released is not False
 
 
 async def _defer_message(
@@ -53,8 +63,8 @@ async def _defer_message(
 ) -> bool:
     defer = getattr(queue, "defer", None)
     if callable(defer):
-        await defer(message, error.delay_seconds, error.reason)
-        return True
+        result = await defer(message, error.delay_seconds, error.reason)
+        return result is not False
     put = getattr(queue, "put", None)
     if not callable(put):
         return False
@@ -66,6 +76,123 @@ async def _defer_message(
     delayed["available_at"] = time.time() + error.delay_seconds
     await put(delayed)
     return True
+
+
+async def _escalate_dead_lettered_trigger(
+    *,
+    message: dict[str, Any],
+    state: Any,
+    log_path: Path,
+    escalate_fn: HandleMessageFn | None,
+) -> None:
+    """Transfer terminal trigger failures instead of stranding queue state."""
+    try:
+        ticket_id = int(message["ticket_id"])
+    except (KeyError, TypeError, ValueError):
+        # The queue row is already a dead letter.  A malformed poison message
+        # must remain inspectable without terminating the only consumer task.
+        logger.error(
+            "trigger_dead_letter_invalid_ticket_id",
+            ticket_id=message.get("ticket_id"),
+            source=message.get("source"),
+        )
+        return
+    existing = state.get(ticket_id)
+    if existing is not None and existing.state in {
+        "processed",
+        "escalated_to_human",
+        "abandoned",
+    }:
+        return
+
+    expected_revision = message.get("expected_state_revision")
+    if (
+        existing is not None
+        and isinstance(expected_revision, int)
+        and existing.state_revision != expected_revision
+    ):
+        logger.info(
+            "trigger_dead_letter_stale_state_ignored",
+            ticket_id=ticket_id,
+            source=message.get("source"),
+            expected_revision=expected_revision,
+            current_revision=existing.state_revision,
+            current_state=existing.state,
+        )
+        return
+
+    now = datetime.now(timezone.utc)
+    if escalate_fn is not None:
+        try:
+            await escalate_fn(
+                ticket_id=ticket_id,
+                reason="trigger_retry_exhausted",
+                existing=existing,
+                state=state,
+                log_path=log_path,
+                source=str(message.get("source") or "trigger_dead_letter"),
+                now=now,
+                verdict_str="trigger_retry_exhausted",
+                latest_cid=(
+                    existing.last_customer_comment_id if existing else None
+                ),
+                latest_ts=(existing.last_comment_ts if existing else None),
+                completeness=0,
+                customer_msgs=[],
+                extra_log={"queue_attempts": message.get("_queue_attempts")},
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - state fallback is mandatory.
+            logger.exception(
+                "trigger_dead_letter_escalation_failed",
+                ticket_id=ticket_id,
+                error=str(exc)[:200],
+            )
+
+    # Generic/test consumers may not provide the production escalation
+    # adapter. Persist human ownership even when notifications are unavailable.
+    from zd_agent.services.trigger_state_machine import apply_escalated_to_human
+
+    apply_escalated_to_human(
+        state,
+        ticket_id,
+        existing=existing,
+        latest_cid=(existing.last_customer_comment_id if existing else None),
+        latest_ts=(existing.last_comment_ts if existing else None),
+        now=now,
+        verdict_str="trigger_retry_exhausted",
+        reason="trigger_retry_exhausted",
+    )
+
+
+async def reconcile_dead_lettered_triggers(
+    *,
+    queue: Any,
+    state: Any,
+    log_path: Path,
+    escalate_fn: HandleMessageFn | None,
+    limit: int = 100,
+) -> int:
+    """Finish the state compensation for dead letters left by a crash.
+
+    Queue failure persistence and human escalation cannot be one transaction.
+    This pass closes that crash gap.  Terminal state and revision checks in
+    ``_escalate_dead_lettered_trigger`` make repeated startup/periodic passes
+    idempotent.
+    """
+    list_dead_letters = getattr(queue, "list_dead_letters", None)
+    if not callable(list_dead_letters):
+        return 0
+    reconciled = 0
+    for message in await list_dead_letters(limit=limit):
+        await _escalate_dead_lettered_trigger(
+            message=message,
+            state=state,
+            log_path=log_path,
+            escalate_fn=escalate_fn,
+        )
+        reconciled += 1
+    return reconciled
 
 
 def default_trigger_log_path(cfg: Any) -> Path:
@@ -122,6 +249,13 @@ async def run_trigger_consumer(
                 deferred=deferred,
                 attempts=msg.get("_queue_attempts"),
             )
+            if not deferred:
+                await _escalate_dead_lettered_trigger(
+                    message=msg,
+                    state=state,
+                    log_path=log_path,
+                    escalate_fn=escalate_fn,
+                )
         except asyncio.CancelledError:
             released = await asyncio.shield(_release_message(queue, msg))
             logger.info(
@@ -142,6 +276,13 @@ async def run_trigger_consumer(
                 retried=retried,
                 attempts=msg.get("_queue_attempts"),
             )
+            if retried is False:
+                await _escalate_dead_lettered_trigger(
+                    message=msg,
+                    state=state,
+                    log_path=log_path,
+                    escalate_fn=escalate_fn,
+                )
         else:
             await _ack_message(queue, msg)
 

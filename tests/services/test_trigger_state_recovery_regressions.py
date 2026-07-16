@@ -55,6 +55,13 @@ async def test_startup_recovery_reprocesses_matching_saved_comment(
         completeness=100,
         reason="recovery classification completed",
     )))
+    send_closed = AsyncMock(return_value=True)
+
+    async def dispatch_verdict(**kwargs) -> None:
+        await post_verdict_dispatch_action(
+            **kwargs,
+            send_closed_fn=send_closed,
+        )
 
     result = await handle_trigger_message(
         msg={"ticket_id": 3461, "source": "startup_recovery"},
@@ -72,13 +79,14 @@ async def test_startup_recovery_reprocesses_matching_saved_comment(
             {"id": 3461},
         )),
         classify_ticket_messages_fn=classify,
-        post_verdict_dispatch_fn=post_verdict_dispatch_action,
+        post_verdict_dispatch_fn=dispatch_verdict,
         escalate_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
 
     assert result.action == "verdict_dispatched"
     classify.assert_awaited_once()
+    send_closed.assert_awaited_once()
     recovered = state.get(3461)
     assert recovered is not None
     assert recovered.state == "processed"

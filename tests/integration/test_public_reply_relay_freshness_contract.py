@@ -13,7 +13,10 @@ import pytest
 
 from zd_agent.config import AppConfig
 from zd_agent.integrations.zendesk_browser_relay import send_browser_relay_reply
-from zd_agent.tools.public_reply_delivery import send_public_reply_safely
+from zd_agent.tools.public_reply_delivery import (
+    PublicReplyTransportError,
+    send_public_reply_safely,
+)
 
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -31,6 +34,9 @@ def _relay_config() -> AppConfig:
         "https://relay.example.test/zendesk-reply-mcp"
     )
     cfg.public_reply.browser_relay_api_key = "relay-secret"
+    cfg.public_reply.freshness_callback_url = (
+        "https://agent.example.test/webhook/relay-pre-send-freshness"
+    )
     cfg.webhook.listen_port = 8080
     return cfg
 
@@ -85,18 +91,50 @@ async def _send_and_capture_relay_arguments(reply_type: str) -> dict[str, object
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply_type", ["handoff", "closed"])
-async def test_terminal_reply_omits_freshness_contract_from_relay_payload(
+@pytest.mark.parametrize("reply_type", ["handoff"])
+async def test_handoff_keeps_form_readiness_callback_at_relay_boundary(
     reply_type: str,
 ) -> None:
-    """Terminal notifications must not be rejected by a stale agent snapshot."""
+    """Handoff skips stale-answer semantics but cannot bypass a late form."""
     relay_arguments = await _send_and_capture_relay_arguments(reply_type)
 
-    assert FRESHNESS_FIELDS.isdisjoint(relay_arguments)
+    assert relay_arguments["freshness_check_url"] == (
+        "https://agent.example.test/webhook/relay-pre-send-freshness"
+    )
+    assert relay_arguments["freshness_check_api_key"] == "relay-secret"
+    assert relay_arguments["snapshot_customer_message_count"] == 2
+    assert relay_arguments["snapshot_customer_last_message_id"] == (
+        "customer-message-2"
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reply_type", ["ask", "solution"])
+async def test_handoff_without_snapshot_still_sends_form_readiness_callback() -> None:
+    relay = AsyncMock()
+
+    await send_public_reply_safely(
+        cfg=_relay_config(),
+        ticket_id=3461,
+        body_with_footer="Transferred to a support engineer.",
+        reply_type="handoff",
+        conversation_id="conversation-3461",
+        snapshot_customer_message_count=None,
+        snapshot_customer_last_message_id=None,
+        delivery_attempt_id=None,
+        delivery_store=None,
+        delivery_store_factory=lambda _cfg: pytest.fail("unexpected store"),
+        zendesk_tool_caller=AsyncMock(),
+        relay_sender=relay,
+    )
+
+    assert relay.await_args.kwargs["freshness_check_url"] == (
+        "https://agent.example.test/webhook/relay-pre-send-freshness"
+    )
+    assert relay.await_args.kwargs["snapshot_customer_message_count"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply_type", ["ask", "solution", "closed"])
 async def test_customer_resolvable_reply_keeps_final_relay_freshness_contract(
     reply_type: str,
 ) -> None:
@@ -104,10 +142,34 @@ async def test_customer_resolvable_reply_keeps_final_relay_freshness_contract(
     relay_arguments = await _send_and_capture_relay_arguments(reply_type)
 
     assert relay_arguments["freshness_check_url"] == (
-        "http://127.0.0.1:8080/internal/pre-send-freshness"
+        "https://agent.example.test/webhook/relay-pre-send-freshness"
     )
     assert relay_arguments["freshness_check_api_key"] == "relay-secret"
     assert relay_arguments["snapshot_customer_message_count"] == 2
     assert relay_arguments["snapshot_customer_last_message_id"] == (
         "customer-message-2"
     )
+
+
+@pytest.mark.asyncio
+async def test_remote_relay_refuses_loopback_freshness_callback() -> None:
+    cfg = _relay_config()
+    cfg.public_reply.freshness_callback_url = (
+        "http://127.0.0.1:8080/internal/pre-send-freshness"
+    )
+
+    with pytest.raises(PublicReplyTransportError, match="HTTPS.*non-loopback"):
+        await send_public_reply_safely(
+            cfg=cfg,
+            ticket_id=3461,
+            body_with_footer="Customer-visible reply",
+            reply_type="solution",
+            conversation_id="conversation-3461",
+            snapshot_customer_message_count=2,
+            snapshot_customer_last_message_id="customer-message-2",
+            delivery_attempt_id=None,
+            delivery_store=None,
+            delivery_store_factory=lambda _cfg: pytest.fail("unexpected store"),
+            zendesk_tool_caller=AsyncMock(),
+            relay_sender=AsyncMock(),
+        )

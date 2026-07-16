@@ -14,7 +14,7 @@ def _now():
 
 @pytest.mark.asyncio
 async def test_scan_once_dispatches_substantial_on_expiry(tmp_path):
-    """verdict=substantial → state=processing + source=silence_waker."""
+    """A substantial ticket queues a generation-bound Agent wakeup."""
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()
     state.set("1", TicketState(
@@ -29,12 +29,13 @@ async def test_scan_once_dispatches_substantial_on_expiry(tmp_path):
     assert msg["source"] == "silence_waker"
     assert msg["ticket_id"] == 1
     rec = state.get("1")
-    assert rec.state == "processing"
+    assert rec.state == "in_silence_window"
+    assert msg["expected_state_revision"] == rec.state_revision
 
 
 @pytest.mark.asyncio
 async def test_scan_once_asks_when_not_substantial_on_expiry(tmp_path):
-    """verdict=greeting/insufficient → state=waiting_for_issue + source=silence_expired_ask."""
+    """A non-substantial ticket queues an ask without claiming ownership."""
     for verdict in ("greeting", "insufficient_info", ""):
         state = TicketStateTracker(tmp_path / f"tickets_{verdict or 'blank'}.json")
         queue: asyncio.Queue = asyncio.Queue()
@@ -49,7 +50,8 @@ async def test_scan_once_asks_when_not_substantial_on_expiry(tmp_path):
         msg = queue.get_nowait()
         assert msg["source"] == "silence_expired_ask", verdict
         rec = state.get("1")
-        assert rec.state == "waiting_for_issue", verdict
+        assert rec.state == "in_silence_window", verdict
+        assert msg["expected_state_revision"] == rec.state_revision
 
 
 @pytest.mark.asyncio

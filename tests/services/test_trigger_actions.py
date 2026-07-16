@@ -9,6 +9,7 @@ import pytest
 from zd_agent.services.trigger_actions import (
     handle_silence_expired_ask_action,
     post_verdict_dispatch_action,
+    send_closed_template_action,
     send_ask_template_action,
     set_escalated_to_human_action,
 )
@@ -44,8 +45,38 @@ async def test_send_ask_template_action_delegates(monkeypatch) -> None:
         conversation_id="conv-1",
         messaging_app_id="app-1",
         delivery_attempt_id="",
+        return_delivery_result=True,
     )
 
+
+@pytest.mark.asyncio
+async def test_send_closed_template_action_delegates(monkeypatch) -> None:
+    send_closed = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "zd_agent.services.trigger_actions.send_closed_template_best_effort",
+        send_closed,
+    )
+
+    result = await send_closed_template_action(
+        ticket_id=2808,
+        customer_msgs=[{"body": "I fixed it"}],
+        ticket_info={"id": 2808},
+        source="zendesk_webhook",
+        conversation_id="conv-1",
+        messaging_app_id="app-1",
+        delivery_attempt_id="attempt-1",
+    )
+
+    assert result is True
+    send_closed.assert_awaited_once_with(
+        ticket_id=2808,
+        customer_msgs=[{"body": "I fixed it"}],
+        source="zendesk_webhook",
+        conversation_id="conv-1",
+        messaging_app_id="app-1",
+        delivery_attempt_id="attempt-1",
+        return_delivery_result=True,
+    )
 
 @pytest.mark.asyncio
 async def test_silence_expired_ask_action_delegates(monkeypatch, tmp_path) -> None:
@@ -61,6 +92,8 @@ async def test_silence_expired_ask_action_delegates(monkeypatch, tmp_path) -> No
         log_path=tmp_path / "trigger.jsonl",
         nudge_message_fn="nudge",
         delivery_attempt_id="",
+        expected_customer_last_id=None,
+        persist_state=True,
     )
 
     handle_silence.assert_awaited_once_with(
@@ -69,6 +102,8 @@ async def test_silence_expired_ask_action_delegates(monkeypatch, tmp_path) -> No
         log_path=tmp_path / "trigger.jsonl",
         nudge_message_fn="nudge",
         delivery_attempt_id="",
+        expected_customer_last_id=None,
+        persist_state=True,
     )
 
 
@@ -159,3 +194,4 @@ async def test_post_verdict_dispatch_action_delegates(monkeypatch, tmp_path) -> 
     assert kwargs["cfg"] == "cfg"
     assert kwargs["escalate_fn"] is set_escalated_to_human_action
     assert kwargs["send_ask_fn"] is send_ask_template_action
+    assert kwargs["send_closed_fn"] is send_closed_template_action

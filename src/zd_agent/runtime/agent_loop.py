@@ -274,18 +274,60 @@ def _record_slow_sql_failure(
     )
 
 
-def _apply_freshness_recovery(
+async def _apply_freshness_recovery(
     *,
     result: Any,
     session: AgentSession,
     message_store: MessageStore,
+    enable_vision_input: bool,
 ) -> bool:
-    """Inject newly fetched customer messages before advancing the session cursor."""
+    """Apply a typed freshness action before another public-reply attempt.
+
+    Customer-message cursors are committed only after recovered text and every
+    selected image are present in ``MessageStore``. Images skipped by the
+    configured vision limit are called out explicitly, so a private Zendesk
+    attachment URL can never masquerade as context the model has actually seen.
+    """
     recovery = (getattr(result, "metadata", None) or {}).get(
         "freshness_recovery"
     )
     if not isinstance(recovery, FreshnessRecovery):
         return False
+
+    if recovery.action is FreshnessRecoveryAction.DEFER:
+        session.status = SessionStatus.DEFERRED
+        session.error_message = recovery.reason or "freshness_check_deferred"
+        logger.warning(
+            "freshness_check_deferred",
+            ticket_id=session.ticket_id,
+            reason=session.error_message,
+        )
+        return True
+
+    if recovery.action is FreshnessRecoveryAction.RETRY_FETCH:
+        session.freshness_fetch_error_count += 1
+        if session.freshness_fetch_error_count >= 2:
+            session.status = SessionStatus.DEFERRED
+            session.error_message = recovery.reason or "freshness_fetch_error"
+            logger.warning(
+                "freshness_fetch_retry_exhausted",
+                ticket_id=session.ticket_id,
+                attempts=session.freshness_fetch_error_count,
+                reason=session.error_message,
+            )
+            return True
+        message_store.append_user(
+            "[系统] 发送前无法读取最新 Zendesk 客户消息。当前回复未发送；"
+            "只允许再尝试读取一次，若仍失败，本次会话必须延期。"
+        )
+        logger.warning(
+            "freshness_fetch_retry_scheduled",
+            ticket_id=session.ticket_id,
+            attempt=session.freshness_fetch_error_count,
+            reason=recovery.reason,
+        )
+        return False
+
     if recovery.action is not FreshnessRecoveryAction.REFRESH_CONTEXT:
         return False
     if not recovery.new_messages or not recovery.next_snapshot_last_id:
@@ -307,27 +349,84 @@ def _apply_freshness_recovery(
         )
         return True
 
-    rendered_messages = [
-        {
+    rendered_messages = []
+    all_late_image_urls: list[str] = []
+    seen_late_image_urls: set[str] = set()
+    for message in recovery.new_messages:
+        rendered_messages.append({
             "id": message.get("id"),
             "created_at": message.get("created_at"),
             "content_type": message.get("content_type") or "text",
             "body": message.get("body") or "",
-            "image_urls": message.get("image_urls") or [],
-        }
-        for message in recovery.new_messages
-    ]
-    message_store.append_user(
-        "[系统] 客户在本次分析期间补充了以下新消息。上一版回复已取消；"
-        "请先吸收这些内容，再重新生成客户回复。\n"
-        + json.dumps(rendered_messages, ensure_ascii=False)
-    )
+        })
+        for raw_url in message.get("image_urls") or []:
+            url = str(raw_url or "").strip()
+            if not url or url in seen_late_image_urls:
+                continue
+            seen_late_image_urls.add(url)
+            all_late_image_urls.append(url)
+
+    late_image_urls = all_late_image_urls[:MAX_IMAGES]
+    late_images_truncated = len(all_late_image_urls) > MAX_IMAGES
+
+    if late_image_urls and enable_vision_input:
+        from zd_agent.services.ticket_messages import _download_image_data_url
+
+        downloaded = await asyncio.gather(
+            *(_download_image_data_url(url) for url in late_image_urls),
+            return_exceptions=True,
+        )
+        if any(isinstance(item, Exception) or not item for item in downloaded):
+            session.status = SessionStatus.DEFERRED
+            session.error_message = "freshness_image_download_failed"
+            logger.warning(
+                "freshness_image_download_failed",
+                ticket_id=session.ticket_id,
+                attempted=len(late_image_urls),
+            )
+            return True
+
+        text = (
+            "[系统] 客户在本次分析期间补充了以下新消息。上一版回复已取消；"
+            "请先吸收这些内容和截图，再重新生成客户回复。\n"
+            + json.dumps(rendered_messages, ensure_ascii=False)
+        )
+        if late_images_truncated:
+            text += (
+                f"\n[系统提醒] 客户共补充 {len(all_late_image_urls)} 张图片；"
+                f"本轮仅读取前 {MAX_IMAGES} 张，结论不得假设其余图片内容。"
+            )
+        content: list[dict[str, Any]] = [{"type": "text", "text": text}]
+        content.extend(
+            {
+                "type": "image_url",
+                "image_url": {"url": str(data_url), "detail": "low"},
+            }
+            for data_url in downloaded
+        )
+        message_store.append_user(content)
+    else:
+        vision_warning = ""
+        if late_image_urls and not enable_vision_input:
+            vision_warning = (
+                f"\n[系统提醒] 客户补充了 {len(all_late_image_urls)} 张图片，"
+                "但当前主模型视觉输入已关闭，图片内容尚未读取。"
+                "请仅依据文字内容分析；若图片可能改变结论，应向客户索取"
+                "文字版报错或关键信息。"
+            )
+        message_store.append_user(
+            "[系统] 客户在本次分析期间补充了以下新消息。上一版回复已取消；"
+            "请先吸收这些内容，再重新生成客户回复。\n"
+            + json.dumps(rendered_messages, ensure_ascii=False)
+            + vision_warning
+        )
     # Cursor advancement is deliberately last: the context must already be in
     # MessageStore before a subsequent send is allowed against the new cursor.
     session.customer_msgs_snapshot_count = recovery.next_snapshot_count
     session.customer_msgs_snapshot_last_id = recovery.next_snapshot_last_id
     session.customer_msgs_snapshot_captured = True
     session.freshness_rebase_count += 1
+    session.freshness_fetch_error_count = 0
     logger.info(
         "freshness_context_rebased",
         ticket_id=session.ticket_id,
@@ -407,11 +506,6 @@ async def _run_tool_call(
         error=result.error,
     )
     message_store.append_tool_result(tc.id, tc.name, output)
-    _apply_freshness_recovery(
-        result=result,
-        session=session,
-        message_store=message_store,
-    )
     return ToolExecuted(
         round=current_round,
         tool_name=tc.name,
@@ -438,6 +532,8 @@ async def _execute_tool_calls(
     session: AgentSession,
     message_store: MessageStore,
     current_round: int,
+    *,
+    enable_vision_input: bool = False,
 ) -> AsyncGenerator[ToolExecuted, None]:
     """Run safe tools in parallel and unsafe tools serially.
 
@@ -445,13 +541,46 @@ async def _execute_tool_calls(
     subprocess. Their ``concurrency_safe=False`` flag used to be ignored by the
     main agent loop, so a model could trigger multiple writes in the same round.
     """
+    has_handoff_reply = any(
+        tc.name == "zendesk_public_reply"
+        and _parse_tool_arguments(tc.arguments).get("reply_type") == "handoff"
+        for tc in tool_calls
+    )
+    suppressed_feishu_ids: set[str] = set()
+    if has_handoff_reply:
+        for tc in tool_calls:
+            if tc.name != "feishu_push":
+                continue
+            suppressed_feishu_ids.add(tc.id)
+            message_store.append_tool_result(
+                tc.id,
+                tc.name,
+                (
+                    "Cancelled: reply_type=handoff owns the escalation side "
+                    "effects. The public-reply boundary notifies Feishu only "
+                    "after customer delivery succeeds."
+                ),
+            )
+        if suppressed_feishu_ids:
+            logger.info(
+                "feishu_push_cancelled_for_handoff",
+                ticket_id=session.ticket_id,
+                cancelled_count=len(suppressed_feishu_ids),
+            )
+
     async def _run_safe_batch(
         safe_batch: list[ToolCallRequest],
     ) -> AsyncGenerator[ToolExecuted, None]:
         if not safe_batch:
             return
         tasks = [
-            _run_tool_call(tc, registry, session, message_store, current_round)
+            _run_tool_call(
+                tc,
+                registry,
+                session,
+                message_store,
+                current_round,
+            )
             for tc in safe_batch
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -464,9 +593,18 @@ async def _execute_tool_calls(
                 yield result
 
     safe_batch: list[ToolCallRequest] = []
-    for tc in tool_calls:
+    for index, tc in enumerate(tool_calls):
+        if tc.id in suppressed_feishu_ids:
+            continue
         tool = registry.get(tc.name)
-        if tool is None or tool.concurrency_safe:
+        # A public reply is a terminal external write even if a test double or
+        # future implementation forgets to declare ``concurrency_safe=False``.
+        # Keep it on the serial path so a freshness cancellation or successful
+        # delivery can invalidate every later call from the same LLM response.
+        if (
+            tc.name != "zendesk_public_reply"
+            and (tool is None or tool.concurrency_safe)
+        ):
             safe_batch.append(tc)
             continue
 
@@ -476,7 +614,66 @@ async def _execute_tool_calls(
 
         try:
             event = await _run_tool_call(
-                tc, registry, session, message_store, current_round,
+                tc,
+                registry,
+                session,
+                message_store,
+                current_round,
+            )
+            if tc.name == "zendesk_public_reply" and session.reply_sent:
+                # A confirmed customer-visible write is terminal even when
+                # post-send internal-note/outbox bookkeeping reports failure.
+                yield event
+                return
+            recovery = (event.metadata or {}).get("freshness_recovery")
+            if (
+                isinstance(recovery, FreshnessRecovery)
+                and recovery.action
+                in {
+                    FreshnessRecoveryAction.REFRESH_CONTEXT,
+                    FreshnessRecoveryAction.RETRY_FETCH,
+                }
+            ):
+                # The assistant produced every remaining call against the old
+                # customer snapshot.  Add explicit cancellation results so the
+                # next OpenAI request still has a valid tool-call transcript,
+                # but never execute those stale writes.
+                for cancelled in tool_calls[index + 1:]:
+                    if cancelled.id in suppressed_feishu_ids:
+                        continue
+                    message_store.append_tool_result(
+                        cancelled.id,
+                        cancelled.name,
+                        (
+                            "Cancelled: customer context changed before this "
+                            "tool call could execute. Re-evaluate it against "
+                            "the refreshed ticket context."
+                        ),
+                    )
+                logger.info(
+                    "tool_batch_cancelled_after_freshness_change",
+                    ticket_id=session.ticket_id,
+                    cancelled_count=len(tool_calls) - index - 1,
+                    recovery_action=recovery.action.value,
+                )
+                # Every tool result for this assistant message is now present.
+                # Only then may a user freshness message be appended; otherwise
+                # the next provider request sees tool -> user -> tool and rejects
+                # the transcript as malformed.
+                await _apply_freshness_recovery(
+                    result=event,
+                    session=session,
+                    message_store=message_store,
+                    enable_vision_input=enable_vision_input,
+                )
+                yield event
+                return
+
+            await _apply_freshness_recovery(
+                result=event,
+                session=session,
+                message_store=message_store,
+                enable_vision_input=enable_vision_input,
             )
             yield event
             if session.status is SessionStatus.DEFERRED:
@@ -780,15 +977,23 @@ async def agent_loop(
                 return
 
             successful_tool_names: list[str] = []
+            public_reply_delivered = False
             async for event in _execute_tool_calls(
                 response.tool_calls,
                 registry,
                 session,
                 message_store,
                 guardrails.current_round,
+                enable_vision_input=enable_vision_input,
             ):
                 if isinstance(event, ToolExecuted) and event.success:
                     successful_tool_names.append(event.tool_name)
+                if (
+                    isinstance(event, ToolExecuted)
+                    and event.tool_name == "zendesk_public_reply"
+                    and session.reply_sent
+                ):
+                    public_reply_delivered = True
                 yield event
 
             if session.status is SessionStatus.DEFERRED:
@@ -797,7 +1002,18 @@ async def agent_loop(
                     total_rounds=guardrails.current_round,
                     total_tokens=guardrails.total_tokens,
                     elapsed_seconds=guardrails.elapsed_seconds,
-                    reason="freshness_rebase_limit",
+                    reason=session.error_message or "freshness_check_deferred",
+                )
+                return
+
+            if public_reply_delivered:
+                session.status = SessionStatus.COMPLETED
+                yield LoopFinished(
+                    status="completed",
+                    total_rounds=guardrails.current_round,
+                    total_tokens=guardrails.total_tokens,
+                    elapsed_seconds=guardrails.elapsed_seconds,
+                    reason="customer-visible reply delivered",
                 )
                 return
 
@@ -983,6 +1199,11 @@ async def agent_loop(
                                 f"Forced summary reply tool {tc.name} failed: "
                                 f"{tc_result.error or 'unknown error'}"
                             )
+                        if (
+                            tc.name == "zendesk_public_reply"
+                            and session.reply_sent
+                        ):
+                            break
                     except Exception as exc:
                         logger.error(
                             "guardrail_summary_reply_failed",

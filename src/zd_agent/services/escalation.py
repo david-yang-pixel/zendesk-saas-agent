@@ -83,18 +83,22 @@ async def set_escalated_to_human(
             delivery_attempt_id=(
                 f"{source}:{ticket_id}:{latest_cid or verdict_str}:handoff"
             ),
+            source=source,
+            customer_phrase=customer_phrase,
         )
     )
 
-    await escalation_notifications.send_feishu_escalation_best_effort(
-        ticket_id=ticket_id,
-        reason=reason,
-        source=source,
-        customer_phrase=customer_phrase,
-        agent_last_reply=agent_last_reply,
-        handoff_reply_sent=handoff_reply_sent,
-    )
-
-    await escalation_notifications.add_zendesk_escalation_tag_best_effort(
-        ticket_id=ticket_id,
-    )
+    if not handoff_reply_sent:
+        # Delivery never reached the durable post-public boundary, so alert the
+        # operator immediately and tag the ticket through the fallback path.
+        await escalation_notifications.send_feishu_escalation_best_effort(
+            ticket_id=ticket_id,
+            reason=reason,
+            source=source,
+            customer_phrase=customer_phrase,
+            agent_last_reply=agent_last_reply,
+            handoff_reply_sent=False,
+        )
+        await escalation_notifications.add_zendesk_escalation_tag_best_effort(
+            ticket_id=ticket_id,
+        )

@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -522,6 +522,7 @@ class TestTriggerSkipEscalated:
             trigger_type="webhook-mention",
             hint="处理一下",
             delivery_attempt_id="mention:9999",
+            on_session_created=ANY,
         )
 
     @pytest.mark.asyncio

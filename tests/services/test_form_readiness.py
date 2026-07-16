@@ -59,6 +59,7 @@ def _cfg() -> AppConfig:
 def _initial_issue_event() -> dict[str, Any]:
     return {
         "id": "m1",
+        "type": "Messaging::ConversationMessage",
         "created_at": "2026-07-16T04:15:22Z",
         "author": {
             "type": "end-user",
@@ -78,6 +79,7 @@ def _initial_issue_event() -> dict[str, Any]:
 def _pending_answer_bot_form_event() -> dict[str, Any]:
     return {
         "id": "bot-form-1",
+        "type": "Messaging::ConversationMessage",
         "created_at": "2026-07-16T04:15:30Z",
         "author": {
             "type": "business",
@@ -117,6 +119,7 @@ def _form_response_event(
 ) -> dict[str, Any]:
     return {
         "id": message_id,
+        "type": "Messaging::ConversationMessage",
         "created_at": "2026-07-16T04:18:53Z",
         "author": {
             "type": "end-user",
@@ -418,11 +421,11 @@ async def test_waiting_form_is_polled_for_a_lost_form_response_webhook(
 
 
 @pytest.mark.asyncio
-async def test_waiting_form_does_not_inherit_issue_waiting_timeouts(
+async def test_waiting_form_abandons_after_readiness_timeout(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Form readiness is polled, but it is not a greeting/ask lifecycle."""
+    """An unanswered blocking form cannot remain in the poller forever."""
     from zd_agent.trigger import state_store
 
     monkeypatch.setattr(
@@ -452,7 +455,14 @@ async def test_waiting_form_does_not_inherit_issue_waiting_timeouts(
         },
     ))
 
-    with patch("zd_agent.services.ticket_messages._fetch_customer_messages", fetch):
+    alert = AsyncMock()
+    with patch(
+        "zd_agent.services.ticket_messages._fetch_customer_messages",
+        fetch,
+    ), patch(
+        "zd_agent.services.waiting_poller._alert_feishu",
+        alert,
+    ):
         processed = await scan_once(
             state=state,
             trigger_queue=queue,
@@ -464,7 +474,8 @@ async def test_waiting_form_does_not_inherit_issue_waiting_timeouts(
     fetch.assert_awaited_once_with(_TICKET_ID, log_success=False)
     waiting = state.get(_TICKET_ID)
     assert waiting is not None
-    assert waiting.state == "waiting_for_form"
-    assert waiting.abandoned_alert_sent_at is None
+    assert waiting.state == "abandoned"
+    assert waiting.abandoned_alert_sent_at is not None
     assert waiting.alert_sent_at is None
     assert queue.empty()
+    alert.assert_awaited_once()

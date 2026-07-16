@@ -1,6 +1,7 @@
 """Runtime dependency bootstrap for the SaaS aiohttp app."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +14,15 @@ from zd_agent.services.app_context import install_saas_app_context
 from zd_agent.services.app_lifecycle import wire_session_finished_callback
 from zd_agent.services.admin_config import AdminConfigStore
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
+from zd_agent.services.public_reply_internal_note import (
+    PostPublicInternalNoteStore,
+    reconcile_pending_post_public_internal_notes,
+)
+from zd_agent.services.public_reply_delivery_store import PublicReplyDeliveryStore
+from zd_agent.services.public_reply_handoff_effects import (
+    PostPublicHandoffStore,
+    reconcile_pending_post_public_handoff_effects,
+)
 from zd_agent.services.webhook_dedup import WebhookDedup
 from zd_agent.trigger.state_store import TicketStateTracker
 
@@ -62,8 +72,20 @@ def prepare_saas_app_runtime(
         except ValueError:
             logger.error("processing_recovery_invalid_ticket_id", ticket_id=ticket_id)
             continue
-        trigger_queue.ensure_processing_recovery(numeric_ticket_id)
-        recovered_ticket_ids.append(numeric_ticket_id)
+        record = state.get(ticket_id)
+        recovered = trigger_queue.ensure_processing_recovery(
+            numeric_ticket_id,
+            delivery_attempt_id=(
+                record.delivery_attempt_id if record is not None else ""
+            ),
+        )
+        if recovered:
+            recovered_ticket_ids.append(numeric_ticket_id)
+        else:
+            logger.info(
+                "processing_session_recovery_already_queued",
+                ticket_id=numeric_ticket_id,
+            )
     if recovered_ticket_ids:
         logger.warning(
             "processing_sessions_recovered",
@@ -83,6 +105,82 @@ def prepare_saas_app_runtime(
         webhook_dedup=webhook_dedup,
         manager=manager,
     )
+
+    async def _reconcile_dead_letters(_app: web.Application) -> None:
+        del _app
+        try:
+            from zd_agent.services.trigger_actions import (
+                set_escalated_to_human_action,
+            )
+            from zd_agent.services.trigger_consumer import (
+                default_trigger_log_path,
+                reconcile_dead_lettered_triggers,
+            )
+
+            reconciled = await reconcile_dead_lettered_triggers(
+                queue=trigger_queue,
+                state=state,
+                log_path=default_trigger_log_path(cfg),
+                escalate_fn=set_escalated_to_human_action,
+            )
+            if reconciled:
+                logger.warning("trigger_dead_letters_startup_reconciled", count=reconciled)
+        except Exception as exc:  # noqa: BLE001 - next periodic pass retries.
+            logger.warning(
+                "trigger_dead_letter_startup_reconcile_failed",
+                error=str(exc)[:200],
+            )
+
+    async def _reconcile_internal_notes(_app: web.Application) -> None:
+        del _app
+        try:
+            from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
+
+            note_store = PostPublicInternalNoteStore(
+                state_dir / "post_public_internal_note_outbox.sqlite3"
+            )
+            handoff_store = PostPublicHandoffStore(
+                state_dir / "post_public_handoff_outbox.sqlite3"
+            )
+            note_pending = bool(note_store.pending(limit=1))
+            handoff_pending = bool(handoff_store.pending(limit=1))
+            if not note_pending and not handoff_pending:
+                return
+            delivery_store = PublicReplyDeliveryStore(
+                state_dir / "public_reply_outbox.sqlite3"
+            )
+            reconciled_notes = 0
+            reconciled_handoffs = 0
+            if note_pending:
+                reconciled_notes = await asyncio.wait_for(
+                    reconcile_pending_post_public_internal_notes(
+                        note_store=note_store,
+                        zendesk_tool_caller=call_zendesk_tool,
+                        delivery_store=delivery_store,
+                    ),
+                    timeout=90,
+                )
+            if handoff_pending:
+                reconciled_handoffs = await asyncio.wait_for(
+                    reconcile_pending_post_public_handoff_effects(
+                        store=handoff_store,
+                        delivery_store=delivery_store,
+                    ),
+                    timeout=90,
+                )
+            logger.info(
+                "post_public_side_effects_startup_reconciled",
+                notes=reconciled_notes,
+                handoffs=reconciled_handoffs,
+            )
+        except Exception as exc:  # noqa: BLE001 - startup recovery is best effort.
+            logger.warning(
+                "post_public_internal_note_startup_reconcile_failed",
+                error=str(exc)[:200],
+            )
+
+    app.on_startup.append(_reconcile_dead_letters)
+    app.on_startup.append(_reconcile_internal_notes)
 
     return SaasAppRuntime(
         state_dir=state_dir,

@@ -84,6 +84,7 @@ async def _dispatch(
         else Path("/tmp/trigger_test.jsonl")
     )
     mock_send = AsyncMock(return_value=send_ask_returns)
+    mock_closed = AsyncMock(return_value=True)
     await post_verdict_dispatch_action(
         ticket_id=ticket_id,
         verdict=verdict,
@@ -98,6 +99,7 @@ async def _dispatch(
         now=now,
         cfg=cfg or _make_cfg(),
         send_ask_fn=mock_send,
+        send_closed_fn=mock_closed,
     )
 
 
@@ -142,17 +144,58 @@ class TestRequestHumanEscalates:
 
 class TestSelfResolved:
     @pytest.mark.asyncio
-    async def test_self_resolved_marks_processed(self, tmp_path) -> None:
+    async def test_self_resolved_sends_closed_reply_before_marking_processed(
+        self, tmp_path,
+    ) -> None:
         state = _make_state(tmp_path)
-        await _dispatch(
+        closed = AsyncMock(return_value=True)
+        now = _now()
+        await post_verdict_dispatch_action(
             state=state,
+            ticket_id=12345,
             verdict=_make_verdict(kind="self_resolved", completeness=85),
-            tmp_path=tmp_path,
+            customer_msgs=[{"body": "I fixed it"}],
+            ticket_info={"id": 12345},
+            latest_cid="cid-1",
+            latest_ts=now,
+            existing=None,
+            log_path=tmp_path / "trigger.jsonl",
+            source="zendesk_webhook",
+            now=now,
+            cfg=_make_cfg(),
+            send_ask_fn=AsyncMock(return_value=True),
+            send_closed_fn=closed,
         )
         rec = state.get(12345)
         assert rec.state == "processed"
         assert rec.last_verdict == "self_resolved"
         assert rec.escalated_reason == ""  # 不是升级
+        closed.assert_awaited_once()
+        assert closed.await_args.kwargs["delivery_attempt_id"] == ""
+
+    @pytest.mark.asyncio
+    async def test_self_resolved_does_not_mark_processed_when_closed_reply_fails(
+        self, tmp_path,
+    ) -> None:
+        state = _make_state(tmp_path)
+        with pytest.raises(PublicAskDeliveryError, match="closed"):
+            await post_verdict_dispatch_action(
+                ticket_id=12345,
+                verdict=_make_verdict(kind="self_resolved"),
+                customer_msgs=[],
+                ticket_info={"id": 12345},
+                latest_cid="cid-1",
+                latest_ts=_now(),
+                existing=None,
+                state=state,
+                log_path=tmp_path / "trigger.jsonl",
+                source="zendesk_webhook",
+                now=_now(),
+                cfg=_make_cfg(),
+                send_ask_fn=AsyncMock(return_value=True),
+                send_closed_fn=AsyncMock(return_value=False),
+            )
+        assert state.get(12345) is None
 
 
 # ============================================================================

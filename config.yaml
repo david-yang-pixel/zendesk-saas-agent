@@ -63,6 +63,9 @@ public_reply:
   ask_followup_alert_minutes: 30
   abandoned_hours: 24
   browser_relay_url: https://zendesk.smlershou.top/zendesk-reply-mcp
+  # Reuse the already-deployed /webhook/ reverse-proxy boundary. The aiohttp
+  # route itself still requires the browser-relay Bearer token.
+  freshness_callback_url: https://zendesk.smlershou.top/webhook/relay-pre-send-freshness
   browser_relay_timeout_seconds: 90
 sandbox:
   type: local

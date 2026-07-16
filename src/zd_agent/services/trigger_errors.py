@@ -9,6 +9,18 @@ class TriggerDeferredError(RuntimeError):
 
 
 class PublicReplyDeliveryError(RuntimeError):
-    def __init__(self, ticket_id: int, *, kind: str = "reply") -> None:
-        label = "public ask" if kind == "ask" else "public reply"
+    def __init__(
+        self,
+        ticket_id: int,
+        *,
+        kind: str = "reply",
+        ambiguous: bool = False,
+    ) -> None:
+        self.ambiguous = ambiguous
+        if kind == "ask":
+            label = "public ask"
+        elif kind == "reply":
+            label = "public reply"
+        else:
+            label = f"public {kind} reply"
         super().__init__(f"{label} delivery failed for ticket #{ticket_id}")

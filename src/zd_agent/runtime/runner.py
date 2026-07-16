@@ -304,7 +304,11 @@ async def run_agent(session: AgentSession) -> None:
         # 自动归档保底：如果 LLM 没有调用 archive_ticket，runner 层补充写入 meta.json
         _ensure_archive(session, guardrails)
 
-        if session.status == SessionStatus.COMPLETED and session.reply_sent:
+        if (
+            session.status == SessionStatus.COMPLETED
+            and session.reply_sent
+            and session.public_reply_type != "handoff"
+        ):
             await notify_ticket_done_best_effort(session)
 
         # sandbox 清理策略

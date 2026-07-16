@@ -123,7 +123,7 @@ class TestCustomerRequestedHumanWiring:
 
 class TestAgentPublicReplySentWiring:
     @pytest.mark.asyncio
-    async def test_send_public_reply_success_emits_metric(self) -> None:
+    async def test_send_public_reply_success_emits_metric(self, tmp_path) -> None:
         """send_public_reply() relay 路径成功 → emit metric"""
         from zd_agent.tools.zendesk_public_reply import send_public_reply
 
@@ -131,6 +131,8 @@ class TestAgentPublicReplySentWiring:
         cfg.public_reply = PublicReplyConfig(enabled=True)
         cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097"
         cfg.public_reply.browser_relay_api_key = "test-relay-key"
+        cfg.resources.base_dir = str(tmp_path)
+        cfg.resources.state_dir = ".state"
 
         with (
             patch(
@@ -196,7 +198,7 @@ class TestAgentPublicReplySentWiring:
         mock_emit.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_metric_failure_does_not_break_send(self) -> None:
+    async def test_metric_failure_does_not_break_send(self, tmp_path) -> None:
         """metric emit 抛 exception → 发送主流程仍 return success"""
         from zd_agent.tools.zendesk_public_reply import send_public_reply
 
@@ -204,6 +206,8 @@ class TestAgentPublicReplySentWiring:
         cfg.public_reply = PublicReplyConfig(enabled=True)
         cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097"
         cfg.public_reply.browser_relay_api_key = "test-relay-key"
+        cfg.resources.base_dir = str(tmp_path)
+        cfg.resources.state_dir = ".state"
 
         with (
             patch(

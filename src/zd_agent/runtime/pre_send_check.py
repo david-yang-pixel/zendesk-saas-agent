@@ -49,19 +49,22 @@ logger = get_logger(module="runtime.pre_send_check")
 # ---------------------------------------------------------------------------
 
 class FreshnessRecoveryAction(str, Enum):
-    """Typed next step for a stale customer-message snapshot."""
+    """Typed next step for a failed customer-message freshness check."""
 
     REFRESH_CONTEXT = "refresh_context"
+    RETRY_FETCH = "retry_fetch"
+    DEFER = "defer"
 
 
 @dataclass(frozen=True)
 class FreshnessRecovery:
-    """New customer context and the cursor that represents that context."""
+    """Runtime action required before another public-reply attempt."""
 
     action: FreshnessRecoveryAction
-    new_messages: tuple[dict, ...]
-    next_snapshot_count: int
-    next_snapshot_last_id: str
+    new_messages: tuple[dict, ...] = ()
+    next_snapshot_count: int = 0
+    next_snapshot_last_id: str = ""
+    reason: str = ""
 
 
 @dataclass
@@ -282,6 +285,10 @@ async def pre_send_check_or_abort(
         return FreshnessResult(
             continue_send=False,
             reason=f"fetch_error: {type(e).__name__}",
+            recovery=FreshnessRecovery(
+                action=FreshnessRecoveryAction.RETRY_FETCH,
+                reason=f"fetch_error: {type(e).__name__}",
+            ),
         )
 
     current_count = len(current)
@@ -303,6 +310,14 @@ async def pre_send_check_or_abort(
                 continue_send=False,
                 reason="snapshot_last_id_missing",
                 new_messages_count=current_count,
+                recovery=FreshnessRecovery(
+                    action=FreshnessRecoveryAction.DEFER,
+                    next_snapshot_count=current_count,
+                    next_snapshot_last_id=(
+                        str(current[-1].get("id") or "") if current else ""
+                    ),
+                    reason="snapshot_last_id_missing",
+                ),
             )
         new_msgs = current[snapshot_index + 1:]
     else:
@@ -396,4 +411,9 @@ async def pre_send_check_or_abort(
         continue_send=True,
         reason="all_new_msgs_non_substantive",
         new_messages_count=new_count,
+        # The reply can proceed without a context rebase, but the caller must
+        # persist this accepted cursor once delivery succeeds.  Otherwise a
+        # delayed webhook will treat the same "thanks" / "any update" as new
+        # work and dispatch the ticket again.
+        recovery=recovery,
     )

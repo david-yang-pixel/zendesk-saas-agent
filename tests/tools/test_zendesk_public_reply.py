@@ -30,7 +30,11 @@ from zd_agent.tools.zendesk_public_reply import (
     ZendeskPublicReply,
 )
 from zd_agent.services.public_reply_delivery_store import PublicReplyDeliveryStore
-from zd_agent.tools.public_reply_delivery import PublicReplyTransportError
+from zd_agent.services.public_reply_handoff_effects import PostPublicHandoffStore
+from zd_agent.tools.public_reply_delivery import (
+    PublicReplyTransportError,
+    recent_duplicate_public_reply_exists,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -51,6 +55,106 @@ def _available_duplicate_check(
         "zd_agent.tools.zendesk_public_reply._delivery_store_for_config",
         lambda _cfg: store,
     )
+    handoff_store = PostPublicHandoffStore(
+        tmp_path / "post_public_handoff_effects.sqlite3"
+    )
+    monkeypatch.setattr(
+        "zd_agent.tools.zendesk_public_reply._handoff_store_for_config",
+        lambda _cfg: handoff_store,
+    )
+
+
+@pytest.mark.asyncio
+async def test_duplicate_lookup_follows_all_conversation_pages() -> None:
+    body = "A frozen customer-visible reply"
+    caller = AsyncMock(
+        side_effect=[
+            {
+                "success": True,
+                "data": {
+                    "comments": [],
+                    "conversation_log": {
+                        "events": [],
+                        "meta": {"has_more": True, "after_cursor": "p2"},
+                    },
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "events": [
+                        {
+                            "author": {"type": "agent"},
+                            "content": {"text": body},
+                            "created_at": "2026-07-16T00:00:00Z",
+                        },
+                    ],
+                    "meta": {"has_more": False},
+                },
+            },
+        ]
+    )
+
+    assert await recent_duplicate_public_reply_exists(
+        ticket_id=42,
+        body_with_footer=body,
+        not_before=0,
+        zendesk_tool_caller=caller,
+    )
+    assert [call.args[0] for call in caller.await_args_list] == [
+        "get_ticket_comments", "get_ticket_conversation_log",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_lookup_fails_closed_on_incomplete_conversation() -> None:
+    caller = AsyncMock(return_value={
+        "success": True,
+        "data": {
+            "comments": [],
+            "conversation_log": {
+                "events": [],
+                "meta": {"has_more": True, "after_cursor": ""},
+            },
+        },
+    })
+
+    with pytest.raises(PublicReplyTransportError, match="cursor incomplete"):
+        await recent_duplicate_public_reply_exists(
+            ticket_id=42,
+            body_with_footer="reply",
+            not_before=0,
+            zendesk_tool_caller=caller,
+        )
+
+
+@pytest.mark.asyncio
+async def test_relay_success_with_delivery_mark_failure_stays_no_resend(tmp_path) -> None:
+    store = PublicReplyDeliveryStore(tmp_path / "outbox.sqlite3")
+    store.mark_delivered = MagicMock(return_value=False)  # type: ignore[method-assign]
+    relay = AsyncMock()
+    remote = AsyncMock(return_value={"success": True, "data": {"comments": []}})
+
+    with patch(
+        "zd_agent.tools.zendesk_public_reply.get_config",
+        return_value=_make_cfg(relay=True),
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.call_zendesk_tool", remote,
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply", relay,
+    ), pytest.raises(PublicReplyTransportError, match="claim expired"):
+        await _send_public_reply_safely(
+            ticket_id=42,
+            body_with_footer="Frozen body",
+            reply_type="handoff",
+            conversation_id="conv-1",
+            delivery_attempt_id="mark-failure",
+            delivery_store=store,
+        )
+
+    attempt = store.get(ticket_id=42, delivery_attempt_id="mark-failure")
+    assert attempt is not None and attempt.ambiguous
+    assert store.claim(attempt.delivery_key) is None
 
 
 # ---------- footer helpers ----------
@@ -1238,8 +1342,12 @@ class TestExecute:
 class TestPreSendCheckIntegration:
     """M5: ZendeskPublicReply 接入 pre_send_check（snapshot > 0 时调）"""
 
+    @pytest.mark.parametrize("reply_type", ["ask", "closed"])
     @pytest.mark.asyncio
-    async def test_missing_snapshot_blocks_ask(self) -> None:
+    async def test_missing_snapshot_blocks_resolvable_reply(
+        self,
+        reply_type: str,
+    ) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
         sess.customer_msgs_snapshot_captured = False
@@ -1257,7 +1365,7 @@ class TestPreSendCheckIntegration:
                 {
                     "ticket_id": 42,
                     "body": "test",
-                    "reply_type": "ask",
+                    "reply_type": reply_type,
                     "conversation_id": "conv-1",
                 },
                 sess,
@@ -1335,6 +1443,59 @@ class TestPreSendCheckIntegration:
         assert not r.success
         assert "Pre-send check abort" in r.error
         assert "substantive_heuristic" in r.error
+
+    @pytest.mark.asyncio
+    async def test_accepted_non_substantive_messages_advance_session_cursor(
+        self,
+    ) -> None:
+        """A later webhook must not reprocess messages the send gate accepted."""
+        from zd_agent.runtime.pre_send_check import (
+            FreshnessRecovery,
+            FreshnessRecoveryAction,
+            FreshnessResult,
+        )
+
+        tool = ZendeskPublicReply()
+        session = _make_session(dry_run=False)
+        session.customer_msgs_snapshot_count = 1
+        session.customer_msgs_snapshot_last_id = "m1"
+        relay = AsyncMock()
+
+        async def _accepted_check(**kwargs):
+            return FreshnessResult(
+                continue_send=True,
+                reason="all_new_msgs_non_substantive",
+                new_messages_count=1,
+                recovery=FreshnessRecovery(
+                    action=FreshnessRecoveryAction.REFRESH_CONTEXT,
+                    next_snapshot_count=2,
+                    next_snapshot_last_id="m2",
+                ),
+            )
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.runtime.pre_send_check.pre_send_check_or_abort",
+            side_effect=_accepted_check,
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            relay,
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "We are checking this for you.",
+                    "reply_type": "ask",
+                    "conversation_id": "conv-1",
+                },
+                session,
+            )
+
+        assert result.success
+        assert session.customer_msgs_snapshot_count == 2
+        assert session.customer_msgs_snapshot_last_id == "m2"
 
     @pytest.mark.asyncio
     async def test_ask_blocks_when_freshness_check_fails(self) -> None:
@@ -1440,7 +1601,12 @@ async def test_historical_matching_body_does_not_suppress_new_attempt(tmp_path) 
 async def test_retry_reuses_first_body_and_confirms_ambiguous_delivery(tmp_path) -> None:
     first_body = _append_footer("First generated body.", "ask")
     second_body = _append_footer("Changed retry body.", "ask")
-    store = PublicReplyDeliveryStore(tmp_path / "outbox.sqlite3")
+    clock = {"now": 100.0}
+    store = PublicReplyDeliveryStore(
+        tmp_path / "outbox.sqlite3",
+        claim_lease_seconds=5,
+        now_fn=lambda: clock["now"],
+    )
     relay = AsyncMock(side_effect=RuntimeError("relay result unknown"))
     remote = AsyncMock(return_value={"success": True, "data": {"comments": []}})
 
@@ -1464,6 +1630,18 @@ async def test_retry_reuses_first_body_and_confirms_ambiguous_delivery(tmp_path)
                 delivery_store=store,
             )
 
+        with pytest.raises(PublicReplyTransportError, match="manual reconciliation"):
+            await _send_public_reply_safely(
+                ticket_id=42,
+                body_with_footer=second_body,
+                reply_type="ask",
+                conversation_id="conv-1",
+                delivery_attempt_id="attempt-retry",
+                delivery_store=store,
+            )
+        assert relay.await_count == 1
+
+        clock["now"] += 6
         remote.return_value = {
             "success": True,
             "data": {
@@ -1485,6 +1663,105 @@ async def test_retry_reuses_first_body_and_confirms_ambiguous_delivery(tmp_path)
 
     assert delivered is False
     assert relay.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_retry_uses_snapshot_that_generated_frozen_body(tmp_path) -> None:
+    first_body = _append_footer("Answer generated for message m1.", "solution")
+    regenerated_body = _append_footer("Answer regenerated for message m2.", "solution")
+    clock = {"now": 100.0}
+    store = PublicReplyDeliveryStore(
+        tmp_path / "outbox.sqlite3",
+        claim_lease_seconds=1,
+        now_fn=lambda: clock["now"],
+    )
+    relay = AsyncMock(side_effect=[RuntimeError("response lost"), None])
+    remote = AsyncMock(return_value={"success": True, "data": {"comments": []}})
+
+    cfg = _make_cfg(relay=True)
+    with patch(
+        "zd_agent.tools.zendesk_public_reply.get_config",
+        return_value=cfg,
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+        remote,
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+        relay,
+    ):
+        with pytest.raises(RuntimeError, match="response lost"):
+            await _send_public_reply_safely(
+                ticket_id=42,
+                body_with_footer=first_body,
+                reply_type="solution",
+                conversation_id="conv-1",
+                snapshot_customer_message_count=1,
+                snapshot_customer_last_message_id="m1",
+                delivery_attempt_id="attempt-snapshot",
+                delivery_store=store,
+            )
+
+        clock["now"] += 2
+        with pytest.raises(PublicReplyTransportError, match="manual reconciliation"):
+            await _send_public_reply_safely(
+                ticket_id=42,
+                body_with_footer=regenerated_body,
+                reply_type="solution",
+                conversation_id="conv-1",
+                snapshot_customer_message_count=2,
+                snapshot_customer_last_message_id="m2",
+                delivery_attempt_id="attempt-snapshot",
+                delivery_store=store,
+            )
+
+    assert relay.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_definite_unsent_relay_error_discards_frozen_attempt(tmp_path) -> None:
+    from zd_agent.integrations.zendesk_browser_relay import (
+        BrowserRelayDefiniteUnsentError,
+    )
+
+    first_body = _append_footer("Stale body A.", "handoff")
+    replacement_body = _append_footer("Replacement body B.", "handoff")
+    store = PublicReplyDeliveryStore(tmp_path / "outbox.sqlite3")
+    relay = AsyncMock(
+        side_effect=[
+            BrowserRelayDefiniteUnsentError("login required before Send"),
+            None,
+        ]
+    )
+
+    with patch(
+        "zd_agent.tools.zendesk_public_reply.get_config",
+        return_value=_make_cfg(relay=True),
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+        AsyncMock(return_value={"success": True, "data": {"comments": []}}),
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+        relay,
+    ):
+        with pytest.raises(BrowserRelayDefiniteUnsentError):
+            await _send_public_reply_safely(
+                ticket_id=42,
+                body_with_footer=first_body,
+                reply_type="handoff",
+                conversation_id="conv-1",
+                delivery_attempt_id="definitely-unsent",
+                delivery_store=store,
+            )
+        assert await _send_public_reply_safely(
+            ticket_id=42,
+            body_with_footer=replacement_body,
+            reply_type="handoff",
+            conversation_id="conv-1",
+            delivery_attempt_id="definitely-unsent",
+            delivery_store=store,
+        ) is True
+
+    assert relay.await_args_list[1].kwargs["body"] == replacement_body
 
 
 @pytest.mark.asyncio
@@ -1530,6 +1807,64 @@ async def test_concurrent_same_attempt_sends_only_once(tmp_path) -> None:
     assert relay.await_count == 1
     assert results.count(True) == 1
     assert any(isinstance(result, PublicReplyTransportError) for result in results)
+
+
+@pytest.mark.asyncio
+async def test_active_delivery_claim_is_renewed_while_relay_is_slow(tmp_path) -> None:
+    body = _append_footer("One slow delivery only.", "handoff")
+    store = PublicReplyDeliveryStore(
+        tmp_path / "outbox.sqlite3",
+        claim_lease_seconds=1,
+    )
+    relay_started = asyncio.Event()
+    relay_calls = 0
+
+    async def slow_relay(**_kwargs) -> None:
+        nonlocal relay_calls
+        relay_calls += 1
+        relay_started.set()
+        await asyncio.sleep(1.2)
+
+    relay = AsyncMock(side_effect=slow_relay)
+    remote = AsyncMock(return_value={"success": True, "data": {"comments": []}})
+
+    with patch(
+        "zd_agent.tools.zendesk_public_reply.get_config",
+        return_value=_make_cfg(relay=True),
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.call_zendesk_tool",
+        remote,
+    ), patch(
+        "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+        relay,
+    ):
+        first = asyncio.create_task(
+            _send_public_reply_safely(
+                ticket_id=42,
+                body_with_footer=body,
+                reply_type="handoff",
+                conversation_id="conv-1",
+                delivery_attempt_id="slow-attempt",
+                delivery_store=store,
+            )
+        )
+        await relay_started.wait()
+        await asyncio.sleep(1.05)
+        second = await asyncio.gather(
+            _send_public_reply_safely(
+                ticket_id=42,
+                body_with_footer=body,
+                reply_type="handoff",
+                conversation_id="conv-1",
+                delivery_attempt_id="slow-attempt",
+                delivery_store=store,
+            ),
+            return_exceptions=True,
+        )
+
+    assert await first is True
+    assert isinstance(second[0], PublicReplyTransportError)
+    assert relay_calls == 1
 
 
 class TestRegistryRegistration:

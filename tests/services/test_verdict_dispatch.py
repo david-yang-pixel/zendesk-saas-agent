@@ -1,6 +1,7 @@
 """Tests for verdict dispatch orchestration service."""
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -29,6 +30,7 @@ def _verdict(kind: str, completeness: int = 80) -> PreCheckVerdict:
 @pytest.mark.asyncio
 async def test_self_resolved_marks_processed(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
+    send_closed = AsyncMock(return_value=True)
 
     await handle_post_verdict_dispatch(
         ticket_id=12345,
@@ -45,12 +47,69 @@ async def test_self_resolved_marks_processed(tmp_path) -> None:
         cfg=_cfg(),
         escalate_fn=AsyncMock(),
         send_ask_fn=AsyncMock(),
+        send_closed_fn=send_closed,
     )
 
     rec = state.get(12345)
     assert rec is not None
     assert rec.state == "processed"
     assert rec.last_verdict == "self_resolved"
+    send_closed.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_self_resolved_uses_cursor_accepted_by_final_freshness_gate(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    send_closed = AsyncMock(return_value=SimpleNamespace(
+        success=True,
+        accepted_snapshot_last_id="thanks-after-close",
+    ))
+
+    await handle_post_verdict_dispatch(
+        ticket_id=12345,
+        verdict=_verdict("self_resolved"),
+        customer_msgs=[{"id": "original", "body": "I fixed it."}],
+        ticket_info={"id": 12345},
+        latest_cid="original",
+        latest_ts=_now(),
+        existing=None,
+        state=state,
+        log_path=Path(tmp_path) / "trigger.jsonl",
+        source="zendesk_webhook",
+        now=_now(),
+        cfg=_cfg(),
+        escalate_fn=AsyncMock(),
+        send_ask_fn=AsyncMock(),
+        send_closed_fn=send_closed,
+    )
+
+    assert state.get(12345).last_customer_comment_id == "thanks-after-close"
+
+
+@pytest.mark.asyncio
+async def test_self_resolved_failed_close_reply_keeps_ticket_retryable(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+
+    with pytest.raises(RuntimeError, match="public closed reply delivery failed"):
+        await handle_post_verdict_dispatch(
+            ticket_id=12345,
+            verdict=_verdict("self_resolved"),
+            customer_msgs=[],
+            ticket_info={"id": 12345},
+            latest_cid="cid-1",
+            latest_ts=_now(),
+            existing=None,
+            state=state,
+            log_path=Path(tmp_path) / "trigger.jsonl",
+            source="zendesk_webhook",
+            now=_now(),
+            cfg=_cfg(),
+            escalate_fn=AsyncMock(),
+            send_ask_fn=AsyncMock(),
+            send_closed_fn=AsyncMock(return_value=False),
+        )
+
+    assert state.get(12345) is None
 
 
 @pytest.mark.asyncio
@@ -78,6 +137,34 @@ async def test_ask_path_calls_send_ask_and_increments_when_sent(tmp_path) -> Non
     send_ask.assert_awaited_once()
     assert send_ask.await_args.kwargs["verdict_kind"] == "greeting"
     assert state.get(12345).ask_count == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_uses_cursor_accepted_by_final_freshness_gate(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    send_ask = AsyncMock(return_value=SimpleNamespace(
+        success=True,
+        accepted_snapshot_last_id="thanks-after-ask",
+    ))
+
+    await handle_post_verdict_dispatch(
+        ticket_id=12345,
+        verdict=_verdict("greeting"),
+        customer_msgs=[{"id": "original", "body": "hello"}],
+        ticket_info={"id": 12345},
+        latest_cid="original",
+        latest_ts=_now(),
+        existing=None,
+        state=state,
+        log_path=Path(tmp_path) / "trigger.jsonl",
+        source="zendesk_webhook",
+        now=_now(),
+        cfg=_cfg(),
+        escalate_fn=AsyncMock(),
+        send_ask_fn=send_ask,
+    )
+
+    assert state.get(12345).last_customer_comment_id == "thanks-after-ask"
 
 
 @pytest.mark.asyncio

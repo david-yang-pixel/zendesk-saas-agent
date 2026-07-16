@@ -77,6 +77,11 @@ class DurableTriggerStore:
                     "ALTER TABLE trigger_events "
                     "ADD COLUMN lease_until REAL NOT NULL DEFAULT 0"
                 )
+            if "deferrals" not in columns:
+                connection.execute(
+                    "ALTER TABLE trigger_events "
+                    "ADD COLUMN deferrals INTEGER NOT NULL DEFAULT 0"
+                )
             connection.execute(CREATE_READY_INDEX_SQL)
             now = self._now()
             connection.execute(RECOVER_PROCESSING_SQL, (now, now))
@@ -153,6 +158,7 @@ class DurableTriggerStore:
                 payload["_queue_event_id"] = int(row["id"])
                 payload["_queue_key"] = row["event_key"]
                 payload["_queue_attempts"] = int(row["attempts"])
+                payload["_queue_deferrals"] = int(row["deferrals"])
                 payload["_queue_claim_token"] = claim_token
                 return payload, None
 
@@ -166,17 +172,40 @@ class DurableTriggerStore:
         claim_token: str,
         delay_seconds: float,
         reason: str,
-    ) -> None:
+        *,
+        increment_deferrals: bool = False,
+    ) -> bool:
         now = self._now()
         with self.connect() as connection:
-            connection.execute(
-                RELEASE_SQL,
-                (now + delay_seconds, reason[:500], now, event_id, claim_token),
-            )
+            if increment_deferrals:
+                cursor = connection.execute(
+                    "UPDATE trigger_events SET status = 'pending', "
+                    "available_at = ?, deferrals = deferrals + 1, "
+                    "last_error = ?, claim_token = '', lease_until = 0, "
+                    "updated_at = ? WHERE id = ? AND status = 'processing' "
+                    "AND claim_token = ?",
+                    (
+                        now + delay_seconds,
+                        reason[:500],
+                        now,
+                        event_id,
+                        claim_token,
+                    ),
+                )
+            else:
+                cursor = connection.execute(
+                    RELEASE_SQL,
+                    (now + delay_seconds, reason[:500], now, event_id, claim_token),
+                )
+            return cursor.rowcount == 1
 
-    def delete(self, event_id: int, claim_token: str) -> None:
+    def delete(self, event_id: int, claim_token: str) -> bool:
         with self.connect() as connection:
-            connection.execute(DELETE_CLAIM_SQL, (event_id, claim_token))
+            cursor = connection.execute(
+                DELETE_CLAIM_SQL,
+                (event_id, claim_token),
+            )
+            return cursor.rowcount == 1
 
     def mark_failed(
         self,
@@ -186,10 +215,10 @@ class DurableTriggerStore:
         pending: bool,
         delay: float,
         error: str,
-    ) -> None:
+    ) -> bool:
         now = self._now()
         with self.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 MARK_FAILED_SQL,
                 (
                     "pending" if pending else "dead_letter",
@@ -201,6 +230,7 @@ class DurableTriggerStore:
                     claim_token,
                 ),
             )
+            return cursor.rowcount == 1
 
     def count(self, status: str) -> int:
         with self.connect() as connection:
@@ -228,6 +258,7 @@ class DurableTriggerStore:
             payload["_queue_event_id"] = int(row["id"])
             payload["_queue_key"] = row["event_key"]
             payload["_queue_attempts"] = int(row["attempts"])
+            payload["_queue_deferrals"] = int(row["deferrals"])
             payload["_queue_error"] = row["last_error"]
             result.append(payload)
         return result

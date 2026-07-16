@@ -272,7 +272,10 @@ def test_freshness_deferred_session_schedules_retry_after_60_seconds(
     assert record.silence_window_end == now + timedelta(seconds=60)
     assert record.last_agent_finish_ts == now
     assert record.last_customer_comment_id == "m3"
-    assert record.last_verdict == "substantial_issue"
+    # A typed deferred marker guarantees the silence expiry wakes the Agent
+    # again instead of routing an old greeting/insufficient verdict to a
+    # customer nudge.
+    assert record.last_verdict == "agent_deferred"
 
     # The silence waker must not be able to re-dispatch immediately and create
     # another overlapping run for the same burst of customer messages.

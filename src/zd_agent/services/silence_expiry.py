@@ -38,6 +38,8 @@ async def handle_silence_expired_ask(
     send_silence_alert_fn: SendSilenceAlertFn | None = None,
     now: datetime | None = None,
     delivery_attempt_id: str = "",
+    expected_customer_last_id: str | None = None,
+    persist_state: bool = True,
 ) -> SilenceExpiredAskResult:
     """Handle a silence-expired ask event and mark nudge state when sent."""
     cfg = cfg or get_config()
@@ -67,6 +69,17 @@ async def handle_silence_expired_ask(
     from zd_agent.services.ask_notifications import message_snapshot
 
     snapshot_count, snapshot_last_id = message_snapshot(customer_msgs or [])
+    if (
+        expected_customer_last_id is not None
+        and str(snapshot_last_id or "") != str(expected_customer_last_id or "")
+    ):
+        logger.info(
+            "silence_expired_ask_new_customer_message",
+            ticket_id=ticket_id,
+            expected_last_id=expected_customer_last_id,
+            current_last_id=snapshot_last_id,
+        )
+        return SilenceExpiredAskResult(action="new_customer_message")
     form = form_data_from_msgs_fn(customer_msgs or [])
     customer_name = form.get("name", "")
     lang, body = nudge_message_fn(customer_name=customer_name)
@@ -117,6 +130,7 @@ async def handle_silence_expired_ask(
         )
         action = "silence_expired_feishu_alert"
 
-    rec.nudge_sent_at = now
-    state.set(ticket_id, rec)
+    if persist_state:
+        rec.nudge_sent_at = now
+        state.set(ticket_id, rec)
     return SilenceExpiredAskResult(action=action)

@@ -11,6 +11,7 @@ logger = get_logger(module="services.verdict_dispatch")
 
 EscalateFn = Callable[..., Awaitable[None]]
 SendAskFn = Callable[..., Awaitable[bool]]
+SendClosedFn = Callable[..., Awaitable[bool]]
 
 
 PublicAskDeliveryError = PublicReplyDeliveryError
@@ -32,9 +33,12 @@ async def handle_post_verdict_dispatch(
     cfg: Any,
     escalate_fn: EscalateFn,
     send_ask_fn: SendAskFn,
+    send_closed_fn: SendClosedFn | None = None,
     conversation_id: str | None = None,
     messaging_app_id: str | None = None,
     delivery_attempt_id: str = "",
+    expected_state_revision: int | None = None,
+    expected_active_session_id: str | None = None,
 ) -> None:
     """Dispatch a pre-check verdict into state transitions and side effects."""
     from zd_agent.services.trigger_state_machine import (
@@ -45,6 +49,17 @@ async def handle_post_verdict_dispatch(
     from zd_agent.trigger.decision_log import log_decision
 
     verdict_str = verdict.verdict
+    # The trigger handler may have claimed a short-lived operation owner while
+    # the classifier and public-reply relay were awaited.  State transitions
+    # after those side effects must still belong to that exact generation.
+    transition_state: Any = state
+    if expected_state_revision is not None and expected_active_session_id is not None:
+        transition_state = _ClaimedTransitionState(
+            state,
+            ticket_id=ticket_id,
+            expected_revision=expected_state_revision,
+            expected_owner=expected_active_session_id,
+        )
     ask_count_now = existing.ask_count if existing else 0
     max_asks = cfg.public_reply.max_ask_count
 
@@ -54,7 +69,7 @@ async def handle_post_verdict_dispatch(
             ticket_id=ticket_id,
             reason="customer_requested",
             existing=existing,
-            state=state,
+            state=transition_state,
             log_path=log_path,
             source=source,
             now=now,
@@ -69,11 +84,38 @@ async def handle_post_verdict_dispatch(
         return
 
     if verdict_str == "self_resolved":
+        if send_closed_fn is None:
+            raise RuntimeError("send_closed_fn is required for self_resolved")
+        if isinstance(transition_state, _ClaimedTransitionState):
+            transition_state.require_current()
+        sent_result = await send_closed_fn(
+            ticket_id=ticket_id,
+            customer_msgs=customer_msgs,
+            ticket_info=ticket_info,
+            source=source,
+            conversation_id=conversation_id,
+            messaging_app_id=messaging_app_id,
+            delivery_attempt_id=delivery_attempt_id,
+        )
+        if not _delivery_succeeded(sent_result):
+            log_decision(
+                log_path=log_path,
+                ticket_id=ticket_id,
+                verdict=verdict_str,
+                completeness=verdict.completeness,
+                action="closed_reply_failed",
+                extra={"source": source},
+            )
+            raise PublicReplyDeliveryError(
+                ticket_id,
+                kind="closed",
+                ambiguous=_delivery_is_ambiguous(sent_result),
+            )
         apply_verdict_processed(
-            state,
+            transition_state,
             ticket_id,
             existing=existing,
-            latest_cid=latest_cid,
+            latest_cid=_accepted_customer_cursor(sent_result, latest_cid),
             latest_ts=latest_ts,
             now=now,
             verdict_str=verdict_str,
@@ -84,7 +126,7 @@ async def handle_post_verdict_dispatch(
             ticket_id=ticket_id,
             verdict=verdict_str,
             completeness=verdict.completeness,
-            action="self_resolved",
+            action="closed_reply_sent",
             extra={"source": source},
         )
         logger.info("trigger_self_resolved", ticket_id=ticket_id, source=source)
@@ -99,7 +141,7 @@ async def handle_post_verdict_dispatch(
             ticket_id=ticket_id,
             reason=f"high_risk_{verdict.high_risk_category}",
             existing=existing,
-            state=state,
+            state=transition_state,
             log_path=log_path,
             source=source,
             now=now,
@@ -134,7 +176,7 @@ async def handle_post_verdict_dispatch(
     if verdict_str == "substantial_issue":
         silence_min = cfg.trigger_decider.silence_minutes_default
         transition = apply_verdict_enter_silence(
-            state,
+            transition_state,
             ticket_id,
             existing=existing,
             latest_cid=latest_cid,
@@ -143,6 +185,7 @@ async def handle_post_verdict_dispatch(
             verdict_str=verdict_str,
             ask_count_now=ask_count_now,
             silence_minutes=silence_min,
+            delivery_attempt_id=delivery_attempt_id,
         )
         log_decision(
             log_path=log_path,
@@ -167,7 +210,7 @@ async def handle_post_verdict_dispatch(
             ticket_id=ticket_id,
             reason="max_asks_reached",
             existing=existing,
-            state=state,
+            state=transition_state,
             log_path=log_path,
             source=source,
             now=now,
@@ -181,7 +224,9 @@ async def handle_post_verdict_dispatch(
         )
         return
 
-    sent = await send_ask_fn(
+    if isinstance(transition_state, _ClaimedTransitionState):
+        transition_state.require_current()
+    sent_result = await send_ask_fn(
         ticket_id=ticket_id,
         verdict_kind=verdict_str,
         customer_msgs=customer_msgs,
@@ -193,7 +238,7 @@ async def handle_post_verdict_dispatch(
         delivery_attempt_id=delivery_attempt_id,
     )
 
-    if not sent:
+    if not _delivery_succeeded(sent_result):
         log_decision(
             log_path=log_path,
             ticket_id=ticket_id,
@@ -212,18 +257,25 @@ async def handle_post_verdict_dispatch(
             ask_count=ask_count_now,
             source=source,
         )
-        raise PublicReplyDeliveryError(ticket_id, kind="ask")
+        raise PublicReplyDeliveryError(
+            ticket_id,
+            kind="ask",
+            ambiguous=_delivery_is_ambiguous(sent_result),
+        )
+
+    sent = True
 
     transition = apply_verdict_waiting_for_issue(
-        state,
+        transition_state,
         ticket_id,
         existing=existing,
-        latest_cid=latest_cid,
+        latest_cid=_accepted_customer_cursor(sent_result, latest_cid),
         latest_ts=latest_ts,
         now=now,
         verdict_str=verdict_str,
         ask_count_now=ask_count_now,
-        sent=sent,
+        sent=True,
+        delivery_attempt_id=delivery_attempt_id,
     )
     log_decision(
         log_path=log_path,
@@ -253,3 +305,60 @@ def _latest_body(customer_msgs: list[dict]) -> str:
     if not customer_msgs:
         return ""
     return (customer_msgs[-1].get("body") or "")[:200]
+
+
+class _ClaimedTransitionState:
+    """Adapter that turns legacy ``state.set`` transitions into owner CASes."""
+
+    def __init__(
+        self,
+        state: Any,
+        *,
+        ticket_id: int,
+        expected_revision: int,
+        expected_owner: str,
+    ) -> None:
+        self._state = state
+        self._ticket_id = ticket_id
+        self._expected_revision = expected_revision
+        self._expected_owner = expected_owner
+
+    def set(self, ticket_id: str | int, desired: Any) -> None:
+        if int(ticket_id) != self._ticket_id:
+            raise RuntimeError("verdict transition changed ticket id")
+        commit = self._state.update_if_revision(
+            ticket_id,
+            expected_revision=self._expected_revision,
+            expected_state="processing",
+            expected_active_session_id=self._expected_owner,
+            mutate=lambda _current: desired,
+        )
+        if commit is None:
+            raise RuntimeError("verdict operation lost ownership before finalization")
+
+    def require_current(self) -> None:
+        current = self._state.get(self._ticket_id)
+        if (
+            current is None
+            or current.state_revision != self._expected_revision
+            or current.state != "processing"
+            or current.active_session_id != self._expected_owner
+        ):
+            raise RuntimeError("verdict operation lost ownership before delivery")
+
+
+def _delivery_succeeded(result: Any) -> bool:
+    """Accept legacy bool test doubles and typed direct-send outcomes."""
+    success = getattr(result, "success", result)
+    return success is True
+
+
+def _accepted_customer_cursor(result: Any, fallback: Any) -> Any:
+    """Use the harmless follow-up cursor accepted by the final send gate."""
+    accepted = getattr(result, "accepted_snapshot_last_id", None)
+    return accepted if accepted else fallback
+
+
+def _delivery_is_ambiguous(result: Any) -> bool:
+    message = str(getattr(result, "message", "")).lower()
+    return "ambiguous" in message or "already in progress" in message

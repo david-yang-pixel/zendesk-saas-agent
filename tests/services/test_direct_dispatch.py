@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
+from zd_agent.session.agent_session import AgentSession
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -67,7 +68,13 @@ async def test_startup_recovery_reenters_normal_takeover_gates(tmp_path) -> None
 async def test_direct_source_dispatches_with_hint(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     manager = MagicMock()
-    manager.dispatch = AsyncMock()
+
+    async def dispatch(ticket_id: int, **kwargs):
+        session = AgentSession(ticket_id=ticket_id, session_id="session-created")
+        kwargs["on_session_created"](session)
+        return session
+
+    manager.dispatch = AsyncMock(side_effect=dispatch)
 
     result = await handle_direct_dispatch_source(
         ticket_id=12345,
@@ -89,6 +96,7 @@ async def test_direct_source_dispatches_with_hint(tmp_path) -> None:
         trigger_type="webhook-mention",
         hint="please rerun",
         delivery_attempt_id="mention:12345",
+        on_session_created=ANY,
     )
 
 
@@ -138,7 +146,7 @@ async def test_silence_waker_cooldown_requeues_instead_of_sticking_processing(
     state.set(
         3436,
         TicketState(
-            state="processing",
+            state="in_silence_window",
             first_seen=_now() - timedelta(minutes=20),
             silence_window_end=_now() - timedelta(seconds=10),
             last_verdict="substantial_issue",
@@ -151,7 +159,13 @@ async def test_silence_waker_cooldown_requeues_instead_of_sticking_processing(
 
     result = await handle_direct_dispatch_source(
         ticket_id=3436,
-        msg={"source": "silence_waker"},
+        msg={
+            "source": "silence_waker",
+            "expected_state_revision": state.get(3436).state_revision,
+            "expected_silence_window_end": (
+                state.get(3436).silence_window_end.isoformat()
+            ),
+        },
         manager=manager,
         state=state,
         log_path=log_path,
@@ -173,3 +187,72 @@ async def test_silence_waker_cooldown_requeues_instead_of_sticking_processing(
     payload = json.loads(record)
     assert payload["verdict"] == "post_agent_cooldown_silence_waker"
     assert payload["action"] == "defer"
+
+
+@pytest.mark.asyncio
+async def test_repeated_waker_dispatch_failures_have_durable_terminal_budget(
+    tmp_path,
+) -> None:
+    state_path = tmp_path / "tickets.json"
+    state = TicketStateTracker(state_path)
+    state.set(
+        3436,
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now() - timedelta(minutes=20),
+            silence_window_end=_now() - timedelta(seconds=1),
+            last_verdict="agent_retry",
+            delivery_attempt_id="delivery-stable",
+        ),
+    )
+    manager = MagicMock(dispatch=AsyncMock(side_effect=RuntimeError("no worker")))
+
+    for attempt in range(1, 4):
+        state = TicketStateTracker(state_path)
+        current = state.get(3436)
+        assert current is not None
+        message = {
+            "source": "silence_waker",
+            "delivery_attempt_id": "delivery-stable",
+            "expected_state_revision": current.state_revision,
+            "expected_silence_window_end": (
+                current.silence_window_end.isoformat()
+                if current.silence_window_end else ""
+            ),
+        }
+        if attempt < 3:
+            with pytest.raises(RuntimeError, match="no worker"):
+                await handle_direct_dispatch_source(
+                    ticket_id=3436,
+                    msg=message,
+                    manager=manager,
+                    state=state,
+                    log_path=tmp_path / "trigger.jsonl",
+                    cfg=_cfg(cooldown_seconds=0),
+                    now=_now() + timedelta(minutes=attempt),
+                )
+            retry = TicketStateTracker(state_path).get(3436)
+            assert retry is not None
+            assert retry.state == "in_silence_window"
+            assert retry.consecutive_agent_failures == attempt
+            retry.silence_window_end = _now() + timedelta(minutes=attempt) - timedelta(
+                seconds=1,
+            )
+            TicketStateTracker(state_path).set(3436, retry)
+        else:
+            result = await handle_direct_dispatch_source(
+                ticket_id=3436,
+                msg=message,
+                manager=manager,
+                state=state,
+                log_path=tmp_path / "trigger.jsonl",
+                cfg=_cfg(cooldown_seconds=0),
+                now=_now() + timedelta(minutes=attempt),
+            )
+            assert result.action == "escalated_dispatch_retry_exhausted"
+
+    terminal = TicketStateTracker(state_path).get(3436)
+    assert terminal is not None
+    assert terminal.state == "escalated_to_human"
+    assert terminal.escalated_reason == "agent_dispatch_retry_exhausted"
+    assert terminal.delivery_attempt_id == "delivery-stable"

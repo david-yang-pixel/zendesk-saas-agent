@@ -17,12 +17,14 @@ class DurableTriggerQueue:
         path: Path | str,
         *,
         max_attempts: int = 5,
+        max_materialization_defers: int = 20,
         retry_base_seconds: float = 5.0,
         lease_seconds: float = 30 * 60,
         now_fn: Callable[[], float] = time.time,
     ) -> None:
         self.path = Path(path)
         self.max_attempts = max(1, max_attempts)
+        self.max_materialization_defers = max(1, max_materialization_defers)
         self.retry_base_seconds = max(0.0, retry_base_seconds)
         self.lease_seconds = max(1.0, lease_seconds)
         self._now = now_fn
@@ -47,12 +49,50 @@ class DurableTriggerQueue:
             self._wake.set()
         return inserted
 
-    def ensure_processing_recovery(self, ticket_id: int) -> bool:
+    async def put_recoverable(self, message: dict[str, Any]) -> bool:
+        """Insert an event, reviving the same durable generation if dead-lettered.
+
+        This is deliberately separate from normal webhook ``put`` semantics:
+        only deterministic state-machine generations (such as a silence-window
+        wakeup) are safe to revive after a crash between dead-lettering and its
+        compensating state transition.
+        """
+        payload = dict(message)
+        event_key = str(payload.get("_queue_key") or uuid.uuid4().hex)
+        payload["_queue_key"] = event_key
+        available_at = _float_or(payload.get("available_at"), self._now())
+        inserted = await asyncio.to_thread(
+            self._store.insert,
+            event_key,
+            payload,
+            available_at,
+        )
+        if not inserted:
+            inserted = await asyncio.to_thread(
+                self._store.revive_dead_letter,
+                event_key,
+                payload,
+                available_at,
+            )
+        if inserted:
+            self._wake.set()
+        return inserted
+
+    def ensure_processing_recovery(
+        self,
+        ticket_id: int,
+        *,
+        delivery_attempt_id: str = "",
+    ) -> bool:
+        # Queue identity and customer-delivery identity serve different jobs.
+        # The pre-crash trigger may still hold a live queue lease under the
+        # delivery id, so startup recovery needs its own independent key.
         event_key = f"startup-recovery:{ticket_id}"
         payload = {
             "source": "startup_recovery",
             "ticket_id": ticket_id,
             "_queue_key": event_key,
+            "delivery_attempt_id": delivery_attempt_id or event_key,
         }
         available_at = self._now()
         inserted = self._store.insert(event_key, payload, available_at)
@@ -83,47 +123,70 @@ class DurableTriggerQueue:
             except TimeoutError:
                 continue
 
-    async def ack(self, message: dict[str, Any]) -> None:
+    async def ack(self, message: dict[str, Any]) -> bool:
         event_id = _event_id(message)
         claim_token = _claim_token(message)
-        await asyncio.to_thread(self._store.delete, event_id, claim_token)
+        return await asyncio.to_thread(self._store.delete, event_id, claim_token)
 
-    async def release(self, message: dict[str, Any]) -> None:
+    async def release(self, message: dict[str, Any]) -> bool:
         event_id = _event_id(message)
         claim_token = _claim_token(message)
-        await asyncio.to_thread(
+        released = await asyncio.to_thread(
             self._store.reschedule,
             event_id,
             claim_token,
             0.0,
             "consumer_cancelled",
         )
-        self._wake.set()
+        if released:
+            self._wake.set()
+        return released
 
     async def defer(
         self,
         message: dict[str, Any],
         delay_seconds: float,
         reason: str,
-    ) -> None:
+    ) -> bool | None:
         event_id = _event_id(message)
         claim_token = _claim_token(message)
-        await asyncio.to_thread(
+        is_materialization_wait = reason == "ticket_not_materialized"
+        deferrals = int(message.get("_queue_deferrals") or 0)
+        if (
+            is_materialization_wait
+            and deferrals + 1 >= self.max_materialization_defers
+        ):
+            attempts = int(message.get("_queue_attempts") or 0) + 1
+            failed = await asyncio.to_thread(
+                self._store.mark_failed,
+                event_id,
+                claim_token,
+                attempts,
+                False,
+                0.0,
+                f"{reason}: deferral budget exhausted",
+            )
+            return False if failed else None
+        deferred = await asyncio.to_thread(
             self._store.reschedule,
             event_id,
             claim_token,
             max(0.0, delay_seconds),
             reason,
+            increment_deferrals=is_materialization_wait,
         )
-        self._wake.set()
+        if deferred:
+            self._wake.set()
+            return True
+        return None
 
-    async def retry(self, message: dict[str, Any], error: str) -> bool:
+    async def retry(self, message: dict[str, Any], error: str) -> bool | None:
         event_id = _event_id(message)
         claim_token = _claim_token(message)
         attempts = int(message.get("_queue_attempts") or 0) + 1
         pending = attempts < self.max_attempts
         delay = min(300.0, self.retry_base_seconds * (2 ** max(0, attempts - 1)))
-        await asyncio.to_thread(
+        failed = await asyncio.to_thread(
             self._store.mark_failed,
             event_id,
             claim_token,
@@ -132,6 +195,8 @@ class DurableTriggerQueue:
             delay,
             error,
         )
+        if not failed:
+            return None
         if pending:
             self._wake.set()
         return pending

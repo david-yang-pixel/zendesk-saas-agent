@@ -88,7 +88,7 @@ async def test_failed_silence_waker_dispatch_restores_retryable_state(
 
     assert await scan_once(state=state, trigger_queue=queue) == 1
     queued = queue.get_nowait()
-    assert state.get(_TICKET_ID).state == "processing"
+    assert state.get(_TICKET_ID).state == "in_silence_window"
 
     manager = MagicMock()
     manager.dispatch = AsyncMock(side_effect=RuntimeError("worker unavailable"))
@@ -117,9 +117,9 @@ async def test_silence_waker_checks_latest_ticket_for_pending_form_before_dispat
 ) -> None:
     """A pending Answer Bot form remains an upstream gate for a waker run."""
     state = TicketStateTracker(tmp_path / "tickets.json")
-    processing = _expired_substantial_state()
-    processing.state = "processing"
-    state.set(_TICKET_ID, processing)
+    state.set(_TICKET_ID, _expired_substantial_state())
+    pending = state.get(_TICKET_ID)
+    assert pending is not None
 
     manager = MagicMock()
     manager.dispatch = AsyncMock(
@@ -144,7 +144,15 @@ async def test_silence_waker_checks_latest_ticket_for_pending_form_before_dispat
     ))
 
     result = await handle_trigger_message(
-        msg={"ticket_id": _TICKET_ID, "source": "silence_waker"},
+        msg={
+            "ticket_id": _TICKET_ID,
+            "source": "silence_waker",
+            "expected_state_revision": pending.state_revision,
+            "expected_silence_window_end": (
+                pending.silence_window_end.isoformat()
+                if pending.silence_window_end else ""
+            ),
+        },
         manager=manager,
         state=state,
         cfg=_cfg(),
@@ -210,4 +218,5 @@ async def test_deferred_mention_always_wakes_agent_after_sixty_seconds(
     retry = queue.get_nowait()
     assert retry["source"] == "silence_waker"
     assert retry["ticket_id"] == _TICKET_ID
-    assert state.get(_TICKET_ID).state == "processing"
+    assert retry["expected_state_revision"] == state.get(_TICKET_ID).state_revision
+    assert state.get(_TICKET_ID).state == "in_silence_window"

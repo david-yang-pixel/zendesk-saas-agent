@@ -121,3 +121,40 @@ async def test_public_nudge_failure_does_not_mark_sent(tmp_path) -> None:
         snapshot_customer_last_message_id="message-1",
         delivery_attempt_id="",
     )
+
+
+@pytest.mark.asyncio
+async def test_second_fetch_with_new_customer_message_never_sends_stale_nudge(
+    tmp_path,
+) -> None:
+    """The final live fetch is a guard, not just personalization input."""
+    state = _state(tmp_path)
+    state.set(
+        12345,
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now(),
+            last_verdict="insufficient_info",
+            last_customer_comment_id="message-1",
+        ),
+    )
+    send_nudge = AsyncMock(return_value=True)
+
+    result = await handle_silence_expired_ask(
+        ticket_id=12345,
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        nudge_message_fn=MagicMock(return_value=("en", "More details?")),
+        cfg=_cfg(enable_public_nudge=True),
+        fetch_customer_messages_fn=AsyncMock(return_value=([
+            {"id": "message-1", "body": "Initial report"},
+            {"id": "message-2", "body": "The missing run ID is run-123"},
+        ], {"id": 12345})),
+        send_public_nudge_fn=send_nudge,
+        now=_now(),
+        expected_customer_last_id="message-1",
+    )
+
+    assert result.action == "new_customer_message"
+    send_nudge.assert_not_awaited()
+    assert state.get(12345).nudge_sent_at is None

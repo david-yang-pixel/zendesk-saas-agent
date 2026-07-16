@@ -38,4 +38,4 @@
 - 只有公开回复通道不可用，或说明原因本身会泄露安全或隐私信息时，才允许仅写 internal note；内部记录必须注明客户尚未收到升级说明以及原因。
 - 如果信息不足，先判断客户是否已经给出真实诉求，再让大模型生成针对性 ask；ask 的目的，是让客户说出这次需要什么帮助，不要套用只面向 bug 的固定模板。
 - 客户仅发送"你好 / 您好 / hello / 在吗"时，不要按人工介入处理；先礼貌询问客户需要什么帮助。可以用 `For example...` 列常见方向（billing/refund、feature usage/how-to、account/subscription、workflows、knowledge base、API、error/bug），但不要要求客户先选择分类。
-- 敏感动作、ask 达到上限或已取证后仍需要工程/SRE/财务介入时，先发客户安全的 handoff/进度说明，再由公开回复工具自动写 internal note 并升级。
+- 敏感动作、ask 达到上限或已取证后仍需要工程/SRE/财务介入时，先调用 `zendesk_public_reply(reply_type=handoff)` 发客户安全的进度说明。该工具会在客户投递成功后自动写 internal note 并升级；不要额外调用 `feishu_push`。

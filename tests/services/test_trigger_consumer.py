@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,11 +13,14 @@ from zd_agent.services.trigger_actions import (
     set_escalated_to_human_action,
 )
 from zd_agent.services.trigger_consumer import (
+    reconcile_dead_lettered_triggers,
     run_saas_trigger_consumer,
     run_trigger_consumer,
 )
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.trigger_errors import TriggerDeferredError
+from zd_agent.services.trigger_state_machine import apply_escalated_to_human
+from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
 @pytest.mark.asyncio
@@ -297,3 +301,111 @@ async def test_deferred_durable_message_remains_pending_without_retry_consumptio
     recovered = await queue.get()
     assert recovered["_queue_attempts"] == 0
     await queue.ack(recovered)
+
+
+@pytest.mark.asyncio
+async def test_dead_lettered_silence_event_transfers_to_human_owner(tmp_path) -> None:
+    """A terminal queue failure cannot strand an expired ticket forever."""
+    terminal = asyncio.Event()
+    now = datetime(2026, 7, 16, 8, 30, tzinfo=timezone.utc)
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        3461,
+        TicketState(
+            state="in_silence_window",
+            first_seen=now - timedelta(minutes=10),
+            silence_window_end=now - timedelta(seconds=1),
+            last_verdict="agent_retry",
+            delivery_attempt_id="delivery-stable",
+        ),
+    )
+
+    class DeadLetterQueue:
+        schedules_available_at = True
+
+        def __init__(self) -> None:
+            self.delivered = False
+
+        async def get(self) -> dict:
+            if self.delivered:
+                await asyncio.Event().wait()
+            self.delivered = True
+            return {
+                "ticket_id": 3461,
+                "source": "silence_waker",
+                "delivery_attempt_id": "delivery-stable",
+                "_queue_attempts": 4,
+            }
+
+        async def retry(self, _message: dict, _error: str) -> bool:
+            return False
+
+        async def ack(self, _message: dict) -> None:
+            raise AssertionError("failed messages must not be acknowledged")
+
+    async def escalate(**kwargs) -> None:
+        apply_escalated_to_human(
+            kwargs["state"],
+            kwargs["ticket_id"],
+            existing=kwargs["existing"],
+            latest_cid=kwargs["latest_cid"],
+            latest_ts=kwargs["latest_ts"],
+            now=kwargs["now"],
+            verdict_str=kwargs["verdict_str"],
+            reason=kwargs["reason"],
+        )
+        terminal.set()
+
+    async def fail_message(**_kwargs) -> None:
+        raise RuntimeError("permanent trigger failure")
+
+    task = asyncio.create_task(
+        run_trigger_consumer(
+            DeadLetterQueue(),
+            MagicMock(),
+            state,
+            cfg=MagicMock(),
+            env=MagicMock(),
+            log_path=tmp_path / "trigger_log.jsonl",
+            handle_message_fn=fail_message,
+            silence_expired_ask_fn=MagicMock(),
+            post_verdict_dispatch_fn=MagicMock(),
+            escalate_fn=escalate,
+        ),
+    )
+
+    await asyncio.wait_for(terminal.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    persisted = TicketStateTracker(state.path).get(3461)
+    assert persisted is not None
+    assert persisted.state == "escalated_to_human"
+    assert persisted.escalated_reason == "trigger_retry_exhausted"
+    assert persisted.delivery_attempt_id == "delivery-stable"
+
+
+@pytest.mark.asyncio
+async def test_dead_letter_reconciliation_completes_crash_gap(tmp_path) -> None:
+    """Rows dead-lettered before the consumer's escalation survive restart."""
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        12345,
+        TicketState(state="waiting_for_issue", first_seen=datetime.now(timezone.utc)),
+    )
+
+    class Queue:
+        async def list_dead_letters(self, *, limit: int) -> list[dict]:
+            assert limit == 100
+            return [{"ticket_id": 12345, "source": "zendesk_webhook", "_queue_attempts": 3}]
+
+    escalated = AsyncMock()
+    count = await reconcile_dead_lettered_triggers(
+        queue=Queue(),
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        escalate_fn=escalated,
+    )
+    assert count == 1
+    escalated.assert_awaited_once()

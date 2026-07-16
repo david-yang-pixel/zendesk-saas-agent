@@ -18,6 +18,7 @@ async def test_get_ticket_uses_zendesk_mcp_conversation_log(fake_session):
             "ticket_id": 3134,
             "include_comments": True,
             "include_conversation_log": True,
+            "conversation_page_size": 100,
             "force_refresh": True,
         }
         return {

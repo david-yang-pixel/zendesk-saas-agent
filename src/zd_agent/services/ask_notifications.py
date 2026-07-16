@@ -1,6 +1,8 @@
 """Best-effort public ask template reply helper."""
 from __future__ import annotations
 
+from typing import overload
+
 from zd_agent.log import get_logger
 from zd_agent.services.ticket_messages import extract_form_data_from_msgs
 
@@ -22,6 +24,7 @@ def message_snapshot(customer_msgs: list[dict]) -> tuple[int, str | None]:
     return len(msgs), str(raw_id) if raw_id else None
 
 
+@overload
 async def send_ask_template_best_effort(
     *,
     ticket_id: int,
@@ -32,11 +35,41 @@ async def send_ask_template_best_effort(
     conversation_id: str | None = None,
     messaging_app_id: str | None = None,
     delivery_attempt_id: str = "",
-) -> bool:
+    return_delivery_result: bool = False,
+) -> bool: ...
+
+
+@overload
+async def send_ask_template_best_effort(
+    *,
+    ticket_id: int,
+    verdict_kind: str,
+    customer_msgs: list[dict],
+    ask_count: int,
+    source: str,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
+    return_delivery_result: bool,
+) -> object: ...
+
+
+async def send_ask_template_best_effort(
+    *,
+    ticket_id: int,
+    verdict_kind: str,
+    customer_msgs: list[dict],
+    ask_count: int,
+    source: str,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
+    return_delivery_result: bool = False,
+) -> object:
     """Build and send a public ask reply without mutating trigger state."""
     from zd_agent.config import EnvSettings, get_config
     from zd_agent.prompts.public_reply.templates import build_ask_body
-    from zd_agent.tools.zendesk_public_reply import send_public_reply
+    from zd_agent.tools.zendesk_public_reply import send_public_reply_with_freshness
 
     cfg = get_config()
     env = EnvSettings()
@@ -77,7 +110,7 @@ async def send_ask_template_best_effort(
         source=source,
     )
 
-    success, msg = await send_public_reply(
+    result = await send_public_reply_with_freshness(
         ticket_id=ticket_id,
         body=body,
         reply_type="ask",
@@ -87,15 +120,15 @@ async def send_ask_template_best_effort(
         snapshot_customer_last_message_id=snapshot_last_id,
         delivery_attempt_id=delivery_attempt_id,
     )
-    if not success:
+    if not result.success:
         logger.warning(
             "ask_template_send_failed",
             ticket_id=ticket_id,
             template=template_name,
-            error=msg[:200],
+            error=result.message[:200],
             source=source,
         )
-        return False
+        return result if return_delivery_result else False
 
     logger.info(
         "ask_template_sent",
@@ -104,4 +137,56 @@ async def send_ask_template_best_effort(
         ask_count_now=ask_count + 1,
         source=source,
     )
-    return True
+    return result if return_delivery_result else True
+
+
+async def send_closed_template_best_effort(
+    *,
+    ticket_id: int,
+    customer_msgs: list[dict],
+    source: str,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
+    return_delivery_result: bool = False,
+) -> object:
+    """Send the deterministic customer-safe close acknowledgement.
+
+    This uses the same public-reply delivery path as every other reply, so a
+    successful send also creates the durable internal-analysis follow-up.
+    Trigger state is deliberately left to ``verdict_dispatch``: a failed
+    delivery must not silently mark a ticket as processed.
+    """
+    from zd_agent.prompts.public_reply.templates import closed_template
+    from zd_agent.tools.zendesk_public_reply import send_public_reply_with_freshness
+
+    form = extract_form_data_from_msgs(customer_msgs or [])
+    customer_name = (form.get("name", "") or "").strip()
+    snapshot_count, snapshot_last_id = message_snapshot(customer_msgs or [])
+    body = closed_template(customer_name=customer_name)
+
+    result = await send_public_reply_with_freshness(
+        ticket_id=ticket_id,
+        body=body,
+        reply_type="closed",
+        conversation_id=conversation_id,
+        messaging_app_id=messaging_app_id,
+        snapshot_customer_message_count=snapshot_count,
+        snapshot_customer_last_message_id=snapshot_last_id,
+        delivery_attempt_id=delivery_attempt_id,
+    )
+    if not result.success:
+        logger.warning(
+            "closed_template_send_failed",
+            ticket_id=ticket_id,
+            error=result.message[:200],
+            source=source,
+        )
+        return result if return_delivery_result else False
+
+    logger.info(
+        "closed_template_sent",
+        ticket_id=ticket_id,
+        source=source,
+    )
+    return result if return_delivery_result else True

@@ -25,7 +25,7 @@
                         → handoff_template 发出 + 飞书推送 + Zendesk tag
 
 6. **self_resolved**     客户说"算了我搞定了 / never mind"
-                        → state=processed（不发 ask 不发 handoff）
+                        → closed 公开回复 + internal analysis + state=processed
 
 外加边界场景：
 - **max_asks_reached**: ask_count=10 时再 insufficient → escalated (max_asks_reached)
@@ -101,6 +101,7 @@ async def _run_dispatch(
     customer_msgs = customer_msgs or []
     mock_send = mock_send or AsyncMock(return_value=True)
     mock_send_pr = AsyncMock(return_value=(True, "ok"))
+    mock_closed = AsyncMock(return_value=True)
 
     with (
         patch(
@@ -126,6 +127,7 @@ async def _run_dispatch(
             now=now,
             cfg=cfg,
             send_ask_fn=mock_send,
+            send_closed_fn=mock_closed,
         )
     return mock_send
 
@@ -328,12 +330,12 @@ class TestScenarioRequestHuman:
 
 
 # ---------------------------------------------------------------------------
-# Scenario 6: self_resolved → processed
+# Scenario 6: self_resolved → closed reply → processed
 # ---------------------------------------------------------------------------
 
 class TestScenarioSelfResolved:
     @pytest.mark.asyncio
-    async def test_self_resolved_marks_processed_no_reply_sent(
+    async def test_self_resolved_sends_closed_reply_then_marks_processed(
         self, tmp_path,
     ) -> None:
         state = TicketStateTracker(tmp_path / "tickets.json")
@@ -344,7 +346,7 @@ class TestScenarioSelfResolved:
         )
         rec = state.get(5000)
         assert rec.state == "processed"
-        # 不发 ask 模板
+        # 不发 ask 模板；发送 closed 的公开回复由独立回调负责。
         mock_send.assert_not_called()
 
 

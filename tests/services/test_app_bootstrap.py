@@ -88,13 +88,18 @@ async def test_prepare_saas_app_runtime_wires_session_finish_callback(tmp_path) 
     runtime.state.set(
         "2808",
         TicketState(
-            state="waiting_for_issue",
+            state="processing",
             first_seen=datetime.now(timezone.utc),
+            active_session_id="session-current",
         ),
     )
 
     callback = manager.set_on_finished.call_args.args[0]
-    session = AgentSession(ticket_id=2808, trigger_type="webhook-mention")
+    session = AgentSession(
+        ticket_id=2808,
+        session_id="session-current",
+        trigger_type="webhook-mention",
+    )
     session.status = SessionStatus.COMPLETED
     session.reply_sent = True
     await callback(session)

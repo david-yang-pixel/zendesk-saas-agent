@@ -26,7 +26,11 @@ class BrowserRelaySendResult:
     error: str | None = None
 
 
-class BrowserRelayStaleContextError(RuntimeError):
+class BrowserRelayDefiniteUnsentError(RuntimeError):
+    """The relay proved that it failed before clicking Zendesk Send."""
+
+
+class BrowserRelayStaleContextError(BrowserRelayDefiniteUnsentError):
     """The relay definitely aborted before clicking Send due to a newer message."""
 
 
@@ -86,9 +90,13 @@ async def send_browser_relay_reply(
     base_url = (url or "").strip().rstrip("/")
     api_key = (api_key or "").strip()
     if not base_url:
-        raise RuntimeError("Zendesk browser relay URL is not configured")
+        raise BrowserRelayDefiniteUnsentError(
+            "Zendesk browser relay URL is not configured"
+        )
     if not api_key:
-        raise RuntimeError("Zendesk browser relay API key is not configured")
+        raise BrowserRelayDefiniteUnsentError(
+            "Zendesk browser relay API key is not configured"
+        )
 
     if _uses_mcp_endpoint(base_url):
         result = await _send_via_mcp(
@@ -127,7 +135,9 @@ async def send_browser_relay_reply(
         ) from exc
 
     if response.status_code in (401, 403):
-        raise RuntimeError("Zendesk browser relay rejected API key")
+        raise BrowserRelayDefiniteUnsentError(
+            "Zendesk browser relay rejected API key"
+        )
     if response.status_code >= 400:
         raise RuntimeError(
             "Zendesk browser relay HTTP "
@@ -196,7 +206,9 @@ async def _send_via_mcp(
         ) from exc
 
     if response.status_code in (401, 403):
-        raise RuntimeError("Zendesk browser relay rejected API key")
+        raise BrowserRelayDefiniteUnsentError(
+            "Zendesk browser relay rejected API key"
+        )
     if response.status_code >= 400:
         raise RuntimeError(
             "Zendesk browser relay MCP HTTP "
@@ -243,13 +255,17 @@ def _ensure_sent(result: BrowserRelaySendResult) -> BrowserRelaySendResult:
     if result.ok and result.status == "sent":
         return result
     if result.status == "login_required":
-        raise RuntimeError("Zendesk browser relay login_required")
+        raise BrowserRelayDefiniteUnsentError(
+            "Zendesk browser relay login_required"
+        )
     if result.status == "stale_context":
         raise BrowserRelayStaleContextError(
             "Zendesk browser relay aborted stale_context"
         )
     if result.status == "freshness_check_failed":
-        raise RuntimeError("Zendesk browser relay freshness_check_failed")
+        raise BrowserRelayDefiniteUnsentError(
+            "Zendesk browser relay freshness_check_failed"
+        )
     raise RuntimeError(
         "Zendesk browser relay send failed"
         f" status={result.status} error={_safe_error_text(result.error)}"

@@ -58,6 +58,61 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_run_agent_does_not_send_ticket_done_for_handoff(monkeypatch):
+    from zd_agent.runtime import runner
+
+    cfg = MagicMock()
+    cfg.agent.guardrails = MagicMock()
+    cfg.llm.model = "test-model"
+    cfg.sandbox.cleanup_on_success = False
+    cfg.sandbox.cleanup_on_failure = False
+    monkeypatch.setattr(runner, "get_config", lambda: cfg)
+    monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
+    monkeypatch.setattr(runner, "_ensure_archive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
+
+    class FakeSandbox:
+        async def create(self, ticket_id):
+            return f"/tmp/{ticket_id}"
+
+        async def cleanup(self):
+            raise AssertionError("cleanup should be disabled in this test")
+
+    async def fake_tool_loop(session, *_args, **_kwargs):
+        session.status = SessionStatus.COMPLETED
+        session.reply_sent = True
+        session.public_reply_type = "handoff"
+
+    notify = AsyncMock()
+    monkeypatch.setattr(runner, "create_sandbox", lambda: FakeSandbox())
+    monkeypatch.setattr(runner, "create_tool_registry", lambda: MagicMock())
+    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock())
+    monkeypatch.setattr(
+        runner,
+        "Guardrails",
+        lambda config: MagicMock(elapsed_seconds=0),
+    )
+    monkeypatch.setattr(runner, "run_tool_loop", fake_tool_loop)
+    monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
+    monkeypatch.setattr(
+        "zd_agent.runtime.customer_profile.prefetch_customer_profile",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        "zd_agent.tools.saas_version.resolve_deployed_version",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        "zd_agent.runtime.prompt_loader.build_static_system_prompt",
+        lambda: "system",
+    )
+
+    await runner.run_agent(AgentSession(ticket_id=2810))
+
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_run_agent_writes_failure_note_when_tool_loop_times_out(monkeypatch):
     from zd_agent.runtime import runner
 

@@ -4,7 +4,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from zd_agent.services.ask_notifications import send_ask_template_best_effort
+from zd_agent.services.ask_notifications import (
+    send_ask_template_best_effort,
+    send_closed_template_best_effort,
+)
 from zd_agent.services.escalation import set_escalated_to_human
 from zd_agent.services.silence_expiry import handle_silence_expired_ask
 from zd_agent.services.verdict_dispatch import handle_post_verdict_dispatch
@@ -17,6 +20,8 @@ async def handle_silence_expired_ask_action(
     log_path: Path,
     nudge_message_fn: Any,
     delivery_attempt_id: str = "",
+    expected_customer_last_id: str | None = None,
+    persist_state: bool = True,
 ) -> None:
     """Delegate silence-expired ask handling to the orchestration service."""
     await handle_silence_expired_ask(
@@ -25,6 +30,8 @@ async def handle_silence_expired_ask_action(
         log_path=log_path,
         nudge_message_fn=nudge_message_fn,
         delivery_attempt_id=delivery_attempt_id,
+        expected_customer_last_id=expected_customer_last_id,
+        persist_state=persist_state,
     )
 
 
@@ -50,6 +57,30 @@ async def send_ask_template_action(
         conversation_id=conversation_id,
         messaging_app_id=messaging_app_id,
         delivery_attempt_id=delivery_attempt_id,
+        return_delivery_result=True,
+    )
+
+
+async def send_closed_template_action(
+    *,
+    ticket_id: int,
+    customer_msgs: list[dict],
+    ticket_info: dict,
+    source: str,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    delivery_attempt_id: str = "",
+) -> bool:
+    """Delegate deterministic self-resolved acknowledgement delivery."""
+    del ticket_info  # Retained in the adapter contract for future templates.
+    return await send_closed_template_best_effort(
+        ticket_id=ticket_id,
+        customer_msgs=customer_msgs,
+        source=source,
+        conversation_id=conversation_id,
+        messaging_app_id=messaging_app_id,
+        delivery_attempt_id=delivery_attempt_id,
+        return_delivery_result=True,
     )
 
 
@@ -108,8 +139,11 @@ async def post_verdict_dispatch_action(
     conversation_id: str | None = None,
     messaging_app_id: str | None = None,
     delivery_attempt_id: str = "",
+    expected_state_revision: int | None = None,
+    expected_active_session_id: str | None = None,
     escalate_fn: Any = set_escalated_to_human_action,
     send_ask_fn: Any = send_ask_template_action,
+    send_closed_fn: Any = send_closed_template_action,
 ) -> None:
     """Delegate verdict dispatch with default trigger action side effects."""
     await handle_post_verdict_dispatch(
@@ -128,6 +162,9 @@ async def post_verdict_dispatch_action(
         conversation_id=conversation_id,
         messaging_app_id=messaging_app_id,
         delivery_attempt_id=delivery_attempt_id,
+        expected_state_revision=expected_state_revision,
+        expected_active_session_id=expected_active_session_id,
         escalate_fn=escalate_fn,
         send_ask_fn=send_ask_fn,
+        send_closed_fn=send_closed_fn,
     )

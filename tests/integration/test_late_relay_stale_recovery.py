@@ -52,6 +52,9 @@ def _config() -> AppConfig:
             enabled=True,
             browser_relay_url="https://relay.example.test/zendesk-reply-mcp",
             browser_relay_api_key="relay-secret",
+            freshness_callback_url=(
+                "https://agent.example.test/webhook/relay-pre-send-freshness"
+            ),
         ),
     )
     cfg.webhook.listen_port = 8080
@@ -107,6 +110,7 @@ async def test_browser_relay_raises_typed_stale_context_error() -> None:
 @pytest.mark.asyncio
 async def test_public_reply_refetches_after_late_relay_stale_context(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     """A relay-side abort must return typed recovery metadata to the agent loop."""
     initial = _customer_message("m1", "I cannot update our knowledge documents.")
@@ -121,7 +125,10 @@ async def test_public_reply_refetches_after_late_relay_stale_context(
         ],
     )
 
-    monkeypatch.setattr(public_reply_module, "get_config", _config)
+    cfg = _config()
+    cfg.resources.base_dir = str(tmp_path)
+    cfg.resources.state_dir = ".state"
+    monkeypatch.setattr(public_reply_module, "get_config", lambda: cfg)
     monkeypatch.setattr(
         public_reply_module,
         "public_reply_privacy_blockers",
@@ -140,6 +147,17 @@ async def test_public_reply_refetches_after_late_relay_stale_context(
     monkeypatch.setattr(
         "zd_agent.services.ticket_messages.fetch_customer_messages_for_freshness",
         fetch_messages,
+    )
+
+    async def fetch_ticket(_ticket_id: int):
+        return (
+            await fetch_messages(_ticket_id),
+            {"_zd_agent_conversation_events": []},
+        )
+
+    monkeypatch.setattr(
+        "zd_agent.services.ticket_messages._fetch_customer_messages",
+        fetch_ticket,
     )
 
     async def relay_detects_late_message(**_kwargs: Any) -> bool:

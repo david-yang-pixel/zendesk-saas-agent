@@ -135,6 +135,35 @@ async def test_processing_recovery_revives_dead_letter(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_materialization_deferrals_are_bounded_and_dead_lettered(
+    tmp_path: Path,
+) -> None:
+    queue = DurableTriggerQueue(
+        tmp_path / "trigger_queue.sqlite3",
+        max_materialization_defers=3,
+        retry_base_seconds=0,
+    )
+    await queue.put({"ticket_id": 1001, "source": "messaging_webhook"})
+
+    first = await queue.get()
+    assert first["_queue_deferrals"] == 0
+    assert await queue.defer(first, 0, "ticket_not_materialized") is True
+
+    second = await queue.get()
+    assert second["_queue_deferrals"] == 1
+    assert await queue.defer(second, 0, "ticket_not_materialized") is True
+
+    third = await queue.get()
+    assert third["_queue_deferrals"] == 2
+    assert await queue.defer(third, 0, "ticket_not_materialized") is False
+
+    assert await queue.pending_count() == 0
+    [dead] = await queue.list_dead_letters()
+    assert dead["ticket_id"] == 1001
+    assert "ticket_not_materialized" in dead["_queue_error"]
+
+
+@pytest.mark.asyncio
 async def test_claim_lease_prevents_second_instance_from_stealing_active_work(
     tmp_path: Path,
 ) -> None:

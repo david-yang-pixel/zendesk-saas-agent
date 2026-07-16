@@ -22,9 +22,9 @@ Loop per ticket in (in_silence_window | waiting_for_issue)
    - latest customer comment_id != state's       → push
                                                    ``{source: "poller_new_msg"}``
                                                    to trigger_queue → re-judge
-4. Timeouts (only if no new message and state == waiting_for_issue):
+4. Timeouts (only if no new message):
    - 24h since first_seen → state = abandoned + Feishu alert (one-shot)
-   - 30min since first_seen + last_verdict == greeting → Feishu alert (one-shot)
+   - 30min since first_seen + waiting_for_issue/greeting → Feishu alert
 """
 from __future__ import annotations
 

@@ -51,6 +51,13 @@ def test_prompt_leaves_handoff_support_hours_to_the_send_layer():
     assert "不要在 body 里重复写工作时间" in prompt
 
 
+def test_prompt_forbids_extra_feishu_push_after_handoff():
+    prompt = _build()
+
+    assert "reply_type=handoff" in prompt
+    assert "不要额外调用 `feishu_push`" in prompt
+
+
 def test_core_router_requires_remote_tool_services():
     prompt = _build()
 

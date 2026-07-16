@@ -1,4 +1,5 @@
 """Test TicketStateTracker persistence + state semantics."""
+from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -27,6 +28,122 @@ def test_set_and_get(tmp_path):
     assert rec is not None
     assert rec.state == "waiting_for_issue"
     assert rec.last_customer_comment_id == 67890
+
+
+def test_update_if_revision_commits_one_fresh_generation(tmp_path) -> None:
+    store = TicketStateTracker(tmp_path / "tickets.json")
+    store.set(
+        "1",
+        TicketState(state="in_silence_window", first_seen=_now()),
+    )
+    before = store.get("1")
+    assert before is not None
+
+    commit = store.update_if_revision(
+        "1",
+        expected_revision=before.state_revision,
+        expected_state="in_silence_window",
+        mutate=lambda current: replace(
+            current,
+            state="processing",
+            active_session_id="session-1",
+        ),
+    )
+
+    assert commit is not None
+    assert commit.after.state_revision == before.state_revision + 1
+    assert store.get("1").active_session_id == "session-1"
+
+
+def test_update_if_revision_stale_attempt_does_not_touch_memory_or_disk(
+    tmp_path,
+) -> None:
+    path = tmp_path / "tickets.json"
+    store = TicketStateTracker(path)
+    store.set("1", TicketState(state="processed", first_seen=_now()))
+    serialized_before = path.read_text(encoding="utf-8")
+
+    commit = store.update_if_revision(
+        "1",
+        expected_revision=0,
+        expected_state="in_silence_window",
+        mutate=lambda current: current,
+    )
+
+    assert commit is None
+    assert store.get("1").state == "processed"
+    assert path.read_text(encoding="utf-8") == serialized_before
+
+
+def test_update_if_revision_checks_owner_without_running_mutation(tmp_path) -> None:
+    store = TicketStateTracker(tmp_path / "tickets.json")
+    store.set(
+        "1",
+        TicketState(
+            state="processing",
+            first_seen=_now(),
+            active_session_id="session-current",
+        ),
+    )
+    before = store.get("1")
+    assert before is not None
+    mutation_called = False
+
+    def mutate(current):
+        nonlocal mutation_called
+        mutation_called = True
+        return replace(current, state="processed")
+
+    commit = store.update_if_revision(
+        "1",
+        expected_revision=before.state_revision,
+        expected_state="processing",
+        expected_active_session_id="session-stale",
+        mutate=mutate,
+    )
+
+    assert commit is None
+    assert mutation_called is False
+    persisted = TicketStateTracker(store.path).get("1")
+    assert persisted is not None
+    assert persisted.state == "processing"
+    assert persisted.active_session_id == "session-current"
+
+
+def test_update_if_revision_uses_detached_snapshots(tmp_path) -> None:
+    store = TicketStateTracker(tmp_path / "tickets.json")
+    store.set(
+        "1",
+        TicketState(state="in_silence_window", first_seen=_now()),
+    )
+    before = store.get("1")
+    assert before is not None
+    mutation_snapshot = None
+
+    def mutate(current):
+        nonlocal mutation_snapshot
+        mutation_snapshot = current
+        current.state = "processing"
+        current.active_session_id = "session-1"
+        return current
+
+    commit = store.update_if_revision(
+        "1",
+        expected_revision=before.state_revision,
+        expected_state="in_silence_window",
+        mutate=mutate,
+    )
+
+    assert commit is not None
+    assert mutation_snapshot is not None
+    mutation_snapshot.state = "abandoned"
+    commit.after.state = "processed"
+
+    persisted = store.get("1")
+    assert persisted is not None
+    assert persisted.state == "processing"
+    assert persisted.active_session_id == "session-1"
+    assert persisted.state_revision == before.state_revision + 1
 
 
 def test_get_missing_returns_none(tmp_path):

@@ -47,6 +47,7 @@ def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
         "trigger_decider.post_agent_cooldown_seconds",
         "waiting_poller.poll_new_messages",
         "public_reply.browser_relay_timeout_seconds",
+        "public_reply.freshness_callback_url",
         "zendesk_mcp.request_timeout_seconds",
         "db_gateway.request_timeout_seconds",
         "signoz.request_timeout_seconds",
@@ -79,6 +80,7 @@ def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:
     by_path = {field["path"]: field for field in schema["fields"]}
 
     assert by_path["public_reply.browser_relay_url"]["group"] == "工具与集成"
+    assert by_path["public_reply.freshness_callback_url"]["group"] == "工具与集成"
     assert by_path["public_reply.browser_relay_api_key"]["group"] == "工具与集成"
 
 

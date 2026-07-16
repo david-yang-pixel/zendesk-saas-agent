@@ -16,6 +16,8 @@ async def send_handoff_reply_best_effort(
     reason: str,
     customer_name: str = "",
     delivery_attempt_id: str = "",
+    source: str = "trigger_escalation",
+    customer_phrase: str = "",
 ) -> bool:
     """Send the customer-facing handoff reply unless a human already took over."""
     if reason == "human_takeover_detected":
@@ -42,6 +44,9 @@ async def send_handoff_reply_best_effort(
                 f"Escalation reason: {reason}. A customer-safe explanation was "
                 "sent before the internal escalation."
             ),
+            handoff_reason=reason,
+            handoff_source=source,
+            handoff_customer_phrase=customer_phrase,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning(
@@ -76,6 +81,7 @@ async def send_feishu_escalation_best_effort(
     customer_phrase: str = "",
     agent_last_reply: str = "",
     handoff_reply_sent: bool | None = None,
+    idempotency_reference: str = "",
 ) -> bool:
     """Push the internal escalation card through notification-service MCP."""
     if reason == "human_takeover_detected":
@@ -102,6 +108,8 @@ async def send_feishu_escalation_best_effort(
             reason_lines.append(
                 "**投递告警**: 客户未收到转人工通知，请立即人工回复。"
             )
+        if idempotency_reference:
+            reason_lines.append(f"**幂等引用**: {idempotency_reference}")
         reason_lines.append(f"**source**: {source}")
 
         payload = await push_notification_card(

@@ -21,6 +21,7 @@ from zd_agent.services.ticket_images import (
     filename_from_url,
 )
 from zd_agent.services.ticket_message_parsing import normalize_messaging_content
+from zd_agent.services.ticket_messages import load_complete_ticket_payload
 from zd_agent.runtime.source_selector import suggest_sources
 from zd_agent.runtime.image_evidence import (
     guard_against_stale_no_image_claim,
@@ -125,7 +126,7 @@ def _language_label(language: str) -> str:
 
 def _extract_event_text(event: dict[str, Any]) -> str:
     content = event.get("content") or {}
-    if content.get("type") == "formResponse":
+    if content.get("type") not in {"text", "html"}:
         return ""
     return str(normalize_messaging_content(content)["body"]).strip()
 
@@ -147,6 +148,12 @@ def _extract_reply_language_hint(
     """从最近一条客户公开消息中提取回复语言建议。"""
     if thread_type == "conversation_log":
         for event in reversed(thread_items):
+            event_type = str(event.get("type") or "")
+            if event_type != "Messaging::ConversationMessage":
+                continue
+            metadata = event.get("metadata") or {}
+            if event.get("public") is False or metadata.get("is_public") is False:
+                continue
             author = event.get("author") or {}
             if not _is_external_author(str(author.get("type", ""))):
                 continue
@@ -519,21 +526,10 @@ class ZendeskGetTicket(Tool):
         if isinstance(tid, ToolResult):
             return tid
         try:
-            payload = await call_zendesk_tool(
-                "get_ticket",
-                {
-                    "ticket_id": tid,
-                    "include_comments": True,
-                    "include_conversation_log": True,
-                    "force_refresh": True,
-                },
+            tdata = await load_complete_ticket_payload(
+                tid,
+                zendesk_tool_caller=call_zendesk_tool,
             )
-            if not payload.get("success"):
-                return ToolResult(
-                    success=False,
-                    error=_format_mcp_error("get_ticket", payload),
-                )
-            tdata = payload.get("data") or {}
             ticket = tdata.get("ticket", tdata)
             if not isinstance(ticket, dict):
                 return ToolResult(

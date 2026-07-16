@@ -38,6 +38,7 @@
 | `public_reply.enabled` | `true` | **总开关 / 应急回退**：出问题立即 flip 为 `false`，agent 全部退回只发 Internal Note（SE 手动 forward），无需改代码 |
 | `public_reply.max_ask_count` | `10` | 累计追问上限，超过转人工 |
 | `public_reply.browser_relay_url` | `https://zendesk.smlershou.top/zendesk-reply-mcp` | SaaS native messaging 客户可见回复走独立 browser relay MCP，不使用 Conversations API |
+| `public_reply.freshness_callback_url` | `https://zendesk.smlershou.top/webhook/relay-pre-send-freshness` | remote relay 在点击 Send 前调用的 HTTPS freshness gate；复用现有 `/webhook/` 反代，应用层仍强制 Bearer 校验 |
 | `zendesk.min_ticket_id` | `2624` | **灰度边界**：只处理 ID ≥ 此值的工单。上线稳定后改 `0` 处理全部 SaaS 工单 |
 | `zendesk.search_query` | `status:new tags:saas` | 处理范围 |
 
@@ -94,6 +95,7 @@ chmod 600 /opt/zd-agent/.env
 # into /opt/zd-agent/.env:
 # ZENDESK_BROWSER_RELAY_URL=https://zendesk.smlershou.top/zendesk-reply-mcp
 # ZENDESK_BROWSER_RELAY_API_KEY=<from /etc/zendesk-browser-relay/env>
+# ZENDESK_FRESHNESS_CALLBACK_URL=https://zendesk.smlershou.top/webhook/relay-pre-send-freshness
 
 # SigNoz env lives outside the agent repo. Copy only the MCP URL/key
 # into /opt/zd-agent/.env:

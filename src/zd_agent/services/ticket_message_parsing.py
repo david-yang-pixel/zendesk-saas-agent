@@ -17,20 +17,19 @@ def _message_created_at_sort_key(message: dict[str, Any]) -> str:
 def extract_form_data_from_msgs(
     customer_msgs: list[dict[str, Any]],
 ) -> dict[str, str]:
+    expected_keys = {"name", "email", "workspace_id"}
+    out: dict[str, str] = {}
     for message in reversed(customer_msgs):
         form_data = message.get("form_data")
         if isinstance(form_data, dict):
-            normalized = {
-                key: str(value).strip()
-                for key, value in form_data.items()
-                if key in {"name", "email", "workspace_id"}
-                and str(value).strip()
-            }
-            if normalized:
-                return normalized
+            for key, value in form_data.items():
+                normalized_value = str(value).strip()
+                if key in expected_keys and normalized_value and key not in out:
+                    out[key] = normalized_value
+        if out.keys() == expected_keys:
+            return out
 
     for message in reversed(customer_msgs):
-        out: dict[str, str] = {}
         body = message.get("body") or ""
         if "Name:" not in body and "Workspace ID:" not in body:
             continue
@@ -43,15 +42,15 @@ def extract_form_data_from_msgs(
             value = value.strip()
             if not value:
                 continue
-            if key == "name":
+            if key == "name" and "name" not in out:
                 out["name"] = value
-            elif key == "email":
+            elif key == "email" and "email" not in out:
                 out["email"] = value
-            elif key in ("workspace id", "wid"):
+            elif key in ("workspace id", "wid") and "workspace_id" not in out:
                 out["workspace_id"] = value
-        if out:
+        if out.keys() == expected_keys:
             return out
-    return {}
+    return out
 
 
 def _customer_public_comments(
@@ -94,28 +93,54 @@ def _form_field_value(field: dict[str, Any]) -> str:
     return ""
 
 
+def _profile_form_key(field: dict[str, Any]) -> str:
+    label = str(field.get("label") or "").strip().lower()
+    name = str(field.get("name") or "").strip().lower()
+    if label == "name" or name.endswith("requester.name"):
+        return "name"
+    if label == "email" or name.endswith("requester.email"):
+        return "email"
+    if (
+        label in {"workspace id", "wid"}
+        or name.endswith("ticketfield.41021162892948")
+    ):
+        return "workspace_id"
+    return ""
+
+
+def _is_requester_system_field(field: dict[str, Any]) -> bool:
+    name = str(field.get("name") or "").strip().lower()
+    return name.startswith("datacapture.systemfield.requester.")
+
+
 def _form_data(fields: list[dict[str, Any]]) -> dict[str, str]:
     out: dict[str, str] = {}
     for field in fields:
-        label = str(field.get("label") or "").strip()
-        name = str(field.get("name") or "").strip()
+        key = _profile_form_key(field)
         value = _form_field_value(field)
-        if not value:
-            continue
-        normalized = label.lower()
-        if normalized == "name" or name.endswith("requester.name"):
-            out["name"] = value
-        elif normalized == "email" or name.endswith("requester.email"):
-            out["email"] = value
-        elif normalized in {"workspace id", "wid"}:
-            out["workspace_id"] = value
+        if key and value:
+            out[key] = value
     return out
+
+
+def _form_issue_body(fields: list[dict[str, Any]]) -> str:
+    """Render customer-supplied non-profile fields for issue classification."""
+    return "\n".join(
+        f"{field.get('label') or field.get('name')}: "
+        f"{_form_field_value(field)}".rstrip()
+        for field in fields
+        if not _profile_form_key(field)
+        and not _is_requester_system_field(field)
+        and (field.get("label") or field.get("name"))
+        and _form_field_value(field)
+    )
 
 
 def normalize_messaging_content(content: dict[str, Any]) -> dict[str, Any]:
     """Normalize one Zendesk Messaging content object exactly once."""
     content_type = str(content.get("type") or "")
     body = ""
+    classification_body = ""
     image_urls: list[str] = []
     form_data: dict[str, str] = {}
     if content_type == "text":
@@ -131,6 +156,8 @@ def normalize_messaging_content(content: dict[str, Any]) -> dict[str, Any]:
             if isinstance(field, dict)
         ]
         form_data = _form_data(fields)
+        if content_type == "formResponse":
+            classification_body = _form_issue_body(fields)
         body = str(content.get("text_fallback") or "")
         if not body:
             body = "\n".join(
@@ -160,14 +187,29 @@ def normalize_messaging_content(content: dict[str, Any]) -> dict[str, Any]:
     return {
         "content_type": content_type,
         "body": body.strip(),
+        "classification_body": classification_body.strip(),
         "form_data": form_data,
         "image_urls": image_urls,
     }
 
 
+def _form_field_signature(content: dict[str, Any]) -> tuple[str, ...]:
+    """Return a stable signature for pairing a form with its response."""
+    field_names: set[str] = set()
+    for field in content.get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        name = str(field.get("name") or "").strip().lower()
+        if not name:
+            name = str(field.get("label") or "").strip().lower()
+        if name:
+            field_names.add(name)
+    return tuple(sorted(field_names))
+
+
 def conversation_has_pending_form(events: list[dict[str, Any]]) -> bool:
-    """Return whether the latest blocking Answer Bot form is unanswered."""
-    pending = False
+    """Return whether the latest blocking form lacks its matching response."""
+    pending_signature: tuple[str, ...] | None = None
     for event in events:
         content = event.get("content") or {}
         content_type = content.get("type")
@@ -176,10 +218,15 @@ def conversation_has_pending_form(events: list[dict[str, Any]]) -> bool:
             and content.get("block_chat_input") is True
             and content.get("submitted") is False
         ):
-            pending = True
+            # A bot can re-issue the same blocking form.  The newer form
+            # supersedes the historical copy; otherwise one real response
+            # would leave an unreachable stale wait behind forever.
+            pending_signature = _form_field_signature(content)
         elif content_type == "formResponse":
-            pending = False
-    return pending
+            response_signature = _form_field_signature(content)
+            if pending_signature == response_signature:
+                pending_signature = None
+    return pending_signature is not None
 
 
 def _messaging_customer_messages(
@@ -209,6 +256,7 @@ def _messaging_customer_messages(
             "public": True,
             "image_urls": image_urls,
             "content_type": content_type,
+            "classification_body": normalized["classification_body"],
             "form_data": normalized["form_data"],
         })
     return out

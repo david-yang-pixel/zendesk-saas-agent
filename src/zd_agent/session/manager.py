@@ -25,6 +25,7 @@ logger = get_logger(module="session_manager")
 # 回调签名：(session) → coroutine。在 session 完成后异步触发，主要给 saas_app
 # 用来更新 trigger state（last_agent_finish_ts）实现 post-agent cooldown。
 SessionFinishedCallback = Callable[[AgentSession], Awaitable[None]]
+SessionCreatedCallback = Callable[[AgentSession], None]
 MAX_COMPLETED_SESSIONS: Final = 100
 
 
@@ -97,6 +98,7 @@ class SessionManager:
         dry_run: bool = False,
         trigger_type: str = "auto",
         delivery_attempt_id: str = "",
+        on_session_created: SessionCreatedCallback | None = None,
     ) -> AgentSession:
         """派发工单处理任务
 
@@ -105,12 +107,13 @@ class SessionManager:
         """
         async with self._lock:
             if ticket_id in self._active:
+                existing_session = self._active[ticket_id].session
                 logger.info(
                     "session_already_active",
                     ticket_id=ticket_id,
                     session_id=self._active[ticket_id].session.session_id,
                 )
-                return self._active[ticket_id].session
+                return existing_session
 
             session = AgentSession(
                 ticket_id=ticket_id, hint=hint, dry_run=dry_run,
@@ -118,13 +121,24 @@ class SessionManager:
                 delivery_attempt_id=delivery_attempt_id,
             )
 
+            # Bind durable ownership before the background task can run.  A
+            # very short session may otherwise finish between create_task()
+            # and dispatch() returning to its caller.
+            if on_session_created is not None:
+                on_session_created(session)
+
             tracked = _TrackedSession(session=session)
             self._active[ticket_id] = tracked
-
-            task = asyncio.create_task(
-                self._run_with_semaphore(tracked),
-                name=f"session-{ticket_id}",
-            )
+            run_coro = self._run_with_semaphore(tracked)
+            try:
+                task = asyncio.create_task(
+                    run_coro,
+                    name=f"session-{ticket_id}",
+                )
+            except BaseException:
+                run_coro.close()
+                self._active.pop(ticket_id, None)
+                raise
             tracked.task = task
 
             logger.info(

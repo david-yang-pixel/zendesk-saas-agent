@@ -29,8 +29,10 @@ def _ticket_state(state: str = "processing") -> TicketState:
 
 def test_completed_reply_marks_owned_processing_ticket_processed(tmp_path):
     tracker = _state(tmp_path)
-    tracker.set("2808", _ticket_state("processing"))
     session = AgentSession(ticket_id=2808)
+    ticket_state = _ticket_state("processing")
+    ticket_state.active_session_id = session.session_id
+    tracker.set("2808", ticket_state)
     session.status = SessionStatus.COMPLETED
     session.reply_sent = True
     now = datetime(2026, 6, 5, tzinfo=timezone.utc)

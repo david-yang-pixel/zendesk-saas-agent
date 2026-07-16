@@ -14,6 +14,31 @@ REAL_ASYNC_CLIENT = httpx.AsyncClient
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["login_required", "freshness_check_failed"])
+async def test_pre_send_relay_status_raises_definite_unsent_error(status: str) -> None:
+    from zd_agent.integrations.zendesk_browser_relay import (
+        BrowserRelayDefiniteUnsentError,
+    )
+
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={"ok": False, "ticket_id": 2861, "status": status},
+        )
+    )
+    with patch(
+        "zd_agent.integrations.zendesk_browser_relay.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ), pytest.raises(BrowserRelayDefiniteUnsentError):
+        await send_browser_relay_reply(
+            url="http://127.0.0.1:8097/",
+            api_key="secret",
+            ticket_id=2861,
+            body="hello",
+        )
+
+
+@pytest.mark.asyncio
 async def test_send_browser_relay_reply_posts_to_send_endpoint() -> None:
     requests: list[httpx.Request] = []
 

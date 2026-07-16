@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
 from zd_agent.services.trigger_state_machine import apply_session_finished
 from zd_agent.session.agent_session import AgentSession, SessionStatus
+from zd_agent.session.manager import SessionManager
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -34,7 +36,12 @@ async def test_direct_dispatch_persists_returned_session_as_state_owner(
         session_id="session-current",
     )
     manager = MagicMock()
-    manager.dispatch = AsyncMock(return_value=dispatched_session)
+
+    async def dispatch(_ticket_id: int, **kwargs):
+        kwargs["on_session_created"](dispatched_session)
+        return dispatched_session
+
+    manager.dispatch = AsyncMock(side_effect=dispatch)
 
     result = await handle_direct_dispatch_source(
         ticket_id=3461,
@@ -51,6 +58,91 @@ async def test_direct_dispatch_persists_returned_session_as_state_owner(
     assert persisted is not None
     assert persisted.state == "processing"
     assert persisted.active_session_id == dispatched_session.session_id
+
+
+@pytest.mark.asyncio
+async def test_direct_dispatch_binds_owner_before_fast_session_can_finish(
+    tmp_path,
+) -> None:
+    """A session completion callback may run before dispatch() returns."""
+    state_path = tmp_path / "tickets.json"
+    state = TicketStateTracker(state_path)
+
+    class FastManager:
+        async def dispatch(self, ticket_id: int, **kwargs):
+            session = AgentSession(
+                ticket_id=ticket_id,
+                session_id="session-fast",
+            )
+            kwargs["on_session_created"](session)
+            session.status = SessionStatus.COMPLETED
+            session.reply_sent = True
+            apply_session_finished(state, session, now=_now())
+            return session
+
+    result = await handle_direct_dispatch_source(
+        ticket_id=3461,
+        msg={"source": "mention", "hint": "retry investigation"},
+        manager=FastManager(),
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        now=_now(),
+    )
+
+    persisted = TicketStateTracker(state_path).get(3461)
+    assert result.dispatched is True
+    assert persisted is not None
+    assert persisted.state == "processed"
+    assert persisted.active_session_id == ""
+
+
+@pytest.mark.asyncio
+async def test_create_task_failure_restores_generation_bound_state(
+    tmp_path,
+) -> None:
+    """A pre-start owner cannot survive when task creation itself fails."""
+    state_path = tmp_path / "tickets.json"
+    state = TicketStateTracker(state_path)
+    state.set(
+        3461,
+        TicketState(
+            state="waiting_for_issue",
+            first_seen=_now() - timedelta(minutes=10),
+            last_verdict="insufficient_info",
+        ),
+    )
+    before = state.get(3461)
+    assert before is not None
+    manager_cfg = SimpleNamespace(
+        agent=SimpleNamespace(max_concurrent_sessions=1),
+    )
+
+    with (
+        patch("zd_agent.session.manager.get_config", return_value=manager_cfg),
+        patch(
+            "zd_agent.session.manager.asyncio.create_task",
+            side_effect=RuntimeError("cannot create task"),
+        ),
+    ):
+        manager = SessionManager(max_concurrent=1)
+        with pytest.raises(RuntimeError, match="cannot create task"):
+            await handle_direct_dispatch_source(
+                ticket_id=3461,
+                msg={"source": "mention", "hint": "retry investigation"},
+                manager=manager,
+                state=state,
+                log_path=tmp_path / "trigger.jsonl",
+                cfg=_cfg(),
+                now=_now(),
+            )
+
+    persisted = TicketStateTracker(state_path).get(3461)
+    assert persisted is not None
+    assert persisted.state == "waiting_for_issue"
+    assert persisted.active_session_id == ""
+    assert persisted.state_revision > before.state_revision
+    assert manager.active_count == 0
 
 
 def test_older_session_completion_cannot_overwrite_new_processing_owner(

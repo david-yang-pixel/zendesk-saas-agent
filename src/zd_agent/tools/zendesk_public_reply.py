@@ -30,7 +30,9 @@ footer 处理都不一样。
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
+from uuid import uuid4
 
 from zd_agent.config import get_config
 from zd_agent.integrations.zendesk_browser_relay import (
@@ -39,7 +41,11 @@ from zd_agent.integrations.zendesk_browser_relay import (
 )
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
-from zd_agent.runtime.pre_send_check import FreshnessResult, pre_send_check_or_abort
+from zd_agent.runtime.pre_send_check import (
+    FreshnessRecovery,
+    FreshnessRecoveryAction,
+    FreshnessResult,
+)
 from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
 from zd_agent.runtime.reply_audit import (
     public_reply_evidence_blockers,
@@ -47,10 +53,15 @@ from zd_agent.runtime.reply_audit import (
 )
 from zd_agent.services.messaging_context import get_messaging_context
 from zd_agent.services.public_reply_internal_note import (
+    PostPublicInternalNoteStore,
     ensure_post_public_internal_note,
 )
 from zd_agent.services.public_reply_delivery_store import (
     PublicReplyDeliveryStore,
+)
+from zd_agent.services.public_reply_handoff_effects import (
+    PostPublicHandoffStore,
+    ensure_post_public_handoff_effects,
 )
 from zd_agent.tools.base import Tool, ToolResult
 from zd_agent.tools.public_reply_format import (
@@ -83,6 +94,43 @@ __all__ = [
 logger = get_logger(module="tools.zendesk_public_reply")
 
 
+@dataclass(frozen=True)
+class DirectPublicReplyResult:
+    """Outcome for the deterministic public-reply path.
+
+    ``accepted_snapshot_*`` is populated only after a successful delivery.  It
+    lets trigger-state callers consume harmless customer follow-ups that the
+    final freshness gate deliberately allowed through.
+    """
+
+    success: bool
+    message: str
+    accepted_snapshot_count: int | None = None
+    accepted_snapshot_last_id: str | None = None
+
+
+def _advance_session_snapshot_from_accepted_freshness(
+    session: AgentSession,
+    check: FreshnessResult,
+) -> None:
+    """Persist a cursor accepted by the freshness gate after delivery.
+
+    A non-substantive customer message does not require a model rebase, but it
+    is still consumed by the reply that follows.  Keep the durable state cursor
+    in sync so its delayed webhook cannot dispatch that same message again.
+    """
+    recovery = check.recovery
+    if (
+        not check.continue_send
+        or recovery is None
+        or not recovery.next_snapshot_last_id
+    ):
+        return
+    session.customer_msgs_snapshot_count = recovery.next_snapshot_count
+    session.customer_msgs_snapshot_last_id = recovery.next_snapshot_last_id
+    session.customer_msgs_snapshot_captured = True
+
+
 async def _recent_duplicate_public_reply_exists(
     *,
     ticket_id: int,
@@ -102,6 +150,64 @@ def _delivery_store_for_config(cfg: Any) -> PublicReplyDeliveryStore:
     return PublicReplyDeliveryStore(state_dir / "public_reply_outbox.sqlite3")
 
 
+def _handoff_store_for_config(cfg: Any) -> PostPublicHandoffStore:
+    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
+    return PostPublicHandoffStore(
+        state_dir / "post_public_handoff_outbox.sqlite3"
+    )
+
+
+def _prepare_durable_delivery_payload(
+    *,
+    cfg: Any,
+    ticket_id: int,
+    reply_type: str,
+    delivery_attempt_id: str | None,
+    body_with_footer: str,
+    internal_analysis: str,
+    snapshot_customer_message_count: int | None = None,
+    snapshot_customer_last_message_id: str | None = None,
+) -> tuple[
+    str,
+    str,
+    str,
+    PublicReplyDeliveryStore | None,
+    PostPublicInternalNoteStore | None,
+]:
+    """Freeze public body and analysis under one logical delivery attempt."""
+    if not delivery_attempt_id:
+        return body_with_footer, internal_analysis, reply_type, None, None
+    delivery_store = _delivery_store_for_config(cfg)
+    attempt = delivery_store.prepare(
+        delivery_attempt_id=delivery_attempt_id,
+        ticket_id=ticket_id,
+        reply_type=reply_type,
+        body=body_with_footer,
+        internal_analysis=internal_analysis,
+        snapshot_customer_message_count=snapshot_customer_message_count,
+        snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+    )
+    note_store = PostPublicInternalNoteStore(
+        delivery_store.path.parent / "post_public_internal_note_outbox.sqlite3"
+    )
+    note_store.prepare(
+        ticket_id=ticket_id,
+        delivery_attempt_id=delivery_attempt_id,
+        reply_type=attempt.reply_type,
+        body_with_footer=attempt.body,
+        internal_analysis=attempt.internal_analysis,
+        public_delivery_confirmed=attempt.delivered,
+        accept_legacy_reference=attempt.migrated_from_v1,
+    )
+    return (
+        attempt.body,
+        attempt.internal_analysis,
+        attempt.reply_type,
+        delivery_store,
+        note_store,
+    )
+
+
 async def _send_public_reply_safely(
     *,
     ticket_id: int,
@@ -113,6 +219,7 @@ async def _send_public_reply_safely(
     snapshot_customer_last_message_id: str | None = None,
     delivery_attempt_id: str | None = None,
     delivery_store: PublicReplyDeliveryStore | None = None,
+    internal_analysis: str = "",
 ) -> bool:
     cfg = get_config()
     return await send_public_reply_safely(
@@ -128,6 +235,7 @@ async def _send_public_reply_safely(
         delivery_store_factory=_delivery_store_for_config,
         zendesk_tool_caller=call_zendesk_tool,
         relay_sender=send_browser_relay_reply,
+        internal_analysis=internal_analysis,
     )
 
 
@@ -136,34 +244,90 @@ async def _check_freshness_before_relay(
     ticket_id: int,
     snapshot_count: int | None,
     snapshot_last_id: str | None,
-) -> FreshnessResult | None:
-    """Best-effort first freshness guard before handing off to browser relay."""
-    if snapshot_count is None:
-        return None
-
-    from zd_agent.config import EnvSettings
-
-    cfg = get_config()
-
-    async def _fetch() -> list[dict]:
-        from zd_agent.services.ticket_messages import (
-            fetch_customer_messages_for_freshness,
-        )
-
-        return await fetch_customer_messages_for_freshness(ticket_id)
-
-    env = EnvSettings()
-    return await pre_send_check_or_abort(
+) -> FreshnessResult:
+    """Fail-closed freshness and Answer Bot form check before relay."""
+    return await _check_public_reply_readiness(
         ticket_id=ticket_id,
         snapshot_count=snapshot_count,
         snapshot_last_id=snapshot_last_id,
-        fetch_messages_fn=_fetch,
-        model=cfg.trigger_decider.llm_model,
-        api_key=env.openai_api_key,
-        base_url=cfg.llm.base_url,
         skip_llm=True,
     )
-async def send_public_reply(
+
+
+async def _check_public_reply_readiness(
+    *,
+    ticket_id: int,
+    snapshot_count: int | None,
+    snapshot_last_id: str | None,
+    skip_llm: bool,
+    cfg: Any | None = None,
+) -> FreshnessResult:
+    """Fetch once, then verify customer freshness and blocking-form readiness."""
+    from zd_agent.config import EnvSettings
+    from zd_agent.runtime.pre_send_check import pre_send_check_or_abort
+    from zd_agent.services.ticket_message_parsing import (
+        conversation_has_pending_form,
+    )
+    from zd_agent.services.ticket_messages import _fetch_customer_messages
+
+    latest_ticket: dict[str, Any] | None = None
+
+    async def _fetch() -> list[dict]:
+        nonlocal latest_ticket
+        messages, ticket = await _fetch_customer_messages(ticket_id)
+        if ticket is None:
+            raise RuntimeError(f"ticket fetch failed for #{ticket_id}")
+        latest_ticket = ticket
+        return messages
+
+    if snapshot_count is None:
+        try:
+            await _fetch()
+        except Exception as error:  # noqa: BLE001 - public writes fail closed.
+            reason = f"fetch_error: {type(error).__name__}"
+            return FreshnessResult(
+                continue_send=False,
+                reason=reason,
+                recovery=FreshnessRecovery(
+                    action=FreshnessRecoveryAction.RETRY_FETCH,
+                    reason=reason,
+                ),
+            )
+        check = FreshnessResult(continue_send=True, reason="no_snapshot_required")
+    else:
+        cfg = cfg or get_config()
+        env = EnvSettings()
+        check = await pre_send_check_or_abort(
+            ticket_id=ticket_id,
+            snapshot_count=snapshot_count,
+            snapshot_last_id=snapshot_last_id,
+            fetch_messages_fn=_fetch,
+            model=cfg.trigger_decider.llm_model,
+            api_key=env.openai_api_key,
+            base_url=cfg.llm.base_url,
+            skip_llm=skip_llm,
+        )
+    if not check.continue_send:
+        return check
+
+    conversation_events = (
+        latest_ticket.get("_zd_agent_conversation_events")
+        if latest_ticket
+        else []
+    )
+    if conversation_has_pending_form(conversation_events or []):
+        return FreshnessResult(
+            continue_send=False,
+            reason="pending_blocking_form",
+            recovery=FreshnessRecovery(
+                action=FreshnessRecoveryAction.DEFER,
+                reason="pending_blocking_form",
+            ),
+        )
+    return check
+
+
+async def send_public_reply_with_freshness(
     *,
     ticket_id: int,
     body: str,
@@ -175,7 +339,10 @@ async def send_public_reply(
     snapshot_customer_last_message_id: str | None = None,
     delivery_attempt_id: str | None = None,
     internal_analysis: str = "",
-) -> tuple[bool, str]:
+    handoff_reason: str = "agent_handoff",
+    handoff_source: str = "direct_public_reply",
+    handoff_customer_phrase: str = "",
+) -> DirectPublicReplyResult:
     """直接发 public reply 的公共入口（不需要 AgentSession）。
 
     给 trigger_consumer / 集成测试 / CLI 用。和 ZendeskPublicReply Tool 共享
@@ -186,7 +353,7 @@ async def send_public_reply(
         (success, message_or_error)
     """
     if not isinstance(ticket_id, int) or isinstance(ticket_id, bool) or ticket_id <= 0:
-        return False, "ticket_id must be a positive integer"
+        return DirectPublicReplyResult(False, "ticket_id must be a positive integer")
 
     # Kill switch
     cfg = get_config()
@@ -196,17 +363,16 @@ async def send_public_reply(
             ticket_id=ticket_id,
             reason="cfg.public_reply.enabled=false",
         )
-        return (
-            False,
-            "Public reply is currently disabled (kill switch).",
+        return DirectPublicReplyResult(
+            False, "Public reply is currently disabled (kill switch)."
         )
 
     # 参数校验
     body = (body or "").strip()
     if not body:
-        return False, "body is empty"
+        return DirectPublicReplyResult(False, "body is empty")
     if reply_type not in _VALID_REPLY_TYPES:
-        return False, f"invalid reply_type: {reply_type!r}"
+        return DirectPublicReplyResult(False, f"invalid reply_type: {reply_type!r}")
     privacy_blockers = public_reply_privacy_blockers(body)
     if privacy_blockers:
         logger.warning(
@@ -216,7 +382,7 @@ async def send_public_reply(
             warning_count=len(privacy_blockers),
             warnings=privacy_blockers[:5],
         )
-        return (
+        return DirectPublicReplyResult(
             False,
             "Public reply privacy hard gate blocked this reply. "
             "Remove internal source paths before replying: "
@@ -236,23 +402,23 @@ async def send_public_reply(
             ticket_id=ticket_id, reply_type=reply_type,
             body_len=len(body_with_footer),
         )
-        return True, "[Dry Run] Not sent."
+        return DirectPublicReplyResult(True, "[Dry Run] Not sent.")
     if not conversation_id:
         logger.warning(
             "public_reply_missing_conversation_id_direct",
             ticket_id=ticket_id,
             reply_type=reply_type,
         )
-        return (
+        return DirectPublicReplyResult(
             False,
             "Zendesk Messaging conversation_id is missing; "
             "Support API public-comment fallback is disabled.",
         )
     if (
-        reply_type in ("ask", "solution")
+        reply_type in ("ask", "solution", "closed")
         and snapshot_customer_message_count is None
     ):
-        return (
+        return DirectPublicReplyResult(
             False,
             "Public reply blocked because the customer-message snapshot is unavailable.",
         )
@@ -269,9 +435,8 @@ async def send_public_reply(
             ticket_id=ticket_id,
             error=str(e)[:200],
         )
-        return (
-            False,
-            "Pre-relay freshness check unavailable; public reply was blocked.",
+        return DirectPublicReplyResult(
+            False, "Pre-relay freshness check unavailable; public reply was blocked."
         )
     if check is not None and not check.continue_send:
         logger.info(
@@ -282,22 +447,57 @@ async def send_public_reply(
             new_msg_count=check.new_messages_count,
         )
         if check.reason.startswith("fetch_error"):
-            return (
-                False,
-                "Pre-relay freshness check unavailable; public reply was blocked.",
+            return DirectPublicReplyResult(
+                False, "Pre-relay freshness check unavailable; public reply was blocked."
             )
-        return (
+        if check.reason == "pending_blocking_form":
+            return DirectPublicReplyResult(
+                False, "Public reply deferred because a blocking customer form is pending."
+            )
+        return DirectPublicReplyResult(
             False,
             "Pre-relay freshness check abort: customer added "
             f"{check.new_messages_count} new message(s) ({check.reason}).",
         )
 
-    logger.info(
-        "public_reply_send_start_direct",
-        ticket_id=ticket_id, reply_type=reply_type,
-        body_len=len(body_with_footer),
-    )
     try:
+        logical_delivery_attempt_id = (
+            delivery_attempt_id or f"direct:{ticket_id}:{uuid4().hex}"
+        )
+        (
+            body_with_footer,
+            internal_analysis,
+            reply_type,
+            delivery_store,
+            note_store,
+        ) = _prepare_durable_delivery_payload(
+            cfg=cfg,
+            ticket_id=ticket_id,
+            reply_type=reply_type,
+            delivery_attempt_id=logical_delivery_attempt_id,
+            body_with_footer=body_with_footer,
+            internal_analysis=internal_analysis,
+            snapshot_customer_message_count=snapshot_customer_message_count,
+            snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+        )
+        handoff_store: PostPublicHandoffStore | None = None
+        if reply_type == "handoff":
+            handoff_store = _handoff_store_for_config(cfg)
+            handoff_store.prepare(
+                ticket_id=ticket_id,
+                delivery_attempt_id=logical_delivery_attempt_id,
+                body_with_footer=body_with_footer,
+                public_delivery_confirmed=False,
+                reason=handoff_reason,
+                source=handoff_source,
+                customer_phrase=handoff_customer_phrase,
+            )
+        logger.info(
+            "public_reply_send_start_direct",
+            ticket_id=ticket_id,
+            reply_type=reply_type,
+            body_len=len(body_with_footer),
+        )
         sent_now = await _send_public_reply_safely(
             ticket_id=ticket_id,
             body_with_footer=body_with_footer,
@@ -306,7 +506,9 @@ async def send_public_reply(
             messaging_app_id=messaging_app_id,
             snapshot_customer_message_count=snapshot_customer_message_count,
             snapshot_customer_last_message_id=snapshot_customer_last_message_id,
-            delivery_attempt_id=delivery_attempt_id,
+            delivery_attempt_id=logical_delivery_attempt_id,
+            delivery_store=delivery_store,
+            internal_analysis=internal_analysis,
         )
         logger.info(
             "public_reply_sent_direct" if sent_now else "public_reply_already_delivered_direct",
@@ -314,11 +516,25 @@ async def send_public_reply(
         )
         internal_note_sent = await ensure_post_public_internal_note(
             ticket_id=ticket_id,
+            delivery_attempt_id=logical_delivery_attempt_id,
             reply_type=reply_type,
             body_with_footer=body_with_footer,
             internal_analysis=internal_analysis,
             zendesk_tool_caller=call_zendesk_tool,
+            note_store=note_store,
+            public_delivery_confirmed=True,
         )
+        if reply_type == "handoff" and handoff_store is not None:
+            await ensure_post_public_handoff_effects(
+                ticket_id=ticket_id,
+                delivery_attempt_id=logical_delivery_attempt_id,
+                body_with_footer=body_with_footer,
+                store=handoff_store,
+                public_delivery_confirmed=True,
+                reason=handoff_reason,
+                source=handoff_source,
+                customer_phrase=handoff_customer_phrase,
+            )
         # M8 metric: 成功发出一条公共回复
         try:
             from zd_agent.observability.metrics import (
@@ -342,14 +558,63 @@ async def send_public_reply(
             message = f"Public Reply already delivered to ticket #{ticket_id}"
         if not internal_note_sent:
             message += "; internal analysis note delivery failed"
-        return True, message
+        recovery = check.recovery
+        return DirectPublicReplyResult(
+            True,
+            message,
+            accepted_snapshot_count=(
+                recovery.next_snapshot_count
+                if recovery is not None and recovery.next_snapshot_last_id
+                else snapshot_customer_message_count
+            ),
+            accepted_snapshot_last_id=(
+                recovery.next_snapshot_last_id
+                if recovery is not None and recovery.next_snapshot_last_id
+                else snapshot_customer_last_message_id
+            ),
+        )
     except Exception as e:  # noqa: BLE001 - public boundary returns a typed result.
         logger.error(
             "public_reply_direct_send_failed",
             ticket_id=ticket_id, error=str(e)[:200],
             exc_info=True,
         )
-        return False, f"{type(e).__name__}: {e}"
+        return DirectPublicReplyResult(False, f"{type(e).__name__}: {e}")
+
+
+async def send_public_reply(
+    *,
+    ticket_id: int,
+    body: str,
+    reply_type: str,
+    dry_run: bool = False,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    snapshot_customer_message_count: int | None = None,
+    snapshot_customer_last_message_id: str | None = None,
+    delivery_attempt_id: str | None = None,
+    internal_analysis: str = "",
+    handoff_reason: str = "agent_handoff",
+    handoff_source: str = "direct_public_reply",
+    handoff_customer_phrase: str = "",
+) -> tuple[bool, str]:
+    """Compatibility wrapper for callers that only need send success."""
+    result = await send_public_reply_with_freshness(
+        ticket_id=ticket_id,
+        body=body,
+        reply_type=reply_type,
+        dry_run=dry_run,
+        conversation_id=conversation_id,
+        messaging_app_id=messaging_app_id,
+        snapshot_customer_message_count=snapshot_customer_message_count,
+        snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+        delivery_attempt_id=delivery_attempt_id,
+        internal_analysis=internal_analysis,
+        handoff_reason=handoff_reason,
+        handoff_source=handoff_source,
+        handoff_customer_phrase=handoff_customer_phrase,
+    )
+    return result.success, result.message
 
 
 class ZendeskPublicReply(Tool):
@@ -601,85 +866,122 @@ class ZendeskPublicReply(Tool):
                 ),
             )
 
-        # 4b. Pre-send freshness check（M5）
-        # handoff / closed 类回复跳过 freshness check：
-        #   - handoff 是"已转人工"通知，发就发，不需等更多客户消息
-        #   - closed 是客户已说解决，发就发
-        if reply_type in ("ask", "solution"):
-            if not session.customer_msgs_snapshot_captured:
-                return ToolResult(
-                    success=False,
-                    error=(
-                        "Public reply blocked because the customer-message "
-                        "snapshot is unavailable. Re-fetch the ticket before replying."
-                    ),
-                )
-            from zd_agent.config import EnvSettings
-            from zd_agent.runtime.pre_send_check import pre_send_check_or_abort
+        # 4b. Pre-send freshness + Answer Bot form readiness check（M5）。
+        # handoff 不比较 customer snapshot，但仍须读取最新完整 conversation，
+        # 防止 dispatch 后出现的 blocking form 被 system-event 盲区漏掉。
+        customer_resolvable_reply = reply_type in ("ask", "solution", "closed")
+        if (
+            customer_resolvable_reply
+            and not session.customer_msgs_snapshot_captured
+        ):
+            return ToolResult(
+                success=False,
+                error=(
+                    "Public reply blocked because the customer-message "
+                    "snapshot is unavailable. Re-fetch the ticket before replying."
+                ),
+            )
+        try:
+            check = await _check_public_reply_readiness(
+                ticket_id=ticket_id,
+                snapshot_count=(
+                    session.customer_msgs_snapshot_count
+                    if customer_resolvable_reply
+                    else None
+                ),
+                snapshot_last_id=(
+                    (session.customer_msgs_snapshot_last_id or None)
+                    if customer_resolvable_reply
+                    else None
+                ),
+                skip_llm=False,
+            )
+        except Exception as e:  # noqa: BLE001 - freshness failures must fail closed.
+            logger.warning(
+                "public_reply_pre_send_check_error",
+                ticket_id=ticket_id, error=str(e)[:200],
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Pre-send freshness check unavailable; public reply was "
+                    "blocked to avoid sending a stale response."
+                ),
+            )
 
-            async def _fetch():
-                from zd_agent.services.ticket_messages import (
-                    fetch_customer_messages_for_freshness,
+        if not check.continue_send:
+            logger.info(
+                "public_reply_aborted_pre_send_check",
+                ticket_id=ticket_id, reply_type=reply_type,
+                reason=check.reason,
+                new_msg_count=check.new_messages_count,
+            )
+            if check.reason.startswith("fetch_error"):
+                error = (
+                    "Pre-send freshness check unavailable; public reply was "
+                    "blocked to avoid sending a stale response."
                 )
-
-                return await fetch_customer_messages_for_freshness(ticket_id)
-
-            env = EnvSettings()
-            try:
-                check = await pre_send_check_or_abort(
-                    ticket_id=ticket_id,
-                    snapshot_count=session.customer_msgs_snapshot_count,
-                    snapshot_last_id=session.customer_msgs_snapshot_last_id or None,
-                    fetch_messages_fn=_fetch,
-                    model=cfg.trigger_decider.llm_model,
-                    api_key=env.openai_api_key,
-                    base_url=cfg.llm.base_url,
+            elif check.reason == "pending_blocking_form":
+                error = (
+                    "Public reply deferred because a blocking customer form "
+                    "is pending. Wait for the matching form response."
                 )
-            except Exception as e:  # noqa: BLE001 - freshness failures must fail closed.
-                logger.warning(
-                    "public_reply_pre_send_check_error",
-                    ticket_id=ticket_id, error=str(e)[:200],
+            else:
+                error = (
+                    f"Pre-send check abort: customer added "
+                    f"{check.new_messages_count} new substantive message(s) "
+                    f"({check.reason}). Re-analyze with fresh context."
                 )
-                return ToolResult(
-                    success=False,
-                    error=(
-                        "Pre-send freshness check unavailable; public reply was "
-                        "blocked to avoid sending a stale response."
-                    ),
-                )
-
-            if not check.continue_send:
-                logger.info(
-                    "public_reply_aborted_pre_send_check",
-                    ticket_id=ticket_id, reply_type=reply_type,
-                    reason=check.reason,
-                    new_msg_count=check.new_messages_count,
-                )
-                if check.reason.startswith("fetch_error"):
-                    return ToolResult(
-                        success=False,
-                        error=(
-                            "Pre-send freshness check unavailable; public reply was "
-                            "blocked to avoid sending a stale response."
-                        ),
-                    )
-                return ToolResult(
-                    success=False,
-                    error=(
-                        f"Pre-send check abort: customer added "
-                        f"{check.new_messages_count} new substantive message(s) "
-                        f"({check.reason}). Re-analyze with fresh context."
-                    ),
-                    metadata={"freshness_recovery": check.recovery},
-                )
+            return ToolResult(
+                success=False,
+                error=error,
+                metadata={"freshness_recovery": check.recovery},
+            )
 
         # 5. 真发送：只走 native messaging browser relay，不回退 Support API。
-        logger.info(
-            "public_reply_send_start",
-            ticket_id=ticket_id, reply_type=reply_type,
-            body_len=len(body_with_footer),
+        logical_delivery_attempt_id = (
+            session.delivery_attempt_id or session.session_id
         )
         try:
+            (
+                body_with_footer,
+                internal_analysis,
+                reply_type,
+                delivery_store,
+                note_store,
+            ) = _prepare_durable_delivery_payload(
+                cfg=cfg,
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                delivery_attempt_id=logical_delivery_attempt_id,
+                body_with_footer=body_with_footer,
+                internal_analysis=internal_analysis,
+                snapshot_customer_message_count=(
+                    session.customer_msgs_snapshot_count
+                    if session.customer_msgs_snapshot_captured
+                    else None
+                ),
+                snapshot_customer_last_message_id=(
+                    session.customer_msgs_snapshot_last_id or None
+                ),
+            )
+            session.reply_draft = body_with_footer
+            session.public_reply_type = reply_type
+            handoff_store: PostPublicHandoffStore | None = None
+            if reply_type == "handoff":
+                handoff_store = _handoff_store_for_config(cfg)
+                handoff_store.prepare(
+                    ticket_id=ticket_id,
+                    delivery_attempt_id=logical_delivery_attempt_id,
+                    body_with_footer=body_with_footer,
+                    public_delivery_confirmed=False,
+                )
+            logger.info(
+                "public_reply_send_start",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                body_len=len(body_with_footer),
+            )
             sent_now = await _send_public_reply_safely(
                 ticket_id=ticket_id,
                 body_with_footer=body_with_footer,
@@ -692,22 +994,44 @@ class ZendeskPublicReply(Tool):
                 snapshot_customer_last_message_id=(
                     session.customer_msgs_snapshot_last_id or None
                 ),
-                delivery_attempt_id=(
-                    session.delivery_attempt_id or session.session_id
-                ),
+                delivery_attempt_id=logical_delivery_attempt_id,
+                delivery_store=delivery_store,
+                internal_analysis=internal_analysis,
             )
+            # Customer delivery is now confirmed (or reconciled from the
+            # outbox).  Block any alternative second reply in this session even
+            # if the mandatory internal-note bookkeeping below needs recovery.
             session.reply_sent = True
+            _advance_session_snapshot_from_accepted_freshness(session, check)
             logger.info(
                 "public_reply_sent" if sent_now else "public_reply_already_delivered",
                 ticket_id=ticket_id, reply_type=reply_type,
             )
             internal_note_sent = await ensure_post_public_internal_note(
                 ticket_id=ticket_id,
+                delivery_attempt_id=logical_delivery_attempt_id,
                 reply_type=reply_type,
                 body_with_footer=body_with_footer,
                 internal_analysis=internal_analysis,
                 zendesk_tool_caller=call_zendesk_tool,
+                note_store=note_store,
+                public_delivery_confirmed=True,
             )
+            if reply_type == "handoff" and handoff_store is not None:
+                handoff_effects_sent = await ensure_post_public_handoff_effects(
+                    ticket_id=ticket_id,
+                    delivery_attempt_id=logical_delivery_attempt_id,
+                    body_with_footer=body_with_footer,
+                    store=handoff_store,
+                    public_delivery_confirmed=True,
+                )
+                logger.info(
+                    "handoff_operator_effects_completed"
+                    if handoff_effects_sent
+                    else "handoff_operator_effects_pending",
+                    ticket_id=ticket_id,
+                    delivery_attempt_id=logical_delivery_attempt_id,
+                )
             # M8 metric: agent 通过 Tool 路径成功发出公共回复
             try:
                 from zd_agent.observability.metrics import (

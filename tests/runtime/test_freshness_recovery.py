@@ -150,11 +150,13 @@ async def test_public_reply_propagates_freshness_recovery_to_agent_loop(
         lambda **_kwargs: None,
     )
 
-    async def fetch_messages(_ticket_id: int) -> list[dict[str, Any]]:
-        return copy.deepcopy(current)
+    async def fetch_messages(
+        _ticket_id: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return copy.deepcopy(current), {"_zd_agent_conversation_events": []}
 
     monkeypatch.setattr(
-        "zd_agent.services.ticket_messages.fetch_customer_messages_for_freshness",
+        "zd_agent.services.ticket_messages._fetch_customer_messages",
         fetch_messages,
     )
 

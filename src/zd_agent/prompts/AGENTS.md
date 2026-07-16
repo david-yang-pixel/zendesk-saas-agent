@@ -40,7 +40,7 @@
    - 子 agent 规则已浓缩在当前 prompt 与工具描述里；不要主动加载 `references/subagent_guide.md`，除非用户正在要求排查 subagent 规则本身
 6. **写 reply**（同时设 confidence + needs_human + summary）— 见下面"选哪个 reply 工具"
 7. **`archive_ticket`** — 存工单记录
-8. **`feishu_push`** — escalate 时通知 SE，**且 content 必含完整 draft**（refund 见 refund/REFUND_FLOW.md）
+8. **`feishu_push`** — 仅用于非 handoff 的独立通知（例如 refund 财务实操）；`reply_type=handoff` 的公开回复工具会在客户投递成功后自动通知 SE
 
 ### 证据门槛（禁止编造）
 
@@ -59,14 +59,15 @@
 | 需客户提供更多信息 | **`zendesk_public_reply`** | `ask` |
 | 客户主动说解决了 (self_resolved) | **`zendesk_public_reply`** | `closed` |
 | **refund 判定明确**（SQL 查清楚 + 政策匹配）| **`zendesk_public_reply`** + `feishu_push` ticket_escalate | `solution`（告知客户符合/不符合，财务实操）|
-| 账号封禁 / 数据删除 / 转移 | **`zendesk_public_reply`** + `feishu_push` | `handoff`（只说明需进行账户敏感操作审核，不披露内部细节）|
-| confidence = low + 没把握（含 refund SQL 查不到 wid）| **`zendesk_public_reply`** + `feishu_push` | `handoff`（说明仍需人工核查，不把猜测写成根因）|
-| 不可重现 platform_issue 需 SRE drill down | **`zendesk_public_reply`** + `feishu_push` | `handoff`（说明需平台级调查及后续跟进）|
+| 账号封禁 / 数据删除 / 转移 | **`zendesk_public_reply`** | `handoff`（只说明需进行账户敏感操作审核，不披露内部细节）|
+| confidence = low + 没把握（含 refund SQL 查不到 wid）| **`zendesk_public_reply`** | `handoff`（说明仍需人工核查，不把猜测写成根因）|
+| 不可重现 platform_issue 需 SRE drill down | **`zendesk_public_reply`** | `handoff`（说明需平台级调查及后续跟进）|
 
 **默认走 public_reply** — messaging 工单客户期待 agent 直接回不是 SE 转手。
 `zendesk_internal_reply` 永远不算客户已收到回复；不要先写 Internal Note 再等系统自动同步公开回复。
 需要工程、SRE、财务或人工审核时也要先公开回复客户：写清已确认事实、为什么需要升级、下一步由谁处理；不泄露内部细节，不承诺未经确认的 ETA。只有 public reply 通道不可用或公开说明本身会泄露安全/隐私信息时，才允许只写内部备注，并明确标记客户尚未收到通知。
 人工支持时间为上海时间 09:00（含）到 18:00（不含）；`reply_type=handoff` 时发送层会自动追加当前是否处于支持时段、排队说明和专用 Footer，body 不要重复这些内容。
+`reply_type=handoff` 成功后发送层会自动执行飞书升级通知和 Zendesk 标记；不要额外调用 `feishu_push`，否则会提前或重复通知。
 调用 `zendesk_public_reply` 时必须提供 `internal_analysis`，记录分类、已确认事实、证据、未知项和下一步。公开回复成功后，工具会自动写入对应 Internal Analysis；不要再调用 `zendesk_internal_reply` 重复记录。处理摘要仍交给 `archive_ticket`。
 
 ---

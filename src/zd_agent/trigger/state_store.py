@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from time import time_ns
-from typing import Optional
+from typing import Callable, Optional
 
 from zd_agent.log import get_logger
 from zd_agent.services.atomic_write import atomic_write_text
@@ -54,6 +54,20 @@ class TicketState:
     # Durable owner for ``processing``. Completion callbacks from any older
     # session generation must not mutate the current ticket lifecycle.
     active_session_id: str = ""
+    # Stable logical id for customer-visible delivery side effects.  Queue
+    # scheduling keys may change across silence-window and startup recovery,
+    # but retries must keep this id so the public-reply outbox can reconcile
+    # an already delivered message instead of sending regenerated prose.
+    delivery_attempt_id: str = ""
+    # Consecutive AgentSession failures that ended before a public reply was
+    # delivered.  This must live in the durable ticket state rather than the
+    # queue message: a dispatched session is ACKed before its runner finishes,
+    # so queue attempts cannot bound this recovery loop.
+    consecutive_agent_failures: int = 0
+    # Monotonic lifecycle generation. Delayed queue messages carry the
+    # generation they were created from and must no-op after any newer state
+    # transition, preventing stale asks or dispatches from taking effect.
+    state_revision: int = 0
 
     # ───── M3 (2026-05-13) auto-public-reply 新增字段 ─────
     # 同工单内 agent 累计自动 ask 客户的次数（每次发 public ask 模板 A/B/C/D 累加）。
@@ -96,6 +110,16 @@ class TicketState:
         valid_keys = {f.name for f in cls.__dataclass_fields__.values()}
         data = {k: v for k, v in data.items() if k in valid_keys}
         return cls(**data)
+
+
+@dataclass(frozen=True)
+class TicketStateCommit:
+    """One successful generation-fenced ticket-state transition."""
+
+    before: Optional[TicketState]
+    after: TicketState
+    previous_revision: Optional[int]
+    state_revision: int
 
 
 class TicketStateTracker:
@@ -167,15 +191,102 @@ class TicketStateTracker:
         if state.state not in VALID_STATES:
             raise ValueError(f"invalid state: {state.state}")
         key = str(ticket_id)
-        serialized = state.to_dict()
-        if self._serialized.get(key) == serialized:
+        previous = self._serialized.get(key)
+        previous_revision = int((previous or {}).get("state_revision") or 0)
+        candidate = state.to_dict()
+        # Callers often mutate the tracker-owned dataclass before set().  Use
+        # the last serialized snapshot as the source of truth for comparison
+        # and generation assignment instead of trusting the mutable object.
+        candidate["state_revision"] = previous_revision
+        if previous == candidate:
+            state.state_revision = previous_revision
             self._data[key] = state
             return
+        state.state_revision = previous_revision + 1
+        serialized = state.to_dict()
         next_serialized = dict(self._serialized)
         next_serialized[key] = serialized
         self._save(next_serialized)
         self._data[key] = state
         self._serialized = next_serialized
+
+    def update_if_revision(
+        self,
+        ticket_id: str | int,
+        *,
+        expected_revision: int | None,
+        mutate: Callable[[Optional[TicketState]], TicketState],
+        expected_state: str | None = None,
+        expected_active_session_id: str | None = None,
+    ) -> TicketStateCommit | None:
+        """Atomically update one lifecycle generation in this tracker.
+
+        The comparison and write are synchronous, so they cannot interleave
+        with another asyncio task using this tracker.  Both the comparison and
+        mutation input come from the last serialized snapshot, not from the
+        mutable object returned by :meth:`get`.
+
+        ``expected_revision=None`` means that the record must not exist.
+        Optional state and owner predicates further fence lifecycle ownership.
+        A stale predicate returns ``None`` without invoking ``mutate`` or
+        changing memory/disk.  Every successful update creates exactly one new
+        revision, including a logically identical mutation used as a claim.
+        """
+        key = str(ticket_id)
+        serialized_before = self._serialized.get(key)
+        if serialized_before is None:
+            if expected_revision is not None:
+                return None
+            current_revision: int | None = None
+            current_state: TicketState | None = None
+        else:
+            current_revision = int(serialized_before.get("state_revision") or 0)
+            if current_revision != expected_revision:
+                return None
+            current_state = TicketState.from_dict(dict(serialized_before))
+
+        if expected_state is not None and (
+            current_state is None or current_state.state != expected_state
+        ):
+            return None
+        if expected_active_session_id is not None and (
+            current_state is None
+            or current_state.active_session_id != expected_active_session_id
+        ):
+            return None
+
+        before = (
+            TicketState.from_dict(dict(serialized_before))
+            if serialized_before is not None
+            else None
+        )
+        mutation_input = (
+            TicketState.from_dict(dict(serialized_before))
+            if serialized_before is not None
+            else None
+        )
+        candidate = mutate(mutation_input)
+        if not isinstance(candidate, TicketState):
+            raise TypeError("ticket state mutation must return TicketState")
+        if candidate.state not in VALID_STATES:
+            raise ValueError(f"invalid state: {candidate.state}")
+
+        next_revision = (current_revision or 0) + 1
+        candidate.state_revision = next_revision
+        serialized_after = candidate.to_dict()
+        next_serialized = dict(self._serialized)
+        next_serialized[key] = serialized_after
+        self._save(next_serialized)
+
+        stored_state = TicketState.from_dict(dict(serialized_after))
+        self._data[key] = stored_state
+        self._serialized = next_serialized
+        return TicketStateCommit(
+            before=before,
+            after=TicketState.from_dict(dict(serialized_after)),
+            previous_revision=current_revision,
+            state_revision=next_revision,
+        )
 
     def delete(self, ticket_id: str | int) -> None:
         key = str(ticket_id)
@@ -186,6 +297,36 @@ class TicketStateTracker:
         self._save(next_serialized)
         self._data.pop(key)
         self._serialized = next_serialized
+
+    def delete_if_revision(
+        self,
+        ticket_id: str | int,
+        *,
+        expected_revision: int,
+        expected_state: str | None = None,
+        expected_active_session_id: str | None = None,
+    ) -> bool:
+        """Delete only the generation still owned by the caller."""
+        key = str(ticket_id)
+        serialized = self._serialized.get(key)
+        if serialized is None:
+            return False
+        current = TicketState.from_dict(dict(serialized))
+        if current.state_revision != expected_revision:
+            return False
+        if expected_state is not None and current.state != expected_state:
+            return False
+        if (
+            expected_active_session_id is not None
+            and current.active_session_id != expected_active_session_id
+        ):
+            return False
+        next_serialized = dict(self._serialized)
+        next_serialized.pop(key)
+        self._save(next_serialized)
+        self._data.pop(key, None)
+        self._serialized = next_serialized
+        return True
 
     def list_by_state(self, state: str) -> list[str]:
         return [k for k, v in self._data.items() if v.state == state]

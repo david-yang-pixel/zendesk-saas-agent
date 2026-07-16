@@ -48,7 +48,9 @@ def test_create_saas_app_wires_queues_and_state(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_completed_reply_session_marks_waiting_ticket_processed(tmp_path):
+async def test_completed_reply_session_marks_owned_processing_ticket_processed(
+    tmp_path,
+):
     from zd_agent.services.saas_app import create_saas_app
     from zd_agent.services.app_context import ticket_state
     from zd_agent.session.agent_session import AgentSession, SessionStatus
@@ -66,15 +68,16 @@ async def test_completed_reply_session_marks_waiting_ticket_processed(tmp_path):
         app = create_saas_app(manager)
 
     state = ticket_state(app)
+    session = AgentSession(ticket_id=2808, trigger_type="webhook-mention")
     state.set("2808", TicketState(
-        state="waiting_for_issue",
+        state="processing",
         first_seen=__import__("datetime").datetime.now(
             __import__("datetime").timezone.utc,
         ),
         last_verdict="insufficient_info",
+        active_session_id=session.session_id,
     ))
     callback = manager.set_on_finished.call_args.args[0]
-    session = AgentSession(ticket_id=2808, trigger_type="webhook-mention")
     session.status = SessionStatus.COMPLETED
     session.reply_sent = True
 

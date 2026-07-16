@@ -118,6 +118,7 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("public_reply.browser_relay_timeout_seconds", "Browser relay 超时秒数", "回复策略", input="number"),
     FieldSpec("prompts.ask_extra_instructions", "Ask 提示词补充规则", "回复策略", input="textarea"),
     FieldSpec("public_reply.browser_relay_url", "Browser relay URL", "工具与集成"),
+    FieldSpec("public_reply.freshness_callback_url", "Freshness callback URL", "工具与集成"),
     FieldSpec("public_reply.browser_relay_api_key", "Browser relay API Key", "工具与集成", secret=True),
     FieldSpec("skills.enabled", "启用 Skills", "工具与集成", input="textarea"),
     FieldSpec("skills.custom", "自定义 Skills", "工具与集成", input="json"),

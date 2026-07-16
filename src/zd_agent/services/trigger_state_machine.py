@@ -11,6 +11,8 @@ from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 logger = get_logger(module="services.trigger_state_machine")
 
+_MAX_CONSECUTIVE_AGENT_FAILURES = 3
+
 
 @dataclass(frozen=True)
 class SilenceExpiryTransition:
@@ -60,6 +62,7 @@ def apply_waiting_for_form(
     latest_cid: str | None,
     latest_ts: datetime,
     now: datetime,
+    delivery_attempt_id: str = "",
 ) -> None:
     """Persist an Answer Bot readiness wait without customer-ask semantics."""
     state.set(ticket_id, TicketState(
@@ -72,6 +75,13 @@ def apply_waiting_for_form(
         ask_count=existing.ask_count if existing else 0,
         last_agent_finish_ts=(
             existing.last_agent_finish_ts if existing else None
+        ),
+        delivery_attempt_id=(
+            delivery_attempt_id
+            or (existing.delivery_attempt_id if existing else "")
+        ),
+        consecutive_agent_failures=(
+            existing.consecutive_agent_failures if existing else 0
         ),
     ))
 
@@ -107,6 +117,10 @@ def apply_escalated_to_human(
         ),
         last_agent_finish_ts=(
             existing.last_agent_finish_ts if existing else None
+        ),
+        delivery_attempt_id=(existing.delivery_attempt_id if existing else ""),
+        consecutive_agent_failures=(
+            existing.consecutive_agent_failures if existing else 0
         ),
     ))
     return EscalationTransition(
@@ -146,6 +160,10 @@ def apply_verdict_processed(
         last_agent_finish_ts=(
             existing.last_agent_finish_ts if existing else None
         ),
+        delivery_attempt_id=(existing.delivery_attempt_id if existing else ""),
+        consecutive_agent_failures=(
+            existing.consecutive_agent_failures if existing else 0
+        ),
     ))
     return VerdictStateTransition(
         ticket_id=int(ticket_id),
@@ -167,6 +185,7 @@ def apply_verdict_enter_silence(
     verdict_str: str,
     ask_count_now: int,
     silence_minutes: int,
+    delivery_attempt_id: str = "",
 ) -> VerdictStateTransition:
     """Persist an in-silence-window state for a substantial verdict."""
     window_end = now + timedelta(minutes=silence_minutes)
@@ -186,6 +205,13 @@ def apply_verdict_enter_silence(
         ),
         last_agent_finish_ts=(
             existing.last_agent_finish_ts if existing else None
+        ),
+        delivery_attempt_id=(
+            delivery_attempt_id
+            or (existing.delivery_attempt_id if existing else "")
+        ),
+        consecutive_agent_failures=(
+            existing.consecutive_agent_failures if existing else 0
         ),
     ))
     return VerdictStateTransition(
@@ -210,6 +236,7 @@ def apply_verdict_waiting_for_issue(
     verdict_str: str,
     ask_count_now: int,
     sent: bool,
+    delivery_attempt_id: str = "",
 ) -> VerdictStateTransition:
     """Persist waiting-for-issue state after the public ask attempt."""
     new_ask_count = ask_count_now + 1 if sent else ask_count_now
@@ -229,6 +256,13 @@ def apply_verdict_waiting_for_issue(
         ),
         last_agent_finish_ts=(
             existing.last_agent_finish_ts if existing else None
+        ),
+        delivery_attempt_id=(
+            delivery_attempt_id
+            or (existing.delivery_attempt_id if existing else "")
+        ),
+        consecutive_agent_failures=(
+            existing.consecutive_agent_failures if existing else 0
         ),
     ))
     return VerdictStateTransition(
@@ -256,26 +290,7 @@ def apply_session_finished(
     if ticket_state is None:
         return False
 
-    if ticket_state.state == "escalated_to_human":
-        logger.info(
-            "session_finished_ignored_human_owner",
-            ticket_id=session.ticket_id,
-            session_id=getattr(session, "session_id", ""),
-            escalated_reason=ticket_state.escalated_reason,
-        )
-        return True
-
-    active_session_id = ticket_state.active_session_id
     session_id = str(getattr(session, "session_id", "") or "")
-    if active_session_id and active_session_id != session_id:
-        logger.warning(
-            "session_finished_ignored_stale_owner",
-            ticket_id=session.ticket_id,
-            active_session_id=active_session_id,
-            stale_session_id=session_id,
-        )
-        return True
-
     if ticket_state.state != "processing":
         logger.info(
             "session_finished_ignored_non_processing_state",
@@ -285,15 +300,65 @@ def apply_session_finished(
         )
         return True
 
+    active_session_id = ticket_state.active_session_id
+    if active_session_id and active_session_id != session_id:
+        logger.warning(
+            "session_finished_ignored_stale_owner",
+            ticket_id=session.ticket_id,
+            active_session_id=active_session_id,
+            stale_session_id=session_id,
+        )
+        return True
+
     finished_at = now or datetime.now(timezone.utc)
+    reply_sent = bool(getattr(session, "reply_sent", False))
+    if reply_sent and not active_session_id:
+        # Old state files may contain an ownerless ``processing`` record.  A
+        # no-reply failure can safely release that zombie for retry, but a
+        # public-delivery callback cannot prove which session generation sent
+        # the message and therefore must not terminalize the ticket.
+        logger.warning(
+            "session_finished_ignored_unowned_delivery",
+            ticket_id=session.ticket_id,
+            session_id=session_id,
+        )
+        return True
+
+    if reply_sent:
+        # A confirmed customer-visible delivery is the terminal business fact.
+        # Cleanup/notification failures may subsequently mark the in-memory
+        # session FAILED or TIMEOUT, but must never schedule a second reply.
+        logger.info(
+            "session_finished_after_public_delivery",
+            ticket_id=session.ticket_id,
+            from_state=ticket_state.state,
+            session_status=session.status.value,
+        )
+        is_handoff = getattr(session, "public_reply_type", "") == "handoff"
+        ticket_state.state = (
+            "escalated_to_human" if is_handoff else "processed"
+        )
+        ticket_state.active_session_id = ""
+        ticket_state.last_agent_finish_ts = finished_at
+        ticket_state.silence_window_end = None
+        ticket_state.consecutive_agent_failures = 0
+        if (
+            bool(getattr(session, "customer_msgs_snapshot_captured", False))
+            and getattr(session, "customer_msgs_snapshot_last_id", "")
+        ):
+            ticket_state.last_customer_comment_id = str(
+                session.customer_msgs_snapshot_last_id,
+            )
+            ticket_state.last_eval_at = finished_at
+        if is_handoff:
+            ticket_state.escalated_at = finished_at
+            ticket_state.escalated_reason = "agent_handoff"
+            ticket_state.last_verdict = "agent_handoff"
+        state.set(session.ticket_id, ticket_state)
+        return True
+
     ticket_state.last_agent_finish_ts = finished_at
 
-    reply_sent = bool(getattr(session, "reply_sent", False))
-    completed_with_reply = (
-        ticket_state.state == "processing"
-        and session.status == SessionStatus.COMPLETED
-        and reply_sent
-    )
     completed_without_reply_from_processing = (
         ticket_state.state == "processing"
         and session.status == SessionStatus.COMPLETED
@@ -308,12 +373,23 @@ def apply_session_finished(
         and session.status == SessionStatus.DEFERRED
     )
     if (
-        completed_with_reply
-        or completed_without_reply_from_processing
+        completed_without_reply_from_processing
         or unsuccessful_from_processing
         or deferred_from_processing
     ):
-        new_state = "processed" if completed_with_reply else "in_silence_window"
+        # Every run that returns ownership without a confirmed public delivery
+        # consumes the same durable budget.  DEFERRED is intentionally bounded:
+        # otherwise repeated stale-context deferrals can wake forever.
+        ticket_state.consecutive_agent_failures += 1
+
+        retry_exhausted = (
+            ticket_state.consecutive_agent_failures
+            >= _MAX_CONSECUTIVE_AGENT_FAILURES
+        )
+        if retry_exhausted:
+            new_state = "escalated_to_human"
+        else:
+            new_state = "in_silence_window"
         logger.info(
             "session_finished_state_reset",
             ticket_id=session.ticket_id,
@@ -321,16 +397,28 @@ def apply_session_finished(
             to_state=new_state,
             session_status=session.status.value,
             reply_sent=reply_sent,
+            consecutive_agent_failures=ticket_state.consecutive_agent_failures,
+            retry_exhausted=retry_exhausted,
         )
         ticket_state.state = new_state
         ticket_state.active_session_id = ""
-        if not completed_with_reply:
+        if retry_exhausted:
+            ticket_state.silence_window_end = None
+            ticket_state.escalated_at = finished_at
+            ticket_state.escalated_reason = "agent_retry_exhausted"
+            ticket_state.last_verdict = "agent_retry_exhausted"
+        else:
             delay_seconds = 60 if deferred_from_processing else 0
             ticket_state.silence_window_end = finished_at + timedelta(
                 seconds=delay_seconds,
             )
             if deferred_from_processing:
                 ticket_state.last_verdict = "agent_deferred"
+            else:
+                # Every failed Agent attempt must wake the Agent again.  Do not
+                # reuse a pre-agent greeting/insufficient verdict, which would
+                # route the recovery into an unrelated customer nudge.
+                ticket_state.last_verdict = "agent_retry"
 
     state.set(session.ticket_id, ticket_state)
     return True
@@ -355,7 +443,7 @@ def apply_silence_window_expired(
         return None
 
     verdict = rec.last_verdict or ""
-    if verdict in {"substantial_issue", "agent_deferred"}:
+    if verdict in {"substantial_issue", "agent_deferred", "agent_retry"}:
         rec.state = "processing"
         queue_source = "silence_waker"
     else:
@@ -402,9 +490,9 @@ def apply_waiting_poller_timeouts(
     greeting_alert_minutes: int,
     now: datetime | None = None,
 ) -> WaitingPollerTransition | None:
-    """Apply waiting-for-issue timeout transitions and one-shot alert markers."""
+    """Apply bounded waiting timeouts and one-shot alert markers."""
     rec = state.get(ticket_id)
-    if rec is None or rec.state != "waiting_for_issue":
+    if rec is None or rec.state not in {"waiting_for_issue", "waiting_for_form"}:
         return None
 
     current_time = now or datetime.now(timezone.utc)
@@ -431,7 +519,8 @@ def apply_waiting_poller_timeouts(
         )
 
     if (
-        rec.last_verdict == "greeting"
+        rec.state == "waiting_for_issue"
+        and rec.last_verdict == "greeting"
         and age_seconds >= greeting_alert_minutes * 60
         and rec.alert_sent_at is None
     ):
