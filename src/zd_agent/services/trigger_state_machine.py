@@ -232,6 +232,26 @@ def apply_session_finished(
     if ticket_state is None:
         return False
 
+    if ticket_state.state == "escalated_to_human":
+        logger.info(
+            "session_finished_ignored_human_owner",
+            ticket_id=session.ticket_id,
+            session_id=getattr(session, "session_id", ""),
+            escalated_reason=ticket_state.escalated_reason,
+        )
+        return True
+
+    active_session_id = ticket_state.active_session_id
+    session_id = str(getattr(session, "session_id", "") or "")
+    if active_session_id and active_session_id != session_id:
+        logger.warning(
+            "session_finished_ignored_stale_owner",
+            ticket_id=session.ticket_id,
+            active_session_id=active_session_id,
+            stale_session_id=session_id,
+        )
+        return True
+
     finished_at = now or datetime.now(timezone.utc)
     ticket_state.last_agent_finish_ts = finished_at
 
@@ -264,6 +284,7 @@ def apply_session_finished(
             reply_sent=reply_sent,
         )
         ticket_state.state = new_state
+        ticket_state.active_session_id = ""
         if not completed_with_reply:
             ticket_state.silence_window_end = finished_at
 

@@ -102,7 +102,7 @@ async def handle_direct_dispatch_source(
         has_hint=bool(hint),
     )
     try:
-        await manager.dispatch(
+        dispatched_session = await manager.dispatch(
             ticket_id,
             dry_run=False,
             trigger_type=f"webhook-{source}",
@@ -123,4 +123,8 @@ async def handle_direct_dispatch_source(
             restored_state=(previous_state.state if previous_state else None),
         )
         raise
+    processing_state.active_session_id = str(
+        getattr(dispatched_session, "session_id", "") or ""
+    )
+    state.set(ticket_id, processing_state)
     return DirectDispatchResult(handled=True, dispatched=True, action="dispatch")

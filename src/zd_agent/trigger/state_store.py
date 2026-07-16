@@ -50,6 +50,9 @@ class TicketState:
     # （防止客户连发两条触发 agent 跑两次同语义任务）。由 SessionManager / runner finally
     # 钩子在 agent_done 后写入。
     last_agent_finish_ts: Optional[datetime] = None
+    # Durable owner for ``processing``. Completion callbacks from any older
+    # session generation must not mutate the current ticket lifecycle.
+    active_session_id: str = ""
 
     # ───── M3 (2026-05-13) auto-public-reply 新增字段 ─────
     # 同工单内 agent 累计自动 ask 客户的次数（每次发 public ask 模板 A/B/C/D 累加）。
