@@ -45,6 +45,7 @@ _PROACTIVE_CONTEXT_SNIP_TOKEN_THRESHOLD = 12_000
 _TOOL_CALL_TIMEOUT_SECONDS = 180.0
 _SLOW_SQL_FAILURE_SECONDS = 25.0
 _MAX_SLOW_SQL_FAILURES = 3
+_MAX_FRESHNESS_REBASES = 2
 _SUBAGENT_BATCH_TOOL_NAME = "run_subagents_parallel"
 _SUBAGENT_CONVERGENCE_REMINDER = (
     "[系统提醒] 并行证据收集已完成。请先基于当前已经拿到的 DB / 源码 / 日志 / "
@@ -278,15 +279,15 @@ def _apply_freshness_recovery(
     result: Any,
     session: AgentSession,
     message_store: MessageStore,
-) -> None:
+) -> bool:
     """Inject newly fetched customer messages before advancing the session cursor."""
     recovery = (getattr(result, "metadata", None) or {}).get(
         "freshness_recovery"
     )
     if not isinstance(recovery, FreshnessRecovery):
-        return
+        return False
     if recovery.action is not FreshnessRecoveryAction.REFRESH_CONTEXT:
-        return
+        return False
     if not recovery.new_messages or not recovery.next_snapshot_last_id:
         logger.warning(
             "freshness_recovery_invalid",
@@ -294,7 +295,17 @@ def _apply_freshness_recovery(
             next_snapshot_count=recovery.next_snapshot_count,
             next_snapshot_last_id=recovery.next_snapshot_last_id,
         )
-        return
+        return False
+    if session.freshness_rebase_count >= _MAX_FRESHNESS_REBASES:
+        session.status = SessionStatus.DEFERRED
+        session.error_message = "freshness_rebase_limit"
+        logger.warning(
+            "freshness_rebase_limit_reached",
+            ticket_id=session.ticket_id,
+            rebase_count=session.freshness_rebase_count,
+            pending_messages_count=len(recovery.new_messages),
+        )
+        return True
 
     rendered_messages = [
         {
@@ -316,13 +327,16 @@ def _apply_freshness_recovery(
     session.customer_msgs_snapshot_count = recovery.next_snapshot_count
     session.customer_msgs_snapshot_last_id = recovery.next_snapshot_last_id
     session.customer_msgs_snapshot_captured = True
+    session.freshness_rebase_count += 1
     logger.info(
         "freshness_context_rebased",
         ticket_id=session.ticket_id,
         new_messages_count=len(recovery.new_messages),
         snapshot_count=recovery.next_snapshot_count,
         snapshot_last_id=recovery.next_snapshot_last_id,
+        rebase_count=session.freshness_rebase_count,
     )
+    return False
 
 
 async def _run_tool_call(
@@ -461,9 +475,12 @@ async def _execute_tool_calls(
         safe_batch = []
 
         try:
-            yield await _run_tool_call(
+            event = await _run_tool_call(
                 tc, registry, session, message_store, current_round,
             )
+            yield event
+            if session.status is SessionStatus.DEFERRED:
+                return
         except Exception as e:
             yield _tool_execution_error_event(
                 tc, session, message_store, current_round, e,
@@ -773,6 +790,16 @@ async def agent_loop(
                 if isinstance(event, ToolExecuted) and event.success:
                     successful_tool_names.append(event.tool_name)
                 yield event
+
+            if session.status is SessionStatus.DEFERRED:
+                yield LoopFinished(
+                    status="deferred",
+                    total_rounds=guardrails.current_round,
+                    total_tokens=guardrails.total_tokens,
+                    elapsed_seconds=guardrails.elapsed_seconds,
+                    reason="freshness_rebase_limit",
+                )
+                return
 
             if session.image_urls and not session.images_injected:
                 if enable_vision_input:

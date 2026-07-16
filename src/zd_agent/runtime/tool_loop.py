@@ -198,6 +198,18 @@ async def run_tool_loop(
                         )
                         finish_reported = True
 
+                case LoopFinished(status="deferred"):
+                    _console.print(
+                        f"\n[bold yellow]⏳ 已延后重排: {event.reason}[/bold yellow]"
+                    )
+                    if run_id is not None:
+                        await reporter.report_run_finish(
+                            run_id, event,
+                            total_input_tokens=session.token_usage.prompt_tokens,
+                            total_output_tokens=session.token_usage.completion_tokens,
+                        )
+                        finish_reported = True
+
                 case LoopFinished(status="error"):
                     _console.print(f"\n[bold red]❌ 异常: {event.reason}[/bold red]")
                     if run_id is not None:

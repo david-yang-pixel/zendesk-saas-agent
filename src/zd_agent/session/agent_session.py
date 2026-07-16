@@ -15,6 +15,7 @@ class SessionStatus(enum.Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     TIMEOUT = "timeout"
+    DEFERRED = "deferred"
 
 
 @dataclass
@@ -106,6 +107,7 @@ class AgentSession:
     customer_msgs_snapshot_count: int = 0
     customer_msgs_snapshot_last_id: str = ""
     customer_msgs_snapshot_captured: bool = False
+    freshness_rebase_count: int = 0
 
     # ───── P2-8 (2026-05-17) 客户画像预拉 ─────
     # runner.py 在 build_system_prompt 之前调用 prefetch_customer_profile()，

@@ -269,10 +269,15 @@ def apply_session_finished(
         ticket_state.state == "processing"
         and session.status in (SessionStatus.FAILED, SessionStatus.TIMEOUT)
     )
+    deferred_from_processing = (
+        ticket_state.state == "processing"
+        and session.status == SessionStatus.DEFERRED
+    )
     if (
         completed_with_reply
         or completed_without_reply_from_processing
         or unsuccessful_from_processing
+        or deferred_from_processing
     ):
         new_state = "processed" if completed_with_reply else "in_silence_window"
         logger.info(
@@ -286,7 +291,10 @@ def apply_session_finished(
         ticket_state.state = new_state
         ticket_state.active_session_id = ""
         if not completed_with_reply:
-            ticket_state.silence_window_end = finished_at
+            delay_seconds = 60 if deferred_from_processing else 0
+            ticket_state.silence_window_end = finished_at + timedelta(
+                seconds=delay_seconds,
+            )
 
     state.set(session.ticket_id, ticket_state)
     return True
