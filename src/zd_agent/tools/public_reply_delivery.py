@@ -199,9 +199,13 @@ async def send_public_reply_safely(
             )
             return False
 
+        freshness_protected = (
+            reply_type in {"ask", "solution"}
+            and snapshot_customer_message_count is not None
+        )
         freshness_check_url = (
             f"http://127.0.0.1:{cfg.webhook.listen_port}/internal/pre-send-freshness"
-            if snapshot_customer_message_count is not None
+            if freshness_protected
             else None
         )
         await relay_sender(
@@ -214,8 +218,12 @@ async def send_public_reply_safely(
             freshness_check_api_key=(
                 cfg.public_reply.browser_relay_api_key if freshness_check_url else None
             ),
-            snapshot_customer_message_count=snapshot_customer_message_count,
-            snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+            snapshot_customer_message_count=(
+                snapshot_customer_message_count if freshness_protected else None
+            ),
+            snapshot_customer_last_message_id=(
+                snapshot_customer_last_message_id if freshness_protected else None
+            ),
         )
         if (
             delivery_attempt is not None
