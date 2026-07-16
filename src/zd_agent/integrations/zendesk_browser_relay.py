@@ -26,6 +26,10 @@ class BrowserRelaySendResult:
     error: str | None = None
 
 
+class BrowserRelayStaleContextError(RuntimeError):
+    """The relay definitely aborted before clicking Send due to a newer message."""
+
+
 def _safe_error_text(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -241,7 +245,9 @@ def _ensure_sent(result: BrowserRelaySendResult) -> BrowserRelaySendResult:
     if result.status == "login_required":
         raise RuntimeError("Zendesk browser relay login_required")
     if result.status == "stale_context":
-        raise RuntimeError("Zendesk browser relay aborted stale_context")
+        raise BrowserRelayStaleContextError(
+            "Zendesk browser relay aborted stale_context"
+        )
     if result.status == "freshness_check_failed":
         raise RuntimeError("Zendesk browser relay freshness_check_failed")
     raise RuntimeError(

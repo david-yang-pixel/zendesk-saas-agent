@@ -33,7 +33,10 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from zd_agent.config import get_config
-from zd_agent.integrations.zendesk_browser_relay import send_browser_relay_reply
+from zd_agent.integrations.zendesk_browser_relay import (
+    BrowserRelayStaleContextError,
+    send_browser_relay_reply,
+)
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.pre_send_check import FreshnessResult, pre_send_check_or_abort
@@ -735,6 +738,48 @@ class ZendeskPublicReply(Tool):
             if not internal_note_sent:
                 output += "；公开回复已送达，但内部分析备注写入失败"
             return ToolResult(output=output)
+        except BrowserRelayStaleContextError as e:
+            try:
+                late_check = await _check_freshness_before_relay(
+                    ticket_id=ticket_id,
+                    snapshot_count=(
+                        session.customer_msgs_snapshot_count
+                        if session.customer_msgs_snapshot_captured else None
+                    ),
+                    snapshot_last_id=(
+                        session.customer_msgs_snapshot_last_id or None
+                    ),
+                )
+            except Exception as refresh_error:  # noqa: BLE001
+                logger.warning(
+                    "public_reply_late_stale_refresh_failed",
+                    ticket_id=ticket_id,
+                    error=str(refresh_error)[:200],
+                )
+                return ToolResult(
+                    success=False,
+                    error=f"{type(e).__name__}: {e}; refresh failed",
+                )
+            logger.info(
+                "public_reply_late_stale_recovered",
+                ticket_id=ticket_id,
+                reason=late_check.reason if late_check else "no_snapshot",
+                new_msg_count=(
+                    late_check.new_messages_count if late_check else 0
+                ),
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Browser relay aborted stale customer context; "
+                    "re-analyze the newly fetched messages."
+                ),
+                metadata={
+                    "freshness_recovery": (
+                        late_check.recovery if late_check else None
+                    )
+                },
+            )
         except Exception as e:  # noqa: BLE001 - tool boundary returns ToolResult.
             logger.error(
                 "public_reply_send_failed",

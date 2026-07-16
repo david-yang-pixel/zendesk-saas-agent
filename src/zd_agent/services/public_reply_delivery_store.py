@@ -132,6 +132,27 @@ class PublicReplyDeliveryStore:
             )
         self.path.chmod(0o600)
 
+    def discard_definitely_unsent(
+        self,
+        delivery_key: str,
+        claim_token: str,
+    ) -> bool:
+        """Remove an undelivered attempt after a definite pre-send abort.
+
+        This must only be used when the transport proves that Send was never
+        clicked. Ambiguous failures keep the first body for exactly-once
+        reconciliation.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM public_reply_deliveries "
+                "WHERE delivery_key = ? AND delivered_at IS NULL "
+                "AND claim_token = ?",
+                (delivery_key, claim_token),
+            )
+        self.path.chmod(0o600)
+        return cursor.rowcount == 1
+
     def mark_delivered(self, delivery_key: str, claim_token: str) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(

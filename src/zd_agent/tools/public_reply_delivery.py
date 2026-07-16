@@ -5,6 +5,9 @@ from datetime import datetime
 from typing import Any
 
 from zd_agent.config import AppConfig
+from zd_agent.integrations.zendesk_browser_relay import (
+    BrowserRelayStaleContextError,
+)
 from zd_agent.log import get_logger
 from zd_agent.services.public_reply_delivery_store import PublicReplyDeliveryStore
 
@@ -208,23 +211,37 @@ async def send_public_reply_safely(
             if freshness_protected
             else None
         )
-        await relay_sender(
-            url=cfg.public_reply.browser_relay_url,
-            api_key=cfg.public_reply.browser_relay_api_key,
-            ticket_id=ticket_id,
-            body=body_with_footer,
-            timeout_seconds=cfg.public_reply.browser_relay_timeout_seconds,
-            freshness_check_url=freshness_check_url,
-            freshness_check_api_key=(
-                cfg.public_reply.browser_relay_api_key if freshness_check_url else None
-            ),
-            snapshot_customer_message_count=(
-                snapshot_customer_message_count if freshness_protected else None
-            ),
-            snapshot_customer_last_message_id=(
-                snapshot_customer_last_message_id if freshness_protected else None
-            ),
-        )
+        try:
+            await relay_sender(
+                url=cfg.public_reply.browser_relay_url,
+                api_key=cfg.public_reply.browser_relay_api_key,
+                ticket_id=ticket_id,
+                body=body_with_footer,
+                timeout_seconds=cfg.public_reply.browser_relay_timeout_seconds,
+                freshness_check_url=freshness_check_url,
+                freshness_check_api_key=(
+                    cfg.public_reply.browser_relay_api_key
+                    if freshness_check_url else None
+                ),
+                snapshot_customer_message_count=(
+                    snapshot_customer_message_count if freshness_protected else None
+                ),
+                snapshot_customer_last_message_id=(
+                    snapshot_customer_last_message_id if freshness_protected else None
+                ),
+            )
+        except BrowserRelayStaleContextError:
+            if (
+                delivery_attempt is not None
+                and delivery_store is not None
+                and delivery_claim_token is not None
+                and delivery_store.discard_definitely_unsent(
+                    delivery_attempt.delivery_key,
+                    delivery_claim_token,
+                )
+            ):
+                delivery_claim_token = None
+            raise
         if (
             delivery_attempt is not None
             and delivery_store is not None
