@@ -146,6 +146,7 @@ async def run_subagent(
     sub_session = AgentSession(
         ticket_id=parent_session.ticket_id,
         sandbox_dir=parent_session.sandbox_dir,
+        dry_run=True,
     )
 
     # 构建子 Agent 可用的工具子集（招法 3）：

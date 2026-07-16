@@ -737,6 +737,21 @@ async def agent_loop(
             if not response.has_tool_calls:
                 if response.content:
                     session.analysis += f"\n{response.content}"
+                if not session.dry_run and not session.reply_sent:
+                    failure_reason = (
+                        "Production agent stopped without delivering a "
+                        "customer-visible reply"
+                    )
+                    session.status = SessionStatus.FAILED
+                    session.error_message = failure_reason
+                    yield LoopFinished(
+                        status="error",
+                        total_rounds=guardrails.current_round,
+                        total_tokens=guardrails.total_tokens,
+                        elapsed_seconds=guardrails.elapsed_seconds,
+                        reason=failure_reason,
+                    )
+                    return
                 session.status = SessionStatus.COMPLETED
                 yield LoopFinished(
                     status="completed",
@@ -949,6 +964,11 @@ async def agent_loop(
                         )
                         raise
 
+            if not session.dry_run and not session.reply_sent:
+                raise RuntimeError(
+                    "Forced summary ended without delivering a "
+                    "customer-visible reply"
+                )
             session.status = SessionStatus.COMPLETED
             yield LoopFinished(
                 status="completed",

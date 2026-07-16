@@ -155,7 +155,7 @@ async def _drain_loop(
     events = [
         event
         async for event in agent_loop(
-            AgentSession(ticket_id=2931),
+            AgentSession(ticket_id=2931, dry_run=True),
             provider,
             store,
             registry or ToolRegistry(),
@@ -304,7 +304,7 @@ async def test_agent_loop_skips_image_injection_when_vision_is_disabled() -> Non
     store.append_user("please inspect the attached screenshot")
     registry = ToolRegistry()
     registry.register(_NoopTool())
-    session = AgentSession(ticket_id=2931)
+    session = AgentSession(ticket_id=2931, dry_run=True)
     session.image_urls = [{"url": "https://example.com/screenshot.png"}]
 
     events = [
