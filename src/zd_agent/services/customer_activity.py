@@ -53,7 +53,13 @@ def handle_customer_activity_gate(
     )
     existing = state.get(ticket_id)
 
-    if is_duplicate_customer_comment(existing, latest_cid):
+    # A startup recovery intentionally replays the last saved customer message.
+    # Treating that message as a duplicate would ACK the only recovery event and
+    # leave the durable ticket state stuck in ``processing`` forever.
+    if (
+        source != "startup_recovery"
+        and is_duplicate_customer_comment(existing, latest_cid)
+    ):
         logger.info(
             "trigger_skip_duplicate_comment",
             ticket_id=ticket_id,

@@ -1,6 +1,7 @@
 """Direct dispatch handling for trigger sources that bypass verdict checks."""
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -86,6 +87,7 @@ async def handle_direct_dispatch_source(
             elapsed_seconds=cooldown.elapsed_seconds,
         )
 
+    previous_state = deepcopy(existing_state)
     processing_state = existing_state or TicketState(
         state="processing",
         first_seen=now,
@@ -99,13 +101,26 @@ async def handle_direct_dispatch_source(
         source=source,
         has_hint=bool(hint),
     )
-    await manager.dispatch(
-        ticket_id,
-        dry_run=False,
-        trigger_type=f"webhook-{source}",
-        hint=hint,
-        delivery_attempt_id=str(
-            msg.get("_queue_key") or f"{source}:{ticket_id}"
-        ),
-    )
+    try:
+        await manager.dispatch(
+            ticket_id,
+            dry_run=False,
+            trigger_type=f"webhook-{source}",
+            hint=hint,
+            delivery_attempt_id=str(
+                msg.get("_queue_key") or f"{source}:{ticket_id}"
+            ),
+        )
+    except Exception:
+        if previous_state is None:
+            state.delete(ticket_id)
+        else:
+            state.set(ticket_id, previous_state)
+        logger.exception(
+            "trigger_dispatch_direct_failed_state_restored",
+            ticket_id=ticket_id,
+            source=source,
+            restored_state=(previous_state.state if previous_state else None),
+        )
+        raise
     return DirectDispatchResult(handled=True, dispatched=True, action="dispatch")
