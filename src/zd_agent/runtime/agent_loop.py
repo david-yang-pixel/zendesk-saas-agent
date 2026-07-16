@@ -22,7 +22,12 @@ except ImportError:
 from openai import RateLimitError as OpenAIRateLimitError
 
 from zd_agent.log import get_logger
-from zd_agent.runtime.compaction import count_tokens, history_snip, multi_level_compact
+from zd_agent.runtime.compaction import (
+    count_tokens,
+    has_responses_history,
+    history_snip,
+    multi_level_compact,
+)
 from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, ToolExecuted
 from zd_agent.runtime.guardrails import GuardrailTriggered, Guardrails
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
@@ -156,8 +161,11 @@ def _strip_images_from_messages(messages: list[dict[str, Any]]) -> int:
 
 def _apply_history_snip(message_store: MessageStore) -> tuple[int, int]:
     """对 message_store 做一次 cheap history_snip，返回前后 token 估算。"""
-    before_tokens = count_tokens(message_store.to_api_messages())
-    message_store.raw = history_snip(message_store.to_api_messages())
+    messages = message_store.to_api_messages()
+    before_tokens = count_tokens(messages)
+    if has_responses_history(messages):
+        return before_tokens, before_tokens
+    message_store.raw = history_snip(messages)
     after_tokens = count_tokens(message_store.to_api_messages())
     return before_tokens, after_tokens
 
@@ -195,7 +203,16 @@ def _groom_context_for_retry(
     首次请求仍保留截图；只有模型超时后才降级到纯文本上下文，避免
     因图片下载/视觉分析拖垮整单。
     """
-    before_tokens = count_tokens(message_store.to_api_messages())
+    messages = message_store.to_api_messages()
+    before_tokens = count_tokens(messages)
+    if has_responses_history(messages):
+        logger.warning(
+            "context_grooming_skipped_responses_history",
+            ticket_id=session.ticket_id,
+            reason=reason,
+            before_tokens=before_tokens,
+        )
+        return
     removed_images = _strip_images_from_messages(message_store.raw)
     message_store.raw = history_snip(message_store.to_api_messages())
     after_tokens = count_tokens(message_store.to_api_messages())
@@ -909,6 +926,8 @@ async def agent_loop(
                 response = await _chat_with_retry()
             except Exception as chat_err:
                 if not _is_image_url_error(chat_err):
+                    raise
+                if has_responses_history(message_store.to_api_messages()):
                     raise
                 removed = _strip_images_from_messages(message_store.raw)
                 logger.warning(

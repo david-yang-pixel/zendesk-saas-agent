@@ -16,6 +16,12 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
 
     assert by_path["llm.base_url"]["editable"] is True
     assert by_path["llm.model"]["input"] == "text"
+    assert by_path["llm.reasoning_effort"]["input"] == "reasoning_effort"
+    assert by_path["llm.reasoning_effort"]["model_path"] == "llm.model"
+    assert by_path["llm.subagent_reasoning_effort"]["input"] == "reasoning_effort"
+    assert by_path["llm.subagent_reasoning_effort"]["model_path"] == "llm.subagent_model"
+    assert by_path["trigger_decider.reasoning_effort"]["input"] == "reasoning_effort"
+    assert by_path["trigger_decider.reasoning_effort"]["model_path"] == "trigger_decider.llm_model"
     assert by_path["llm.enable_vision_input"]["input"] == "boolean"
     assert by_path["llm.timeout"]["input"] == "number"
     assert by_path["openai.api_key"]["secret"] is True
@@ -32,6 +38,7 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["zendesk.mention_aliases"]["group"] == "触发配置"
     assert by_path["skills.custom"]["input"] == "json"
     assert by_path["mcp_services.custom"]["input"] == "json"
+    assert schema["reasoning_capabilities"][0]["model_prefix"] == "gpt-5.6"
 
 
 def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
@@ -229,7 +236,12 @@ def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
         {
             "changes": {
                 "llm.base_url": "https://proxy.example.test/v1/",
-                "llm.model": "gpt-custom",
+                "llm.model": "gpt-5.6-terra",
+                "llm.reasoning_effort": "high",
+                "llm.subagent_model": "gpt-5.4-mini",
+                "llm.subagent_reasoning_effort": "low",
+                "trigger_decider.llm_model": "gpt-5.1",
+                "trigger_decider.reasoning_effort": "medium",
                 "openai.api_key": "sk-test-secret",
                 "db_gateway.api_key": "db-test-secret",
             },
@@ -241,7 +253,12 @@ def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
 
     assert result["ok"] is True
     assert cfg.llm.base_url == "https://proxy.example.test/v1"
-    assert cfg.llm.model == "gpt-custom"
+    assert cfg.llm.model == "gpt-5.6-terra"
+    assert cfg.llm.reasoning_effort == "high"
+    assert cfg.llm.subagent_model == "gpt-5.4-mini"
+    assert cfg.llm.subagent_reasoning_effort == "low"
+    assert cfg.trigger_decider.llm_model == "gpt-5.1"
+    assert cfg.trigger_decider.reasoning_effort == "medium"
     assert cfg.db_gateway.api_key == "db-test-secret"
     assert store.overrides_path.exists()
     assert store.secrets_path.exists()
@@ -250,6 +267,112 @@ def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
     assert "db-test-secret" not in audit_text
     assert "llm.base_url" in store.audit_path.read_text()
     assert store.list_audit_logs()["items"][0]["actor"] == "admin"
+
+
+def test_apply_trims_model_ids_before_persisting(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+
+    store.apply(
+        cfg,
+        {
+            "changes": {
+                "llm.model": "  gpt-5.6-terra  ",
+                "llm.reasoning_effort": "max",
+                "llm.subagent_model": "  gpt-5.4-mini  ",
+                "trigger_decider.llm_model": "  gpt-5.1  ",
+            },
+            "reason": "normalize model ids",
+        },
+        actor="admin",
+        ip="127.0.0.1",
+    )
+
+    assert cfg.llm.model == "gpt-5.6-terra"
+    assert cfg.llm.subagent_model == "gpt-5.4-mini"
+    assert cfg.trigger_decider.llm_model == "gpt-5.1"
+    assert "  gpt-5.6-terra  " not in store.overrides_path.read_text()
+
+
+def test_apply_rejects_reasoning_effort_not_supported_by_new_model(tmp_path) -> None:
+    cfg = AppConfig()
+    cfg.llm.model = "gpt-5.6-terra"
+    cfg.llm.reasoning_effort = "max"
+    store = AdminConfigStore(tmp_path)
+
+    with pytest.raises(ValueError, match="does not support reasoning effort 'max'"):
+        store.apply(
+            cfg,
+            {
+                "changes": {"llm.model": "gpt-5.4-mini"},
+                "reason": "switch model",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert not store.overrides_path.exists()
+    assert cfg.llm.model == "gpt-5.6-terra"
+
+
+def test_apply_rejects_trigger_effort_not_supported_by_new_model(tmp_path) -> None:
+    cfg = AppConfig()
+    cfg.trigger_decider.llm_model = "gpt-5.6-terra"
+    cfg.trigger_decider.reasoning_effort = "max"
+    store = AdminConfigStore(tmp_path)
+
+    with pytest.raises(ValueError, match="does not support reasoning effort 'max'"):
+        store.apply(
+            cfg,
+            {
+                "changes": {"trigger_decider.llm_model": "gpt-5.4-mini"},
+                "reason": "switch trigger model",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert not store.overrides_path.exists()
+    assert cfg.trigger_decider.llm_model == "gpt-5.6-terra"
+
+
+def test_apply_rejects_responses_only_trigger_model(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+
+    with pytest.raises(ValueError, match="Responses-only"):
+        store.apply(
+            cfg,
+            {
+                "changes": {
+                    "trigger_decider.llm_model": "gpt-5.5-pro",
+                    "trigger_decider.reasoning_effort": "high",
+                },
+                "reason": "unsupported trigger endpoint",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert not store.overrides_path.exists()
+
+
+def test_apply_saved_rejects_invalid_reasoning_override_without_partial_mutation(
+    tmp_path,
+) -> None:
+    cfg = AppConfig()
+    cfg.llm.model = "gpt-5.6-terra"
+    cfg.llm.reasoning_effort = "high"
+    store = AdminConfigStore(tmp_path)
+    store.overrides_path.write_text(
+        "llm:\n  model: gpt-5.4-mini\n  reasoning_effort: max\n"
+    )
+
+    with pytest.raises(ValueError, match="does not support reasoning effort 'max'"):
+        store.apply_saved(cfg)
+
+    assert cfg.llm.model == "gpt-5.6-terra"
+    assert cfg.llm.reasoning_effort == "high"
 
 
 def test_restart_required_overrides_wait_for_restart(tmp_path) -> None:

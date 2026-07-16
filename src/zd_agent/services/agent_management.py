@@ -11,6 +11,10 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from zd_agent.config import AppConfig, EnvSettings
+from zd_agent.runtime.openai_reasoning import (
+    supported_reasoning_efforts,
+    validate_reasoning_effort,
+)
 from zd_agent.tools.registry import create_tool_registry
 from zd_agent.tools.service_boundary import (
     get_tool_service_boundary,
@@ -20,6 +24,9 @@ from zd_agent.tools.service_boundary import (
 ModelFetcher = Callable[[str | None, str], Awaitable[list[str]]]
 
 _DEFAULT_OPENAI_COMPATIBLE_MODELS = (
+    "gpt-5.6-terra",
+    "gpt-5.6-sol",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.5-mini",
     "gpt-5.4",
@@ -88,7 +95,7 @@ def build_agent_config_manifest(
             "temperature": cfg.llm.temperature,
             "timeout": cfg.llm.timeout,
             "max_tokens": cfg.llm.max_tokens,
-            "reasoning_effort": None,
+            "reasoning_effort": cfg.llm.reasoning_effort or None,
         },
         "agent": {
             "max_concurrent_sessions": cfg.agent.max_concurrent_sessions,
@@ -100,8 +107,8 @@ def build_agent_config_manifest(
             "base_url": cfg.llm.base_url,
             "effective_base_url": cfg.llm.base_url,
             "api_key_configured": llm_key_configured,
-            "reasoning_effort": None,
-            "effective_reasoning_effort": None,
+            "reasoning_effort": cfg.llm.subagent_reasoning_effort or None,
+            "effective_reasoning_effort": cfg.llm.subagent_reasoning_effort or None,
             "guardrails": _guardrails_manifest(cfg),
         },
         "features": {
@@ -220,9 +227,33 @@ def update_agent_config(
     update = deepcopy(payload)
 
     llm = _as_mapping(update.get("llm"))
+    subagent = _as_mapping(update.get("subagent"))
+    if "model" in llm:
+        llm["model"] = str(llm.get("model") or "").strip()
+    if "model" in subagent:
+        subagent["model"] = str(subagent.get("model") or "").strip()
+    main_model = str(llm.get("model", cfg.llm.model))
+    main_reasoning_effort = validate_reasoning_effort(
+        main_model,
+        str(llm.get("reasoning_effort", cfg.llm.reasoning_effort)),
+    )
+    subagent_model = str(
+        subagent.get("model", cfg.llm.subagent_model) or main_model
+    )
+    subagent_reasoning_effort = validate_reasoning_effort(
+        subagent_model,
+        str(
+            subagent.get(
+                "reasoning_effort",
+                cfg.llm.subagent_reasoning_effort,
+            )
+        ),
+    )
     _set_if_present(cfg.llm, llm, "provider")
     _set_if_present(cfg.llm, llm, "model")
     _set_if_present(cfg.llm, llm, "base_url")
+    if "reasoning_effort" in llm:
+        cfg.llm.reasoning_effort = main_reasoning_effort
     _set_float_if_present(cfg.llm, llm, "temperature")
     _set_positive_int_if_present(cfg.llm, llm, "timeout")
     if "max_tokens" in llm:
@@ -233,9 +264,10 @@ def update_agent_config(
         if max_tokens >= 0:
             cfg.llm.max_tokens = max_tokens
 
-    subagent = _as_mapping(update.get("subagent"))
     if "model" in subagent:
         cfg.llm.subagent_model = str(subagent.get("model") or "")
+    if "reasoning_effort" in subagent:
+        cfg.llm.subagent_reasoning_effort = subagent_reasoning_effort
     if "base_url" in subagent:
         cfg.llm.base_url = subagent.get("base_url") or None
 
@@ -391,7 +423,13 @@ async def list_agent_models(
         "target": target,
         "base_url": effective_base_url,
         "count": len(model_ids),
-        "models": [{"id": model_id} for model_id in model_ids],
+        "models": [
+            {
+                "id": model_id,
+                "reasoning_efforts": list(supported_reasoning_efforts(model_id)),
+            }
+            for model_id in model_ids
+        ],
     }
 
 

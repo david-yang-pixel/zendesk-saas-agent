@@ -13,7 +13,10 @@ from zd_agent.services.ask_notifications import (
 
 def _make_cfg() -> AppConfig:
     cfg = AppConfig()
-    cfg.trigger_decider = TriggerDeciderConfig(llm_model="gpt-test")
+    cfg.trigger_decider = TriggerDeciderConfig(
+        llm_model="gpt-5.6-terra",
+        reasoning_effort="low",
+    )
     return cfg
 
 
@@ -56,7 +59,8 @@ async def test_ask_template_builds_from_form_name_and_sends_public_reply() -> No
         "Name: Alice\nEmail: alice@example.com\nWorkspace ID: ws-1",
         "I get an error when upgrading.",
     ]
-    assert build_kwargs["model"] == "gpt-test"
+    assert build_kwargs["model"] == "gpt-5.6-terra"
+    assert build_kwargs["reasoning_effort"] == "low"
 
     mock_send.assert_awaited_once_with(
         ticket_id=9999,

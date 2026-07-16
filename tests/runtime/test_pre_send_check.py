@@ -15,7 +15,7 @@
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -136,6 +136,34 @@ class TestLLMJudge:
                 "didn't help, still same error", model="x", api_key="k",
             )
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_is_sent_to_llm(self) -> None:
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
+        mock_resp.json = lambda: {
+            "choices": [{"message": {"content":
+                '{"substantive": false, "reason": "pure acknowledgement"}'
+            }}]
+        }
+        client = MagicMock()
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        client.post = AsyncMock(return_value=mock_resp)
+        with patch(
+            "zd_agent.runtime.pre_send_check.httpx.AsyncClient",
+            return_value=client,
+        ) as client_cls:
+            await is_substantive_llm(
+                "still there?",
+                model="gpt-5.6-terra",
+                reasoning_effort="high",
+                api_key="k",
+            )
+
+        assert client.post.await_args.kwargs["json"]["reasoning_effort"] == "high"
+        assert client.post.await_args.kwargs["json"]["max_completion_tokens"] == 8192
+        assert client_cls.call_args.kwargs["timeout"] == 120.0
 
     @pytest.mark.asyncio
     async def test_substantive_false_response(self) -> None:

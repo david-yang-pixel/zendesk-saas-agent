@@ -68,7 +68,17 @@ async def handle_update_agent_config(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "bad_request"}, status=400)
     if not isinstance(payload, dict):
         return web.json_response({"ok": False, "error": "bad_request"}, status=400)
-    manifest = update_agent_config(app_config(request.app), payload, env=EnvSettings())
+    try:
+        manifest = update_agent_config(
+            app_config(request.app),
+            payload,
+            env=EnvSettings(),
+        )
+    except ValueError as exc:
+        return web.json_response(
+            {"ok": False, "error": str(exc)},
+            status=400,
+        )
     return web.json_response(manifest)
 
 

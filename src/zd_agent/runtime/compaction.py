@@ -17,6 +17,14 @@ logger = get_logger(module="compaction")
 KEEP_RECENT_ROUNDS = 6
 
 
+def has_responses_history(messages: list[dict[str, Any]]) -> bool:
+    """Whether messages contain an encrypted/stateless Responses chain."""
+    return any(
+        isinstance(message.get("_zd_responses_output"), list)
+        for message in messages
+    )
+
+
 def count_tokens(messages: list[dict[str, Any]], model: str = "gpt-4o") -> int:
     """估算 messages 的 token 数"""
     try:
@@ -28,6 +36,11 @@ def count_tokens(messages: list[dict[str, Any]], model: str = "gpt-4o") -> int:
     for msg in messages:
         # 每条消息的元数据开销约 4 tokens
         total += 4
+        # Responses API 的加密 reasoning item 不能直接重新 tokenize；API
+        # 已返回精确 reasoning token 数，纳入当前上下文大小估算。
+        reasoning_tokens = msg.get("_zd_responses_reasoning_tokens", 0)
+        if isinstance(reasoning_tokens, int) and reasoning_tokens > 0:
+            total += reasoning_tokens
         if content := msg.get("content"):
             if isinstance(content, str):
                 total += len(encoding.encode(content))
@@ -47,22 +60,30 @@ async def compact_messages(
 
     返回压缩后的新 messages 列表。
     """
-    if len(messages) <= KEEP_RECENT_ROUNDS + 2:
+    responses_history = has_responses_history(messages)
+    if not responses_history and len(messages) <= KEEP_RECENT_ROUNDS + 2:
         return messages
 
     # system prompt 始终保留
     system_msgs = [m for m in messages if m.get("role") == "system"]
     non_system = [m for m in messages if m.get("role") != "system"]
 
-    if len(non_system) <= KEEP_RECENT_ROUNDS:
+    if not responses_history and len(non_system) <= KEEP_RECENT_ROUNDS:
         return messages
 
     # 拆分：早期对话 vs 最近对话
     # 关键约束：不能让 recent 以 tool 消息开头，否则会破坏
     # assistant(tool_calls) -> tool 的消息配对关系，触发 OpenAI 400。
-    split_idx = _find_safe_split_index(non_system, KEEP_RECENT_ROUNDS)
-    early = non_system[:split_idx]
-    recent = non_system[split_idx:]
+    if responses_history:
+        # Encrypted reasoning/function-call items must stay attached to the
+        # exact inputs that produced them. Summarize the whole chain and start
+        # a clean one instead of replaying a partial Responses history.
+        early = non_system
+        recent: list[dict[str, Any]] = []
+    else:
+        split_idx = _find_safe_split_index(non_system, KEEP_RECENT_ROUNDS)
+        early = non_system[:split_idx]
+        recent = non_system[split_idx:]
 
     # 将早期对话交给 LLM 做摘要
     early_text = _messages_to_text(early)
@@ -257,6 +278,14 @@ async def multi_level_compact(
     current_tokens = count_tokens(current)
 
     if current_tokens <= target_tokens:
+        return current
+
+    if has_responses_history(current):
+        current = await compact_messages(current, llm_or_provider)
+        logger.info(
+            "compaction_level2_responses_reset",
+            tokens_after=count_tokens(current),
+        )
         return current
 
     # Level 1：History Snip（不消耗 LLM 调用）

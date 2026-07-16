@@ -1,7 +1,8 @@
 """Test that config loads all new SaaS-related fields."""
 import pytest
+from pydantic import ValidationError
 
-from zd_agent.config import load_config
+from zd_agent.config import LLMConfig, TriggerDeciderConfig, load_config
 
 
 SAAS_CONFIG_YAML = """
@@ -10,6 +11,9 @@ agent:
 llm:
   provider: openai
   model: gpt-5.4
+  reasoning_effort: high
+  subagent_model: gpt-5.4-mini
+  subagent_reasoning_effort: low
   enable_vision_input: true
 resources:
   base_dir: /opt/zd-agent/resources
@@ -24,6 +28,7 @@ zendesk:
     - "@yonggang"
 trigger_decider:
   llm_model: gpt-5.4-mini
+  reasoning_effort: medium
   enable_vision_input: true
   silence_minutes_default: 0
   silence_extend_to_minutes: 1
@@ -138,11 +143,89 @@ def test_config_loads_resources_section(saas_env, saas_config_file):
 def test_config_loads_trigger_decider_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.llm.enable_vision_input is True
+    assert cfg.llm.reasoning_effort == "high"
+    assert cfg.llm.subagent_model == "gpt-5.4-mini"
+    assert cfg.llm.subagent_reasoning_effort == "low"
     assert cfg.trigger_decider.llm_model == "gpt-5.4-mini"
+    assert cfg.trigger_decider.reasoning_effort == "medium"
     assert cfg.trigger_decider.enable_vision_input is True
     assert cfg.trigger_decider.silence_minutes_default == 0
     assert cfg.trigger_decider.silence_extend_to_minutes == 1
     assert cfg.trigger_decider.rapid_burst_window_seconds == 30
+
+
+def test_llm_config_defaults_to_provider_managed_reasoning() -> None:
+    cfg = LLMConfig()
+
+    assert cfg.reasoning_effort == ""
+    assert cfg.subagent_reasoning_effort == ""
+
+
+def test_llm_config_rejects_reasoning_effort_unsupported_by_model() -> None:
+    with pytest.raises(ValidationError, match="does not support reasoning effort 'max'"):
+        LLMConfig(model="gpt-5.4-mini", reasoning_effort="max")
+
+
+def test_llm_config_validates_subagent_effort_against_subagent_model() -> None:
+    with pytest.raises(ValidationError, match="does not support reasoning effort 'max'"):
+        LLMConfig(
+            model="gpt-5.6-terra",
+            reasoning_effort="max",
+            subagent_model="gpt-5.4-mini",
+            subagent_reasoning_effort="max",
+        )
+
+
+def test_trigger_decider_config_validates_effort_against_its_model() -> None:
+    with pytest.raises(ValidationError, match="does not support reasoning effort 'max'"):
+        TriggerDeciderConfig(llm_model="gpt-5.4-mini", reasoning_effort="max")
+
+
+def test_model_ids_are_trimmed_before_reasoning_validation() -> None:
+    llm = LLMConfig(
+        model="  gpt-5.6-terra  ",
+        reasoning_effort="max",
+        subagent_model="  gpt-5.4-mini  ",
+        subagent_reasoning_effort="low",
+    )
+    trigger = TriggerDeciderConfig(
+        llm_model="  gpt-5.1  ",
+        reasoning_effort="high",
+    )
+
+    assert llm.model == "gpt-5.6-terra"
+    assert llm.subagent_model == "gpt-5.4-mini"
+    assert trigger.llm_model == "gpt-5.1"
+
+
+def test_zd_model_env_override_is_trimmed(
+    saas_env,
+    saas_config_file,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ZD_MODEL", "  gpt-5.6-terra  ")
+
+    cfg = load_config(saas_config_file)
+
+    assert cfg.llm.model == "gpt-5.6-terra"
+
+
+def test_zd_model_env_override_revalidates_reasoning_combination(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "llm:\n"
+        "  model: gpt-5.6-terra\n"
+        "  reasoning_effort: max\n"
+        "  subagent_model: ''\n"
+        "  subagent_reasoning_effort: max\n"
+    )
+    monkeypatch.setenv("ZD_MODEL", "gpt-5.4-mini")
+
+    with pytest.raises(ValueError, match="does not support reasoning effort 'max'"):
+        load_config(str(config_path))
 
 
 def test_config_loads_signoz_section(saas_env, saas_config_file):

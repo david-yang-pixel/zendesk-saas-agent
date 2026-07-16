@@ -421,6 +421,7 @@ async def handle_trigger_message(
             customer_msgs=customer_msgs,
             model=cfg.trigger_decider.llm_model,
             api_key=env.openai_api_key,
+            reasoning_effort=cfg.trigger_decider.reasoning_effort,
             base_url=cfg.llm.base_url,
             enable_vision_input=cfg.trigger_decider.enable_vision_input,
         )

@@ -304,6 +304,7 @@ async def _check_public_reply_readiness(
             fetch_messages_fn=_fetch,
             model=cfg.trigger_decider.llm_model,
             api_key=env.openai_api_key,
+            reasoning_effort=cfg.trigger_decider.reasoning_effort,
             base_url=cfg.llm.base_url,
             skip_llm=skip_llm,
         )

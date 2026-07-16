@@ -17,6 +17,9 @@ from zd_agent.services.agent_management import (
 def test_build_agent_config_manifest_redacts_secrets() -> None:
     cfg = AppConfig()
     cfg.llm.model = "gpt-5.5"
+    cfg.llm.reasoning_effort = "high"
+    cfg.llm.subagent_model = "gpt-5.4-mini"
+    cfg.llm.subagent_reasoning_effort = "low"
     cfg.llm.base_url = "https://llm.example.test/v1"
     cfg.zendesk.subdomain = "langgenius"
     cfg.zendesk.email = "agent@example.test"
@@ -30,6 +33,10 @@ def test_build_agent_config_manifest_redacts_secrets() -> None:
     manifest = build_agent_config_manifest(cfg)
 
     assert manifest["llm"]["model"] == "gpt-5.5"
+    assert manifest["llm"]["reasoning_effort"] == "high"
+    assert manifest["subagent"]["model"] == "gpt-5.4-mini"
+    assert manifest["subagent"]["reasoning_effort"] == "low"
+    assert manifest["subagent"]["effective_reasoning_effort"] == "low"
     assert manifest["llm"]["base_url"] == "https://llm.example.test/v1"
     assert manifest["llm"]["api_key_configured"] is False
     assert manifest["zendesk"]["subdomain"] == "langgenius"
@@ -51,8 +58,13 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
         {
             "llm": {
                 "model": "gpt-5.4",
+                "reasoning_effort": "high",
                 "temperature": 0.3,
                 "api_key": "must-not-be-applied",
+            },
+            "subagent": {
+                "model": "gpt-5.4-mini",
+                "reasoning_effort": "low",
             },
             "agent": {
                 "max_concurrent_sessions": 3,
@@ -83,6 +95,9 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     )
 
     assert cfg.llm.model == "gpt-5.4"
+    assert cfg.llm.reasoning_effort == "high"
+    assert cfg.llm.subagent_model == "gpt-5.4-mini"
+    assert cfg.llm.subagent_reasoning_effort == "low"
     assert cfg.llm.temperature == 0.3
     assert cfg.agent.max_concurrent_sessions == 3
     assert cfg.agent.guardrails.max_rounds == 18
@@ -99,6 +114,24 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert cfg.zendesk.api_token == ""
     assert manifest["agent"]["guardrails"]["max_context_tokens"] == 800000
     assert manifest["agent"]["guardrails"]["context_compaction_target_tokens"] == 28000
+
+
+def test_update_agent_config_trims_model_ids() -> None:
+    cfg = AppConfig()
+
+    update_agent_config(
+        cfg,
+        {
+            "llm": {
+                "model": "  gpt-5.6-terra  ",
+                "reasoning_effort": "max",
+            },
+            "subagent": {"model": "  gpt-5.4-mini  "},
+        },
+    )
+
+    assert cfg.llm.model == "gpt-5.6-terra"
+    assert cfg.llm.subagent_model == "gpt-5.4-mini"
 
 
 def test_build_agent_tools_manifest_includes_metadata() -> None:
@@ -142,6 +175,15 @@ async def test_list_agent_models_includes_default_candidates_without_provider_fe
     assert "gpt-5.4-mini" in model_ids
     assert manifest["count"] == len(model_ids)
     assert manifest["count"] > 1
+    by_id = {model["id"]: model for model in manifest["models"]}
+    assert by_id["gpt-5.5"]["reasoning_efforts"] == [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    ]
+    assert by_id["gpt-4.1"]["reasoning_efforts"] == []
 
 
 @pytest.mark.asyncio

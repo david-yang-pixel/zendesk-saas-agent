@@ -29,6 +29,7 @@ async def classify_ticket_messages(
     customer_msgs: list[dict],
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
     base_url: str | None = None,
     enable_vision_input: bool = False,
     collect_recent_image_data_urls_fn: CollectImagesFn | None = None,
@@ -55,15 +56,18 @@ async def classify_ticket_messages(
         if enable_vision_input
         else []
     )
-    verdict = await classify_messages_fn(
-        messages=bodies,
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        image_data_urls=image_data_urls,
-        image_count=image_count,
-        enable_vision_input=enable_vision_input,
-    )
+    classify_kwargs = {
+        "messages": bodies,
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "image_data_urls": image_data_urls,
+        "image_count": image_count,
+        "enable_vision_input": enable_vision_input,
+    }
+    if reasoning_effort:
+        classify_kwargs["reasoning_effort"] = reasoning_effort
+    verdict = await classify_messages_fn(**classify_kwargs)
     logger.info(
         "trigger_verdict",
         ticket_id=ticket_id,

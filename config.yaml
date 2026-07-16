@@ -17,11 +17,16 @@ agent:
 llm:
   provider: openai
   model: gpt-5.5
+  # 空字符串 = 模型默认。GPT-5.6 带工具且为空时会安全使用 none；在管理后台
+  # 选择 low/medium/high/xhigh/max 后，工具轮会自动切到 Responses API。
+  reasoning_effort: ''
   # 招 1（省钱）：subagent 用 mini 模型。subagent 80% 是机械抓数活，mini 够用，
   # 比 full 便宜 10×。空字符串 = subagent 也用 model 字段（向后兼容）。
   # ⚠️ 注意：必须用 LLM proxy 实际存在的模型名。之前试 gpt-5.5-mini 不存在
   # 全 404。gpt-5.4-mini 是 trigger_decider 之前用过的，确认存在。
   subagent_model: gpt-5.4-mini
+  # Subagent 独立设置，不继承主模型；空字符串 = Subagent 模型默认。
+  subagent_reasoning_effort: ''
   temperature: 0.2
   max_tokens: 0
 resources:
@@ -87,6 +92,8 @@ trigger_decider:
   # gpt-5.4-mini → gpt-5.5：verdict 误分类会让 dispatch 走错路径
   # （substantial 误判成 greeting 等），mini 省的钱不抵后续 agent 跑歪的代价
   llm_model: gpt-5.5
+  # 触发判定、自动追问生成和发送前灰区复核共用；空字符串 = 模型默认。
+  reasoning_effort: ''
   silence_minutes_default: 0
   silence_extend_to_minutes: 1
   rapid_burst_window_seconds: 30

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -15,7 +15,12 @@ from zd_agent.runtime.llm.anthropic_provider import (
     _tool_schemas_to_anthropic,
 )
 from zd_agent.runtime.llm.factory import create_llm_provider
-from zd_agent.runtime.llm.openai_provider import _parse_completion, _tool_schemas_to_openai
+from zd_agent.runtime.llm.openai_provider import (
+    OpenAIProvider,
+    _messages_to_responses_input,
+    _parse_completion,
+    _tool_schemas_to_openai,
+)
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
 from zd_agent.runtime.messages import MessageStore
 
@@ -91,6 +96,40 @@ def test_tool_schemas_to_openai_format() -> None:
     ]
 
 
+def test_messages_to_responses_input_converts_multimodal_chat_content() -> None:
+    converted = _messages_to_responses_input(
+        [
+            {"role": "system", "content": "You are support."},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "See screenshot"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc", "detail": "low"},
+                    },
+                ],
+            },
+        ]
+    )
+
+    assert converted == [
+        {"type": "message", "role": "system", "content": "You are support."},
+        {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "See screenshot"},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,abc",
+                    "detail": "low",
+                },
+            ],
+        },
+    ]
+
+
 def test_parse_completion_without_tool_calls_and_with_usage() -> None:
     """_parse_completion：无 tool_calls、有 usage 时解析正确。"""
     message = MagicMock()
@@ -137,6 +176,456 @@ def test_parse_completion_with_tool_calls_and_no_usage() -> None:
     assert result.finish_reason == "stop"
     assert result.prompt_tokens == 0
     assert result.completion_tokens == 0
+
+
+async def test_gpt_56_tool_request_disables_reasoning_for_chat_completions() -> None:
+    """GPT-5.6 的 Chat Completions 工具调用必须显式关闭 reasoning。"""
+    message = MagicMock()
+    message.content = None
+    message.tool_calls = []
+    message.model_dump.return_value = {"role": "assistant", "content": None}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=None,
+    )
+    create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.6-terra")
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    await provider.chat(
+        [{"role": "user", "content": "Check the ticket"}],
+        tools=[
+            ToolSchema(
+                name="get_ticket",
+                description="Fetch a Zendesk ticket",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    assert create.await_args.kwargs["reasoning_effort"] == "none"
+
+
+async def test_gpt_56_reasoning_tool_request_uses_responses_api() -> None:
+    """GPT-5.6 的非 none 工具轮使用 Responses API 保留推理能力。"""
+    reasoning_item = SimpleNamespace(
+        type="reasoning",
+        model_dump=lambda **_kwargs: {
+            "id": "rs_1",
+            "type": "reasoning",
+            "encrypted_content": "encrypted",
+            "summary": [],
+        },
+    )
+    function_call = SimpleNamespace(
+        type="function_call",
+        call_id="call_1",
+        name="get_ticket",
+        arguments='{"ticket_id":3461}',
+        status="completed",
+        model_dump=lambda **_kwargs: {
+            "id": "fc_1",
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "get_ticket",
+            "arguments": '{"ticket_id":3461}',
+            "status": "completed",
+        },
+    )
+    response = SimpleNamespace(
+        status="completed",
+        output=[reasoning_item, function_call],
+        output_text="",
+        usage=SimpleNamespace(
+            input_tokens=120,
+            output_tokens=24,
+            input_tokens_details=SimpleNamespace(cached_tokens=32),
+            output_tokens_details=SimpleNamespace(reasoning_tokens=20),
+        ),
+        incomplete_details=None,
+        error=None,
+    )
+    responses_create = AsyncMock(return_value=response)
+    chat_create = AsyncMock()
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.6-terra",
+        reasoning_effort="low",
+    )
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+
+    result = await provider.chat(
+        [{"role": "user", "content": "Check ticket 3461"}],
+        tools=[
+            ToolSchema(
+                name="get_ticket",
+                description="Fetch a Zendesk ticket",
+                parameters={
+                    "type": "object",
+                    "properties": {"ticket_id": {"type": "integer"}},
+                },
+            )
+        ],
+    )
+
+    chat_create.assert_not_awaited()
+    request = responses_create.await_args.kwargs
+    assert request["reasoning"] == {"effort": "low"}
+    assert request["store"] is False
+    assert request["include"] == ["reasoning.encrypted_content"]
+    assert request["tools"] == [
+        {
+            "type": "function",
+            "name": "get_ticket",
+            "description": "Fetch a Zendesk ticket",
+            "parameters": {
+                "type": "object",
+                "properties": {"ticket_id": {"type": "integer"}},
+            },
+            "strict": False,
+        }
+    ]
+    assert result.finish_reason == "tool_calls"
+    assert result.tool_calls[0].id == "call_1"
+    assert result.prompt_tokens == 120
+    assert result.completion_tokens == 24
+    assert result.raw["_zd_responses_output"][0]["type"] == "reasoning"
+
+
+async def test_namespaced_gpt_56_reasoning_tool_request_uses_responses_api() -> None:
+    response = SimpleNamespace(
+        status="completed",
+        output=[],
+        output_text="Done",
+        usage=None,
+        incomplete_details=None,
+        error=None,
+    )
+    responses_create = AsyncMock(return_value=response)
+    chat_create = AsyncMock()
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="openai/gpt-5.6-terra",
+        reasoning_effort="low",
+    )
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+
+    await provider.chat(
+        [{"role": "user", "content": "Check the ticket"}],
+        tools=[
+            ToolSchema(
+                name="get_ticket",
+                description="Fetch a Zendesk ticket",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    responses_create.assert_awaited_once()
+    chat_create.assert_not_awaited()
+
+
+async def test_pro_model_always_uses_responses_api_and_model_default_effort() -> None:
+    response = SimpleNamespace(
+        status="completed",
+        output=[],
+        output_text="Done",
+        usage=None,
+        incomplete_details=None,
+        error=None,
+    )
+    responses_create = AsyncMock(return_value=response)
+    chat_create = AsyncMock()
+    provider = OpenAIProvider(api_key="sk-test", model="gpt-5.5-pro")
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+
+    result = await provider.chat([{"role": "user", "content": "Analyze this"}])
+
+    assert result.content == "Done"
+    assert "reasoning" not in responses_create.await_args.kwargs
+    chat_create.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex",
+        "gpt-5-codex",
+    ],
+)
+async def test_codex_model_always_uses_responses_api(model: str) -> None:
+    response = SimpleNamespace(
+        status="completed",
+        output=[],
+        output_text="Done",
+        usage=None,
+        incomplete_details=None,
+        error=None,
+    )
+    responses_create = AsyncMock(return_value=response)
+    chat_create = AsyncMock()
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=chat_create)),
+    )
+
+    await provider.chat([{"role": "user", "content": "Analyze this"}])
+
+    responses_create.assert_awaited_once()
+    chat_create.assert_not_awaited()
+
+
+async def test_responses_reasoning_raises_minimum_configured_output_budget() -> None:
+    response = SimpleNamespace(
+        status="completed",
+        output=[],
+        output_text="Done",
+        usage=None,
+        incomplete_details=None,
+        error=None,
+    )
+    create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.6-terra",
+        reasoning_effort="high",
+        max_tokens=8192,
+    )
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock())),
+    )
+
+    await provider.chat(
+        [{"role": "user", "content": "Analyze"}],
+        tools=[ToolSchema(name="lookup", description="Lookup", parameters={})],
+    )
+
+    assert create.await_args.kwargs["max_output_tokens"] == 25000
+
+
+async def test_incomplete_responses_result_raises_instead_of_silent_stop() -> None:
+    response = SimpleNamespace(
+        status="incomplete",
+        output=[],
+        output_text="",
+        usage=None,
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        error=None,
+    )
+    create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.6-terra",
+        reasoning_effort="low",
+    )
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock())),
+    )
+
+    with pytest.raises(RuntimeError, match="incomplete.*max_output_tokens"):
+        await provider.chat(
+            [{"role": "user", "content": "Analyze"}],
+            tools=[ToolSchema(name="lookup", description="Lookup", parameters={})],
+        )
+
+
+async def test_responses_history_replays_reasoning_and_function_output() -> None:
+    """后续工具轮完整回放 reasoning/function_call，并用 call_id 关联结果。"""
+    message = SimpleNamespace(
+        type="message",
+        content=[SimpleNamespace(type="output_text", text="Done")],
+        model_dump=lambda **_kwargs: {
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "Done", "annotations": []}],
+        },
+    )
+    response = SimpleNamespace(
+        status="completed",
+        output=[message],
+        output_text="Done",
+        usage=SimpleNamespace(
+            input_tokens=40,
+            output_tokens=5,
+            input_tokens_details=SimpleNamespace(cached_tokens=0),
+            output_tokens_details=SimpleNamespace(reasoning_tokens=0),
+        ),
+        incomplete_details=None,
+        error=None,
+    )
+    responses_create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.6-terra",
+        reasoning_effort="medium",
+    )
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=responses_create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock())),
+    )
+    prior_output = [
+        {
+            "id": "rs_1",
+            "type": "reasoning",
+            "encrypted_content": "encrypted",
+            "summary": [],
+        },
+        {
+            "id": "fc_1",
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "get_ticket",
+            "arguments": '{"ticket_id":3461}',
+            "status": "completed",
+        },
+    ]
+
+    await provider.chat(
+        [
+            {"role": "system", "content": "You are support."},
+            {"role": "user", "content": "Check ticket 3461"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_ticket",
+                            "arguments": '{"ticket_id":3461}',
+                        },
+                    }
+                ],
+                "_zd_responses_output": prior_output,
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "get_ticket",
+                "content": '{"status":"open"}',
+            },
+        ],
+        tools=[
+            ToolSchema(
+                name="get_ticket",
+                description="Fetch a Zendesk ticket",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    request_input = responses_create.await_args.kwargs["input"]
+    assert request_input[2:4] == prior_output
+    assert request_input[4] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"status":"open"}',
+    }
+
+
+@pytest.mark.parametrize(
+    ("model", "tools"),
+    [
+        ("gpt-5.6-terra", None),
+        (
+            "gpt-5.5",
+            [
+                ToolSchema(
+                    name="get_ticket",
+                    description="Fetch a Zendesk ticket",
+                    parameters={"type": "object", "properties": {}},
+                )
+            ],
+        ),
+    ],
+)
+async def test_reasoning_override_is_limited_to_gpt_56_tool_requests(
+    model: str,
+    tools: list[ToolSchema] | None,
+) -> None:
+    """纯文本 GPT-5.6 与旧模型工具调用保持原有推理参数行为。"""
+    message = MagicMock()
+    message.content = "ok"
+    message.tool_calls = []
+    message.model_dump.return_value = {"role": "assistant", "content": "ok"}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=None,
+    )
+    create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(api_key="sk-test", model=model)
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    await provider.chat(
+        [{"role": "user", "content": "Check the ticket"}],
+        tools=tools,
+    )
+
+    assert "reasoning_effort" not in create.await_args.kwargs
+
+
+async def test_supported_legacy_model_sends_configured_reasoning_effort() -> None:
+    message = MagicMock()
+    message.content = "ok"
+    message.tool_calls = []
+    message.model_dump.return_value = {"role": "assistant", "content": "ok"}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=None,
+    )
+    create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.4-mini",
+        reasoning_effort="xhigh",
+    )
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    await provider.chat(
+        [{"role": "user", "content": "Check the ticket"}],
+        tools=[
+            ToolSchema(
+                name="get_ticket",
+                description="Fetch a Zendesk ticket",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+
+    assert create.await_args.kwargs["reasoning_effort"] == "xhigh"
+
+
+def test_openai_provider_rejects_reasoning_effort_unsupported_by_model() -> None:
+    with pytest.raises(ValueError, match="does not support reasoning effort 'low'"):
+        OpenAIProvider(
+            api_key="sk-test",
+            model="gpt-4.1",
+            reasoning_effort="low",
+        )
 
 
 # --- anthropic_provider.py ---
@@ -242,7 +731,8 @@ def test_create_llm_provider_openai_branch() -> None:
 
     cfg = MagicMock(spec=LLMConfig)
     cfg.provider = "openai"
-    cfg.model = "gpt-4o-mini"
+    cfg.model = "gpt-5.4-mini"
+    cfg.reasoning_effort = "low"
     cfg.base_url = None
     cfg.timeout = 30
     cfg.max_tokens = 8192
@@ -251,6 +741,7 @@ def test_create_llm_provider_openai_branch() -> None:
 
     provider = create_llm_provider(cfg, env)
     assert isinstance(provider, OpenAIProvider)
+    assert provider._reasoning_effort == "low"
 
 
 def test_create_llm_provider_anthropic_branch() -> None:

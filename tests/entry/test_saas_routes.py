@@ -12,6 +12,7 @@ from zd_agent.services.saas_routes import (
     PUBLIC_PRE_SEND_FRESHNESS_PATH,
     handle_agent_config,
     handle_agent_models,
+    handle_update_agent_config,
     handle_pre_send_freshness,
     register_saas_routes,
 )
@@ -355,6 +356,43 @@ async def test_agent_config_rejects_bad_api_key(monkeypatch) -> None:
     response = await handle_agent_config(request)
 
     assert response.status == 401
+
+
+@pytest.mark.asyncio
+async def test_agent_config_update_rejects_invalid_reasoning_combination(
+    monkeypatch,
+) -> None:
+    class _Env:
+        hc_client_api_key = "hc-secret"
+        openai_api_key = ""
+        anthropic_api_key = ""
+
+    monkeypatch.setattr("zd_agent.services.saas_routes.EnvSettings", lambda: _Env())
+
+    app = web.Application()
+    from zd_agent.config import AppConfig
+
+    cfg = AppConfig()
+    install_saas_app_context(
+        app=app,
+        cfg=cfg,
+        manager=MagicMock(),
+        trigger_queue=MagicMock(),
+        state=MagicMock(),
+        webhook_dedup=MagicMock(),
+    )
+    request = _Request(
+        app=app,
+        headers={"Authorization": "Bearer hc-secret"},
+        payload={"llm": {"model": "gpt-4.1", "reasoning_effort": "low"}},
+    )
+
+    response = await handle_update_agent_config(request)
+    payload = json.loads(response.text)
+
+    assert response.status == 400
+    assert "does not support reasoning effort" in payload["error"]
+    assert cfg.llm.model == "gpt-4o"
 
 
 @pytest.mark.asyncio

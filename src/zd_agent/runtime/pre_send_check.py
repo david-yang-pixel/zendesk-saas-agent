@@ -40,6 +40,10 @@ import httpx
 
 from zd_agent.log import get_logger
 from zd_agent.runtime.openai_compat import chat_completions_url
+from zd_agent.runtime.openai_reasoning import (
+    reasoning_completion_token_limit,
+    reasoning_timeout_seconds,
+)
 
 logger = get_logger(module="runtime.pre_send_check")
 
@@ -189,6 +193,7 @@ async def is_substantive_llm(
     *,
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
     base_url: str | None = None,
     timeout: float = 8.0,
 ) -> bool:
@@ -199,19 +204,26 @@ async def is_substantive_llm(
     prompt = _LLM_PROMPT_TEMPLATE.format(body=body[:500])
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        request_json = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_completion_tokens": reasoning_completion_token_limit(
+                60,
+                reasoning_effort,
+            ),
+            "response_format": {"type": "json_object"},
+        }
+        if reasoning_effort:
+            request_json["reasoning_effort"] = reasoning_effort
+        effective_timeout = reasoning_timeout_seconds(timeout, reasoning_effort)
+        async with httpx.AsyncClient(timeout=effective_timeout) as client:
             resp = await client.post(
                 chat_completions_url(base_url),
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_completion_tokens": 60,
-                    "response_format": {"type": "json_object"},
-                },
+                json=request_json,
             )
     except Exception as e:
         logger.warning("pre_send_llm_http_error", error=str(e)[:200])
@@ -257,6 +269,7 @@ async def pre_send_check_or_abort(
     fetch_messages_fn: FetchMessagesFn,
     model: str = "gpt-5.4-mini",
     api_key: str = "",
+    reasoning_effort: str = "",
     base_url: str | None = None,
     skip_llm: bool = False,
 ) -> FreshnessResult:
@@ -386,6 +399,7 @@ async def pre_send_check_or_abort(
                 body,
                 model=model,
                 api_key=api_key,
+                reasoning_effort=reasoning_effort,
                 base_url=base_url,
             )
             if substantive:

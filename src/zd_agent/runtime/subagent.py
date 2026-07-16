@@ -133,12 +133,20 @@ async def run_subagent(
     # subagent 通常做"机械抓数"，mini 模型够用，省 70%+ token 成本。
     # 空字符串 = 用主模型（向后兼容 / 未配置场景）。
     sub_llm_cfg = cfg.llm
+    subagent_reasoning_effort = getattr(cfg.llm, "subagent_reasoning_effort", "")
+    if cfg.llm.subagent_model or subagent_reasoning_effort:
+        # 浅拷贝 + 覆盖 Subagent 独立模型参数，不动主 cfg 实例。
+        sub_llm_cfg = cfg.llm.model_copy(
+            update={
+                "model": cfg.llm.subagent_model or cfg.llm.model,
+                "reasoning_effort": subagent_reasoning_effort,
+            }
+        )
     if cfg.llm.subagent_model:
-        # 浅拷贝 + 覆盖 model 字段，不动主 cfg 实例
-        sub_llm_cfg = cfg.llm.model_copy(update={"model": cfg.llm.subagent_model})
         logger.info(
             "subagent_using_cheap_model",
             model=cfg.llm.subagent_model,
+            reasoning_effort=subagent_reasoning_effort or "model_default",
             ticket_id=parent_session.ticket_id,
         )
     provider = create_llm_provider(sub_llm_cfg, env)

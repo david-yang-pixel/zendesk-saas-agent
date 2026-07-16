@@ -158,9 +158,12 @@ const FIELD_SECTIONS = {
         "llm.provider",
         "llm.base_url",
         "llm.model",
+        "llm.reasoning_effort",
         "llm.subagent_model",
+        "llm.subagent_reasoning_effort",
         "llm.enable_vision_input",
         "trigger_decider.llm_model",
+        "trigger_decider.reasoning_effort",
         "trigger_decider.enable_vision_input"
       ]
     },
@@ -2120,6 +2123,7 @@ function renderFieldRow(field) {
 
 function fieldHelpText(field) {
   if (field.secret) return "可替换密钥";
+  if (field.input === "reasoning_effort") return "按所选模型限制档位；新会话立即生效";
   if (field.restart_required) return "需重启生效";
   if (field.protected) return "受保护";
   return "立即生效";
@@ -2174,6 +2178,9 @@ function renderInput(field) {
       </select>
     `;
   }
+  if (field.input === "reasoning_effort") {
+    return renderReasoningEffortInput(field);
+  }
   if (field.input === "textarea") {
     return `<textarea id="${id}" data-path="${field.path}" class="prompt-textarea" rows="7">${escapeHtml(displayValue)}</textarea>`;
   }
@@ -2181,7 +2188,110 @@ function renderInput(field) {
     return `<textarea id="${id}" data-path="${field.path}" class="json-textarea" rows="10">${escapeHtml(formatJsonFieldValue(value))}</textarea>`;
   }
   const inputType = field.input === "number" ? "number" : "text";
-  return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(displayValue)}">`;
+  const reasoningRefresh = [
+    "llm.model",
+    "llm.subagent_model",
+    "trigger_decider.llm_model"
+  ].includes(field.path)
+    ? ' oninput="refreshReasoningEffortOptions()"'
+    : "";
+  return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(displayValue)}"${reasoningRefresh}>`;
+}
+
+function normalizedModelId(model) {
+  return String(model || "").trim().toLowerCase().split("/").pop();
+}
+
+function reasoningEffortsForModel(model) {
+  const rule = reasoningCapabilityForModel(model);
+  return rule && Array.isArray(rule.efforts) ? rule.efforts : [];
+}
+
+function reasoningCapabilityForModel(model) {
+  const normalized = normalizedModelId(model);
+  for (const rule of state.schema?.reasoning_capabilities || []) {
+    try {
+      if (new RegExp(rule.model_pattern, "i").test(normalized)) {
+        return rule;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function reasoningUnsupportedReason(modelPath, model) {
+  const rule = reasoningCapabilityForModel(model);
+  if (modelPath === "trigger_decider.llm_model" && rule?.responses_only) {
+    return "触发判定暂不支持仅限 Responses API 的模型";
+  }
+  return "";
+}
+
+function reasoningModelValue(modelPath) {
+  const input = document.getElementById(`field-${modelPath}`);
+  let model = input ? input.value : state.values[modelPath];
+  if (modelPath === "llm.subagent_model" && !String(model || "").trim()) {
+    const mainInput = document.getElementById("field-llm.model");
+    model = mainInput ? mainInput.value : state.values["llm.model"];
+  }
+  return model || "";
+}
+
+function reasoningDefaultLabel(model) {
+  return normalizedModelId(model).startsWith("gpt-5.6")
+    ? "自动（Chat 工具轮使用 none）"
+    : "模型默认";
+}
+
+function reasoningOptionsHtml(model, selected, modelPath = "llm.model") {
+  const unsupported = reasoningUnsupportedReason(modelPath, model);
+  if (unsupported) {
+    return `<option value="" selected>${escapeHtml(unsupported)}</option>`;
+  }
+  const efforts = reasoningEffortsForModel(model);
+  const normalizedSelected = efforts.includes(selected) ? selected : "";
+  const options = [
+    `<option value="" ${normalizedSelected === "" ? "selected" : ""}>${escapeHtml(reasoningDefaultLabel(model))}</option>`,
+    ...efforts.map(effort => (
+      `<option value="${escapeHtml(effort)}" ${normalizedSelected === effort ? "selected" : ""}>${escapeHtml(effort)}</option>`
+    ))
+  ];
+  return options.join("");
+}
+
+function renderReasoningEffortInput(field) {
+  const modelPath = field.model_path || "llm.model";
+  const model = reasoningModelValue(modelPath);
+  const selected = String(state.values[field.path] || "").trim().toLowerCase();
+  const disabled = (
+    reasoningEffortsForModel(model).length === 0
+    || Boolean(reasoningUnsupportedReason(modelPath, model))
+  ) ? " disabled" : "";
+  return `
+    <select
+      id="field-${field.path}"
+      data-path="${field.path}"
+      data-reasoning-model-path="${modelPath}"
+      ${disabled}
+    >
+      ${reasoningOptionsHtml(model, selected, modelPath)}
+    </select>
+  `;
+}
+
+function refreshReasoningEffortOptions() {
+  document.querySelectorAll("select[data-reasoning-model-path]").forEach(select => {
+    const modelPath = select.getAttribute("data-reasoning-model-path") || "llm.model";
+    const model = reasoningModelValue(modelPath);
+    const selected = select.value;
+    select.innerHTML = reasoningOptionsHtml(model, selected, modelPath);
+    select.disabled = (
+      reasoningEffortsForModel(model).length === 0
+      || Boolean(reasoningUnsupportedReason(modelPath, model))
+    );
+  });
 }
 
 function fieldValue(path) {

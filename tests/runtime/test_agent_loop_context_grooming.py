@@ -197,6 +197,48 @@ async def test_agent_loop_proactively_snips_large_tool_outputs(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_does_not_snip_active_responses_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        agent_loop_module,
+        "_PROACTIVE_CONTEXT_SNIP_TOKEN_THRESHOLD",
+        1,
+        raising=False,
+    )
+    provider = _RecordingProvider()
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user("hello")
+    store.raw.append({
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "tool-1",
+            "type": "function",
+            "function": {"name": "knowledge_search", "arguments": "{}"},
+        }],
+        "_zd_responses_output": [{
+            "type": "reasoning",
+            "encrypted_content": "encrypted",
+        }],
+    })
+    store.raw.append({
+        "role": "tool",
+        "tool_call_id": "tool-1",
+        "name": "knowledge_search",
+        "content": "x" * 1000,
+    })
+
+    await _drain_loop(store, provider)
+
+    first_call_tool = next(
+        msg for msg in provider.calls[0] if msg.get("name") == "knowledge_search"
+    )
+    assert first_call_tool["content"] == "x" * 1000
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_grooms_context_before_timeout_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _no_sleep(delay: float) -> None:
         return None
@@ -242,6 +284,54 @@ async def test_agent_loop_grooms_context_before_timeout_retry(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
+async def test_timeout_retry_does_not_mutate_active_responses_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _no_sleep(delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(agent_loop_module.asyncio, "sleep", _no_sleep)
+    provider = _RecordingProvider(fail_first=True)
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user([
+        {"type": "text", "text": "inspect"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc", "detail": "low"},
+        },
+    ])
+    store.raw.append({
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [{
+            "id": "tool-1",
+            "type": "function",
+            "function": {"name": "knowledge_search", "arguments": "{}"},
+        }],
+        "_zd_responses_output": [{
+            "type": "reasoning",
+            "encrypted_content": "encrypted",
+        }],
+    })
+    store.raw.append({
+        "role": "tool",
+        "tool_call_id": "tool-1",
+        "name": "knowledge_search",
+        "content": "y" * 1000,
+    })
+
+    await _drain_loop(store, provider)
+
+    retry_messages = provider.calls[1]
+    assert "image_url" in str(retry_messages)
+    retry_tool = next(
+        msg for msg in retry_messages if msg.get("name") == "knowledge_search"
+    )
+    assert retry_tool["content"] == "y" * 1000
+
+
+@pytest.mark.asyncio
 async def test_agent_loop_retries_without_images_when_model_rejects_image_input(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -284,6 +374,44 @@ async def test_agent_loop_retries_without_images_when_model_rejects_image_input(
         fields for event, fields in warnings if event == "image_url_fallback"
     )
     assert "SECRET-CUSTOMER-CONTENT" not in str(fallback_warning)
+
+
+@pytest.mark.asyncio
+async def test_image_error_does_not_mutate_or_replay_active_responses_history() -> None:
+    provider = _UnsupportedImageProvider()
+    store = MessageStore(provider)
+    store.append_system("system")
+    store.append_user([
+        {"type": "text", "text": "inspect"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc", "detail": "low"},
+        },
+    ])
+    store.raw.append({
+        "role": "assistant",
+        "content": "prior",
+        "_zd_responses_output": [{
+            "type": "reasoning",
+            "encrypted_content": "encrypted",
+        }],
+    })
+
+    events = [
+        event
+        async for event in agent_loop(
+            AgentSession(ticket_id=2931, dry_run=True),
+            provider,
+            store,
+            ToolRegistry(),
+            _guardrails(),
+            [],
+        )
+    ]
+
+    assert len(provider.calls) == 1
+    assert events[-1].status == "error"
+    assert "image_url" in str(store.raw)
 
 
 @pytest.mark.asyncio

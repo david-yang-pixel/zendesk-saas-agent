@@ -8,6 +8,11 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from zd_agent.runtime.openai_reasoning import (
+    validate_reasoning_effort,
+    validate_trigger_model,
+)
+
 
 class GuardrailsConfig(BaseModel):
     max_rounds: int = 30
@@ -26,16 +31,36 @@ class AgentConfig(BaseModel):
 class LLMConfig(BaseModel):
     provider: str = "openai"
     model: str = "gpt-4o"
+    # 空字符串 = 由模型使用默认档位。后台会按具体模型限制可选值。
+    reasoning_effort: str = ""
     enable_vision_input: bool = False
     # subagent_model：subagent 用的模型（默认空 = 用主 model 字段，向后兼容）。
     # 设成 mini 类模型可大幅省 token 成本：subagent 干"go fetch this"机械活，
     # mini 完全够用；主 agent 决策、整合、写 reply 才需要强推理模型。
     # 例：model=gpt-5.5 + subagent_model=gpt-5.5-mini → 单 ticket 成本 -70%。
     subagent_model: str = ""
+    # 独立配置 Subagent；空字符串 = 由 Subagent 模型使用默认档位。
+    subagent_reasoning_effort: str = ""
     temperature: float = 0.2
     base_url: str | None = None  # 自定义 OpenAI API 地址（代理 / Azure）
     timeout: int = 120  # API 请求超时（秒）
     max_tokens: int = 8192  # Anthropic 必传，OpenAI 可选（0 表示不设）
+
+    @field_validator("model", "subagent_model", mode="before")
+    @classmethod
+    def _trim_model_id(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _validate_main_reasoning_effort(cls, value: str, info) -> str:
+        return validate_reasoning_effort(str(info.data.get("model") or ""), value)
+
+    @field_validator("subagent_reasoning_effort")
+    @classmethod
+    def _validate_subagent_reasoning_effort(cls, value: str, info) -> str:
+        model = str(info.data.get("subagent_model") or info.data.get("model") or "")
+        return validate_reasoning_effort(model, value)
 
 
 class RetryPolicyOverrideConfig(BaseModel):
@@ -167,6 +192,8 @@ class McpServicesConfig(BaseModel):
 
 class TriggerDeciderConfig(BaseModel):
     llm_model: str = "gpt-5.4-mini"
+    # 独立配置触发判定及其辅助生成调用；空字符串 = 模型默认档位。
+    reasoning_effort: str = ""
     enable_vision_input: bool = False
     silence_minutes_default: int = 0
     silence_extend_to_minutes: int = 1
@@ -184,6 +211,16 @@ class TriggerDeciderConfig(BaseModel):
     # 提到 180s 后 ticket 2320 类"3 条相邻 mention 各跑一次"场景命中率明显下降。
     # 真正的"新问题"通常会等 SE 回复后再发，3 min 等待对客户体验无感。
     post_agent_cooldown_seconds: int = 180
+
+    @field_validator("llm_model", mode="before")
+    @classmethod
+    def _trim_model_id(cls, value: object) -> str:
+        return validate_trigger_model(str(value or "").strip())
+
+    @field_validator("reasoning_effort")
+    @classmethod
+    def _validate_reasoning_effort(cls, value: str, info) -> str:
+        return validate_reasoning_effort(str(info.data.get("llm_model") or ""), value)
 
 
 class SilenceWakerConfig(BaseModel):
@@ -514,7 +551,17 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     if env.zd_llm_provider is not None:
         cfg.llm.provider = env.zd_llm_provider
     if env.zd_model is not None:
-        cfg.llm.model = env.zd_model
+        model_override = env.zd_model.strip()
+        if model_override:
+            validate_reasoning_effort(
+                model_override,
+                cfg.llm.reasoning_effort,
+            )
+            validate_reasoning_effort(
+                cfg.llm.subagent_model or model_override,
+                cfg.llm.subagent_reasoning_effort,
+            )
+            cfg.llm.model = model_override
     if env.openai_base_url is not None:
         cfg.llm.base_url = env.openai_base_url
     # DB Gateway

@@ -7,6 +7,10 @@ import httpx
 
 from zd_agent.log import get_logger
 from zd_agent.runtime.openai_compat import chat_completions_url
+from zd_agent.runtime.openai_reasoning import (
+    reasoning_completion_token_limit,
+    reasoning_timeout_seconds,
+)
 
 logger = get_logger(module="prompts.public_reply.ask_body")
 
@@ -160,6 +164,7 @@ async def generate_ask_body_with_llm(
     customer_messages: list[str],
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
     base_url: str | None = None,
     timeout: float = 10.0,
 ) -> str | None:
@@ -177,19 +182,26 @@ async def generate_ask_body_with_llm(
         prompt = f"{prompt}\n\nAdmin-managed additional rules:\n{override}"
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        request_json = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_completion_tokens": reasoning_completion_token_limit(
+                240,
+                reasoning_effort,
+            ),
+            "response_format": {"type": "json_object"},
+        }
+        if reasoning_effort:
+            request_json["reasoning_effort"] = reasoning_effort
+        effective_timeout = reasoning_timeout_seconds(timeout, reasoning_effort)
+        async with httpx.AsyncClient(timeout=effective_timeout) as client:
             resp = await client.post(
                 chat_completions_url(base_url),
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_completion_tokens": 240,
-                    "response_format": {"type": "json_object"},
-                },
+                json=request_json,
             )
     except httpx.HTTPError as e:
         logger.warning("ask_body_llm_http_error", error=str(e)[:200])

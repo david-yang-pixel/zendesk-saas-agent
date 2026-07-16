@@ -46,6 +46,10 @@ import httpx
 
 from zd_agent.log import get_logger
 from zd_agent.runtime.openai_compat import chat_completions_url
+from zd_agent.runtime.openai_reasoning import (
+    reasoning_completion_token_limit,
+    reasoning_timeout_seconds,
+)
 
 logger = get_logger(module="trigger.decider")
 
@@ -431,6 +435,7 @@ async def _call_llm(
     user_content,
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
     base_url: str | None = None,
     timeout: float = 60.0,
 ) -> str:
@@ -439,25 +444,36 @@ async def _call_llm(
     ``user_content`` may be either a plain string (text-only) or a list of
     multimodal parts (text + image_url) per OpenAI vision spec.
     """
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    request_json = {
+        "model": model,
+        "messages": [{"role": "user", "content": user_content}],
+        # gpt-5.4 系列不支持 temperature / max_tokens，用 max_completion_tokens
+        "max_completion_tokens": reasoning_completion_token_limit(
+            400,
+            reasoning_effort,
+        ),
+        "response_format": {"type": "json_object"},
+    }
+    if reasoning_effort:
+        request_json["reasoning_effort"] = reasoning_effort
+
+    effective_timeout = reasoning_timeout_seconds(timeout, reasoning_effort)
+    async with httpx.AsyncClient(timeout=effective_timeout) as client:
         resp = await client.post(
             chat_completions_url(base_url),
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": user_content}],
-                # gpt-5.4 系列不支持 temperature / max_tokens，用 max_completion_tokens
-                "max_completion_tokens": 400,
-                "response_format": {"type": "json_object"},
-            },
+            json=request_json,
         )
     if resp.status_code != 200:
         raise RuntimeError(f"LLM call failed with status {resp.status_code}")
     data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    content = data["choices"][0]["message"]["content"]
+    if not isinstance(content, str) or not content.strip():
+        raise RuntimeError("LLM returned empty content")
+    return content
 
 
 async def classify_messages(
@@ -465,6 +481,7 @@ async def classify_messages(
     messages: list[str],
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
     base_url: str | None = None,
     image_data_urls: list[str] | None = None,
     image_count: int | None = None,
@@ -554,11 +571,16 @@ async def classify_messages(
         user_content = prompt_text
 
     try:
+        call_kwargs = {
+            "user_content": user_content,
+            "model": model,
+            "api_key": api_key,
+            "base_url": base_url,
+        }
+        if reasoning_effort:
+            call_kwargs["reasoning_effort"] = reasoning_effort
         raw = await _call_llm(
-            user_content=user_content,
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
+            **call_kwargs,
         )
     except Exception as e:
         error_type = type(e).__name__
@@ -576,14 +598,15 @@ async def classify_messages(
             reason=f"LLM error: {error_type}",
         )
 
+    raw_text = raw if isinstance(raw, str) else ""
     try:
-        parsed = json.loads(_json_candidate(raw))
+        parsed = json.loads(_json_candidate(raw_text))
     except Exception:
-        logger.warning("pre_check_invalid_json", raw=raw[:200])
+        logger.warning("pre_check_invalid_json", raw=raw_text[:200])
         fallback = _actionable_fallback_from_messages(
             recent,
             "invalid JSON from LLM",
-            error=raw,
+            error=raw_text,
         )
         if fallback:
             return fallback

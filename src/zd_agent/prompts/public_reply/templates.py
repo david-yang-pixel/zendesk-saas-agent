@@ -30,6 +30,11 @@ from zd_agent.prompts.public_reply.ask_body_generation import (
     MISSING_INFO_FALLBACK_BULLETS,
     generate_ask_body_with_llm as _generate_ask_body_with_llm,
 )
+from zd_agent.runtime.openai_compat import chat_completions_url
+from zd_agent.runtime.openai_reasoning import (
+    reasoning_completion_token_limit,
+    reasoning_timeout_seconds,
+)
 
 logger = get_logger(module="prompts.public_reply")
 
@@ -258,6 +263,8 @@ async def _generate_missing_info_bullets(
     customer_messages: list[str],
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
+    base_url: str | None = None,
     timeout: float = 10.0,
 ) -> list[str]:
     """Cheap LLM 生成 2-3 个 bullet 点，问客户缺啥具体信息。
@@ -273,19 +280,26 @@ async def _generate_missing_info_bullets(
     prompt = _MISSING_INFO_PROMPT.format(messages=joined)
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        request_json = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_completion_tokens": reasoning_completion_token_limit(
+                200,
+                reasoning_effort,
+            ),
+            "response_format": {"type": "json_object"},
+        }
+        if reasoning_effort:
+            request_json["reasoning_effort"] = reasoning_effort
+        effective_timeout = reasoning_timeout_seconds(timeout, reasoning_effort)
+        async with httpx.AsyncClient(timeout=effective_timeout) as client:
             resp = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                chat_completions_url(base_url),
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_completion_tokens": 200,
-                    "response_format": {"type": "json_object"},
-                },
+                json=request_json,
             )
     except Exception as e:
         logger.warning("template_c_llm_http_error", error=str(e)[:200])
@@ -341,6 +355,8 @@ async def insufficient_info_template(
     customer_messages: list[str],
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
+    base_url: str | None = None,
 ) -> str:
     """C. Customer described problem but too vaguely. Dynamic LLM fill.
 
@@ -348,7 +364,11 @@ async def insufficient_info_template(
     （第 2 次及以后用 ``retry_template``）。
     """
     bullets = await _generate_missing_info_bullets(
-        customer_messages=customer_messages, model=model, api_key=api_key,
+        customer_messages=customer_messages,
+        model=model,
+        api_key=api_key,
+        reasoning_effort=reasoning_effort,
+        base_url=base_url,
     )
     name_part = f"{customer_name}, " if customer_name else ""
     bullet_text = "\n".join(bullets)
@@ -370,6 +390,7 @@ async def build_ask_body(
     customer_messages: list[str],
     model: str,
     api_key: str,
+    reasoning_effort: str = "",
     base_url: str | None = None,
 ) -> tuple[str, str]:
     """给 trigger_consumer 用：按 verdict + ask_count 选模板生成 body。
@@ -392,6 +413,7 @@ async def build_ask_body(
             customer_messages=customer_messages,
             model=model,
             api_key=api_key,
+            reasoning_effort=reasoning_effort,
             base_url=base_url,
         )
         if body is not None:

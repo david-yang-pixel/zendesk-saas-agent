@@ -20,6 +20,7 @@ def create_llm_provider(cfg: LLMConfig, env: EnvSettings) -> LLMProvider:
             base_url=cfg.base_url,
             timeout=cfg.timeout,
             max_tokens=cfg.max_tokens,
+            reasoning_effort=cfg.reasoning_effort,
         )
     elif cfg.provider == "anthropic":
         from zd_agent.runtime.llm.anthropic_provider import AnthropicProvider

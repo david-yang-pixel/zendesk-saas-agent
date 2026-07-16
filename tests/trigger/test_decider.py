@@ -5,6 +5,7 @@ import pytest
 
 from zd_agent.trigger.decider import (
     PreCheckVerdict,
+    _call_llm,
     classify_messages,
 )
 
@@ -22,6 +23,54 @@ async def test_classify_greeting():
     assert v.verdict == "greeting"
     assert v.completeness == 10
     assert v.reason == "only hi"
+
+
+@pytest.mark.asyncio
+async def test_classify_passes_reasoning_effort_to_llm_call():
+    llm_resp = '{"verdict": "greeting", "completeness": 10, "reason": "only hi"}'
+    call_llm = AsyncMock(return_value=llm_resp)
+    with patch("zd_agent.trigger.decider._call_llm", call_llm):
+        await classify_messages(
+            messages=["hi"],
+            model="gpt-5.6-terra",
+            reasoning_effort="max",
+            api_key="x",
+        )
+
+    assert call_llm.await_args.kwargs["reasoning_effort"] == "max"
+
+
+@pytest.mark.asyncio
+async def test_call_llm_sends_configured_reasoning_effort():
+    response = AsyncMock()
+    response.status_code = 200
+    response.json = lambda: {
+        "choices": [{"message": {"content": '{"verdict":"greeting"}'}}],
+    }
+    post = AsyncMock(return_value=response)
+    with patch("httpx.AsyncClient.post", post):
+        await _call_llm(
+            user_content="hello",
+            model="gpt-5.6-terra",
+            api_key="x",
+            reasoning_effort="xhigh",
+        )
+
+    assert post.await_args.kwargs["json"]["reasoning_effort"] == "xhigh"
+    assert post.await_args.kwargs["json"]["max_completion_tokens"] == 16384
+
+
+@pytest.mark.asyncio
+async def test_classify_empty_llm_content_falls_back_without_crashing():
+    with patch("zd_agent.trigger.decider._call_llm", AsyncMock(return_value=None)):
+        verdict = await classify_messages(
+            messages=["Can you help?"],
+            model="gpt-5.6-terra",
+            api_key="x",
+        )
+
+    assert verdict.verdict == "insufficient_info"
+    assert verdict.reason == "invalid JSON from LLM"
 
 
 @pytest.mark.asyncio

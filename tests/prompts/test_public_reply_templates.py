@@ -194,6 +194,26 @@ class TestMissingInfoBullets:
         assert bullets[0] == "- The specific app id"
 
     @pytest.mark.asyncio
+    async def test_reasoning_effort_scales_legacy_completion_budget(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content":
+                '{"bullets": ["- Error text", "- Reproduction steps"]}'
+            }}],
+        })
+        post = AsyncMock(return_value=mock_resp)
+        with patch("httpx.AsyncClient.post", post):
+            await _generate_missing_info_bullets(
+                customer_messages=["my app is broken"],
+                model="gpt-5.6-terra",
+                api_key="k",
+                reasoning_effort="xhigh",
+            )
+
+        assert post.await_args.kwargs["json"]["max_completion_tokens"] == 16384
+
+    @pytest.mark.asyncio
     async def test_llm_returns_excess_bullets_truncated(self) -> None:
         """LLM 给 5 个 → 截到 3"""
         mock_resp = MagicMock()
@@ -538,6 +558,29 @@ class TestAskBodyGeneration:
         request_json = async_post.await_args.kwargs["json"]
         prompt = request_json["messages"][0]["content"]
         assert "Ask one concise category question first." in prompt
+
+    @pytest.mark.asyncio
+    async def test_reasoning_effort_is_sent_to_ask_llm(self) -> None:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json = MagicMock(return_value={
+            "choices": [{"message": {"content": '{"body": "What happened?"}'}}],
+        })
+        post = AsyncMock(return_value=mock_resp)
+
+        with patch("httpx.AsyncClient.post", post):
+            await _generate_ask_body_with_llm(
+                verdict_kind="greeting",
+                ask_count=0,
+                customer_name="Alice",
+                customer_messages=["hi"],
+                model="gpt-5.6-terra",
+                reasoning_effort="medium",
+                api_key="k",
+            )
+
+        assert post.await_args.kwargs["json"]["reasoning_effort"] == "medium"
+        assert post.await_args.kwargs["json"]["max_completion_tokens"] == 4096
 
     @pytest.mark.asyncio
     async def test_llm_generated_ask_body_is_used(self) -> None:

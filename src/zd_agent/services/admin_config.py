@@ -16,6 +16,11 @@ import yaml
 from pydantic import BaseModel
 
 from zd_agent.config import AppConfig, CustomMcpServiceConfig, CustomSkillConfig
+from zd_agent.runtime.openai_reasoning import (
+    reasoning_capabilities_manifest,
+    validate_reasoning_effort,
+    validate_trigger_model,
+)
 from zd_agent.services.atomic_write import atomic_write_text
 
 
@@ -29,13 +34,28 @@ class FieldSpec:
     secret: bool = False
     restart_required: bool = False
     protected: bool = False
+    model_path: str | None = None
 
 
 FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("llm.provider", "模型供应商", "模型与运行"),
     FieldSpec("llm.base_url", "模型 Base URL", "模型与运行"),
     FieldSpec("llm.model", "主模型", "模型与运行"),
+    FieldSpec(
+        "llm.reasoning_effort",
+        "主模型推理强度",
+        "模型与运行",
+        input="reasoning_effort",
+        model_path="llm.model",
+    ),
     FieldSpec("llm.subagent_model", "Subagent 模型", "模型与运行"),
+    FieldSpec(
+        "llm.subagent_reasoning_effort",
+        "Subagent 推理强度",
+        "模型与运行",
+        input="reasoning_effort",
+        model_path="llm.subagent_model",
+    ),
     FieldSpec("llm.enable_vision_input", "主模型视觉输入", "模型与运行", input="boolean"),
     FieldSpec("llm.temperature", "温度", "模型与运行", input="number"),
     FieldSpec("llm.timeout", "模型请求超时秒数", "模型与运行", input="number"),
@@ -82,6 +102,13 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("webhook.zendesk_messaging_path", "Messaging webhook 路径", "触发配置", restart_required=True),
     FieldSpec("webhook.feishu_path", "飞书 webhook 路径", "触发配置", restart_required=True),
     FieldSpec("trigger_decider.llm_model", "触发判定模型", "模型与运行"),
+    FieldSpec(
+        "trigger_decider.reasoning_effort",
+        "触发判定推理强度",
+        "模型与运行",
+        input="reasoning_effort",
+        model_path="trigger_decider.llm_model",
+    ),
     FieldSpec("trigger_decider.enable_vision_input", "触发判定视觉输入", "模型与运行", input="boolean"),
     FieldSpec("trigger_decider.silence_minutes_default", "默认静默分钟数", "触发配置", input="number"),
     FieldSpec("trigger_decider.silence_extend_to_minutes", "静默延长分钟数", "触发配置", input="number"),
@@ -265,6 +292,12 @@ def _coerce_value(spec: FieldSpec, value: Any) -> Any:
     if value is None:
         return ""
     raw = str(value)
+    if spec.path in {
+        "llm.model",
+        "llm.subagent_model",
+        "trigger_decider.llm_model",
+    }:
+        return raw.strip()
     if spec.path.endswith(("base_url", "mcp_url", "url")):
         raw = raw.rstrip("/")
         if raw:
@@ -462,8 +495,13 @@ class AdminConfigStore:
                 "secret": spec.secret,
                 "restart_required": spec.restart_required,
                 "protected": spec.protected,
+                "model_path": spec.model_path,
             })
-        return {"groups": groups, "fields": fields}
+        return {
+            "groups": groups,
+            "fields": fields,
+            "reasoning_capabilities": reasoning_capabilities_manifest(),
+        }
 
     def _read_yaml(self, path: Path) -> dict[str, Any]:
         if not path.exists():
@@ -536,6 +574,49 @@ class AdminConfigStore:
             normalized_value = _coerce_value(spec, value)
             _validate_normalized_value(spec, normalized_value)
             normalized[spec.path] = normalized_value
+        if cfg is not None:
+            main_model = str(normalized.get("llm.model", cfg.llm.model))
+            main_effort = validate_reasoning_effort(
+                main_model,
+                str(normalized.get("llm.reasoning_effort", cfg.llm.reasoning_effort)),
+            )
+            if "llm.reasoning_effort" in normalized:
+                normalized["llm.reasoning_effort"] = main_effort
+
+            subagent_model = str(
+                normalized.get("llm.subagent_model", cfg.llm.subagent_model)
+                or main_model
+            )
+            subagent_effort = validate_reasoning_effort(
+                subagent_model,
+                str(
+                    normalized.get(
+                        "llm.subagent_reasoning_effort",
+                        cfg.llm.subagent_reasoning_effort,
+                    )
+                ),
+            )
+            if "llm.subagent_reasoning_effort" in normalized:
+                normalized["llm.subagent_reasoning_effort"] = subagent_effort
+
+            trigger_model = str(
+                normalized.get(
+                    "trigger_decider.llm_model",
+                    cfg.trigger_decider.llm_model,
+                )
+            )
+            validate_trigger_model(trigger_model)
+            trigger_effort = validate_reasoning_effort(
+                trigger_model,
+                str(
+                    normalized.get(
+                        "trigger_decider.reasoning_effort",
+                        cfg.trigger_decider.reasoning_effort,
+                    )
+                ),
+            )
+            if "trigger_decider.reasoning_effort" in normalized:
+                normalized["trigger_decider.reasoning_effort"] = trigger_effort
         if "skills.enabled" in normalized:
             custom_skills = normalized.get("skills.custom")
             if custom_skills is None and cfg is not None:
@@ -627,10 +708,40 @@ class AdminConfigStore:
         return {**preview, "audit_id": audit["id"]}
 
     def apply_saved(self, cfg: AppConfig) -> None:
+        candidate = cfg.model_copy(deep=True)
+        nonsecret_values: list[tuple[str, Any]] = []
+        reasoning_paths = {
+            "llm.model",
+            "llm.reasoning_effort",
+            "llm.subagent_model",
+            "llm.subagent_reasoning_effort",
+            "trigger_decider.llm_model",
+            "trigger_decider.reasoning_effort",
+        }
         for path, value in _flatten(self._read_yaml(self.overrides_path)).items():
             spec = self._specs.get(path)
             if spec and not spec.secret and not path.startswith("admin_auth."):
-                _set_attr(cfg, path, _coerce_value(spec, value))
+                coerced = _coerce_value(spec, value)
+                _set_attr(candidate, path, coerced)
+                nonsecret_values.append((path, coerced))
+
+        if any(path in reasoning_paths for path, _value in nonsecret_values):
+            validate_reasoning_effort(
+                candidate.llm.model,
+                candidate.llm.reasoning_effort,
+            )
+            validate_reasoning_effort(
+                candidate.llm.subagent_model or candidate.llm.model,
+                candidate.llm.subagent_reasoning_effort,
+            )
+            validate_reasoning_effort(
+                candidate.trigger_decider.llm_model,
+                candidate.trigger_decider.reasoning_effort,
+            )
+            validate_trigger_model(candidate.trigger_decider.llm_model)
+        for path, value in nonsecret_values:
+            _set_attr(cfg, path, value)
+
         for path, value in _flatten(self._read_yaml(self.secrets_path)).items():
             spec = self._specs.get(path)
             if not spec or not spec.secret:

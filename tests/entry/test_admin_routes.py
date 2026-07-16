@@ -294,6 +294,17 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "json-textarea" in app_js
     assert "触发判定与等待策略" in app_js
     assert "主模型与判定模型" in app_js
+    assert "llm.reasoning_effort" in app_js
+    assert "llm.subagent_reasoning_effort" in app_js
+    assert "trigger_decider.reasoning_effort" in app_js
+    assert 'field.input === "reasoning_effort"' in app_js
+    assert "reasoningEffortsForModel" in app_js
+    assert "refreshReasoningEffortOptions" in app_js
+    assert '"trigger_decider.llm_model"' in app_js
+    assert "reasoningEffortsForModel(model).length === 0" in app_js
+    assert "reasoningUnsupportedReason" in app_js
+    assert "触发判定暂不支持仅限 Responses API 的模型" in app_js
+    assert "reasoning_capabilities" in app_js
     assert "判定模型放在「模型与运行」里" in app_js
     assert "Ask 提示词补充规则" in (
         resources.files("zd_agent.services")
