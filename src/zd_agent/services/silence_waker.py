@@ -36,7 +36,7 @@ async def scan_once(
 
         source = (
             "silence_waker"
-            if record.last_verdict == "substantial_issue"
+            if record.last_verdict in {"substantial_issue", "agent_deferred"}
             else "silence_expired_ask"
         )
         await trigger_queue.put({

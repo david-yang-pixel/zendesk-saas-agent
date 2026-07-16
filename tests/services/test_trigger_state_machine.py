@@ -27,9 +27,9 @@ def _ticket_state(state: str = "processing") -> TicketState:
     )
 
 
-def test_completed_reply_marks_ticket_processed_from_any_waiting_state(tmp_path):
+def test_completed_reply_marks_owned_processing_ticket_processed(tmp_path):
     tracker = _state(tmp_path)
-    tracker.set("2808", _ticket_state("waiting_for_issue"))
+    tracker.set("2808", _ticket_state("processing"))
     session = AgentSession(ticket_id=2808)
     session.status = SessionStatus.COMPLETED
     session.reply_sent = True
@@ -96,7 +96,7 @@ def test_timeout_processing_schedules_immediate_retry(tmp_path):
     assert rec.last_agent_finish_ts == now
 
 
-def test_failed_non_processing_only_records_finish_time(tmp_path):
+def test_failed_non_processing_does_not_mutate_newer_lifecycle_state(tmp_path):
     tracker = _state(tmp_path)
     tracker.set("2810", _ticket_state("waiting_for_issue"))
     session = AgentSession(ticket_id=2810)
@@ -110,7 +110,7 @@ def test_failed_non_processing_only_records_finish_time(tmp_path):
     assert rec is not None
     assert rec.state == "waiting_for_issue"
     assert rec.silence_window_end is not None
-    assert rec.last_agent_finish_ts == now
+    assert rec.last_agent_finish_ts is None
 
 
 def test_missing_ticket_state_is_noop(tmp_path):

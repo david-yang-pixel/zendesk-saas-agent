@@ -67,16 +67,22 @@ async def handle_trigger_message(
             raise TriggerDeferredError("paused")
         return TriggerMessageResult(True, entry_gate.action, ticket_id, source)
 
-    direct_dispatch = await handle_direct_dispatch_source(
-        ticket_id=ticket_id,
-        msg=msg,
-        manager=manager,
-        state=state,
-        log_path=log_path,
-        cfg=cfg,
-    )
-    if direct_dispatch.handled:
-        return TriggerMessageResult(True, "direct_dispatch", ticket_id, source)
+    if source == "mention":
+        direct_dispatch = await handle_direct_dispatch_source(
+            ticket_id=ticket_id,
+            msg=msg,
+            manager=manager,
+            state=state,
+            log_path=log_path,
+            cfg=cfg,
+        )
+        if direct_dispatch.handled:
+            return TriggerMessageResult(
+                True,
+                "direct_dispatch",
+                ticket_id,
+                source,
+            )
 
     if source == "silence_expired_ask":
         silence_expired_ask_fn = silence_expired_ask_fn or handle_silence_expired_ask
@@ -96,7 +102,10 @@ async def handle_trigger_message(
     )
     customer_msgs, ticket_info = await fetch_customer_messages_fn(ticket_id)
     if ticket_info is None:
-        raise RuntimeError(f"ticket fetch failed for #{ticket_id}")
+        raise TriggerDeferredError(
+            "ticket_not_materialized",
+            delay_seconds=30.0,
+        )
 
     if not customer_msgs:
         logger.info("trigger_skip_no_customer_msg", ticket_id=ticket_id)
@@ -155,6 +164,23 @@ async def handle_trigger_message(
             last_customer_comment_id=latest_cid,
         )
         return TriggerMessageResult(True, "waiting_for_form", ticket_id, source)
+
+    if source == "silence_waker":
+        direct_dispatch = await handle_direct_dispatch_source(
+            ticket_id=ticket_id,
+            msg=msg,
+            manager=manager,
+            state=state,
+            log_path=log_path,
+            cfg=cfg,
+        )
+        if direct_dispatch.handled:
+            return TriggerMessageResult(
+                True,
+                "direct_dispatch",
+                ticket_id,
+                source,
+            )
 
     customer_activity = handle_customer_activity_gate(
         ticket_id=ticket_id,

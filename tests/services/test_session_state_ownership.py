@@ -106,3 +106,28 @@ def test_session_completion_cannot_overwrite_human_escalation(tmp_path) -> None:
     assert persisted.state == "escalated_to_human"
     assert persisted.escalated_at == escalated_at
     assert persisted.escalated_reason == "customer_requested"
+
+
+def test_session_completion_cannot_overwrite_new_form_wait(tmp_path) -> None:
+    """A new customer-side lifecycle state wins over an older session callback."""
+    tracker = TicketStateTracker(tmp_path / "tickets.json")
+    tracker.set(
+        3461,
+        TicketState(
+            state="waiting_for_form",
+            first_seen=_now() - timedelta(minutes=10),
+            last_customer_comment_id="message-newer-than-session",
+            last_verdict="waiting_for_form",
+        ),
+    )
+    session = AgentSession(ticket_id=3461, session_id="session-old")
+    session.status = SessionStatus.COMPLETED
+    session.reply_sent = True
+
+    apply_session_finished(tracker, session, now=_now())
+
+    persisted = TicketStateTracker(tmp_path / "tickets.json").get(3461)
+    assert persisted is not None
+    assert persisted.state == "waiting_for_form"
+    assert persisted.last_customer_comment_id == "message-newer-than-session"
+    assert persisted.last_agent_finish_ts is None

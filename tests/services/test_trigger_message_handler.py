@@ -85,7 +85,7 @@ async def test_no_customer_messages_logs_skip(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_ticket_fetch_failure_is_retryable(tmp_path) -> None:
-    with pytest.raises(RuntimeError, match="ticket fetch failed"):
+    with pytest.raises(TriggerDeferredError, match="ticket_not_materialized"):
         await handle_trigger_message(
             msg={"ticket_id": 12345, "source": "zendesk_webhook"},
             manager=MagicMock(),

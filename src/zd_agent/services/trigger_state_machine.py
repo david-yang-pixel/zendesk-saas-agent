@@ -276,12 +276,22 @@ def apply_session_finished(
         )
         return True
 
+    if ticket_state.state != "processing":
+        logger.info(
+            "session_finished_ignored_non_processing_state",
+            ticket_id=session.ticket_id,
+            session_id=session_id,
+            current_state=ticket_state.state,
+        )
+        return True
+
     finished_at = now or datetime.now(timezone.utc)
     ticket_state.last_agent_finish_ts = finished_at
 
     reply_sent = bool(getattr(session, "reply_sent", False))
     completed_with_reply = (
-        session.status == SessionStatus.COMPLETED
+        ticket_state.state == "processing"
+        and session.status == SessionStatus.COMPLETED
         and reply_sent
     )
     completed_without_reply_from_processing = (
@@ -319,6 +329,8 @@ def apply_session_finished(
             ticket_state.silence_window_end = finished_at + timedelta(
                 seconds=delay_seconds,
             )
+            if deferred_from_processing:
+                ticket_state.last_verdict = "agent_deferred"
 
     state.set(session.ticket_id, ticket_state)
     return True
@@ -343,7 +355,7 @@ def apply_silence_window_expired(
         return None
 
     verdict = rec.last_verdict or ""
-    if verdict == "substantial_issue":
+    if verdict in {"substantial_issue", "agent_deferred"}:
         rec.state = "processing"
         queue_source = "silence_waker"
     else:

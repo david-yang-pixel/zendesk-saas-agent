@@ -112,7 +112,16 @@ async def handle_direct_dispatch_source(
             ),
         )
     except Exception:
-        if previous_state is None:
+        if (
+            source == "silence_waker"
+            and previous_state is not None
+            and previous_state.state == "processing"
+            and not previous_state.active_session_id
+        ):
+            previous_state.state = "in_silence_window"
+            previous_state.silence_window_end = now + timedelta(seconds=60)
+            state.set(ticket_id, previous_state)
+        elif previous_state is None:
             state.delete(ticket_id)
         else:
             state.set(ticket_id, previous_state)
