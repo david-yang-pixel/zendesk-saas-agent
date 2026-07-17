@@ -17,6 +17,7 @@ from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.ticket_images import (
     collect_image_urls_from_attachments,
+    detected_image_content_type,
     extract_inline_image_urls,
     filename_from_url,
 )
@@ -31,6 +32,17 @@ from zd_agent.session.agent_session import AgentSession, TicketContext
 from zd_agent.tools.base import Tool, ToolResult
 
 logger = get_logger(module="tools.zendesk")
+
+_VISION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024
+_MAX_QUEUED_VISION_ATTACHMENTS = 10
+_IMAGE_CONTENT_TYPE_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+}
 
 _INTERNAL_REPLY_BANNER = (
     "> **AI-generated reply for reference only.**"
@@ -502,6 +514,75 @@ async def _download_attachment_records_via_mcp(
     return downloaded, failed, skipped
 
 
+def _queue_downloaded_images_for_vision(
+    *,
+    records: list[dict[str, Any]],
+    local_files: dict[str, Path],
+    session: AgentSession,
+) -> int:
+    records_by_url = {
+        str(record.get("url") or ""): record
+        for record in records
+        if record.get("url")
+    }
+    queued: list[dict[str, str]] = []
+    for url, path in local_files.items():
+        if len(queued) >= _MAX_QUEUED_VISION_ATTACHMENTS:
+            break
+        try:
+            size = path.stat().st_size
+            if size > _VISION_ATTACHMENT_MAX_BYTES:
+                logger.warning(
+                    "zendesk_attachment_vision_too_large",
+                    ticket_id=session.ticket_id,
+                    file_name=path.name,
+                    size=size,
+                    limit=_VISION_ATTACHMENT_MAX_BYTES,
+                )
+                continue
+            content = path.read_bytes()
+        except OSError:
+            continue
+        record = records_by_url.get(url, {})
+        declared_content_type = str(record.get("content_type") or "")
+        if not declared_content_type:
+            declared_content_type = _IMAGE_CONTENT_TYPE_BY_SUFFIX.get(
+                path.suffix.lower(),
+                "",
+            )
+        content_type = detected_image_content_type(
+            declared_content_type,
+            content,
+        )
+        if content_type is None:
+            continue
+        encoded = base64.b64encode(content).decode("ascii")
+        queued.append({
+            "url": f"data:{content_type};base64,{encoded}",
+            "file_name": path.name,
+            "source": "zendesk_get_attachments",
+            "comment_index": "0",
+        })
+
+    if not queued:
+        return 0
+    existing = list(session.image_urls) if isinstance(session.image_urls, list) else []
+    downloaded_urls = set(local_files)
+    existing_remote = [
+        item for item in existing
+        if not str(item.get("url") or "").startswith("data:image/")
+        and str(item.get("url") or "") not in downloaded_urls
+    ]
+    session.image_urls = queued + existing_remote
+    session.images_injected = False
+    logger.info(
+        "zendesk_attachment_images_queued_for_vision",
+        ticket_id=session.ticket_id,
+        count=len(queued),
+    )
+    return len(queued)
+
+
 class ZendeskGetTicket(Tool):
     name = "zendesk_get_ticket"
     description = (
@@ -771,15 +852,29 @@ class ZendeskGetAttachments(Tool):
                 out_dir,
             )
 
-            lines = [f"附件下载目录: {out_dir}"]
+            queued_images = _queue_downloaded_images_for_vision(
+                records=download_records,
+                local_files={**skipped, **downloaded},
+                session=session,
+            )
+            lines = [
+                "附件下载目录: attachments/（相对于当前工单 sandbox 根目录）",
+                "文本附件使用 sandbox_read('attachments/<文件名>')；"
+                "不要加 ticket_id，不要传绝对路径，图片不要交给 sandbox_read。",
+            ]
             if downloaded:
                 lines.append(f"\n已下载 {len(downloaded)} 个文件:")
                 for url, path in downloaded.items():
-                    lines.append(f"  ✓ {path.name}")
+                    lines.append(f"  ✓ attachments/{path.name}")
             if skipped:
                 lines.append(f"\n复用本地缓存 {len(skipped)} 个:")
                 for url, path in skipped.items():
-                    lines.append(f"  ↺ {path.name}")
+                    lines.append(f"  ↺ attachments/{path.name}")
+            if queued_images:
+                lines.append(
+                    f"\n已将 {queued_images} 张图片排入下一轮视觉输入；"
+                    "无需、也不要使用 sandbox_read 读取图片。"
+                )
             if failed:
                 lines.append(f"\n下载失败 {len(failed)} 个:")
                 for f_item in failed:

@@ -17,6 +17,12 @@ from zd_agent.services.verdict_classification import classify_ticket_messages
 
 logger = get_logger(module="services.trigger_message_handler")
 
+_CUSTOMER_CONTEXT_SOURCES = {
+    "zendesk_webhook",
+    "messaging_webhook",
+    "poller_new_msg",
+}
+
 FetchMessagesFn = Callable[[int], Awaitable[tuple[list[dict], dict | None]]]
 SilenceExpiredAskFn = Callable[..., Awaitable[Any]]
 PostVerdictDispatchFn = Callable[..., Awaitable[Any]]
@@ -105,6 +111,30 @@ async def handle_trigger_message(
         if entry_gate.action == "paused":
             raise TriggerDeferredError("paused")
         if entry_gate.action == "active_session_processing":
+            if source in _CUSTOMER_CONTEXT_SOURCES:
+                current = state.get(ticket_id)
+                mark_dirty = getattr(manager, "mark_customer_context_dirty", None)
+                if callable(mark_dirty):
+                    try:
+                        mark_dirty(
+                            ticket_id,
+                            expected_session_id=(
+                                current.active_session_id if current else ""
+                            ),
+                            source=source,
+                            event_id=str(
+                                msg.get("_queue_key")
+                                or msg.get("delivery_attempt_id")
+                                or ""
+                            ),
+                        )
+                    except Exception as error:
+                        logger.warning(
+                            "active_session_context_signal_failed",
+                            ticket_id=ticket_id,
+                            source=source,
+                            error_type=type(error).__name__,
+                        )
             raise TriggerDeferredError(
                 "active_session_processing",
                 delay_seconds=30.0,

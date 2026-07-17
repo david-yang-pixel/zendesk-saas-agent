@@ -782,6 +782,28 @@ class ZendeskPublicReply(Tool):
                     "for the processing summary, or re-fetch the ticket before retrying."
                 ),
             )
+        pending_images = getattr(session, "image_urls", None)
+        if (
+            reply_type in {"ask", "solution", "closed"}
+            and isinstance(pending_images, list)
+            and pending_images
+            and getattr(session, "images_injected", False) is not True
+        ):
+            logger.warning(
+                "public_reply_blocked_pending_image_injection",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                pending_image_count=len(pending_images),
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Public reply blocked because queued ticket images have not "
+                    "been injected into the model context yet. Finish this tool "
+                    "batch, inspect the injected images in the next round, then "
+                    "generate the reply again."
+                ),
+            )
 
         privacy_blockers = public_reply_privacy_blockers(body)
         if privacy_blockers:

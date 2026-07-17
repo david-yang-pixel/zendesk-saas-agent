@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,16 @@ from zd_agent.integrations.sandbox_worker import call_sandbox_worker_tool
 from zd_agent.runtime.retry import get_retry_policy, retry_async
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
+
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+_IMAGE_MAGIC_PREFIXES = (
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",
+    b"GIF87a",
+    b"GIF89a",
+    b"BM",
+)
 
 
 def _coerce_int_arg(
@@ -58,6 +69,59 @@ def _worker_result(payload: dict[str, Any]) -> ToolResult:
     code = payload.get("code") or "UNKNOWN"
     error = payload.get("error") or "unknown error"
     return ToolResult(success=False, error=f"Sandbox worker failed [{code}]: {error}")
+
+
+def _suggest_sandbox_relative_path(raw_path: str, session: AgentSession) -> str:
+    normalized = raw_path.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in {"", "."}]
+    ticket_id = str(session.ticket_id)
+    if ticket_id in parts:
+        parts = parts[parts.index(ticket_id) + 1:]
+    return "/".join(parts) or "attachments/<filename>"
+
+
+def _validate_sandbox_relative_path(
+    raw_path: str,
+    session: AgentSession,
+    *,
+    argument: str,
+    allow_empty: bool = False,
+) -> ToolResult | None:
+    cleaned = raw_path.strip()
+    if not cleaned and allow_empty:
+        return None
+    suggested = _suggest_sandbox_relative_path(cleaned, session)
+    if Path(cleaned).is_absolute() or _WINDOWS_ABSOLUTE_PATH_RE.match(cleaned):
+        return ToolResult(
+            success=False,
+            error=(
+                f"{argument} must be relative to the current ticket sandbox root. "
+                f"Use '{suggested}', not an absolute path."
+            ),
+        )
+    parts = Path(cleaned).parts
+    if parts and parts[0] == str(session.ticket_id):
+        return ToolResult(
+            success=False,
+            error=(
+                f"The sandbox root is already ticket #{session.ticket_id}; "
+                f"do not repeat the ticket ID. Use '{suggested}'."
+            ),
+        )
+    return None
+
+
+def _is_image_path(target: Path, raw_path: str) -> bool:
+    if Path(raw_path).suffix.lower() in _IMAGE_SUFFIXES:
+        return True
+    try:
+        with target.open("rb") as handle:
+            prefix = handle.read(16)
+    except OSError:
+        return False
+    return prefix.startswith(_IMAGE_MAGIC_PREFIXES) or (
+        len(prefix) >= 12 and prefix[:4] == b"RIFF" and prefix[8:12] == b"WEBP"
+    )
 
 
 async def _call_worker(
@@ -181,6 +245,13 @@ class SandboxWrite(Tool):
         filepath = _coerce_required_string_arg(args, "filepath")
         if isinstance(filepath, ToolResult):
             return filepath
+        path_error = _validate_sandbox_relative_path(
+            filepath,
+            session,
+            argument="filepath",
+        )
+        if path_error is not None:
+            return path_error
         content = _coerce_required_string_arg(args, "content")
         if isinstance(content, ToolResult):
             return content
@@ -195,13 +266,20 @@ class SandboxWrite(Tool):
 
 class SandboxRead(Tool):
     name = "sandbox_read"
-    description = "读取 sandbox 目录中的文件内容，支持按行号读取片段，避免一次返回整份大文件"
+    description = (
+        "仅以 UTF-8 文本读取 sandbox 文件，支持按行号读取片段。"
+        "不得用于 PNG/JPEG/GIF/WebP 等图片；工单图片先调用 zendesk_get_attachments，"
+        "下载成功后会在下一轮自动注入视觉输入。"
+    )
     parameters = {
         "type": "object",
         "properties": {
             "filepath": {
                 "type": "string",
-                "description": "相对于 sandbox 根目录的文件路径",
+                "description": (
+                    "相对于当前工单 sandbox 根目录的文本路径，例如 "
+                    "attachments/error.log；不要加 ticket_id，不要传绝对路径"
+                ),
             },
             "start_line": {
                 "type": "integer",
@@ -225,11 +303,27 @@ class SandboxRead(Tool):
         filepath = _coerce_required_string_arg(args, "filepath")
         if isinstance(filepath, ToolResult):
             return filepath
+        path_error = _validate_sandbox_relative_path(
+            filepath,
+            session,
+            argument="filepath",
+        )
+        if path_error is not None:
+            return path_error
 
         sandbox_root = _sandbox_root(session)
         target = (sandbox_root / filepath).resolve()
         if not _is_within(target, sandbox_root):
             return ToolResult(success=False, error="路径超出 sandbox 范围")
+        if _is_image_path(target, filepath):
+            return ToolResult(
+                success=False,
+                error=(
+                    "sandbox_read is text-only and cannot decode image attachments. "
+                    "Call zendesk_get_attachments; downloaded images are queued for "
+                    "automatic vision injection in the next model round."
+                ),
+            )
 
         if "start_line" in args:
             start_line_check = _coerce_int_arg(
@@ -257,7 +351,10 @@ class SandboxRead(Tool):
 
 class SandboxList(Tool):
     name = "sandbox_list"
-    description = "列出 sandbox 或 worktree 中的目录/文件，帮助浏览完整代码树结构"
+    description = (
+        "列出当前工单 sandbox 或 worktree 中的目录/文件。路径相对于 sandbox 根目录；"
+        "附件目录直接写 attachments，不要加 ticket_id 或绝对路径。"
+    )
     parameters = {
         "type": "object",
         "properties": {
@@ -283,6 +380,14 @@ class SandboxList(Tool):
         raw_path = _coerce_optional_string_arg(args, "path")
         if isinstance(raw_path, ToolResult):
             return raw_path
+        path_error = _validate_sandbox_relative_path(
+            raw_path or "",
+            session,
+            argument="path",
+            allow_empty=True,
+        )
+        if path_error is not None:
+            return path_error
         target = _resolve_sandbox_path(session, raw_path or "")
         if isinstance(target, ToolResult):
             return target
@@ -338,6 +443,14 @@ class SandboxSearch(Tool):
         raw_path = _coerce_optional_string_arg(args, "path")
         if isinstance(raw_path, ToolResult):
             return raw_path
+        path_error = _validate_sandbox_relative_path(
+            raw_path or "",
+            session,
+            argument="path",
+            allow_empty=True,
+        )
+        if path_error is not None:
+            return path_error
         glob = _coerce_optional_string_arg(args, "glob")
         if isinstance(glob, ToolResult):
             return glob

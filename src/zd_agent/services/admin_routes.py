@@ -92,6 +92,7 @@ DURATION_RE = re.compile(
     re.IGNORECASE,
 )
 TICKET_ID_RE = re.compile(r"^\d+$")
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 INTEGRATION_SPECS: dict[str, dict[str, str]] = {
     "zendesk_mcp": {
         "label": "Zendesk MCP",
@@ -575,6 +576,9 @@ def _aggregate_run_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
             and current is not None
             and current_event not in RUNNING_RECORD_EVENTS
         ):
+            next_start = _event_datetime(record)
+            if next_start is not None:
+                current["_next_run_started_at"] = next_start.isoformat()
             completed.append(current)
             current = None
 
@@ -582,7 +586,14 @@ def _aggregate_run_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
             open_by_ticket[ticket_key] = key
 
         merged = _merge_run_records(current, record)
+        event_time = _event_datetime(record)
+        if event in RUNNING_RECORD_EVENTS and event_time is not None:
+            current_start = _parse_datetime(merged.get("_run_started_at"))
+            if current_start is None or event_time < current_start:
+                merged["_run_started_at"] = event_time.isoformat()
         if event in SESSION_END_RECORD_EVENTS:
+            if event_time is not None:
+                merged["_run_finished_at"] = event_time.isoformat()
             completed.append(merged)
             open_records.pop(key, None)
             if ticket_key and open_by_ticket.get(ticket_key) == key:
@@ -617,25 +628,64 @@ def _ticket_id_for_archive(item: dict[str, Any]) -> str:
 def _read_archive_meta(
     archive_dir: Path | None,
     ticket_id: str,
+    session_id: str,
     cache: dict[str, dict[str, Any] | None],
 ) -> dict[str, Any] | None:
     if archive_dir is None or not ticket_id:
         return None
-    if ticket_id in cache:
-        return cache[ticket_id]
+    cache_key = f"{ticket_id}:{session_id}"
+    if cache_key in cache:
+        return cache[cache_key]
+    if session_id and (
+        session_id in {".", ".."}
+        or not SESSION_ID_RE.fullmatch(session_id)
+    ):
+        cache[cache_key] = None
+        return None
 
-    meta_path = archive_dir / ticket_id / "meta.json"
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        cache[ticket_id] = None
-        return None
-    if not isinstance(meta, dict):
-        cache[ticket_id] = None
-        return None
-    meta["_archive_meta_path"] = str(meta_path)
-    cache[ticket_id] = meta
-    return meta
+    ticket_dir = archive_dir / ticket_id
+    candidates: list[Path] = []
+    if session_id:
+        candidates.append(ticket_dir / "runs" / session_id / "meta.json")
+    candidates.append(ticket_dir / "meta.json")
+
+    for meta_path in candidates:
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        meta_session_id = str(meta.get("session_id") or "").strip()
+        if session_id and meta_session_id != session_id:
+            continue
+        meta["_archive_meta_path"] = str(meta_path)
+        cache[cache_key] = meta
+        return meta
+
+    cache[cache_key] = None
+    return None
+
+
+def _archive_meta_matches_run_window(
+    meta: dict[str, Any],
+    record: dict[str, Any],
+) -> bool:
+    """Prevent one legacy session archive from enriching multiple executions."""
+    archived_at = _parse_datetime(meta.get("archived_at") or meta.get("created_at"))
+    if archived_at is None:
+        return True
+
+    run_start = _parse_datetime(record.get("_run_started_at"))
+    run_end = _parse_datetime(record.get("_run_finished_at"))
+    next_run_start = _parse_datetime(record.get("_next_run_started_at"))
+    if run_start is not None and archived_at < run_start:
+        return False
+    if run_end is not None and archived_at > run_end:
+        return False
+    if next_run_start is not None and archived_at >= next_run_start:
+        return False
+    return True
 
 
 def _positive_int(value: Any) -> int:
@@ -779,8 +829,9 @@ def _enrich_with_archive_meta(
     cache: dict[str, dict[str, Any] | None],
 ) -> dict[str, Any]:
     ticket_id = _ticket_id_for_archive(record)
-    meta = _read_archive_meta(archive_dir, ticket_id, cache)
-    if meta is None:
+    session_id = str(record.get("session_id") or "").strip()
+    meta = _read_archive_meta(archive_dir, ticket_id, session_id, cache)
+    if meta is None or not _archive_meta_matches_run_window(meta, record):
         return record
 
     enriched = dict(record)
@@ -798,11 +849,16 @@ def _enrich_with_archive_meta(
         "customer_reply_available",
         "reviewer_checklist_available",
     ):
-        if key in meta and not _is_missing(meta.get(key)):
+        if (
+            _is_missing(enriched.get(key))
+            and key in meta
+            and not _is_missing(meta.get(key))
+        ):
             enriched[key] = meta[key]
 
     for key in ("rounds", "round_count", "total_tokens"):
-        _merge_numeric_max(enriched, meta, key)
+        if _is_missing(enriched.get(key)) and not _is_missing(meta.get(key)):
+            enriched[key] = meta[key]
 
     token_usage = meta.get("token_usage")
     if isinstance(token_usage, dict):
@@ -820,7 +876,7 @@ def _enrich_with_archive_meta(
         )
 
     raw_tool_calls = meta.get("tool_calls")
-    if isinstance(raw_tool_calls, list):
+    if isinstance(raw_tool_calls, list) and _is_missing(enriched.get("tool_calls")):
         enriched["tool_calls"] = [
             _archive_tool_to_ui_tool(call)
             for call in raw_tool_calls
@@ -828,7 +884,7 @@ def _enrich_with_archive_meta(
         ]
 
     rounds = _archive_rounds(meta, enriched)
-    if rounds:
+    if rounds and _is_missing(enriched.get("llm_rounds")):
         enriched["llm_rounds"] = rounds
     return enriched
 
@@ -903,15 +959,31 @@ def _record_has_error_with_trace(
 def _trace_matches(record: dict[str, Any], event: dict[str, Any]) -> bool:
     record_session = str(record.get("session_id") or "").strip()
     event_session = str(event.get("session_id") or "").strip()
-    if record_session and event_session:
-        return record_session == event_session
+    if record_session and event_session and record_session != event_session:
+        return False
 
     record_ticket = str(record.get("ticket_id") or record.get("ticket") or "").strip()
     event_ticket = str(event.get("ticket_id") or event.get("ticket") or "").strip()
-    if not record_ticket or record_ticket != event_ticket:
+    if record_ticket and event_ticket and record_ticket != event_ticket:
         return False
-    if record_session and event_session and record_session != event_session:
+    if not (record_session and event_session) and (
+        not record_ticket or record_ticket != event_ticket
+    ):
         return False
+
+    run_start = _parse_datetime(record.get("_run_started_at"))
+    run_end = _parse_datetime(record.get("_run_finished_at"))
+    next_run_start = _parse_datetime(record.get("_next_run_started_at"))
+    if run_start is not None or run_end is not None or next_run_start is not None:
+        event_time = _event_datetime(event)
+        if event_time is None:
+            return False
+        if run_start is not None and event_time < run_start:
+            return False
+        if run_end is not None and event_time > run_end:
+            return False
+        if next_run_start is not None and event_time >= next_run_start:
+            return False
     return True
 
 
@@ -949,6 +1021,7 @@ def _response_record(
     archive_dir: Path | None,
     cache: dict[str, dict[str, Any] | None],
 ) -> dict[str, Any]:
+    record_key = _run_record_public_key(record)
     if include_detail:
         enriched = _enrich_with_archive_meta(
             _attach_event_trace(record, trace_index),
@@ -966,7 +1039,10 @@ def _response_record(
         enriched.pop("llm_rounds", None)
         enriched.pop("tool_calls", None)
         enriched["detail_loaded"] = False
-    enriched["record_key"] = _run_record_public_key(enriched)
+    enriched.pop("_run_started_at", None)
+    enriched.pop("_run_finished_at", None)
+    enriched.pop("_next_run_started_at", None)
+    enriched["record_key"] = record_key
     return enriched
 
 

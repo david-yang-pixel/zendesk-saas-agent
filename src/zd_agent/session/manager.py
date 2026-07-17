@@ -91,6 +91,50 @@ class SessionManager:
     def completed_count(self) -> int:
         return len(self._completed)
 
+    def mark_customer_context_dirty(
+        self,
+        ticket_id: int,
+        *,
+        source: str,
+        event_id: str = "",
+        expected_session_id: str = "",
+    ) -> bool:
+        """Signal that an active session must re-fetch customer messages.
+
+        All production callers run on the same asyncio event loop, so this
+        small in-memory mutation is atomic without awaiting the manager lock.
+        The optional owner fence prevents a delayed queue event from marking a
+        newer session generation.
+        """
+        tracked = self._active.get(int(ticket_id))
+        if tracked is None:
+            return False
+        session = tracked.session
+        if expected_session_id and session.session_id != expected_session_id:
+            logger.info(
+                "customer_context_signal_stale_owner",
+                ticket_id=ticket_id,
+                expected_session_id=expected_session_id,
+                active_session_id=session.session_id,
+                source=source,
+            )
+            return False
+
+        session.customer_context_generation += 1
+        session.customer_context_dirty = True
+        session.customer_context_source = str(source or "")[:80]
+        session.customer_context_event_id = str(event_id or "")[:160]
+        logger.info(
+            "active_session_customer_context_marked_dirty",
+            ticket_id=ticket_id,
+            session_id=session.session_id,
+            source=session.customer_context_source,
+            event_id=session.customer_context_event_id or None,
+            generation=session.customer_context_generation,
+            round=session.round_count,
+        )
+        return True
+
     async def dispatch(
         self,
         ticket_id: int,

@@ -77,6 +77,7 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
     dispatch_verdict = AsyncMock()
     manager = MagicMock()
     manager.dispatch = AsyncMock()
+    manager.mark_customer_context_dirty.return_value = True
 
     with pytest.raises(TriggerDeferredError) as exc_info:
         await handle_trigger_message(
@@ -113,6 +114,15 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
     classify.assert_not_awaited()
     dispatch_verdict.assert_not_awaited()
     manager.dispatch.assert_not_awaited()
+    if source == "zendesk_webhook":
+        manager.mark_customer_context_dirty.assert_called_once_with(
+            _TICKET_ID,
+            expected_session_id="session-current",
+            source="zendesk_webhook",
+            event_id="",
+        )
+    else:
+        manager.mark_customer_context_dirty.assert_not_called()
     persisted = TicketStateTracker(state_path).get(_TICKET_ID)
     assert persisted is not None
     assert persisted.state == "processing"

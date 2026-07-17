@@ -25,12 +25,14 @@ Inspector 是 langgenius/infra-toolkit 提供的私有 CLI。它把高频查询�
 ----
 - 只允许 ``inspector search`` 子命令（Web UI / 其它子命令禁用）
 - ``--show-all`` flag 默认禁用（避免 leak Stripe customer ID 到工单回复）
-- 子进程 timeout 30s
+- 子进程单次 timeout 45s，最多重试一次
 - stdin 关闭，无任意命令注入面
 """
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 import shlex
 from typing import Any, TYPE_CHECKING
 
@@ -93,6 +95,35 @@ def _coerce_optional_string_arg(args: dict[str, Any], name: str) -> str | None:
         raise ValueError(f"{name} must be a string")
     cleaned = value.strip()
     return cleaned or None
+
+
+async def _terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
+    """Terminate Inspector and any child processes it spawned.
+
+    Inspector can fan out to several database clients. Killing only the CLI
+    parent leaves those children alive and lets them keep sockets/resources
+    after the tool call has already timed out.
+    """
+    if proc.returncode is not None:
+        return
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:  # pragma: no cover - production runs on Linux
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    except OSError:
+        # If a process group could not be created or addressed, still make a
+        # best effort to stop the direct child.
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+    try:
+        await proc.wait()
+    except ProcessLookupError:
+        pass
 
 
 class InspectorExec(Tool):
@@ -246,56 +277,85 @@ class InspectorExec(Tool):
         # 到工单回复
 
         timeout = cfg.inspector.timeout_seconds
-        cmd_preview = shlex.join(cmd[:6]) + " ..."
+        cmd_preview = shlex.join(cmd[:5] + ["[REDACTED]"]) + " ..."
         logger.info(
             "inspector_exec_call",
             primary_flag=primary_flag,
             section=section,
             ticket_id=session.ticket_id,
+            session_id=session.session_id,
+            timeout_s=timeout,
             cmd_preview=cmd_preview,
         )
 
         # 6. 跑子进程（超时自动 retry 一次 —— transient 超时很常见，
         #    一次 retry 把"偶发慢"和"真查不到"区分开）
-        async def _run_once() -> tuple[int | None, bytes, bytes]:
+        async def _run_once(attempt: int) -> tuple[int | None, bytes, bytes]:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Required so a timeout can terminate Inspector's database
+                # client children as one process group.
+                start_new_session=True,
             )
             try:
                 out_b, err_b = await asyncio.wait_for(
                     proc.communicate(), timeout=timeout,
                 )
                 return proc.returncode, out_b, err_b
+            except asyncio.CancelledError:
+                await _terminate_process_tree(proc)
+                logger.warning(
+                    "inspector_exec_cancelled",
+                    primary_flag=primary_flag,
+                    section=section,
+                    attempt=attempt,
+                    ticket_id=session.ticket_id,
+                    session_id=session.session_id,
+                    stage="process_wait",
+                )
+                raise
             except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except ProcessLookupError:
-                    pass
+                await _terminate_process_tree(proc)
+                logger.warning(
+                    "inspector_exec_attempt_timeout",
+                    primary_flag=primary_flag,
+                    section=section,
+                    attempt=attempt,
+                    timeout_s=timeout,
+                    ticket_id=session.ticket_id,
+                    session_id=session.session_id,
+                    stage="process_wait",
+                )
                 raise
 
         try:
             try:
-                rc, stdout_b, stderr_b = await _run_once()
+                rc, stdout_b, stderr_b = await _run_once(1)
             except asyncio.TimeoutError:
                 # retry 一次
                 logger.warning(
                     "inspector_exec_timeout_retry",
                     primary_flag=primary_flag,
+                    section=section,
+                    attempt=1,
                     timeout_s=timeout,
                     ticket_id=session.ticket_id,
+                    session_id=session.session_id,
                 )
                 try:
-                    rc, stdout_b, stderr_b = await _run_once()
+                    rc, stdout_b, stderr_b = await _run_once(2)
                 except asyncio.TimeoutError:
                     logger.warning(
                         "inspector_exec_timeout",
                         primary_flag=primary_flag,
+                        section=section,
+                        attempt=2,
                         timeout_s=timeout,
                         ticket_id=session.ticket_id,
+                        session_id=session.session_id,
                     )
                     # ⚠️ 两次都超时 = 没拿到任何数据。错误文本必须明确告诉
                     # agent：别臆造结果，改用 sql_query 直查具体表，或标 needs_human。

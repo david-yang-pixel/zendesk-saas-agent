@@ -9,7 +9,12 @@ from typing import Any
 from aiohttp import web
 
 from zd_agent.log import get_logger
-from zd_agent.services.app_context import app_config, trigger_queue, webhook_dedup
+from zd_agent.services.app_context import (
+    app_config,
+    session_manager,
+    trigger_queue,
+    webhook_dedup,
+)
 from zd_agent.services.messaging_context import save_messaging_context
 from zd_agent.services.trigger_delay import with_trigger_delay
 from zd_agent.services.zendesk_webhook import verify_zendesk_signature
@@ -171,6 +176,24 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
             error_type=type(error).__name__,
         )
         return web.Response(status=503, text="queue unavailable")
+    try:
+        manager = session_manager(request.app)
+        mark_dirty = getattr(manager, "mark_customer_context_dirty", None)
+        if callable(mark_dirty):
+            mark_dirty(
+                int(ticket_id),
+                source="messaging_webhook",
+                event_id=str(event_id or msg_id or ""),
+            )
+    except (KeyError, TypeError, ValueError):
+        pass
+    except Exception as error:
+        logger.warning(
+            "zendesk_messaging_context_signal_failed",
+            event_id=event_id,
+            ticket_id=ticket_id,
+            error_type=type(error).__name__,
+        )
     dedup.add(dedup_key)
     logger.info(
         "zendesk_messaging_webhook_enqueued",

@@ -151,9 +151,15 @@ async def run_subagent(
         )
     provider = create_llm_provider(sub_llm_cfg, env)
 
+    metadata = log_metadata or {}
+    sibling_index = metadata.get("sibling_index")
     sub_session = AgentSession(
         ticket_id=parent_session.ticket_id,
         sandbox_dir=parent_session.sandbox_dir,
+        trigger_type="subagent",
+        parent_session_id=parent_session.session_id,
+        subagent_batch_id=str(metadata.get("batch_id") or ""),
+        subagent_index=sibling_index if isinstance(sibling_index, int) else None,
         dry_run=True,
     )
 
@@ -194,6 +200,10 @@ async def run_subagent(
     logger.info(
         "subagent_start",
         ticket_id=parent_session.ticket_id,
+        session_id=sub_session.session_id,
+        parent_session_id=parent_session.session_id,
+        batch_id=sub_session.subagent_batch_id,
+        sibling_index=sub_session.subagent_index,
         task_preview=task[:200],
         tool_count=len(tool_schemas),
     )
@@ -261,6 +271,10 @@ async def run_subagent(
                     logger.warning(
                         "subagent_abnormal",
                         ticket_id=parent_session.ticket_id,
+                        session_id=sub_session.session_id,
+                        parent_session_id=parent_session.session_id,
+                        batch_id=sub_session.subagent_batch_id,
+                        sibling_index=sub_session.subagent_index,
                         status=event.status,
                         reason=event.reason,
                     )
@@ -302,6 +316,10 @@ async def run_subagent(
     logger.info(
         "subagent_done",
         ticket_id=parent_session.ticket_id,
+        session_id=sub_session.session_id,
+        parent_session_id=parent_session.session_id,
+        batch_id=sub_session.subagent_batch_id,
+        sibling_index=sub_session.subagent_index,
         rounds=sub_session.round_count,
         tokens=sub_session.token_usage.total_tokens,
         output_chars=len(final_content),

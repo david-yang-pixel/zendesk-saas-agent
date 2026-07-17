@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import Any
 
 from openai import APIConnectionError, APITimeoutError, BadRequestError
@@ -35,6 +37,8 @@ from zd_agent.runtime.messages import MessageStore
 from zd_agent.runtime.pre_send_check import (
     FreshnessRecovery,
     FreshnessRecoveryAction,
+    FreshnessResult,
+    pre_send_check_or_abort,
 )
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.tools.base import ToolRegistry
@@ -58,6 +62,12 @@ _SUBAGENT_CONVERGENCE_REMINDER = (
     "客户回复或内部分析，不要继续大范围 git_grep / github_code_search / SQL 扫描。"
     "只有缺少会改变结论的具体事实时，才追加少量、有明确目标的工具调用，并说明"
     "缺的是什么。"
+)
+_ERROR_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+_ERROR_SECRET_RE = re.compile(
+    r"\b(authorization|api[_-]?key|access[_-]?token|token|secret|password)\b"
+    r"\s*[:=]\s*(?:bearer\s+)?[^\s,;]+",
+    re.IGNORECASE,
 )
 
 
@@ -96,6 +106,17 @@ def _is_timeout_error(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return "timeout" in msg or "timed out" in msg
+
+
+def _safe_exception_detail(exc: Exception) -> str:
+    """Return a useful one-line error detail without URLs or credentials."""
+    detail = " ".join(str(exc).split())
+    detail = _ERROR_URL_RE.sub("[URL]", detail)
+    detail = _ERROR_SECRET_RE.sub(
+        lambda match: f"{match.group(1)}=[REDACTED]",
+        detail,
+    )
+    return (detail or type(exc).__name__)[:240]
 
 
 def _get_retry_after(exc: Exception) -> float:
@@ -455,6 +476,120 @@ async def _apply_freshness_recovery(
     return False
 
 
+async def _fetch_marked_customer_context(
+    session: AgentSession,
+) -> tuple[int, FreshnessResult] | None:
+    """Resolve one webhook generation against the current Zendesk messages."""
+    if not session.customer_context_dirty:
+        return None
+    if not session.customer_msgs_snapshot_captured:
+        # Runner captures the initial cursor before entering agent_loop. Keep
+        # the signal pending if another caller uses the loop prematurely.
+        return None
+
+    from zd_agent.services.ticket_messages import (
+        fetch_customer_messages_for_freshness,
+    )
+
+    observed_generation = session.customer_context_generation
+    result = await pre_send_check_or_abort(
+        ticket_id=session.ticket_id,
+        snapshot_count=session.customer_msgs_snapshot_count,
+        snapshot_last_id=session.customer_msgs_snapshot_last_id,
+        fetch_messages_fn=lambda: fetch_customer_messages_for_freshness(
+            session.ticket_id,
+        ),
+        # A short, ambiguous customer message is still cheaper to re-analyze
+        # than to spend several more full agent rounds against stale context.
+        skip_llm=True,
+    )
+    logger.info(
+        "active_session_customer_context_checked",
+        ticket_id=session.ticket_id,
+        session_id=session.session_id,
+        source=session.customer_context_source,
+        event_id=session.customer_context_event_id or None,
+        generation=observed_generation,
+        current_generation=session.customer_context_generation,
+        continue_send=result.continue_send,
+        reason=result.reason,
+        new_messages_count=result.new_messages_count,
+        round=session.round_count,
+    )
+    return observed_generation, result
+
+
+async def _commit_marked_customer_context(
+    *,
+    check: tuple[int, FreshnessResult],
+    session: AgentSession,
+    message_store: MessageStore,
+    enable_vision_input: bool,
+) -> bool:
+    """Commit an early freshness check; return True when the loop must restart."""
+    observed_generation, result = check
+    recovery = result.recovery
+
+    if result.continue_send:
+        # Non-substantive additions (thanks/OK) need no new LLM round, but
+        # advancing the accepted cursor prevents the durable webhook retry
+        # from dispatching the same customer activity after this run finishes.
+        if (
+            isinstance(recovery, FreshnessRecovery)
+            and recovery.action is FreshnessRecoveryAction.REFRESH_CONTEXT
+            and recovery.next_snapshot_last_id
+        ):
+            session.customer_msgs_snapshot_count = recovery.next_snapshot_count
+            session.customer_msgs_snapshot_last_id = recovery.next_snapshot_last_id
+            session.customer_msgs_snapshot_captured = True
+        session.freshness_fetch_error_count = 0
+        if session.customer_context_generation == observed_generation:
+            session.customer_context_dirty = False
+            return False
+        # A newer webhook arrived during the fetch. Do not spend an LLM/tool
+        # round until that generation has also been checked.
+        return True
+
+    if not isinstance(recovery, FreshnessRecovery):
+        session.status = SessionStatus.DEFERRED
+        session.error_message = "active_context_check_missing_recovery"
+        logger.warning(
+            "active_context_check_missing_recovery",
+            ticket_id=session.ticket_id,
+            session_id=session.session_id,
+            reason=result.reason,
+        )
+        return True
+
+    await _apply_freshness_recovery(
+        result=SimpleNamespace(metadata={"freshness_recovery": recovery}),
+        session=session,
+        message_store=message_store,
+        enable_vision_input=enable_vision_input,
+    )
+    if recovery.action is FreshnessRecoveryAction.REFRESH_CONTEXT:
+        if session.customer_context_generation == observed_generation:
+            session.customer_context_dirty = False
+    elif recovery.action is FreshnessRecoveryAction.DEFER:
+        session.customer_context_dirty = False
+    # RETRY_FETCH deliberately leaves the signal dirty so the next safe
+    # boundary consumes the bounded second attempt.
+    return True
+
+
+def _loop_finished_for_deferred(
+    session: AgentSession,
+    guardrails: Guardrails,
+) -> LoopFinished:
+    return LoopFinished(
+        status="deferred",
+        total_rounds=guardrails.current_round,
+        total_tokens=guardrails.total_tokens,
+        elapsed_seconds=guardrails.elapsed_seconds,
+        reason=session.error_message or "freshness_check_deferred",
+    )
+
+
 async def _run_tool_call(
     tc: ToolCallRequest,
     registry: ToolRegistry,
@@ -743,9 +878,15 @@ async def _inject_images(session: AgentSession, message_store: MessageStore) -> 
     # Lazy import to avoid circular saas_app ↔ runtime
     from zd_agent.services.ticket_messages import _download_image_data_url
 
-    # 并发下载，跳过失败的（不阻断 dispatch）
+    async def _resolve_image_url(raw_url: str) -> str | None:
+        if raw_url.startswith("data:image/"):
+            return raw_url
+        return await _download_image_data_url(raw_url)
+
+    # 已由 Zendesk MCP 下载的图片直接复用 data URL；其余 URL 并发下载。
+    # 任一图片失败都不阻断 dispatch。
     results = await asyncio.gather(
-        *(_download_image_data_url(img["url"]) for img in raw_images),
+        *(_resolve_image_url(img["url"]) for img in raw_images),
         return_exceptions=False,
     )
     data_urls = [(img, dl) for img, dl in zip(raw_images, results) if dl]
@@ -830,6 +971,23 @@ async def agent_loop(
                 )
             guardrails.check_all()
 
+            # Webhooks mark the active session immediately, without trying to
+            # cancel arbitrary in-flight network calls. Consume that signal at
+            # this safe transcript boundary before paying for another LLM round.
+            dirty_check = await _fetch_marked_customer_context(session)
+            if dirty_check is not None:
+                restart = await _commit_marked_customer_context(
+                    check=dirty_check,
+                    session=session,
+                    message_store=message_store,
+                    enable_vision_input=enable_vision_input,
+                )
+                if session.status is SessionStatus.DEFERRED:
+                    yield _loop_finished_for_deferred(session, guardrails)
+                    return
+                if restart:
+                    continue
+
             # 计算 message_store 当前 token 数（不算很贵，每轮一次）—
             # 用于"修法 2"基于 message_store 大小的提前 compaction 触发。
             ms_tokens = count_tokens(message_store.to_api_messages())
@@ -913,9 +1071,21 @@ async def agent_loop(
                             logger.warning(
                                 "connection_error_retry",
                                 ticket_id=session.ticket_id,
+                                session_id=session.session_id,
+                                parent_session_id=session.parent_session_id,
+                                subagent_batch_id=session.subagent_batch_id,
+                                subagent_index=session.subagent_index,
+                                round=session.round_count,
+                                provider_type=type(provider).__name__,
                                 attempt=conn_attempts,
                                 delay=delay,
                                 error_type=type(e).__name__,
+                                error_cause_type=(
+                                    type(e.__cause__ or e.__context__).__name__
+                                    if (e.__cause__ or e.__context__) is not None
+                                    else ""
+                                ),
+                                error_detail=_safe_exception_detail(e),
                             )
                             await asyncio.sleep(delay)
                             continue
@@ -966,6 +1136,51 @@ async def agent_loop(
             )
 
             message_store.append_assistant(_assistant_message_dict(response))
+
+            # A webhook may arrive while the LLM request is in flight. Re-fetch
+            # now, before any tools from that stale assistant response execute.
+            dirty_check = await _fetch_marked_customer_context(session)
+            if dirty_check is not None:
+                observed_generation, freshness_result = dirty_check
+                newer_generation_pending = (
+                    session.customer_context_generation != observed_generation
+                )
+                must_restart = (
+                    not freshness_result.continue_send
+                    or newer_generation_pending
+                )
+                if must_restart:
+                    for stale_call in response.tool_calls:
+                        message_store.append_tool_result(
+                            stale_call.id,
+                            stale_call.name,
+                            (
+                                "Cancelled: customer context changed while the LLM "
+                                "response was in flight. Re-evaluate this tool call "
+                                "against the refreshed ticket context."
+                            ),
+                        )
+                restart = await _commit_marked_customer_context(
+                    check=dirty_check,
+                    session=session,
+                    message_store=message_store,
+                    enable_vision_input=enable_vision_input,
+                )
+                if must_restart:
+                    logger.info(
+                        "stale_assistant_cancelled_after_customer_webhook",
+                        ticket_id=session.ticket_id,
+                        session_id=session.session_id,
+                        cancelled_tool_count=len(response.tool_calls),
+                        reason=freshness_result.reason,
+                        newer_generation_pending=newer_generation_pending,
+                        round=guardrails.current_round,
+                    )
+                if session.status is SessionStatus.DEFERRED:
+                    yield _loop_finished_for_deferred(session, guardrails)
+                    return
+                if restart:
+                    continue
 
             if not response.has_tool_calls:
                 if response.content:

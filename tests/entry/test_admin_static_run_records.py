@@ -21,3 +21,27 @@ def test_run_records_initial_request_is_quick_without_detail() -> None:
     assert "refreshRunRecordsInBackground();" in initial_load
     assert "quick: false" in background_refresh
     assert "detail: false" in background_refresh
+
+
+def test_run_records_treat_deferred_as_a_distinct_non_success_status() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+
+    run_status = app_js[
+        app_js.index("function runStatus"):
+        app_js.index("function renderStatusBadge")
+    ]
+    summary = app_js[
+        app_js.index("function buildRunSummary"):
+        app_js.index("function renderRunRecordRow")
+    ]
+
+    assert 'text.includes("deferred")' in run_status
+    assert 'return "deferred"' in run_status
+    assert 'deferred: "已延期"' in app_js
+    assert 'record.status === "deferred"' in summary
+    assert "totalRuns - failed - timeout - running - deferred" in summary
+    assert "summary.failed || summary.timeout || summary.deferred" in app_js

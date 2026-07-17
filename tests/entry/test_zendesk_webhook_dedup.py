@@ -20,7 +20,11 @@ import pytest
 from aiohttp import web
 
 from zd_agent.services.zendesk_webhook import handle_zendesk_webhook
-from zd_agent.services.app_context import install_saas_app_context, trigger_queue
+from zd_agent.services.app_context import (
+    install_saas_app_context,
+    session_manager,
+    trigger_queue,
+)
 from zd_agent.services.app_context import TRIGGER_QUEUE_KEY, webhook_dedup
 from zd_agent.services.webhook_dedup import WebhookDedup
 
@@ -181,6 +185,25 @@ async def test_classic_webhook_uses_initial_wait_window(tmp_path):
     assert r.status == 200 and r.text == "ok"
     queued = trigger_queue(app).get_nowait()
     assert queued["available_at"] == 1060.0
+
+
+@pytest.mark.asyncio
+async def test_classic_webhook_immediately_marks_active_session_context_dirty(tmp_path):
+    app = _build_app(tmp_path)
+    manager = session_manager(app)
+    manager.mark_customer_context_dirty.return_value = True
+
+    response = await _post(
+        app,
+        {"ticket_id": 3485, "latest_comment_id": "comment-2"},
+    )
+
+    assert response.status == 200
+    manager.mark_customer_context_dirty.assert_called_once_with(
+        3485,
+        source="zendesk_webhook",
+        event_id="comment-2",
+    )
 
 
 @pytest.mark.asyncio

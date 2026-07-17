@@ -631,6 +631,38 @@ class TestExecute:
         mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_execute_blocks_reply_until_queued_images_are_injected(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=False)
+        sess.image_urls = [{
+            "url": "data:image/png;base64,iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA",
+            "file_name": "screenshot.png",
+        }]
+        sess.images_injected = False
+        mock_relay = AsyncMock()
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(relay=True),
+        ), patch(
+            "zd_agent.tools.zendesk_public_reply.send_browser_relay_reply",
+            mock_relay,
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Here is the conclusion.",
+                    "reply_type": "solution",
+                    "conversation_id": "conv-1",
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert "queued ticket images" in result.error
+        mock_relay.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_execute_treats_matching_existing_reply_as_delivered(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)

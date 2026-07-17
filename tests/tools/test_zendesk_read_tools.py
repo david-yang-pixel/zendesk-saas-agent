@@ -37,6 +37,17 @@ async def test_get_attachments_rejects_invalid_ticket_id_before_client(fake_sess
 @pytest.mark.asyncio
 async def test_get_attachments_downloads_inline_image_and_file_through_mcp(tmp_path, fake_session):
     fake_session.sandbox_dir = tmp_path
+    fake_session.image_urls = [
+        {
+            "url": "https://example.zendesk.com/sc/attachments/v2/a.png",
+            "file_name": "a.png",
+        },
+        {
+            "url": "https://example.zendesk.com/sc/attachments/v2/inline-only.png",
+            "file_name": "inline-only.png",
+        },
+    ]
+    fake_session.images_injected = False
     events = [
         {
             "id": "evt-1",
@@ -82,10 +93,10 @@ async def test_get_attachments_downloads_inline_image_and_file_through_mcp(tmp_p
             if arguments["content_url"] == "https://example.zendesk.com/sc/attachments/v2/a.png":
                 return {
                     "success": True,
-                    "data": {
-                        "file_name": "a.png",
-                        "content_type": "image/png",
-                        "data_base64": "UE5HREFUQQ==",
+                        "data": {
+                            "file_name": "a.png",
+                            "content_type": "image/png",
+                            "data_base64": "iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA",
                     },
                 }
             if arguments["content_url"] == "https://example.zendesk.com/attachments/token/doc":
@@ -105,8 +116,15 @@ async def test_get_attachments_downloads_inline_image_and_file_through_mcp(tmp_p
     assert result.success is True
     assert "该工单没有附件或图片" not in result.output
     assert "已下载 2 个文件" in result.output
-    assert (tmp_path / "attachments" / "a.png").read_bytes() == b"PNGDATA"
+    assert "附件下载目录: attachments/" in result.output
+    assert str(tmp_path) not in result.output
+    assert (tmp_path / "attachments" / "a.png").read_bytes().startswith(b"\x89PNG")
     assert (tmp_path / "attachments" / "diagnostic.txt").read_bytes() == b"TEXTDATA"
+    assert fake_session.image_urls[0]["url"].startswith("data:image/png;base64,")
+    assert [item["url"] for item in fake_session.image_urls[1:]] == [
+        "https://example.zendesk.com/sc/attachments/v2/inline-only.png",
+    ]
+    assert fake_session.images_injected is False
     assert [name for name, _ in calls].count("download_attachment") == 2
 
 

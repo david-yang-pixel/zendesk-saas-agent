@@ -148,6 +148,68 @@ async def test_sandbox_read_rejects_invalid_filepath_arg(sandbox_session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filepath",
+    [
+        "/opt/zd-agent/resources/sandbox/3485/attachments/screenshot.png",
+        "3485/attachments/screenshot.png",
+    ],
+)
+async def test_sandbox_read_rejects_absolute_and_ticket_prefixed_paths(
+    sandbox_session,
+    filepath,
+):
+    sandbox_session.ticket_id = 3485
+    with patch(
+        "zd_agent.tools.sandbox_tools.call_sandbox_worker_tool",
+        new_callable=AsyncMock,
+    ) as worker:
+        result = await SandboxRead().execute({"filepath": filepath}, sandbox_session)
+
+    assert result.success is False
+    assert "attachments/screenshot.png" in (result.error or "")
+    worker.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_read_rejects_png_before_text_worker(sandbox_session):
+    image_path = sandbox_session.sandbox_dir / "attachments" / "screenshot.png"
+    image_path.parent.mkdir()
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+    with patch(
+        "zd_agent.tools.sandbox_tools.call_sandbox_worker_tool",
+        new_callable=AsyncMock,
+    ) as worker:
+        result = await SandboxRead().execute(
+            {"filepath": "attachments/screenshot.png"},
+            sandbox_session,
+        )
+
+    assert result.success is False
+    assert "text-only" in (result.error or "")
+    assert "zendesk_get_attachments" in (result.error or "")
+    worker.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_list_rejects_ticket_prefixed_path(sandbox_session):
+    sandbox_session.ticket_id = 3485
+    with patch(
+        "zd_agent.tools.sandbox_tools.call_sandbox_worker_tool",
+        new_callable=AsyncMock,
+    ) as worker:
+        result = await SandboxList().execute(
+            {"path": "3485/attachments"},
+            sandbox_session,
+        )
+
+    assert result.success is False
+    assert "attachments" in (result.error or "")
+    worker.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_sandbox_list_rejects_invalid_path_arg(sandbox_session):
     result = await SandboxList().execute(
         {"path": ["src"]},

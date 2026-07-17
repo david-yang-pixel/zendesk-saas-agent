@@ -53,6 +53,12 @@ class AgentSession:
     delivery_attempt_id: str = ""
     status: SessionStatus = SessionStatus.QUEUED
 
+    # 子 Agent 关联信息。主会话保持为空；子会话带上父 session / batch / index，
+    # 让连接重试等底层日志可以精确定位到并行 worker。
+    parent_session_id: str = ""
+    subagent_batch_id: str = ""
+    subagent_index: int | None = None
+
     # Sandbox
     sandbox_dir: Path | None = None
 
@@ -112,6 +118,14 @@ class AgentSession:
     customer_msgs_snapshot_captured: bool = False
     freshness_rebase_count: int = 0
     freshness_fetch_error_count: int = 0
+
+    # Webhook arrives while this session is running. The manager increments a
+    # generation instead of cancelling arbitrary in-flight I/O; agent_loop
+    # consumes it at the next safe LLM/tool boundary and re-fetches Zendesk.
+    customer_context_dirty: bool = False
+    customer_context_generation: int = 0
+    customer_context_source: str = ""
+    customer_context_event_id: str = ""
 
     # ───── P2-8 (2026-05-17) 客户画像预拉 ─────
     # runner.py 在 build_system_prompt 之前调用 prefetch_customer_profile()，

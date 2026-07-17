@@ -888,6 +888,272 @@ async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> 
     assert item["event_count"] == 2
 
 
+def test_admin_run_records_keep_retries_isolated_from_legacy_ticket_meta(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    archive_base = tmp_path / "archive"
+    legacy_archive = archive_base / "3485"
+    log_dir.mkdir()
+    legacy_archive.mkdir(parents=True)
+    (log_dir / "events-2026-07-17.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-07-17T06:21:42Z",
+                "event": "agent_start",
+                "ticket_id": 3485,
+                "session_id": "first-session",
+                "model": "gpt-test",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:22:00Z",
+                "event": "llm_round",
+                "ticket_id": 3485,
+                "session_id": "first-session",
+                "round": 1,
+                "prompt_tokens": 1_000,
+                "completion_tokens": 100,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:22:47Z",
+                "event": "connection_error_retry",
+                "ticket_id": 3485,
+                "round": 1,
+                "error_type": "APIConnectionError",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:25:20Z",
+                "event": "agent_done",
+                "ticket_id": 3485,
+                "session_id": "first-session",
+                "status": "deferred",
+                "rounds": 6,
+                "prompt_tokens": 214_982,
+                "completion_tokens": 4_956,
+                "total_tokens": 219_938,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:25:21Z",
+                "event": "session_finished",
+                "ticket_id": 3485,
+                "session_id": "first-session",
+                "status": "deferred",
+                "rounds": 6,
+                "tokens": 219_938,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:29:13Z",
+                "event": "agent_start",
+                "ticket_id": 3485,
+                "session_id": "second-session",
+                "model": "gpt-test",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:30:00Z",
+                "event": "llm_round",
+                "ticket_id": 3485,
+                "session_id": "second-session",
+                "round": 1,
+                "prompt_tokens": 2_000,
+                "completion_tokens": 200,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:33:03Z",
+                "event": "tool_execution_timeout",
+                "ticket_id": 3485,
+                "round": 3,
+                "tool": "inspector_exec",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:35:26Z",
+                "event": "agent_done",
+                "ticket_id": 3485,
+                "session_id": "second-session",
+                "status": "completed",
+                "rounds": 7,
+                "prompt_tokens": 189_607,
+                "completion_tokens": 5_850,
+                "total_tokens": 195_457,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:35:27Z",
+                "event": "session_finished",
+                "ticket_id": 3485,
+                "session_id": "second-session",
+                "status": "completed",
+                "rounds": 7,
+                "tokens": 195_457,
+            }),
+        ]),
+        encoding="utf-8",
+    )
+    (legacy_archive / "meta.json").write_text(
+        json.dumps({
+            "ticket_id": 3485,
+            "session_id": "first-session",
+            "status": "deferred",
+            "rounds": 6,
+            "total_tokens": 219_938,
+            "tool_calls": [{
+                "round": 1,
+                "tool": "legacy_first_run_tool",
+                "success": True,
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    body = admin_routes._read_recent_log_events(
+        log_dir,
+        limit=10,
+        filters={"ticket_id": "3485"},
+        archive_dir=archive_base,
+        include_detail=True,
+    )
+
+    by_session = {item["session_id"]: item for item in body["items"]}
+    assert set(by_session) == {"first-session", "second-session"}
+    assert by_session["first-session"]["status"] == "deferred"
+    assert by_session["first-session"]["total_tokens"] == 219_938
+    assert by_session["second-session"]["status"] == "completed"
+    assert by_session["second-session"]["rounds"] == 7
+    assert by_session["second-session"]["total_tokens"] == 195_457
+    assert by_session["second-session"]["llm_rounds"][0]["input_tokens"] == 2_000
+
+    first_events = {event["event"] for event in by_session["first-session"]["events"]}
+    second_events = {event["event"] for event in by_session["second-session"]["events"]}
+    assert "connection_error_retry" in first_events
+    assert "connection_error_retry" not in second_events
+    assert "tool_execution_timeout" not in first_events
+    assert "tool_execution_timeout" in second_events
+
+
+def test_admin_run_records_isolate_reused_session_id_by_run_window(tmp_path) -> None:
+    log_dir = tmp_path / "logs"
+    archive_base = tmp_path / "archive"
+    legacy_archive = archive_base / "3485"
+    log_dir.mkdir()
+    legacy_archive.mkdir(parents=True)
+    (log_dir / "events-2026-07-17.jsonl").write_text(
+        "\n".join([
+            json.dumps({
+                "timestamp": "2026-07-17T06:21:42Z",
+                "event": "agent_start",
+                "ticket_id": 3485,
+                "session_id": "reused-session",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:22:00Z",
+                "event": "tool_call",
+                "ticket_id": 3485,
+                "session_id": "reused-session",
+                "round": 1,
+                "tool": "first_run_tool",
+                "success": True,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:25:20Z",
+                "event": "agent_done",
+                "ticket_id": 3485,
+                "session_id": "reused-session",
+                "status": "deferred",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:29:13Z",
+                "event": "agent_start",
+                "ticket_id": 3485,
+                "session_id": "reused-session",
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:30:00Z",
+                "event": "tool_call",
+                "ticket_id": 3485,
+                "session_id": "reused-session",
+                "round": 1,
+                "tool": "second_run_tool",
+                "success": True,
+            }),
+            json.dumps({
+                "timestamp": "2026-07-17T06:35:26Z",
+                "event": "agent_done",
+                "ticket_id": 3485,
+                "session_id": "reused-session",
+                "status": "completed",
+            }),
+        ]),
+        encoding="utf-8",
+    )
+    (legacy_archive / "meta.json").write_text(
+        json.dumps({
+            "ticket_id": 3485,
+            "session_id": "reused-session",
+            "status": "deferred",
+            "archived_at": "2026-07-17T06:25:20Z",
+            "tool_calls": [{
+                "round": 1,
+                "tool": "first_run_archive_tool",
+                "success": True,
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    body = admin_routes._read_recent_log_events(
+        log_dir,
+        limit=10,
+        filters={"ticket_id": "3485"},
+        archive_dir=archive_base,
+        include_detail=True,
+    )
+
+    assert len(body["items"]) == 2
+    by_status = {item["status"]: item for item in body["items"]}
+    deferred_tools = {
+        event.get("tool")
+        for event in by_status["deferred"]["events"]
+        if event.get("event") == "tool_call"
+    }
+    completed_tools = {
+        event.get("tool")
+        for event in by_status["completed"]["events"]
+        if event.get("event") == "tool_call"
+    }
+    assert deferred_tools == {"first_run_tool"}
+    assert completed_tools == {"second_run_tool"}
+    assert by_status["deferred"]["archive_available"] is True
+    assert by_status["deferred"]["tool_calls"][0]["name"] == "first_run_archive_tool"
+    assert "archive_available" not in by_status["completed"]
+
+
+def test_archive_meta_lookup_rejects_session_path_traversal(tmp_path) -> None:
+    archive_dir = tmp_path / "archive"
+    ticket_dir = archive_dir / "3485"
+    (ticket_dir / "runs").mkdir(parents=True)
+    outside_meta = tmp_path / "outside" / "meta.json"
+    outside_meta.parent.mkdir(parents=True)
+    outside_meta.write_text(
+        json.dumps({
+            "session_id": "../../../outside",
+            "status": "completed",
+            "total_tokens": 999_999,
+        }),
+        encoding="utf-8",
+    )
+
+    result = admin_routes._read_archive_meta(
+        archive_dir,
+        "3485",
+        "../../../outside",
+        {},
+    )
+
+    assert result is None
+
+    (ticket_dir / "meta.json").write_text(
+        json.dumps({"session_id": "..", "status": "completed"}),
+        encoding="utf-8",
+    )
+    assert admin_routes._read_archive_meta(archive_dir, "3485", "..", {}) is None
+
+
 def test_admin_run_records_trace_index_supports_module_filters(tmp_path) -> None:
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
@@ -1169,7 +1435,7 @@ def test_admin_run_records_only_reads_archive_meta_for_returned_page(
     )
     calls = []
 
-    def fake_read_archive_meta(_archive_dir, ticket_id, _cache):
+    def fake_read_archive_meta(_archive_dir, ticket_id, _session_id, _cache):
         calls.append(ticket_id)
         return {
             "_archive_meta_path": f"/archive/{ticket_id}/meta.json",

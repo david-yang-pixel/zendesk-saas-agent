@@ -108,13 +108,25 @@ def collect_ticket_log(
     archive_dir = archive_base / str(ticket_id)
     if archive_dir.exists():
         entries: list[dict[str, str]] = []
-        for file_path in sorted(archive_dir.iterdir()):
-            if not file_path.is_file():
-                continue
+        file_paths = [path for path in archive_dir.iterdir() if path.is_file()]
+        runs_dir = archive_dir / "runs"
+        if runs_dir.is_dir():
+            for session_dir in runs_dir.iterdir():
+                if session_dir.is_dir():
+                    file_paths.extend(
+                        path for path in session_dir.iterdir() if path.is_file()
+                    )
+        for file_path in sorted(
+            file_paths,
+            key=lambda path: str(path.relative_to(archive_dir)),
+        ):
             content = file_path.read_text(encoding="utf-8", errors="replace")
             if len(content) > max_content_chars:
                 content = content[:max_content_chars] + "\n\n... (截断)"
-            entries.append({"name": file_path.name, "content": content})
+            entries.append({
+                "name": str(file_path.relative_to(archive_dir)),
+                "content": content,
+            })
         return TicketLogResult(kind="archive", base_dir=archive_dir, entries=entries)
 
     sandbox_dir = sandbox_base / str(ticket_id)
@@ -139,6 +151,55 @@ def parse_time_range(last: str) -> timedelta:
         "h": timedelta(hours=amount),
         "m": timedelta(minutes=amount),
     }[unit]
+
+
+def _archive_meta_identity_keys(meta: dict[str, object]) -> set[str]:
+    keys = {
+        "run:" + json.dumps(
+            {
+                "created_at": meta.get("created_at") or meta.get("archived_at"),
+                "status": meta.get("status"),
+                "total_tokens": meta.get("total_tokens"),
+                "rounds": meta.get("rounds"),
+                "reply_sent": bool(meta.get("reply_sent")),
+            },
+            sort_keys=True,
+            default=str,
+        )
+    }
+    session_id = str(meta.get("session_id") or "").strip()
+    if session_id:
+        keys.add(f"session:{session_id}")
+    return keys
+
+
+def _archive_meta_files(ticket_dir: Path) -> list[Path]:
+    """Select run metas while retaining distinct pre-migration legacy data."""
+    session_meta_files = sorted((ticket_dir / "runs").glob("*/meta.json"))
+    legacy_meta_file = ticket_dir / "meta.json"
+    if not legacy_meta_file.exists():
+        return session_meta_files
+    if not session_meta_files:
+        return [legacy_meta_file]
+
+    try:
+        legacy_meta = json.loads(legacy_meta_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return session_meta_files
+    if not isinstance(legacy_meta, dict):
+        return session_meta_files
+
+    session_keys: set[str] = set()
+    for meta_file in session_meta_files:
+        try:
+            session_meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if isinstance(session_meta, dict):
+            session_keys.update(_archive_meta_identity_keys(session_meta))
+    if _archive_meta_identity_keys(legacy_meta).isdisjoint(session_keys):
+        return [legacy_meta_file, *session_meta_files]
+    return session_meta_files
 
 
 def collect_archive_stats(
@@ -174,42 +235,43 @@ def collect_archive_stats(
         if not ticket_dir.is_dir():
             continue
 
-        meta_file = ticket_dir / "meta.json"
-        if not meta_file.exists():
+        meta_files = _archive_meta_files(ticket_dir)
+        if not meta_files:
             dir_mtime = datetime.fromtimestamp(ticket_dir.stat().st_mtime, tz=timezone.utc)
             if dir_mtime < cutoff:
                 continue
             total += 1
             continue
 
-        try:
-            meta = json.loads(meta_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            total += 1
-            continue
-
-        created = meta.get("created_at", "")
-        if created:
+        for meta_file in meta_files:
             try:
-                ts = datetime.fromisoformat(created)
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                if ts < cutoff:
-                    continue
-            except ValueError:
-                pass
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                total += 1
+                continue
 
-        total += 1
-        status_val = meta.get("status", "")
-        if status_val == "completed":
-            completed += 1
-        elif status_val in ("failed", "timeout"):
-            failed += 1
+            created = meta.get("created_at", "")
+            if created:
+                try:
+                    ts = datetime.fromisoformat(created)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    if ts < cutoff:
+                        continue
+                except ValueError:
+                    pass
 
-        total_tokens += meta.get("total_tokens", 0)
-        total_rounds += meta.get("rounds", 0)
-        if meta.get("reply_sent"):
-            reply_sent_count += 1
+            total += 1
+            status_val = meta.get("status", "")
+            if status_val == "completed":
+                completed += 1
+            elif status_val in ("failed", "timeout"):
+                failed += 1
+
+            total_tokens += meta.get("total_tokens", 0)
+            total_rounds += meta.get("rounds", 0)
+            if meta.get("reply_sent"):
+                reply_sent_count += 1
 
     return ArchiveStats(
         archive_exists=True,

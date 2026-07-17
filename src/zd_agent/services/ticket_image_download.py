@@ -39,6 +39,11 @@ class StreamedImageResponse:
     data: bytes | None
 
 
+@dataclass(slots=True)
+class ImageDownloadProgress:
+    stage: str = "setup"
+
+
 def _content_length(headers: httpx.Headers | dict[str, str]) -> int | None:
     raw_value = headers.get("Content-Length", "").strip()
     if not raw_value:
@@ -69,8 +74,11 @@ async def _stream_image_response(
     auth: tuple[str, str] | None,
     max_bytes: int,
     url_ref: str,
+    progress: ImageDownloadProgress,
 ) -> StreamedImageResponse:
+    progress.stage = "url_validation"
     await validate_image_download_url(url)
+    progress.stage = "request_headers"
     stream_context = (
         client.stream("GET", url, follow_redirects=False)
         if auth is None
@@ -78,6 +86,7 @@ async def _stream_image_response(
     )
     response = await stream_context.__aenter__()
     try:
+        progress.stage = "response_headers"
         if response.status_code != 200:
             return _snapshot_response(response, b"")
 
@@ -91,6 +100,7 @@ async def _stream_image_response(
             )
             return _snapshot_response(response, None)
 
+        progress.stage = "response_body"
         body = bytearray()
         async for chunk in response.aiter_bytes():
             if len(body) + len(chunk) > max_bytes:
@@ -119,6 +129,7 @@ async def _request_image_with_redirects(
     zendesk_subdomain: str,
     max_bytes: int,
     url_ref: str,
+    progress: ImageDownloadProgress,
 ) -> StreamedImageResponse | None:
     current_url = url
     for redirect_count in range(_MAX_IMAGE_REDIRECTS + 1):
@@ -128,6 +139,7 @@ async def _request_image_with_redirects(
             auth=None,
             max_bytes=max_bytes,
             url_ref=url_ref,
+            progress=progress,
         )
         if (
             response.status_code in {401, 403}
@@ -140,6 +152,7 @@ async def _request_image_with_redirects(
                 auth=zendesk_auth,
                 max_bytes=max_bytes,
                 url_ref=url_ref,
+                progress=progress,
             )
         if response.status_code not in _REDIRECT_STATUSES:
             return response
@@ -164,7 +177,11 @@ def _image_data_url(response: StreamedImageResponse, url_ref: str) -> str | None
         response.data,
     )
     if content_type is None:
-        logger.warning("vision_image_invalid_content", url_ref=url_ref)
+        logger.warning(
+            "vision_image_invalid_content",
+            url_ref=url_ref,
+            stage="content_validation",
+        )
         return None
     encoded = base64.b64encode(response.data).decode("ascii")
     return f"data:{content_type};base64,{encoded}"
@@ -175,7 +192,10 @@ async def _download_image_data_url_unbounded(
     *,
     timeout: float = 15.0,
     max_bytes: int = _IMG_MAX_BYTES,
+    progress: ImageDownloadProgress | None = None,
 ) -> str | None:
+    progress = progress or ImageDownloadProgress()
+    progress.stage = "configuration"
     cfg = get_config()
     env = EnvSettings()
     auth = None
@@ -189,6 +209,7 @@ async def _download_image_data_url_unbounded(
     url_ref = image_url_log_ref(url)
 
     try:
+        progress.stage = "client_setup"
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=False,
@@ -202,6 +223,7 @@ async def _download_image_data_url_unbounded(
                 zendesk_subdomain=zendesk_subdomain,
                 max_bytes=max_bytes,
                 url_ref=url_ref,
+                progress=progress,
             )
             if response is None:
                 return None
@@ -227,6 +249,7 @@ async def _download_image_data_url_unbounded(
                     zendesk_subdomain=zendesk_subdomain,
                     max_bytes=max_bytes,
                     url_ref=url_ref,
+                    progress=progress,
                 )
                 if redirected is None:
                     return None
@@ -243,6 +266,7 @@ async def _download_image_data_url_unbounded(
                 "vision_image_download_http_error",
                 url_ref=url_ref,
                 status=response.status_code,
+                stage="http_status",
             )
             return None
     except (ImageUrlRejected, httpx.HTTPError, OSError, ValueError) as exc:
@@ -250,6 +274,8 @@ async def _download_image_data_url_unbounded(
             "vision_image_download_failed",
             url_ref=url_ref,
             error_type=type(exc).__name__,
+            error_cause_type=(type(exc.__cause__).__name__ if exc.__cause__ else ""),
+            stage=progress.stage,
         )
         return None
 
@@ -261,11 +287,13 @@ async def download_image_data_url(
     max_bytes: int = _IMG_MAX_BYTES,
 ) -> str | None:
     result: str | None = None
+    progress = ImageDownloadProgress()
     with move_on_after(max(0.001, timeout)) as cancel_scope:
         result = await _download_image_data_url_unbounded(
             url,
             timeout=timeout,
             max_bytes=max_bytes,
+            progress=progress,
         )
     if not cancel_scope.cancel_called:
         return result
@@ -273,5 +301,7 @@ async def download_image_data_url(
         "vision_image_download_failed",
         url_ref=image_url_log_ref(url),
         error_type="TimeoutError",
+        stage=progress.stage,
+        timeout_s=timeout,
     )
     return None

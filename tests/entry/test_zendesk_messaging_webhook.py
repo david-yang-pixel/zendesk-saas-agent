@@ -81,6 +81,39 @@ async def test_messaging_webhook_enqueues_end_user_actor(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_messaging_webhook_immediately_marks_active_session_context_dirty(tmp_path):
+    payload = {
+        "id": "evt-context-1",
+        "app": {"id": "app-1"},
+        "detail": {"id": "3485"},
+        "event": {
+            "actor": {"type": "end_user"},
+            "conversation": {"id": "conv-1"},
+            "message": {"id": "msg-2", "body": "another screenshot"},
+        },
+        "subject": "zen:ticket:3485",
+        "type": "zen:event-type:messaging_ticket.message_added",
+    }
+    request = FakeRequest(payload, tmp_path / "dedup.json")
+    manager = MagicMock()
+    manager.mark_customer_context_dirty.return_value = True
+    request.app["session_manager"] = manager
+
+    with patch(
+        "zd_agent.services.zendesk_messaging_webhook.time.time",
+        return_value=1780460000.0,
+    ):
+        response = await handle_zendesk_messaging_webhook(request)
+
+    assert response.status == 200
+    manager.mark_customer_context_dirty.assert_called_once_with(
+        3485,
+        source="messaging_webhook",
+        event_id="evt-context-1",
+    )
+
+
+@pytest.mark.asyncio
 async def test_messaging_webhook_uses_customer_message_merge_window(tmp_path):
     payload = {
         "id": "evt-1",

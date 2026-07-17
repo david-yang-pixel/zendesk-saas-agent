@@ -11,7 +11,12 @@ from datetime import datetime
 from aiohttp import web
 
 from zd_agent.log import get_logger
-from zd_agent.services.app_context import app_config, trigger_queue, webhook_dedup
+from zd_agent.services.app_context import (
+    app_config,
+    session_manager,
+    trigger_queue,
+    webhook_dedup,
+)
 from zd_agent.services.trigger_delay import with_trigger_delay
 
 logger = get_logger(module="services.zendesk_webhook")
@@ -104,5 +109,24 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
             error_type=type(error).__name__,
         )
         return web.Response(status=503, text="queue unavailable")
+    try:
+        manager = session_manager(request.app)
+        mark_dirty = getattr(manager, "mark_customer_context_dirty", None)
+        if callable(mark_dirty):
+            mark_dirty(
+                int(ticket_id),
+                source="zendesk_webhook",
+                event_id=str(comment_id or event.get("event_id") or ""),
+            )
+    except (KeyError, TypeError, ValueError):
+        # Legacy/test app contexts may not install a session manager. The
+        # durable queue remains the source of truth and will still retry.
+        pass
+    except Exception as error:
+        logger.warning(
+            "zendesk_webhook_context_signal_failed",
+            ticket_id=ticket_id,
+            error_type=type(error).__name__,
+        )
     dedup.add(key)
     return web.Response(status=200, text="ok")

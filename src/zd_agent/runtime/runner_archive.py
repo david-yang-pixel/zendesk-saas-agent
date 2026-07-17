@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,10 +15,30 @@ from zd_agent.session.agent_session import AgentSession
 
 logger = get_logger(module="runner.archive")
 
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+
+def _archive_session_dir(session: AgentSession) -> Path:
+    cfg = get_config()
+    raw_session_id = str(session.session_id or "").strip()
+    if (
+        raw_session_id not in {"", ".", ".."}
+        and _SAFE_SESSION_ID_RE.fullmatch(raw_session_id)
+    ):
+        session_dir_name = raw_session_id
+    else:
+        digest = hashlib.sha256(raw_session_id.encode("utf-8")).hexdigest()[:16]
+        session_dir_name = f"session-{digest}"
+    return (
+        Path(cfg.knowledge.archive_dir)
+        / str(session.ticket_id)
+        / "runs"
+        / session_dir_name
+    )
+
 
 def ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
-    cfg = get_config()
-    archive_dir = Path(cfg.knowledge.archive_dir) / str(session.ticket_id)
+    archive_dir = _archive_session_dir(session)
     meta_path = archive_dir / "meta.json"
     if meta_path.exists():
         return

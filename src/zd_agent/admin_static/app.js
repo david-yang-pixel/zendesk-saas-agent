@@ -1044,14 +1044,16 @@ function renderRunRecordsContent(data, meta = {}) {
   if (state.runFilters.status === "success") {
     records = records.filter(record => record.status === "success");
   } else if (state.runFilters.status === "failed") {
-    records = records.filter(record => record.status !== "success");
+    records = records.filter(record => ["failed", "timeout"].includes(record.status));
+  } else if (state.runFilters.status === "deferred") {
+    records = records.filter(record => record.status === "deferred");
   }
   state.runDisplayRecords = records;
   const summary = buildRunSummary(data, records);
   setContent(`
     <div class="metric-grid run-metrics">
       ${metricCard("总处理数", summary.totalRuns, `运行中 ${summary.running}`)}
-      ${metricCard("成功率", summary.successRate, `失败 ${summary.failed} / 超时 ${summary.timeout}`, summary.failed ? "warn-text" : "success-text")}
+      ${metricCard("成功率", summary.successRate, `失败 ${summary.failed} / 超时 ${summary.timeout} / 延期 ${summary.deferred}`, (summary.failed || summary.timeout || summary.deferred) ? "warn-text" : "success-text")}
       ${metricCard("平均耗时", summary.avgDuration, "最近匹配记录")}
       ${metricCard("Token 消耗", summary.totalTokens, `入 ${summary.inputTokens} / 出 ${summary.outputTokens}`)}
     </div>
@@ -1061,6 +1063,7 @@ function renderRunRecordsContent(data, meta = {}) {
         <option value="">全部状态</option>
         <option value="success" ${state.runFilters.status === "success" ? "selected" : ""}>成功</option>
         <option value="failed" ${state.runFilters.status === "failed" ? "selected" : ""}>失败</option>
+        <option value="deferred" ${state.runFilters.status === "deferred" ? "selected" : ""}>已延期</option>
       </select>
       <input id="run-event" placeholder="事件" value="${escapeHtml(state.runFilters.event || "")}">
       <input id="run-module" placeholder="模块" value="${escapeHtml(state.runFilters.module || "")}">
@@ -1149,7 +1152,8 @@ function buildRunSummary(data, records) {
   const failed = records.filter(record => record.status === "failed").length;
   const timeout = records.filter(record => record.status === "timeout").length;
   const running = records.filter(record => record.status === "running").length;
-  const completed = Math.max(0, totalRuns - failed - timeout - running);
+  const deferred = records.filter(record => record.status === "deferred").length;
+  const completed = Math.max(0, totalRuns - failed - timeout - running - deferred);
   const successRate = totalRuns ? `${((completed * 100) / totalRuns).toFixed(1)}%` : "--";
   const durations = records.map(record => record.durationMs).filter(value => value > 0);
   const avgMs = durations.length
@@ -1163,6 +1167,7 @@ function buildRunSummary(data, records) {
     failed,
     timeout,
     running,
+    deferred,
     successRate,
     avgDuration: avgMs ? formatDuration(avgMs) : "--",
     inputTokens: formatTokenCount(inputTokens),
@@ -2855,6 +2860,7 @@ function runStatus(item) {
     item.exception,
     item.traceback
   ].filter(Boolean).join(" ").toLowerCase();
+  if (text.includes("deferred")) return "deferred";
   if (text.includes("timeout")) return "timeout";
   if (["error", "failed", "failure", "exception", "traceback"].some(token => text.includes(token))) {
     return "failed";
@@ -2868,7 +2874,8 @@ function renderStatusBadge(status) {
     success: "成功",
     failed: "失败",
     timeout: "超时",
-    running: "运行中"
+    running: "运行中",
+    deferred: "已延期"
   };
   return `<span class="status-badge ${status}">${labels[status] || status}</span>`;
 }

@@ -47,7 +47,7 @@
 - 写客户可见回复或 Internal Note 前，若断言任何**源码 / API / 配置 / 字段 / UI 路径 / PR / 版本**，必须先用 `git_grep / git_show`（默认 Source MCP runtime）、`github_code_search`、`sql_query`、`signoz_*` 或 Zendesk/KB 工具拿到真实证据；没查到就写"未确认"，不能把经验当事实。源码路径只能写内部记录，客户回复不得贴源码路径或文件名+行号。
 - **GitHub Issue / PR evidence gate**：遇到 traceback、回归、升级后异常、疑似内部 bug、实现缺陷或客户问"是不是 bug / 是否已修复"时，必须查 GitHub Issue/PR；不能只读源码就给客户下结论。
 - **Zendesk 最新对话是唯一真相源**：本地工单记录只作为参考，不能决定当前是否 follow-up，也不能覆盖客户最新消息。客户有新回复时必须以最新 `zendesk_get_ticket` 对话为准。
-- **附件证据必须下载后判断**：客户提到截图、图片、文件或附件，或需要基于图片/文件判断时，必须调用 `zendesk_get_attachments` 下载到 sandbox，再用 `sandbox_read` 或图片证据处理结果核查；不能只看 `zendesk_get_ticket` 的附件列表就断言没有图片或文件。
+- **附件证据必须下载后判断**：客户提到截图、图片、文件或附件，或需要基于图片/文件判断时，必须调用 `zendesk_get_attachments`。返回路径已经相对于当前工单 sandbox 根目录，例如 `attachments/error.log`；不要重复加 ticket_id，也不要使用绝对路径。`sandbox_read` 只读 UTF-8 文本，严禁用于 PNG/JPEG 等图片；下载成功的图片会在下一轮自动注入视觉输入。不能只看 `zendesk_get_ticket` 的附件列表就断言没有图片或文件。
 
 ---
 
