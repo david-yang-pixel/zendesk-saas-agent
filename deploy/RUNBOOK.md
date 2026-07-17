@@ -315,7 +315,14 @@ To deploy or roll back to an exact commit image:
 
 `deploy-ghcr.sh` pulls `ghcr.io/david-yang-pixel/zendesk-saas-agent:<tag>`, retags it
 as local `zd-agent:latest`, restarts `zd-agent`, and waits for
-`http://127.0.0.1:8080/healthz`.
+`http://127.0.0.1:8080/healthz`. After both the health check and the protected
+freshness-route check succeed, it removes older images from that Agent image
+repository while preserving the running image, `zd-agent:latest`, and the three
+most recently created Agent image versions. Set `ZD_AGENT_IMAGE_KEEP_RECENT` to
+a positive integer to change that retention count. Failed deployments never run
+the image cleanup, and images from other repositories are not touched. If an
+old image is still pinned and cannot be removed, the script emits a warning but
+does not turn an otherwise healthy deployment into a failed deployment.
 
 Fallback source build if GHCR is unavailable:
 
