@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 import stat
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +24,7 @@ from zd_agent.services.app_context import (
 )
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.session.agent_session import AgentSession, SessionStatus
+from zd_agent.tools.public_reply_delivery import PublicReplyTransportError
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -76,6 +78,31 @@ def test_configured_session_manager_loads_saved_concurrency_before_creation(
 
     assert result is manager
     manager_cls.assert_called_once_with(max_concurrent=11)
+
+
+def test_configured_session_manager_rejects_invalid_public_reply_transport(
+    tmp_path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.public_reply.enabled = True
+    cfg.public_reply.browser_relay_url = (
+        "https://relay.example.test/zendesk-reply-mcp"
+    )
+    cfg.public_reply.browser_relay_api_key = "relay-secret"
+    cfg.public_reply.freshness_callback_url = (
+        "https://relay.example.test/webhook/relay-pre-send-freshness"
+    )
+    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
+    state_dir.mkdir(parents=True)
+    (state_dir / "admin_overrides.yaml").write_text(
+        "public_reply:\n  freshness_callback_url: ''\n"
+    )
+
+    with patch("zd_agent.session.manager.SessionManager") as manager_cls:
+        with pytest.raises(PublicReplyTransportError, match="freshness callback URL"):
+            create_configured_session_manager(cfg)
+
+    manager_cls.assert_not_called()
 
 
 @pytest.mark.asyncio

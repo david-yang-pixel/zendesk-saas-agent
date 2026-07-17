@@ -175,7 +175,9 @@ async def test_restart_activates_handoff_effects_only_after_public_outbox_delive
     cfg = AppConfig()
     cfg.public_reply.browser_relay_url = "https://relay.example.test/mcp"
     cfg.public_reply.browser_relay_api_key = "secret"
-    cfg.public_reply.freshness_callback_url = "https://agent.example.test/internal/pre-send-freshness"
+    cfg.public_reply.freshness_callback_url = (
+        "https://relay.example.test/webhook/relay-pre-send-freshness"
+    )
     await send_public_reply_safely(
         cfg=cfg,
         ticket_id=3461,

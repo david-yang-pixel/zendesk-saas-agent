@@ -273,17 +273,16 @@ private package 时，服务器需要先完成一次 GHCR 登录，使用只带 
 权限的 PAT。GitHub 仓库还需要配置部署 SSH secrets；SMTP 通知 secrets 可选。
 完整清单见 `deploy/RUNBOOK.md`。
 
-手动更新到 `main` 最新镜像:
+生产脚本只接受与提交绑定的 immutable digest；日常更新请直接 push `main`
+并由 CI/CD 发布。手工发布或回滚时必须同时提供匹配的 commit 与 digest：
 
 ```bash
-/opt/zd-agent/code/deploy/deploy-ghcr.sh main
+ZD_AGENT_IMAGE_DIGEST=sha256:<manifest-digest> \
+  /opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<40-hex-commit-sha>
 ```
 
-回滚到指定提交镜像:
-
-```bash
-/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>
-```
+服务器 checkout 必须同时处于该 commit 且无 tracked 修改；需要切换 commit
+时，按 `deploy/RUNBOOK.md` 用同一部署锁包住 `git switch` 与部署全过程。
 
 ## 归档与调试
 

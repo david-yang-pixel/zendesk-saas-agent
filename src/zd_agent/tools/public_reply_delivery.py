@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import suppress
 from datetime import datetime
+from ipaddress import IPv6Address, ip_address
 from typing import Any
 from urllib.parse import urlparse
 
@@ -24,13 +25,50 @@ class PublicReplyTransportError(RuntimeError):
     pass
 
 
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.rstrip(".").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        address = ip_address(normalized)
+    except ValueError:
+        return False
+    if address.is_loopback:
+        return True
+    return bool(
+        isinstance(address, IPv6Address)
+        and address.ipv4_mapped is not None
+        and address.ipv4_mapped.is_loopback
+    )
+
+
 def _is_loopback_url(url: str) -> bool:
     """Return whether a relay URL is guaranteed to share this host."""
     try:
-        host = (urlparse(url).hostname or "").lower()
+        host = urlparse(url).hostname or ""
     except ValueError:
         return False
-    return host in {"127.0.0.1", "::1", "localhost"}
+    return _is_loopback_host(host)
+
+
+def _is_non_public_ip(host: str) -> bool:
+    try:
+        return not ip_address(host).is_global
+    except ValueError:
+        return False
+
+
+def _url_origin(url: str) -> tuple[str, str, int]:
+    """Return a normalized origin, including the scheme's default port."""
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").rstrip(".").lower()
+    port = parsed.port
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    if not 1 <= port <= 65535:
+        raise ValueError("URL port must be between 1 and 65535")
+    return scheme, host, port
 
 
 def _freshness_callback_url(cfg: AppConfig) -> str:
@@ -44,11 +82,25 @@ def _freshness_callback_url(cfg: AppConfig) -> str:
         getattr(cfg.public_reply, "freshness_callback_url", "") or ""
     ).strip().rstrip("/")
     relay_url = str(getattr(cfg.public_reply, "browser_relay_url", "") or "")
-    if _is_loopback_url(relay_url):
-        return configured or (
+    try:
+        relay_origin = _url_origin(relay_url)
+    except ValueError as exc:
+        raise PublicReplyTransportError(
+            "Browser relay URL requires a port between 1 and 65535"
+        ) from exc
+    relay_is_loopback = _is_loopback_url(relay_url)
+    if not configured and relay_is_loopback:
+        fallback_url = (
             f"http://127.0.0.1:{cfg.webhook.listen_port}"
             "/internal/pre-send-freshness"
         )
+        try:
+            _url_origin(fallback_url)
+        except ValueError as exc:
+            raise PublicReplyTransportError(
+                "Freshness callback URL requires a port between 1 and 65535"
+            ) from exc
+        return fallback_url
 
     try:
         parsed = urlparse(configured)
@@ -58,18 +110,96 @@ def _freshness_callback_url(cfg: AppConfig) -> str:
             "Remote browser relay requires an HTTPS non-loopback freshness "
             "callback URL"
         ) from exc
-    if (
-        parsed.scheme != "https"
-        or not callback_host
-        or callback_host in {"127.0.0.1", "::1", "localhost"}
+    has_unsafe_components = bool(
+        not callback_host
+        or parsed.username
+        or parsed.password
+        or parsed.params
         or parsed.query
         or parsed.fragment
+    )
+    callback_is_loopback = _is_loopback_host(callback_host)
+    try:
+        callback_origin = _url_origin(configured)
+    except ValueError as exc:
+        raise PublicReplyTransportError(
+            "Freshness callback URL requires a port between 1 and 65535"
+        ) from exc
+    if relay_is_loopback:
+        if (
+            has_unsafe_components
+            or parsed.scheme not in {"http", "https"}
+            or not callback_is_loopback
+            or parsed.path not in {
+                "/internal/pre-send-freshness",
+                "/webhook/relay-pre-send-freshness",
+            }
+        ):
+            raise PublicReplyTransportError(
+                "Loopback browser relay requires a loopback callback URL"
+            )
+        return configured
+    if (
+        has_unsafe_components
+        or parsed.scheme != "https"
+        or callback_is_loopback
+        or _is_non_public_ip(callback_host)
+        or parsed.path != "/webhook/relay-pre-send-freshness"
     ):
         raise PublicReplyTransportError(
-            "Remote browser relay requires an HTTPS non-loopback freshness "
-            "callback URL"
+            "Remote browser relay requires a public HTTPS non-loopback "
+            "freshness callback URL at /webhook/relay-pre-send-freshness"
+        )
+    if callback_origin != relay_origin:
+        raise PublicReplyTransportError(
+            "Remote browser relay requires the freshness callback on the "
+            "same HTTPS origin"
         )
     return configured
+
+
+def validate_public_reply_transport_config(cfg: AppConfig) -> None:
+    """Fail closed when enabled public replies cannot use the browser relay."""
+    if not cfg.public_reply.enabled:
+        return
+    relay_url = str(cfg.public_reply.browser_relay_url or "").strip()
+    if not relay_url:
+        raise PublicReplyTransportError(
+            "Zendesk browser relay URL is not configured"
+        )
+    if not str(cfg.public_reply.browser_relay_api_key or "").strip():
+        raise PublicReplyTransportError(
+            "Zendesk browser relay API key is not configured"
+        )
+    try:
+        parsed_relay = urlparse(relay_url)
+        relay_host = parsed_relay.hostname or ""
+        _url_origin(relay_url)
+    except ValueError as exc:
+        raise PublicReplyTransportError(
+            "Browser relay URL requires a port between 1 and 65535"
+        ) from exc
+    relay_has_unsafe_components = bool(
+        not relay_host
+        or parsed_relay.username
+        or parsed_relay.password
+        or parsed_relay.params
+        or parsed_relay.query
+        or parsed_relay.fragment
+    )
+    if _is_loopback_host(relay_host):
+        if relay_has_unsafe_components or parsed_relay.scheme not in {
+            "http",
+            "https",
+        }:
+            raise PublicReplyTransportError(
+                "Loopback browser relay requires a clean HTTP(S) URL"
+            )
+    elif relay_has_unsafe_components or parsed_relay.scheme != "https":
+        raise PublicReplyTransportError(
+            "Remote browser relay requires a clean HTTPS URL"
+        )
+    _freshness_callback_url(cfg)
 
 
 _DUPLICATE_CHECK_PAGE_SIZE = 100

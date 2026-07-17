@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -89,6 +90,140 @@ def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:
     assert by_path["public_reply.browser_relay_url"]["group"] == "工具与集成"
     assert by_path["public_reply.freshness_callback_url"]["group"] == "工具与集成"
     assert by_path["public_reply.browser_relay_api_key"]["group"] == "工具与集成"
+
+
+def _active_remote_public_reply_config() -> AppConfig:
+    cfg = AppConfig()
+    cfg.public_reply.enabled = True
+    cfg.public_reply.browser_relay_url = (
+        "https://relay.example.test/zendesk-reply-mcp"
+    )
+    cfg.public_reply.browser_relay_api_key = "relay-secret"
+    cfg.public_reply.freshness_callback_url = (
+        "https://relay.example.test/webhook/relay-pre-send-freshness"
+    )
+    return cfg
+
+
+def test_apply_rejects_remote_relay_without_https_callback(tmp_path) -> None:
+    cfg = _active_remote_public_reply_config()
+    store = AdminConfigStore(tmp_path)
+
+    with pytest.raises(ValueError, match="HTTPS.*non-loopback"):
+        store.apply(
+            cfg,
+            {
+                "changes": {
+                    "public_reply.freshness_callback_url": "",
+                    "agent.guardrails.max_rounds": 99,
+                },
+                "reason": "remove callback",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert cfg.public_reply.freshness_callback_url.startswith("https://")
+    assert cfg.agent.guardrails.max_rounds != 99
+    assert not store.overrides_path.exists()
+    assert not store.secrets_path.exists()
+    assert not store.audit_path.exists()
+
+
+def test_apply_write_failure_leaves_runtime_and_files_unchanged(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _active_remote_public_reply_config()
+    original_key = cfg.public_reply.browser_relay_api_key
+    original_count = cfg.public_reply.max_ask_count
+    store = AdminConfigStore(tmp_path)
+    real_write_yaml = store._write_yaml
+    calls = 0
+
+    def fail_second_write(path, data, *, secret=False):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk write failed")
+        return real_write_yaml(path, data, secret=secret)
+
+    monkeypatch.delenv("ZENDESK_BROWSER_RELAY_API_KEY", raising=False)
+    monkeypatch.setattr(store, "_write_yaml", fail_second_write)
+
+    with pytest.raises(OSError, match="disk write failed"):
+        store.apply(
+            cfg,
+            {
+                "changes": {
+                    "public_reply.browser_relay_api_key": "replacement-key",
+                    "public_reply.max_ask_count": 12,
+                },
+                "reason": "test failed persistence",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert cfg.public_reply.browser_relay_api_key == original_key
+    assert cfg.public_reply.max_ask_count == original_count
+    assert "ZENDESK_BROWSER_RELAY_API_KEY" not in os.environ
+    assert not store.overrides_path.exists()
+    assert not store.secrets_path.exists()
+    assert not store.audit_path.exists()
+
+
+def test_apply_rejects_nul_secret_before_persisting(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _active_remote_public_reply_config()
+    original_key = cfg.public_reply.browser_relay_api_key
+    store = AdminConfigStore(tmp_path)
+    monkeypatch.delenv("ZENDESK_BROWSER_RELAY_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="must not contain NUL"):
+        store.apply(
+            cfg,
+            {
+                "changes": {
+                    "public_reply.browser_relay_api_key": "bad\0secret",
+                },
+                "reason": "reject invalid secret",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert cfg.public_reply.browser_relay_api_key == original_key
+    assert "ZENDESK_BROWSER_RELAY_API_KEY" not in os.environ
+    assert not store.overrides_path.exists()
+    assert not store.secrets_path.exists()
+    assert not store.audit_path.exists()
+
+
+def test_apply_allows_disabling_public_reply_and_clearing_callback(
+    tmp_path,
+) -> None:
+    cfg = _active_remote_public_reply_config()
+    store = AdminConfigStore(tmp_path)
+
+    result = store.apply(
+        cfg,
+        {
+            "changes": {
+                "public_reply.enabled": False,
+                "public_reply.freshness_callback_url": "",
+            },
+            "reason": "disable public replies",
+        },
+        actor="admin",
+        ip="127.0.0.1",
+    )
+
+    assert result["ok"] is True
+    assert cfg.public_reply.enabled is False
+    assert cfg.public_reply.freshness_callback_url == ""
 
 
 def test_apply_parses_enabled_skills(tmp_path) -> None:

@@ -11,11 +11,13 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from zd_agent.config import AppConfig
+from zd_agent.config import AppConfig, load_config
 from zd_agent.integrations.zendesk_browser_relay import send_browser_relay_reply
+from zd_agent.services.admin_config import AdminConfigStore
 from zd_agent.tools.public_reply_delivery import (
     PublicReplyTransportError,
     send_public_reply_safely,
+    validate_public_reply_transport_config,
 )
 
 
@@ -30,15 +32,171 @@ FRESHNESS_FIELDS = {
 
 def _relay_config() -> AppConfig:
     cfg = AppConfig()
+    cfg.public_reply.enabled = True
     cfg.public_reply.browser_relay_url = (
         "https://relay.example.test/zendesk-reply-mcp"
     )
     cfg.public_reply.browser_relay_api_key = "relay-secret"
     cfg.public_reply.freshness_callback_url = (
-        "https://agent.example.test/webhook/relay-pre-send-freshness"
+        "https://relay.example.test/webhook/relay-pre-send-freshness"
     )
     cfg.webhook.listen_port = 8080
     return cfg
+
+
+def test_remote_relay_env_override_without_callback_is_rejected(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+public_reply:
+  enabled: true
+  browser_relay_url: http://127.0.0.1:8097/mcp
+  browser_relay_api_key: relay-secret
+  freshness_callback_url: ""
+resources:
+  base_dir: resources
+""".strip()
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(
+        "ZENDESK_BROWSER_RELAY_URL",
+        "https://relay.example.test/zendesk-reply-mcp",
+    )
+    monkeypatch.delenv("ZENDESK_FRESHNESS_CALLBACK_URL", raising=False)
+
+    cfg = load_config(str(config_path))
+
+    with pytest.raises(PublicReplyTransportError, match="HTTPS.*non-loopback"):
+        validate_public_reply_transport_config(cfg)
+
+
+def test_admin_override_is_applied_before_public_reply_config_validation(
+    tmp_path,
+) -> None:
+    cfg = _relay_config()
+    state_dir = tmp_path / ".state"
+    state_dir.mkdir()
+    (state_dir / "admin_overrides.yaml").write_text(
+        "public_reply:\n  freshness_callback_url: ''\n"
+    )
+
+    AdminConfigStore(state_dir).apply_saved(cfg)
+
+    with pytest.raises(PublicReplyTransportError, match="HTTPS.*non-loopback"):
+        validate_public_reply_transport_config(cfg)
+
+
+def test_loopback_relay_can_use_local_freshness_fallback() -> None:
+    cfg = _relay_config()
+    cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097/mcp"
+    cfg.public_reply.freshness_callback_url = ""
+
+    validate_public_reply_transport_config(cfg)
+
+
+@pytest.mark.parametrize("listen_port", [0, 65536, 99999])
+def test_loopback_freshness_fallback_rejects_invalid_webhook_port(
+    listen_port: int,
+) -> None:
+    cfg = _relay_config()
+    cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097/mcp"
+    cfg.public_reply.freshness_callback_url = ""
+    cfg.webhook.listen_port = listen_port
+
+    with pytest.raises(PublicReplyTransportError, match="port between"):
+        validate_public_reply_transport_config(cfg)
+
+
+@pytest.mark.parametrize(
+    "relay_url",
+    [
+        "http://relay.example.test/zendesk-reply-mcp",
+        "https://user@relay.example.test/zendesk-reply-mcp",
+        "https://relay.example.test/zendesk-reply-mcp?token=unsafe",
+        "https://relay.example.test/zendesk-reply-mcp#fragment",
+    ],
+)
+def test_remote_relay_requires_clean_https_url(relay_url: str) -> None:
+    cfg = _relay_config()
+    cfg.public_reply.browser_relay_url = relay_url
+
+    with pytest.raises(PublicReplyTransportError, match="HTTPS.*URL"):
+        validate_public_reply_transport_config(cfg)
+
+
+@pytest.mark.parametrize(
+    "relay_url",
+    [
+        "http://127.0.0.1:0/mcp",
+        "http://localhost:99999/mcp",
+        "http://localhost:bad/mcp",
+    ],
+)
+def test_relay_rejects_invalid_port(relay_url: str) -> None:
+    cfg = _relay_config()
+    cfg.public_reply.browser_relay_url = relay_url
+
+    with pytest.raises(PublicReplyTransportError, match="port between"):
+        validate_public_reply_transport_config(cfg)
+
+
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "https://relay.example.test:0/webhook/relay-pre-send-freshness",
+        "https://relay.example.test:99999/webhook/relay-pre-send-freshness",
+        "https://relay.example.test:bad/webhook/relay-pre-send-freshness",
+    ],
+)
+def test_callback_rejects_invalid_port(callback_url: str) -> None:
+    cfg = _relay_config()
+    cfg.public_reply.freshness_callback_url = callback_url
+
+    with pytest.raises(PublicReplyTransportError, match="port between"):
+        validate_public_reply_transport_config(cfg)
+
+
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "https://agent.example.test",
+        "https://user@agent.example.test/webhook/relay-pre-send-freshness",
+        "https://127.0.0.2/webhook/relay-pre-send-freshness",
+        "https://[::ffff:127.0.0.1]/webhook/relay-pre-send-freshness",
+    ],
+)
+def test_remote_relay_rejects_unsafe_freshness_callback(
+    callback_url: str,
+) -> None:
+    cfg = _relay_config()
+    cfg.public_reply.freshness_callback_url = callback_url
+
+    with pytest.raises(PublicReplyTransportError, match="freshness callback URL"):
+        validate_public_reply_transport_config(cfg)
+
+
+def test_loopback_relay_rejects_explicit_remote_callback() -> None:
+    cfg = _relay_config()
+    cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097/mcp"
+    cfg.public_reply.freshness_callback_url = (
+        "https://attacker.example.test/webhook/relay-pre-send-freshness"
+    )
+
+    with pytest.raises(PublicReplyTransportError, match="loopback callback URL"):
+        validate_public_reply_transport_config(cfg)
+
+
+def test_remote_relay_requires_callback_on_same_https_origin() -> None:
+    cfg = _relay_config()
+    cfg.public_reply.freshness_callback_url = (
+        "https://other.example.test/webhook/relay-pre-send-freshness"
+    )
+
+    with pytest.raises(PublicReplyTransportError, match="same HTTPS origin"):
+        validate_public_reply_transport_config(cfg)
 
 
 async def _send_and_capture_relay_arguments(reply_type: str) -> dict[str, object]:
@@ -99,7 +257,7 @@ async def test_handoff_keeps_form_readiness_callback_at_relay_boundary(
     relay_arguments = await _send_and_capture_relay_arguments(reply_type)
 
     assert relay_arguments["freshness_check_url"] == (
-        "https://agent.example.test/webhook/relay-pre-send-freshness"
+        "https://relay.example.test/webhook/relay-pre-send-freshness"
     )
     assert relay_arguments["freshness_check_api_key"] == "relay-secret"
     assert relay_arguments["snapshot_customer_message_count"] == 2
@@ -128,7 +286,7 @@ async def test_handoff_without_snapshot_still_sends_form_readiness_callback() ->
     )
 
     assert relay.await_args.kwargs["freshness_check_url"] == (
-        "https://agent.example.test/webhook/relay-pre-send-freshness"
+        "https://relay.example.test/webhook/relay-pre-send-freshness"
     )
     assert relay.await_args.kwargs["snapshot_customer_message_count"] is None
 
@@ -142,7 +300,7 @@ async def test_customer_resolvable_reply_keeps_final_relay_freshness_contract(
     relay_arguments = await _send_and_capture_relay_arguments(reply_type)
 
     assert relay_arguments["freshness_check_url"] == (
-        "https://agent.example.test/webhook/relay-pre-send-freshness"
+        "https://relay.example.test/webhook/relay-pre-send-freshness"
     )
     assert relay_arguments["freshness_check_api_key"] == "relay-secret"
     assert relay_arguments["snapshot_customer_message_count"] == 2

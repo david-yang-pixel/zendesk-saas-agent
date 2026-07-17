@@ -52,6 +52,8 @@ def test_build_agent_config_manifest_redacts_secrets() -> None:
 
 def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     cfg = AppConfig()
+    cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097/mcp"
+    cfg.public_reply.browser_relay_api_key = "relay-secret"
 
     manifest = update_agent_config(
         cfg,
@@ -114,6 +116,32 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert cfg.zendesk.api_token == ""
     assert manifest["agent"]["guardrails"]["max_context_tokens"] == 800000
     assert manifest["agent"]["guardrails"]["context_compaction_target_tokens"] == 28000
+
+
+def test_update_agent_config_rejects_invalid_public_reply_atomically() -> None:
+    cfg = AppConfig()
+    cfg.llm.model = "gpt-5.4"
+    cfg.public_reply.browser_relay_url = "http://127.0.0.1:8097/mcp"
+    cfg.public_reply.browser_relay_api_key = "relay-secret"
+    cfg.public_reply.freshness_callback_url = ""
+
+    with pytest.raises(ValueError, match="HTTPS.*non-loopback"):
+        update_agent_config(
+            cfg,
+            {
+                "llm": {"model": "gpt-5.6-terra"},
+                "features": {"auto_public_reply": {"enabled": True}},
+                "public_reply": {
+                    "browser_relay_url": (
+                        "https://relay.example.test/zendesk-reply-mcp"
+                    )
+                },
+            },
+        )
+
+    assert cfg.llm.model == "gpt-5.4"
+    assert cfg.public_reply.enabled is False
+    assert cfg.public_reply.browser_relay_url == "http://127.0.0.1:8097/mcp"
 
 
 def test_update_agent_config_trims_model_ids() -> None:

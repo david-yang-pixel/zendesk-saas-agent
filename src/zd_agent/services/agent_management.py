@@ -224,6 +224,8 @@ def update_agent_config(
     env: EnvSettings | None = None,
 ) -> dict[str, Any]:
     """Apply a conservative in-memory runtime config patch."""
+    original_cfg = cfg
+    cfg = cfg.model_copy(deep=True)
     update = deepcopy(payload)
 
     llm = _as_mapping(update.get("llm"))
@@ -338,7 +340,19 @@ def update_agent_config(
         cfg.public_reply.enabled = bool(public_reply["enabled"])
     _set_if_present(cfg.public_reply, public_reply, "browser_relay_url")
 
-    return build_agent_config_manifest(cfg, env=env)
+    from zd_agent.tools.public_reply_delivery import (
+        PublicReplyTransportError,
+        validate_public_reply_transport_config,
+    )
+
+    try:
+        validate_public_reply_transport_config(cfg)
+    except PublicReplyTransportError as exc:
+        raise ValueError(str(exc)) from None
+
+    for field_name in type(original_cfg).model_fields:
+        setattr(original_cfg, field_name, getattr(cfg, field_name))
+    return build_agent_config_manifest(original_cfg, env=env)
 
 
 def _dedupe_model_ids(*groups: list[str | None] | tuple[str | None, ...]) -> list[str]:

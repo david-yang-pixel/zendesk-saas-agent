@@ -439,6 +439,8 @@ def _validate_enabled_skills(
 
 
 def _validate_normalized_value(spec: FieldSpec, value: Any) -> None:
+    if spec.secret and isinstance(value, str) and "\0" in value:
+        raise ValueError(f"{spec.path} must not contain NUL bytes")
     if spec.path == "skills.enabled":
         if not value:
             raise ValueError("skills.enabled must include at least one Skill")
@@ -617,6 +619,20 @@ class AdminConfigStore:
             )
             if "trigger_decider.reasoning_effort" in normalized:
                 normalized["trigger_decider.reasoning_effort"] = trigger_effort
+            if any(path.startswith("public_reply.") for path in normalized):
+                from zd_agent.tools.public_reply_delivery import (
+                    PublicReplyTransportError,
+                    validate_public_reply_transport_config,
+                )
+
+                candidate = cfg.model_copy(deep=True)
+                for path, value in normalized.items():
+                    if path.startswith("public_reply."):
+                        _set_attr(candidate, path, value)
+                try:
+                    validate_public_reply_transport_config(candidate)
+                except PublicReplyTransportError as exc:
+                    raise ValueError(str(exc)) from None
         if "skills.enabled" in normalized:
             custom_skills = normalized.get("skills.custom")
             if custom_skills is None and cfg is not None:
@@ -682,6 +698,45 @@ class AdminConfigStore:
             spec = self._specs[path]
             if spec.secret:
                 _deep_set(secrets_data, path, value)
+            else:
+                _deep_set(overrides, path, _jsonable(value))
+
+        persisted_paths = (self.overrides_path, self.secrets_path)
+        snapshots = {
+            path: path.read_bytes() if path.exists() else None
+            for path in persisted_paths
+        }
+        audit_existed = self.audit_path.exists()
+        audit_size = self.audit_path.stat().st_size if audit_existed else 0
+        try:
+            self._write_yaml(self.overrides_path, overrides)
+            self._write_yaml(self.secrets_path, secrets_data, secret=True)
+            audit = self._write_audit(
+                actor=actor,
+                ip=ip,
+                action="config_apply",
+                reason=str(payload.get("reason") or ""),
+                diff=preview["diff"],
+                restart_required=preview["restart_required"],
+            )
+        except Exception:
+            for path, content in snapshots.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                    continue
+                atomic_write_text(path, content.decode("utf-8"))
+                if path == self.secrets_path:
+                    path.chmod(0o600)
+            if audit_existed and self.audit_path.exists():
+                with self.audit_path.open("r+b") as audit_file:
+                    audit_file.truncate(audit_size)
+            elif not audit_existed:
+                self.audit_path.unlink(missing_ok=True)
+            raise
+
+        for path, value in changes.items():
+            spec = self._specs[path]
+            if spec.secret:
                 env_name = SECRET_ENV_MAP.get(path)
                 if env_name:
                     os.environ[env_name] = str(value)
@@ -690,21 +745,8 @@ class AdminConfigStore:
                     and not path.startswith(("openai.", "anthropic.", "admin_auth."))
                 ):
                     _set_attr(cfg, path, value)
-            else:
-                _deep_set(overrides, path, _jsonable(value))
-                if not path.startswith("admin_auth.") and not spec.restart_required:
-                    _set_attr(cfg, path, value)
-
-        self._write_yaml(self.overrides_path, overrides)
-        self._write_yaml(self.secrets_path, secrets_data, secret=True)
-        audit = self._write_audit(
-            actor=actor,
-            ip=ip,
-            action="config_apply",
-            reason=str(payload.get("reason") or ""),
-            diff=preview["diff"],
-            restart_required=preview["restart_required"],
-        )
+            elif not path.startswith("admin_auth.") and not spec.restart_required:
+                _set_attr(cfg, path, value)
         return {**preview, "audit_id": audit["id"]}
 
     def apply_saved(self, cfg: AppConfig) -> None:

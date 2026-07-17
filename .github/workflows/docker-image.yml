@@ -55,6 +55,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image_digest: ${{ steps.build-image.outputs.digest }}
 
     steps:
       - name: Check out repository
@@ -71,6 +73,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
+        id: build-image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -101,13 +104,14 @@ jobs:
           DEPLOY_PORT: ${{ secrets.ZD_AGENT_DEPLOY_PORT }}
           DEPLOY_SSH_KEY: ${{ secrets.ZD_AGENT_DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.ZD_AGENT_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_DIGEST: ${{ needs.build.outputs.image_digest }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
           missing=()
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS DEPLOY_DIGEST; do
             if [[ -z "${!name:-}" ]]; then
               missing+=("$name")
             fi
@@ -132,9 +136,22 @@ jobs:
           {
             printf 'export GHCR_USERNAME=%q\n' "$GHCR_USERNAME"
             printf 'export GHCR_PAT=%q\n' "$GHCR_PAT"
+            printf 'export ZD_AGENT_IMAGE_DIGEST=%q\n' "$DEPLOY_DIGEST"
             cat <<'REMOTE'
           set -euo pipefail
+          umask 077
           cd /opt/zd-agent/code
+          exec 9>/run/lock/zd-agent-deploy.lock
+          if ! flock -w 120 9; then
+            echo "Timed out waiting for the zd-agent deployment lock" >&2
+            exit 1
+          fi
+          export ZD_AGENT_DEPLOY_LOCK_HELD=1
+          EXPECTED_SHA="${DEPLOY_TAG#sha-}"
+          if ! git diff --quiet -- || ! git diff --cached --quiet --; then
+            echo "Refusing deployment from a dirty tracked worktree" >&2
+            exit 1
+          fi
           for attempt in 1 2 3; do
             if timeout 30s git fetch origin main; then
               break
@@ -147,7 +164,13 @@ jobs:
             sleep $((attempt * 5))
           done
           git switch main
-          git merge --ff-only origin/main
+          git merge --ff-only "$EXPECTED_SHA"
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          if [[ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]] || \
+            ! git diff --quiet -- || ! git diff --cached --quiet --; then
+            echo "Refusing mixed-revision deployment: repo=${ACTUAL_SHA}, image=${EXPECTED_SHA}" >&2
+            exit 1
+          fi
           ./deploy/deploy-ghcr.sh "$DEPLOY_TAG"
           REMOTE
           } | ssh -i "$key_file" -p "$DEPLOY_PORT" \

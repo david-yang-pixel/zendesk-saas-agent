@@ -44,6 +44,11 @@ def apply_saved_admin_config(cfg: AppConfig) -> Path:
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_dir.chmod(0o700)
     AdminConfigStore(state_dir).apply_saved(cfg)
+    from zd_agent.tools.public_reply_delivery import (
+        validate_public_reply_transport_config,
+    )
+
+    validate_public_reply_transport_config(cfg)
     return state_dir
 
 

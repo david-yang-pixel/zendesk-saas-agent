@@ -42,9 +42,16 @@
 | `zendesk.min_ticket_id` | `2624` | **灰度边界**：只处理 ID ≥ 此值的工单。上线稳定后改 `0` 处理全部 SaaS 工单 |
 | `zendesk.search_query` | `status:new tags:saas` | 处理范围 |
 
-> 改 `config.yaml` 后直接 `systemctl restart zd-agent` 即生效（配置挂载为只读 volume，无需 rebuild 镜像）。
-> 应急回退 public reply：改 `enabled: false` → restart，最快止血。
-> CI/CD 还会从服务器本机请求 freshness callback；未带 Bearer 必须返回 401，否则部署判失败。
+> 生产唯一的宿主机配置源是 `/opt/zd-agent/code/config.yaml`，由 systemd
+> 只读挂载到 `/app/config.yaml`。不要再挂载或同步旧的
+> `/opt/zd-agent/releases/main/config.yaml`。
+> 生产 checkout 必须保持 tracked files clean；不要直接编辑其中的 `config.yaml`。
+> 配置变更应走管理后台/`.env`，或提交到 `main` 后由 CI/CD 发布。
+> 应急回退 public reply：在管理后台将 `enabled` 设为 `false`，最快止血。
+> CI/CD 会在重启前使用目标镜像加载 `config.yaml`、`.env` 和管理后台覆盖，
+> 并在重启后再次检查运行容器的最终有效配置。远程 Browser Relay 缺少 HTTPS
+> 非 loopback callback 时部署必须失败。CI/CD 还会从服务器本机请求 freshness
+> callback 的公网 HTTPS 地址；未带 Bearer 必须返回 401，否则部署判失败。
 
 ### 2. Clone repo on server
 
@@ -253,8 +260,8 @@ Push to `main` runs `.github/workflows/docker-image.yml`:
 1. build `deploy/Dockerfile`
 2. push `ghcr.io/david-yang-pixel/zendesk-saas-agent:main`
 3. push `ghcr.io/david-yang-pixel/zendesk-saas-agent:sha-<commit-sha>`
-4. SSH to the server, fast-forward `/opt/zd-agent/code` to `origin/main`
-5. run `/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>`
+4. SSH to the server, fast-forward `/opt/zd-agent/code` to the exact workflow commit
+5. deploy the immutable build digest with its matching `sha-<commit-sha>` revision
 6. send a success email only after `deploy-ghcr.sh` finishes and `healthz` passes,
    when SMTP notification secrets are configured
 
@@ -294,27 +301,45 @@ notice and skips the email step without failing the deployment:
 ```bash
 # First-time only for private packages. Use a PAT with read:packages only.
 read -rsp "GHCR PAT: " GHCR_PAT; echo
-GHCR_USERNAME=<github-user> GHCR_PAT="$GHCR_PAT" /opt/zd-agent/code/deploy/deploy-ghcr.sh main
+COMMIT=<40-hex-commit-sha>
+IMAGE=ghcr.io/david-yang-pixel/zendesk-saas-agent
+DIGEST="$(docker buildx imagetools inspect "$IMAGE:sha-$COMMIT" --format '{{.Manifest.Digest}}')"
+(
+set -euo pipefail
+cd /opt/zd-agent/code
+exec 9>/run/lock/zd-agent-deploy.lock
+flock -w 120 9
+export ZD_AGENT_DEPLOY_LOCK_HELD=1
+git diff --quiet -- && git diff --cached --quiet --
+git fetch origin main
+git switch --detach "$COMMIT"
+ZD_AGENT_IMAGE_DIGEST="$DIGEST" GHCR_USERNAME=<github-user> GHCR_PAT="$GHCR_PAT" \
+  ./deploy/deploy-ghcr.sh "sha-$COMMIT"
+)
 unset GHCR_PAT
 ```
 
 CI/CD deploys the immutable `sha-<commit-sha>` tag built by that workflow run
-and passes the workflow `GITHUB_TOKEN` to `deploy-ghcr.sh` for a temporary GHCR
-login. Manual daily deploys can use the moving `main` tag after Docker has
-logged in to GHCR:
-
-```bash
-/opt/zd-agent/code/deploy/deploy-ghcr.sh main
-```
+by its immutable digest, and passes the workflow `GITHUB_TOKEN` to
+`deploy-ghcr.sh` for a temporary GHCR login. Moving tags such as `main` are
+intentionally rejected by the production deploy script.
 
 To deploy or roll back to an exact commit image:
 
 ```bash
-/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>
+ZD_AGENT_IMAGE_DIGEST=sha256:<manifest-digest> \
+  /opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<40-hex-commit-sha>
 ```
 
-`deploy-ghcr.sh` pulls `ghcr.io/david-yang-pixel/zendesk-saas-agent:<tag>`, retags it
-as local `zd-agent:latest`, restarts `zd-agent`, and waits for
+The checkout must already be clean and at that exact commit. If a manual
+operation also changes the checkout, acquire `/run/lock/zd-agent-deploy.lock`
+before `git fetch/switch` and export `ZD_AGENT_DEPLOY_LOCK_HELD=1`, as shown
+above. Keep the checkout at the deployed commit; the next successful CI/CD run
+switches it back to `main` under the same lock.
+
+`deploy-ghcr.sh` pulls the immutable image digest, verifies its OCI revision
+label and the clean server checkout match the requested commit, retags it as
+local `zd-agent:latest`, restarts `zd-agent`, and waits for
 `http://127.0.0.1:8080/healthz`. After both the health check and the protected
 freshness-route check succeed, it removes older images from that Agent image
 repository while preserving the running image, `zd-agent:latest`, and the three
@@ -369,9 +394,9 @@ sudo journalctl -u zd-agent -f
 | Force reprocess ticket | Feishu `/reprocess 12345` |
 | Check status | Feishu `/status` |
 | Update SaaS branch | Feishu `/branch dify hotfix/1.11.2-fix3` |
-| Update agent code | `/opt/zd-agent/code/deploy/deploy-ghcr.sh main` |
-| Roll back agent image | `/opt/zd-agent/code/deploy/deploy-ghcr.sh sha-<commit-sha>` |
-| Restart only (改 config.yaml 后) | `sudo systemctl restart zd-agent`（config 挂载只读 volume，无需 rebuild）|
+| Update agent code | Push the desired commit to `main`; CI/CD deploys its immutable digest |
+| Roll back agent image | Set `ZD_AGENT_IMAGE_DIGEST=sha256:<digest>` and deploy the matching `sha-<40-hex-commit>` |
+| Restart only (管理后台要求重启或 `.env` 变更后) | `sudo systemctl restart zd-agent` |
 | Refresh DB schema cheat sheet | `bash /opt/db-gateway/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
 
 ## Daily Backups

@@ -53,7 +53,7 @@ def _config() -> AppConfig:
             browser_relay_url="https://relay.example.test/zendesk-reply-mcp",
             browser_relay_api_key="relay-secret",
             freshness_callback_url=(
-                "https://agent.example.test/webhook/relay-pre-send-freshness"
+                "https://relay.example.test/webhook/relay-pre-send-freshness"
             ),
         ),
     )

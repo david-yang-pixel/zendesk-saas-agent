@@ -1,6 +1,5 @@
 """Test SaaS app factory creates app with expected routes."""
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -14,6 +13,7 @@ def test_create_saas_app_has_expected_routes(tmp_path):
         cfg.resources.state_dir = ".state"
         cfg.webhook.zendesk_path = "/webhook/zendesk"
         cfg.webhook.zendesk_messaging_path = "/webhook/zendesk-messaging"
+        cfg.public_reply.enabled = False
         mock_cfg.return_value = cfg
 
         manager = MagicMock()
@@ -37,6 +37,7 @@ def test_create_saas_app_wires_queues_and_state(tmp_path):
         cfg.resources.state_dir = ".state"
         cfg.webhook.zendesk_path = "/webhook/zendesk"
         cfg.webhook.zendesk_messaging_path = "/webhook/zendesk-messaging"
+        cfg.public_reply.enabled = False
         mock_cfg.return_value = cfg
 
         manager = MagicMock()
@@ -62,6 +63,7 @@ async def test_completed_reply_session_marks_owned_processing_ticket_processed(
         cfg.resources.state_dir = ".state"
         cfg.webhook.zendesk_path = "/webhook/zendesk"
         cfg.webhook.zendesk_messaging_path = "/webhook/zendesk-messaging"
+        cfg.public_reply.enabled = False
         mock_cfg.return_value = cfg
 
         manager = MagicMock()
