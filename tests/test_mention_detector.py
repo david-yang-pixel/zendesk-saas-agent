@@ -11,7 +11,7 @@ from zd_agent.mention.detector import (
 
 
 class TestIsMention(unittest.TestCase):
-    def test_zero_agent_user_id_is_resolved_and_logged_once(self) -> None:
+    def test_zero_agent_user_id_warns_once(self) -> None:
         cfg = SimpleNamespace(zendesk=SimpleNamespace(agent_user_id=0))
         clear_cache = getattr(get_self_user_id, "cache_clear", lambda: None)
         clear_cache()
@@ -19,13 +19,13 @@ class TestIsMention(unittest.TestCase):
         try:
             with (
                 patch("zd_agent.config.get_config", return_value=cfg) as get_config,
-                patch("zd_agent.mention.detector.logger.info") as log_info,
+                patch("zd_agent.mention.detector.logger.warning") as log_warning,
             ):
                 self.assertIsNone(get_self_user_id())
                 self.assertIsNone(get_self_user_id())
 
             get_config.assert_called_once_with()
-            log_info.assert_called_once_with("self_user_id_resolved", user_id=None)
+            log_warning.assert_called_once_with("self_user_id_unconfigured")
         finally:
             clear_cache()
 
@@ -99,6 +99,53 @@ class TestIsMention(unittest.TestCase):
             "zd_agent.mention.detector.get_self_user_id", return_value=12345,
         ):
             self.assertFalse(is_mention(comment, "@saas-agent"))
+
+    def test_api_mention_fails_closed_when_agent_user_id_is_unconfigured(self) -> None:
+        """无法识别自身账号时，API 内部备注不能被当成人工 mention。
+
+        Regression: #3501 的生产配置 ``agent_user_id=0``，Agent 自己写出的
+        失败备注包含 @mention，mention poller 因而持续触发新会话。
+        """
+        comment = {
+            "public": False,
+            "body": (
+                "⚠️ AI Agent encountered an error. "
+                "Retry by mentioning @saas-agent."
+            ),
+            "author_id": 12345,
+            "via": {"channel": "api"},
+        }
+        with patch(
+            "zd_agent.mention.detector.get_self_user_id", return_value=None,
+        ):
+            self.assertFalse(is_mention(comment, "@saas-agent"))
+
+    def test_numeric_web_service_mention_fails_closed_when_unconfigured(self) -> None:
+        """Zendesk may return via.channel as the integer via id (5 = API)."""
+        comment = {
+            "public": False,
+            "body": "Retry by mentioning @David Yang.",
+            "author_id": 45433304089364,
+            "via": {"channel": 5},
+        }
+        with patch(
+            "zd_agent.mention.detector.get_self_user_id", return_value=None,
+        ):
+            self.assertFalse(is_mention(comment, "@David Yang"))
+
+    def test_numeric_mail_mention_is_treated_as_human_channel(self) -> None:
+        """Zendesk via id 4 is mail and must not be classified as an API note."""
+        comment = {
+            "public": False,
+            "body": "Please check @David Yang",
+            "author_id": 45433304089364,
+            "via": {"channel": 4},
+        }
+        with patch(
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=45433304089364,
+        ):
+            self.assertTrue(is_mention(comment, "@David Yang"))
 
     def test_other_bot_via_api_with_different_author_still_triggers(self) -> None:
         """其他 bot 通过 API 写 @saas-agent，author_id 不同 → 应触发（不是自触发）。"""

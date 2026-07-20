@@ -9,6 +9,46 @@ from zd_agent.log import get_logger
 
 logger = get_logger(module="mention.detector")
 
+# Zendesk may serialize ``via.channel`` as either a readable type or an integer
+# via id. Keep only the ids whose human-vs-automation classification matters to
+# the mention guard; unknown ids use the compatibility path below.
+_VIA_ID_CHANNELS = {
+    0: "web",
+    4: "email",
+    5: "web_service",
+    8: "rule",
+    15: "mobile",
+    17: "web",
+    20: "web",
+    27: "web",
+    29: "chat",
+    31: "api",
+    36: "api",
+    39: "api",
+    40: "api",
+    44: "api",
+    45: "api",
+    46: "api",
+    48: "web",
+    49: "mobile",
+    56: "mobile",
+    62: "rule",
+    66: "api",
+    75: "messaging",
+    87: "api",
+}
+
+
+def _normalize_via_channel(raw_channel: object) -> str:
+    if isinstance(raw_channel, bool):
+        return ""
+    if isinstance(raw_channel, int):
+        return _VIA_ID_CHANNELS.get(raw_channel, str(raw_channel))
+    channel = str(raw_channel or "").strip().lower()
+    if channel.isdecimal():
+        return _VIA_ID_CHANNELS.get(int(channel), channel)
+    return channel
+
 
 def configured_mention_triggers(zendesk_cfg: object) -> list[str]:
     """Return primary mention trigger plus aliases, preserving order."""
@@ -54,7 +94,10 @@ def get_self_user_id() -> int | None:
         from zd_agent.config import get_config
         configured_id = int(get_config().zendesk.agent_user_id or 0)
         self_user_id = configured_id or None
-        logger.info("self_user_id_resolved", user_id=self_user_id)
+        if self_user_id is None:
+            logger.warning("self_user_id_unconfigured")
+        else:
+            logger.info("self_user_id_resolved", user_id=self_user_id)
         return self_user_id
     except Exception as e:
         logger.warning("self_user_id_failed", error=str(e))
@@ -87,18 +130,78 @@ def is_mention(comment: dict, trigger: str) -> bool:
     if public_flag:
         return False
 
+    body = str(comment.get("body", ""))
+    username = trigger.lstrip("@")
+    contains_mention = (
+        _contains_raw_mention(body, trigger)
+        or f"**{username.lower()}**" in body.lower()
+    )
+    if not contains_mention:
+        return False
+
     # 防自触发：agent 用的是 agent@example.com 本人账号，所以单靠 author_id ==
     # self_id 会误伤"yonggang 自己在 UI 写 @saas-agent"的合理触发场景。
     # 改用 via.channel + author_id 联合判断：
     #   - human channels (web / mobile / chat / email) → 是人在操作，触发
     #   - API channels (api / web_service / rule / system / trigger) + author_id 匹配
     #     → agent 自己写的，跳过
+    #   - 无法解析 self_id 时，明确的非人工渠道必须 fail-closed；否则 Agent
+    #     自动写出的失败备注会再次唤醒自身（#3501）。
     via = comment.get("via") or {}
-    channel = (via.get("channel") or "").lower()
-    human_channels = {"web", "mobile", "chat", "email", "voice", "messaging"}
+    channel = _normalize_via_channel(via.get("channel"))
+    human_channels = {
+        "web",
+        "web_form",
+        "mail",
+        "mobile",
+        "mobile_sdk",
+        "iphone",
+        "chat",
+        "email",
+        "voice",
+        "messaging",
+        "native_messaging",
+    }
+    non_human_channels = {
+        "api",
+        "web_service",
+        "rule",
+        "rule_revision",
+        "system",
+        "trigger",
+        "ticket_sharing",
+        "answer_bot_api",
+        "sunshine_conversations_api",
+    }
 
-    if channel not in human_channels:
-        # 非人类渠道（API / rule / 缺 via 字段等）→ 走 author_id 自触发兜底
+    if channel in non_human_channels:
+        # 明确的非人工渠道必须能证明作者不是自己；配置或作者缺失时
+        # fail-closed，避免 Agent 生成的 mention 形成自触发循环。
+        author_id = comment.get("author_id")
+        if author_id is None:
+            logger.debug(
+                "skip_non_human_mention_without_author",
+                channel=channel,
+            )
+            return False
+        self_id = get_self_user_id()
+        if self_id is None:
+            logger.debug(
+                "skip_non_human_mention_without_self_user_id",
+                author_id=author_id,
+                channel=channel,
+            )
+            return False
+        if author_id == self_id:
+            logger.debug(
+                "skip_self_comment",
+                author_id=author_id,
+                channel=channel,
+            )
+            return False
+    elif channel not in human_channels:
+        # 兼容缺少 via.channel 的旧评论格式：只有在 self_id 可解析且作者
+        # 明确匹配时才判定为自写。明确的 API 渠道不走此兼容分支。
         author_id = comment.get("author_id")
         if author_id is not None:
             self_id = get_self_user_id()
@@ -110,9 +213,4 @@ def is_mention(comment: dict, trigger: str) -> bool:
                 )
                 return False
 
-    body = str(comment.get("body", ""))
-    if _contains_raw_mention(body, trigger):
-        return True
-    # Zendesk 将 @mention 转为 **username** 格式
-    username = trigger.lstrip("@")
-    return f"**{username.lower()}**" in body.lower()
+    return True

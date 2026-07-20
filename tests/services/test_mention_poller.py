@@ -105,6 +105,67 @@ async def test_scan_once_dispatches_mention(queue, tracker):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_skips_api_mention_when_agent_user_id_is_unconfigured(
+    queue,
+    tracker,
+):
+    """Regression: #3501 must not loop on Agent-authored API notes."""
+    fake_call, _state = _mcp_call(
+        search_resp={"results": [_ticket(3501)]},
+        comments_by_ticket={
+            3501: {
+                "comments": [
+                    {
+                        "id": "agent-error-note",
+                        "body": (
+                            "Production agent stopped. Retry by mentioning "
+                            "@David Yang."
+                        ),
+                        "public": False,
+                        "author_id": 45433304089364,
+                        "via": {
+                            "channel": "api",
+                            "source": {"from": {}, "to": {}, "rel": None},
+                        },
+                    }
+                ],
+            }
+        },
+    )
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+        patch(
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=None,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@David Yang"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+
+        n, cursor = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=time.time() - 600,
+        )
+        n_again, _ = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=cursor,
+        )
+
+    assert n == 0
+    assert n_again == 0
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_scan_once_marks_processed_only_after_durable_put(tracker):
     class FailingQueue:
         async def put(self, _message):
