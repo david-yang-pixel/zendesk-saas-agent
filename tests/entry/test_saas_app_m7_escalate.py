@@ -311,7 +311,7 @@ class TestFeishuEscalate:
 
     @pytest.mark.asyncio
     async def test_feishu_called_with_reason_and_phrase(self, tmp_path) -> None:
-        """飞书 reason 内容含升级原因 / 客户原话 / source"""
+        """飞书卡片含可执行上下文，不暴露内部追踪字段。"""
         state = _make_state(tmp_path)
         mock_push = AsyncMock(return_value={"success": True})
 
@@ -339,9 +339,10 @@ class TestFeishuEscalate:
         kwargs = mock_push.await_args.kwargs
         assert kwargs["ticket_id"] == "9999"
         reason_text = kwargs["content"]
-        assert "high_risk_refund" in reason_text
+        assert "退款或账务操作需要人工审核与执行。" in reason_text
         assert "退款" in reason_text
-        assert "zendesk_webhook" in reason_text
+        assert "high_risk_refund" not in reason_text
+        assert "zendesk_webhook" not in reason_text
         # zendesk_url 拼接正确
         assert "dify-test" in kwargs["zendesk_url"]
         assert "9999" in kwargs["zendesk_url"]

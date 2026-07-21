@@ -9,6 +9,59 @@ from zd_agent.prompts.public_reply.templates import handoff_template
 
 logger = get_logger(module="services.escalation_notifications")
 
+_ESCALATION_REASON_SUMMARIES = {
+    "agent_handoff": "Agent 已完成初步处理，后续需要人工继续跟进。",
+    "customer_requested": "客户明确要求人工支持。",
+    "high_risk_emotional": "客户情绪或潜在风险较高，需要人工优先跟进。",
+    "high_risk_refund": "退款或账务操作需要人工审核与执行。",
+    "max_asks_reached": "多轮补充信息后仍无法自动完成，需要人工继续处理。",
+    "sre_investigation": "需要工程或 SRE 继续调查。",
+}
+
+
+def _escalation_reason_summary(reason: str) -> str:
+    normalized = reason.strip()
+    if normalized in _ESCALATION_REASON_SUMMARIES:
+        return _ESCALATION_REASON_SUMMARIES[normalized]
+    if normalized.startswith("high_risk_"):
+        return "该工单涉及高风险场景，需要人工审核处理。"
+    if normalized.endswith("_retry_exhausted"):
+        return "自动处理多次重试仍未成功，需要人工接管。"
+    return normalized or "未提供升级原因。"
+
+
+def _escalation_card_content(
+    *,
+    reason: str,
+    customer_phrase: str,
+    agent_last_reply: str,
+    handoff_reply_sent: bool | None,
+) -> str:
+    """Build an actionable card without clipping or internal trace fields."""
+    sections = [f"**升级原因**\n{_escalation_reason_summary(reason)}"]
+
+    if handoff_reply_sent is False:
+        sections.append(
+            "**⚠️ 投递告警**\n客户未收到转人工通知，请立即人工回复。"
+        )
+    elif handoff_reply_sent is True:
+        sections.append("**客户通知状态**\n✅ 转人工说明已成功发送")
+
+    normalized_phrase = customer_phrase.strip()
+    if normalized_phrase:
+        sections.append(f"**客户原话**\n{normalized_phrase}")
+
+    normalized_reply = agent_last_reply.strip()
+    if normalized_reply:
+        reply_heading = (
+            "已发送给客户的回复"
+            if handoff_reply_sent is True
+            else "Agent 上次回复（供人工参考）"
+        )
+        sections.append(f"**{reply_heading}**\n{normalized_reply}")
+
+    return "\n\n".join(sections)
+
 
 async def send_handoff_reply_best_effort(
     *,
@@ -99,23 +152,16 @@ async def send_feishu_escalation_best_effort(
             f"/agent/tickets/{ticket_id}"
             if cfg.zendesk.subdomain else ""
         )
-        reason_lines = [f"**升级原因**: {reason}"]
-        if customer_phrase:
-            reason_lines.append(f"**客户原话**: {customer_phrase[:200]}")
-        if agent_last_reply:
-            reason_lines.append(f"**Agent 上次回复**: {agent_last_reply[:200]}")
-        if handoff_reply_sent is False:
-            reason_lines.append(
-                "**投递告警**: 客户未收到转人工通知，请立即人工回复。"
-            )
-        if idempotency_reference:
-            reason_lines.append(f"**幂等引用**: {idempotency_reference}")
-        reason_lines.append(f"**source**: {source}")
 
         payload = await push_notification_card(
             card_type="ticket_escalate",
             ticket_id=str(ticket_id),
-            content="\n".join(reason_lines),
+            content=_escalation_card_content(
+                reason=reason,
+                customer_phrase=customer_phrase,
+                agent_last_reply=agent_last_reply,
+                handoff_reply_sent=handoff_reply_sent,
+            ),
             zendesk_url=zendesk_url,
             cfg=cfg,
         )
@@ -126,6 +172,10 @@ async def send_feishu_escalation_best_effort(
             "escalated_feishu_failed",
             ticket_id=ticket_id,
             error=str(e)[:200],
+            reason=reason,
+            source=source,
+            handoff_reply_sent=handoff_reply_sent,
+            idempotency_reference=idempotency_reference,
             exc_info=True,
         )
         return False
@@ -134,6 +184,9 @@ async def send_feishu_escalation_best_effort(
         "escalated_feishu_pushed",
         ticket_id=ticket_id,
         reason=reason,
+        source=source,
+        handoff_reply_sent=handoff_reply_sent,
+        idempotency_reference=idempotency_reference,
     )
     return True
 

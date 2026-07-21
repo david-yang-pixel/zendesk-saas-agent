@@ -139,7 +139,7 @@ async def test_feishu_escalation_skips_human_takeover() -> None:
 
 
 @pytest.mark.asyncio
-async def test_feishu_escalation_sends_reason_context() -> None:
+async def test_feishu_escalation_sends_actionable_context_without_trace_fields() -> None:
     push = AsyncMock(return_value={"success": True, "output": "pushed"})
 
     with (
@@ -166,10 +166,61 @@ async def test_feishu_escalation_sends_reason_context() -> None:
     assert "dify-test" in kwargs["zendesk_url"]
     assert "9999" in kwargs["zendesk_url"]
     reason_text = kwargs["content"]
-    assert "high_risk_refund" in reason_text
+    assert "退款或账务操作需要人工审核与执行。" in reason_text
     assert "退款" in reason_text
     assert "I will check this." in reason_text
-    assert "zendesk_webhook" in reason_text
+    assert "high_risk_refund" not in reason_text
+    assert "zendesk_webhook" not in reason_text
+
+
+@pytest.mark.asyncio
+async def test_feishu_escalation_keeps_complete_reply_and_logs_hidden_trace() -> None:
+    push = AsyncMock(return_value={"success": True, "output": "pushed"})
+    agent_reply = (
+        "We could not find a paid subscription or invoice linked to the workspace "
+        "provided in this request, so the billing details may be under a different "
+        "account or workspace.\n\n"
+        "I am handing this to our billing support team for a manual review. "
+        "They will continue the investigation in this ticket."
+    )
+    assert len(agent_reply) > 200
+
+    with (
+        patch(
+            "zd_agent.config.get_config",
+            return_value=_make_cfg(),
+        ),
+        patch("zd_agent.services.escalation_notifications.push_notification_card", push),
+        patch("zd_agent.services.escalation_notifications.logger") as log,
+    ):
+        sent = await send_feishu_escalation_best_effort(
+            ticket_id=3512,
+            reason="agent_handoff",
+            source="agent_public_reply",
+            agent_last_reply=agent_reply,
+            handoff_reply_sent=True,
+            idempotency_reference="public-handoff:test-reference",
+        )
+
+    assert sent is True
+    content = push.await_args.kwargs["content"]
+    assert "**升级原因**\n" in content
+    assert "**客户通知状态**\n" in content
+    assert "**已发送给客户的回复**\n" in content
+    assert agent_reply in content
+    assert "They will continue the investigation in this ticket." in content
+    assert "追踪信息" not in content
+    assert "agent_handoff" not in content
+    assert "agent_public_reply" not in content
+    assert "public-handoff:test-reference" not in content
+    log.info.assert_called_once_with(
+        "escalated_feishu_pushed",
+        ticket_id=3512,
+        reason="agent_handoff",
+        source="agent_public_reply",
+        handoff_reply_sent=True,
+        idempotency_reference="public-handoff:test-reference",
+    )
 
 
 @pytest.mark.asyncio

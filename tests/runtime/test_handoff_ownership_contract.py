@@ -151,7 +151,10 @@ async def test_successful_handoff_deterministically_attempts_both_escalations(
     notification_kwargs = notification_push.await_args.kwargs
     assert notification_kwargs["card_type"] == "ticket_escalate"
     assert notification_kwargs["ticket_id"] == str(_TICKET_ID)
-    assert "agent_handoff" in notification_kwargs["content"]
+    assert "Agent 已完成初步处理，后续需要人工继续跟进。" in notification_kwargs[
+        "content"
+    ]
+    assert "agent_handoff" not in notification_kwargs["content"]
 
     zendesk_metadata_update.assert_awaited_once()
     tool_name, tool_args = zendesk_metadata_update.await_args.args
