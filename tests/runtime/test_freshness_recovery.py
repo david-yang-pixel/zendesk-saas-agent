@@ -168,7 +168,8 @@ async def test_public_reply_propagates_freshness_recovery_to_agent_loop(
         {
             "ticket_id": 3461,
             "body": "Thank you. I will re-evaluate the new details.",
-            "reply_type": "solution",
+            "reply_type": "ask",
+            "internal_analysis": "Exercise freshness recovery after a new customer message.",
             "conversation_id": "conversation-3461",
         },
         session,

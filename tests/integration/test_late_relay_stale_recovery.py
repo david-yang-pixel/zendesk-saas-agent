@@ -182,7 +182,8 @@ async def test_public_reply_refetches_after_late_relay_stale_context(
         {
             "ticket_id": TICKET_ID,
             "body": "Here is the answer based on the original message.",
-            "reply_type": "solution",
+            "reply_type": "ask",
+            "internal_analysis": "Exercise late-relay freshness recovery.",
             "conversation_id": "conversation-3461",
         },
         session,

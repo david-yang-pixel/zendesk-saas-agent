@@ -37,7 +37,7 @@ _REMOTE_IMAGE_URL = "https://example.zendesk.com/attachments/late-error.png"
 _IMAGE_DATA_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
 
 
-class _AlwaysRequestSolutionProvider:
+class _AlwaysRequestReplyProvider:
     """Keep asking for the same public reply until runtime terminates the run."""
 
     def __init__(self, ticket_id: int) -> None:
@@ -56,7 +56,8 @@ class _AlwaysRequestSolutionProvider:
             {
                 "ticket_id": self.ticket_id,
                 "body": "Thank you. I reviewed the available details.",
-                "reply_type": "solution",
+                "reply_type": "ask",
+                "internal_analysis": "Exercise the pre-send freshness contract.",
                 "conversation_id": f"conversation-{self.ticket_id}",
             }
         )
@@ -144,7 +145,7 @@ async def _run_repeating_public_reply(
     *,
     monkeypatch: pytest.MonkeyPatch,
     fetch_messages: Callable[[], Awaitable[list[dict[str, Any]]]],
-) -> tuple[AgentSession, _AlwaysRequestSolutionProvider, list[Any], int]:
+) -> tuple[AgentSession, _AlwaysRequestReplyProvider, list[Any], int]:
     """Run the real public-reply tool while replacing only Zendesk reads."""
     _patch_public_reply_boundaries(monkeypatch)
     fetch_count = 0
@@ -169,7 +170,7 @@ async def _run_repeating_public_reply(
     session.customer_msgs_snapshot_count = 1
     session.customer_msgs_snapshot_last_id = "m1"
 
-    provider = _AlwaysRequestSolutionProvider(session.ticket_id)
+    provider = _AlwaysRequestReplyProvider(session.ticket_id)
     message_store = MessageStore(provider)
     message_store.append_system("system")
     message_store.append_user("Initial customer report")
@@ -305,7 +306,7 @@ class _LateImageFreshnessReply(Tool):
         return ToolResult(success=True, output="public reply sent")
 
 
-class _InspectLateImageProvider(_AlwaysRequestSolutionProvider):
+class _InspectLateImageProvider(_AlwaysRequestReplyProvider):
     def __init__(self, session: AgentSession) -> None:
         super().__init__(session.ticket_id)
         self.session = session
@@ -434,7 +435,7 @@ async def test_late_freshness_images_are_deduplicated_and_bounded(
     session.customer_msgs_snapshot_captured = True
     session.customer_msgs_snapshot_count = 1
     session.customer_msgs_snapshot_last_id = "m1"
-    provider = _AlwaysRequestSolutionProvider(session.ticket_id)
+    provider = _AlwaysRequestReplyProvider(session.ticket_id)
     message_store = MessageStore(provider)
 
     unique_urls = [
@@ -496,7 +497,7 @@ async def test_late_image_with_vision_disabled_is_explicitly_marked_unread() -> 
     session.customer_msgs_snapshot_captured = True
     session.customer_msgs_snapshot_count = 1
     session.customer_msgs_snapshot_last_id = "m1"
-    provider = _AlwaysRequestSolutionProvider(session.ticket_id)
+    provider = _AlwaysRequestReplyProvider(session.ticket_id)
     message_store = MessageStore(provider)
     result = ToolResult(
         success=False,

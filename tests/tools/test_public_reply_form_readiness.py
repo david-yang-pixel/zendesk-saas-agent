@@ -121,7 +121,8 @@ async def test_agent_tool_returns_typed_defer_for_pending_form() -> None:
             {
                 "ticket_id": 42,
                 "body": "Here is the answer.",
-                "reply_type": "solution",
+                "reply_type": "ask",
+                "internal_analysis": "Exercise pending-form readiness before delivery.",
                 "conversation_id": "conversation-42",
             },
             session,
