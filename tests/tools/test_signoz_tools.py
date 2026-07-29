@@ -3,7 +3,12 @@ import pytest
 
 import zd_agent.tools.signoz_tools as st
 from zd_agent.tools.signoz_tools import (
-    SignozErrors, SignozTraceback, SignozServices, SignozQuery,
+    SIGNOZ_STRUCTURED_SPECS,
+    SignozErrors,
+    SignozQuery,
+    SignozServices,
+    SignozTraceback,
+    structured_signoz_tools,
 )
 
 
@@ -123,3 +128,80 @@ async def test_traceback_and_services_smoke(monkeypatch):
     monkeypatch.setattr(st, "run_signoz_sz", fake_run_signoz_sz)
     assert (await SignozTraceback().execute({}, session=None)).success
     assert (await SignozServices().execute({}, session=None)).success
+
+
+def test_structured_signoz_tool_specs_match_remote_surface():
+    assert {spec["name"] for spec in SIGNOZ_STRUCTURED_SPECS} == {
+        "signoz_list_services",
+        "signoz_get_trace_details",
+        "signoz_list_metrics",
+        "signoz_get_field_keys",
+        "signoz_get_field_values",
+        "signoz_search_logs",
+        "signoz_aggregate_logs",
+        "signoz_search_traces",
+        "signoz_aggregate_traces",
+        "signoz_query_metrics",
+    }
+
+
+@pytest.mark.asyncio
+async def test_structured_signoz_tool_forwards_arguments(monkeypatch):
+    seen = {}
+
+    async def fake_call_signoz_tool(name, arguments):
+        seen["name"] = name
+        seen["arguments"] = arguments
+        return {
+            "success": True,
+            "data": [{"deployment": "dify-app-worker", "count": 12}],
+        }
+
+    monkeypatch.setattr(st, "call_signoz_tool", fake_call_signoz_tool)
+    tool = next(
+        tool for tool in structured_signoz_tools()
+        if tool.name == "signoz_aggregate_logs"
+    )
+
+    result = await tool.execute(
+        {
+            "aggregation": "count",
+            "groupBy": "resource.k8s.deployment.name",
+            "timeRange": "1h",
+        },
+        session=None,
+    )
+
+    assert result.success is True
+    assert seen == {
+        "name": "signoz_aggregate_logs",
+        "arguments": {
+            "aggregation": "count",
+            "groupBy": "resource.k8s.deployment.name",
+            "timeRange": "1h",
+        },
+    }
+    assert "dify-app-worker" in result.output
+
+
+@pytest.mark.asyncio
+async def test_structured_signoz_tool_preserves_remote_error(monkeypatch):
+    async def fake_call_signoz_tool(name, arguments):
+        return {
+            "success": False,
+            "code": "BAD_ARGUMENT",
+            "error": "unknown field",
+        }
+
+    monkeypatch.setattr(st, "call_signoz_tool", fake_call_signoz_tool)
+    tool = next(
+        tool for tool in structured_signoz_tools()
+        if tool.name == "signoz_search_logs"
+    )
+
+    result = await tool.execute({"timeRange": "1h"}, session=None)
+
+    assert result.success is False
+    assert "BAD_ARGUMENT" in (result.error or "")
+    assert "unknown field" in (result.error or "")
+    assert result.metadata["mcp_code"] == "BAD_ARGUMENT"

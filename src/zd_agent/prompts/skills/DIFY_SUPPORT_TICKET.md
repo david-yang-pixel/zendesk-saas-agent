@@ -15,9 +15,9 @@
 - 历史工单和内部知识：`ticket_record_search`、`ticket_record_read`、`knowledge_search`、`knowledge_read`。
 - 官方文档：`official_docs_search`、`official_docs_read`。
 - DB 只读证据：优先 `sql_query`，复杂 quota/workflow/UUID/跨库调查可用 `inspector_exec`。
-- 日志和链路：`signoz_errors`、`signoz_traceback`、`signoz_services`、`signoz_query`。
+- 日志和链路：优先使用结构化 `signoz_list_services`、`signoz_search_logs`、`signoz_aggregate_logs`、`signoz_search_traces`、`signoz_aggregate_traces`、`signoz_get_trace_details`、`signoz_list_metrics`、`signoz_query_metrics` 和字段发现工具；`signoz_errors`、`signoz_traceback`、`signoz_services`、`signoz_query` 仅作聚焦便利或只读兜底。
 - 线上源码和版本：`saas_deployed_version`、`git_grep`、`git_show`、`git_log`、`git_diff`、`list_repos`、`list_repo_tags`。默认按 Source MCP 的 runtime ref 查线上正在运行的代码。
-- GitHub PR/Issue/代码搜索：`github_search_prs`、`github_get_pr`、`github_code_search`。
+- GitHub PR/Issue/代码搜索：`github_search_prs`、`github_get_pr`、`github_search_issues`、`github_get_issue`、`github_code_search`。
 - 隔离执行和文件处理：`sandbox_exec`、`sandbox_list`、`sandbox_search`、`sandbox_write`、`sandbox_read`，所有路径均相对于当前工单 sandbox 根目录，不要重复 ticket_id 或传绝对路径；不要回退到本地 shell。
 - 通知和升级：`feishu_push`。
 - 多证据源并行：`run_subagents_parallel`。

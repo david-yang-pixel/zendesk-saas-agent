@@ -65,12 +65,12 @@ platform incident 信号处理：
 
 做广谱聚合、schema 探测、或 0 行复查时，不要默认加 `--env production` 或直接写死
 `deployment.environment = 'production'` 到 `signoz_query`。部分 logs / traces / metrics
-没有稳定写入 `deployment.environment`，硬过滤会把真实数据过滤掉。`signoz_errors` /
-`signoz_services` 这类便利工具若 0 行，必须用不带 env 的 `signoz_query` 交叉验证。
+没有稳定写入 `deployment.environment`，硬过滤会把真实数据过滤掉。任何带 environment
+过滤的结构化查询若 0 行，都要先去掉该过滤并用发现/聚合工具交叉验证。
 
 正确顺序：
-1. 先不加 env 过滤，用 `signoz_services` 或 `signoz_query` 聚合当前窗口的 service /
-   deployment / environment 分布。
+1. 先不加 env 过滤，用 `signoz_list_services` 或 `signoz_aggregate_logs` 聚合当前窗口的
+   service / deployment / environment 分布。
 2. 只有确认字段存在且该窗口有环境标签时才加环境过滤。
 3. 如果必须区分 prod/staging，先在结果里展示各 environment 的 count，再选择下钻。
 
@@ -86,7 +86,9 @@ platform incident 信号处理：
 
 **先 count(*) group by k8s.deployment.name + severity** 看错误分布，**再**钻具体日志。
 
-直接 list 几百条肉眼看：容易漏模式 + 浪费 token。`signoz_errors` limit 50 一把抓不到全貌，应该先用 `signoz_query` 跑 `count(*) ... GROUP BY resources_string['k8s.deployment.name'], severity_text` 看分布。
+直接 list 几百条肉眼看：容易漏模式 + 浪费 token。应该先用
+`signoz_aggregate_logs(aggregation=count, groupBy=resource.k8s.deployment.name,intrinsic.severity_text)`
+看分布，再用 `signoz_search_logs` 取少量样本。
 
 ### 6. 0 行不是无异常
 
@@ -94,10 +96,10 @@ platform incident 信号处理：
 service / deployment / env / 字段 / 时间窗其中一个条件错了。
 
 排查顺序：
-1. 先用 `signoz_services` 列出当前窗口所有活跃 service / k8s deployment。
-2. 再用 `signoz_query` 聚合 service、deployment、severity、环境标签和时间分布。
-3. 必要时用 `signoz_query` 跑 `DESCRIBE signoz_logs.distributed_logs_v2`；如果查
-   traces 或 metrics，也先 DESCRIBE 对应 signoz_traces / signoz_metrics 表，确认真实列名。
+1. 先用 `signoz_list_services` 列出当前窗口所有活跃 service / k8s deployment。
+2. 再用 `signoz_aggregate_logs` 聚合 service、deployment、severity、环境标签和时间分布。
+3. 字段不确定时用 `signoz_get_field_keys` / `signoz_get_field_values` 发现真实字段和取值；
+   只有结构化工具表达不了时，才用 `signoz_query` 跑对应 `DESCRIBE`。
 4. 对照客户描述调整 service / deployment / 时间窗后再下钻。
 5. 所有 MCP 查询都失败，才写"SigNoz MCP 不可用，未拿到监控数据"；不要改走任何
    非 MCP 观测路径。
@@ -117,10 +119,10 @@ service / deployment / env / 字段 / 时间窗其中一个条件错了。
 
 SigNoz MCP 的能力面包括 logs、traces、metrics、services、schema 和 ClickHouse SQL。
 不要只跑 `signoz_errors` 后就结束：
-- API 5xx / traceback → logs + traceback
-- 慢请求 / endpoint 退化 → traces 或 ClickHouse 聚合
-- worker / queue / pod 行为 → deployment 维度 logs + metrics 聚合
-- 字段不确定 → schema / DESCRIBE
+- API 5xx / traceback → `signoz_aggregate_logs` + `signoz_search_logs` + `signoz_traceback`
+- 慢请求 / endpoint 退化 → `signoz_aggregate_traces` + `signoz_search_traces` + `signoz_get_trace_details`
+- worker / queue / pod 行为 → deployment 维度 logs + `signoz_query_metrics`
+- 字段不确定 → `signoz_get_field_keys` / `signoz_get_field_values`
 
 如果连续多个查询返回 `rowsScanned: 0` 且**全部** signoz 工具都查不到任何 service /
 log / trace / metric → 怀疑 ingest 端故障，参考之前 #2375 处理路径（不是 agent 自己能修，需要 SaaS observability 同事介入）。
@@ -131,18 +133,18 @@ log / trace / metric → 怀疑 ingest 端故障，参考之前 #2375 处理路�
 
 | 症状 | 必查顺序 |
 |---|---|
-| API 5xx / traceback | `signoz_services` 确认 service/deployment → `signoz_query` 聚合 `status_code` / `severity_text` / `k8s.deployment.name` → `signoz_errors` 找样本 → `signoz_traceback` 取 stack |
-| 慢请求 / endpoint 退化 | `signoz_query` 查 traces 或 ClickHouse 聚合，按 endpoint / deployment / hour 做 count + p50 / p90 / max，并找一个正常 endpoint 或相邻时间窗做 baseline |
-| worker / queue / pending | `signoz_query` 按 `k8s.deployment.name` 聚合 app-worker / dataset-worker logs，必要时查 traces；再查 metrics（pod restart、OOM、CPU/memory、queue lag） |
-| 字段不确定 / 0 行 | `signoz_services` → `signoz_query DESCRIBE ...` → 聚合 service/deployment/environment 分布；仍 0 行才写 MCP/ingest 证据缺口 |
+| API 5xx / traceback | `signoz_list_services` 确认 service/deployment → `signoz_aggregate_logs` 聚合状态/severity/deployment → `signoz_search_logs` 找样本 → `signoz_traceback` 取 stack |
+| 慢请求 / endpoint 退化 | `signoz_aggregate_traces` 按 endpoint/deployment/hour 做 count + p50 / p90 / max → `signoz_search_traces` 找样本 → `signoz_get_trace_details` 还原慢链，并找正常 endpoint 或相邻时窗做 baseline |
+| worker / queue / pending | `signoz_aggregate_logs` 按 deployment 聚合 app-worker/dataset-worker → `signoz_search_traces` 看任务链 → `signoz_list_metrics` + `signoz_query_metrics` 查 pod restart/OOM/CPU/memory/queue lag |
+| 字段不确定 / 0 行 | `signoz_list_services` → `signoz_get_field_keys` / `signoz_get_field_values` → 去掉错误过滤后重新聚合；仍 0 行才写 MCP/ingest 证据缺口 |
 
 ---
 
 ## 关键步骤
 
 1. 确认客户 Workspace ID、出错时间段、具体端点/路径
-2. **并行派发 3 个 subagent**：A 源码 + B GitHub + C SigNoz
-   - 派 SigNoz 时**必须**把上面 SigNoz 规则的关键点写进 subagent 任务描述（特别是 service.name 的 prod/staging 差异 + k8s.deployment.name 区分 worker）
+2. 只有 `deep` 且源码、GitHub、SigNoz 三条取证确实互不依赖时，才并行派 subagent；
+   `standard` 问题由主 agent 直接查，避免机械 fan-out
 3. SQL 查 workspace_runs / 相关业务表，看故障是否单 tenant
 4. 看 SigNoz trace 里 5xx 的实际异常 stack
 5. 如是广泛故障 → 标记 incident，建议 escalate SRE

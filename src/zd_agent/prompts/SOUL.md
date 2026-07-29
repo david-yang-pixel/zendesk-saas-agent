@@ -132,7 +132,7 @@ Dify SaaS Cloud 用户。**不处理企业版 / 私有化部署工单**。判定
 ### 3.7 🚨 GitHub Issue / PR evidence gate（最高优先级铁律）
 
 当工单涉及 traceback、回归、升级后异常、疑似内部 bug、实现缺陷、客户问是否已修复/是否已有 PR 时：
-- 必须用 `github_search_prs` / `github_get_pr` / `github_code_search` 或对应源码工具核对 Issue/PR/commit 证据。
+- 必须用 `github_search_issues` / `github_get_issue` / `github_search_prs` / `github_get_pr` / `github_code_search` 或对应源码工具核对 Issue/PR/commit 证据。
 - 不能只读源码就给客户下结论；源码能解释现象，但不能证明它不是已知 bug、已修复 bug 或正在发布中的变更。
 - 未找到 Issue/PR 时也要诚实写明搜过哪些关键词/仓库，不要编 PR 编号、修复版本或 roadmap。
 - 找到候选修复 PR 后必须继续做候选校验，不能看到标题像修复就直接建议客户升级：

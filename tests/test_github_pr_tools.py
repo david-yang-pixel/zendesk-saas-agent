@@ -2,7 +2,13 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from zd_agent.session.agent_session import AgentSession
-from zd_agent.tools.github_pr import GithubCodeSearch, GithubGetPr, GithubSearchPrs
+from zd_agent.tools.github_pr import (
+    GithubCodeSearch,
+    GithubGetIssue,
+    GithubGetPr,
+    GithubSearchIssues,
+    GithubSearchPrs,
+)
 
 
 class TestGithubSearchPrs(unittest.IsolatedAsyncioTestCase):
@@ -108,6 +114,92 @@ class TestGithubGetPr(unittest.IsolatedAsyncioTestCase):
             AgentSession(ticket_id=1),
         )
         self.assertEqual(result.error, "repo must be a string")
+
+
+class TestGithubSearchIssues(unittest.IsolatedAsyncioTestCase):
+    @patch("zd_agent.tools.github_pr.call_github_tool", new_callable=AsyncMock)
+    async def test_search_issues_formats_results(self, mock_call: AsyncMock) -> None:
+        mock_call.return_value = {
+            "success": True,
+            "data": {
+                "items": [
+                    {
+                        "number": 789,
+                        "title": "Workflow stalls after retry",
+                        "state": "open",
+                        "html_url": "https://github.com/langgenius/dify/issues/789",
+                        "user": {"login": "carol"},
+                        "labels": [{"name": "bug"}, {"name": "workflow"}],
+                    }
+                ]
+            },
+        }
+
+        result = await GithubSearchIssues().execute(
+            {"repo": "langgenius/dify", "query": "workflow retry", "limit": 5},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn("#789", result.output)
+        self.assertIn("bug, workflow", result.output)
+        self.assertEqual(mock_call.await_args.args[0], "github_search_issues")
+        self.assertEqual(
+            mock_call.await_args.args[1],
+            {"repo": "langgenius/dify", "query": "workflow retry", "limit": 5},
+        )
+
+    async def test_search_issues_rejects_invalid_args(self) -> None:
+        bad_repo = await GithubSearchIssues().execute(
+            {"repo": ["langgenius/dify"], "query": "workflow"},
+            AgentSession(ticket_id=1),
+        )
+        bad_limit = await GithubSearchIssues().execute(
+            {"repo": "langgenius/dify", "query": "workflow", "limit": "many"},
+            AgentSession(ticket_id=1),
+        )
+        self.assertEqual(bad_repo.error, "repo must be a string")
+        self.assertIn("limit", bad_limit.error or "")
+
+
+class TestGithubGetIssue(unittest.IsolatedAsyncioTestCase):
+    @patch("zd_agent.tools.github_pr.call_github_tool", new_callable=AsyncMock)
+    async def test_get_issue_formats_summary(self, mock_call: AsyncMock) -> None:
+        mock_call.return_value = {
+            "success": True,
+            "data": {
+                "number": 456,
+                "title": "Known model timeout",
+                "state": "closed",
+                "state_reason": "completed",
+                "created_at": "2026-03-20T12:00:00Z",
+                "updated_at": "2026-03-21T12:00:00Z",
+                "comments": 4,
+                "html_url": "https://github.com/langgenius/dify/issues/456",
+                "body": "Maintainer confirmed the affected versions.",
+                "user": {"login": "bob"},
+                "labels": [{"name": "fixed"}],
+            },
+        }
+
+        result = await GithubGetIssue().execute(
+            {"repo": "langgenius/dify", "issue_number": 456},
+            AgentSession(ticket_id=1),
+        )
+
+        self.assertTrue(result.success)
+        self.assertIn("Known model timeout", result.output)
+        self.assertIn("closed (completed)", result.output)
+        self.assertIn("fixed", result.output)
+        self.assertEqual(mock_call.await_args.args[0], "github_get_issue")
+
+    async def test_get_issue_rejects_invalid_number(self) -> None:
+        result = await GithubGetIssue().execute(
+            {"repo": "langgenius/dify", "issue_number": "abc"},
+            AgentSession(ticket_id=1),
+        )
+        self.assertFalse(result.success)
+        self.assertIn("issue_number", result.error or "")
 
 
 class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):

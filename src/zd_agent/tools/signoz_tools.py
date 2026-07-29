@@ -1,6 +1,8 @@
-"""SigNoz 日志查询工具组，经远程 sz MCP。
+"""SigNoz telemetry tools backed by the remote SigNoz MCP.
 
-四个工具对应远程 sz 子命令：errors / traceback / services / query(raw SQL 兜底)。
+The structured tools are the default investigation path. Four legacy sz
+convenience tools remain available for focused errors, traceback, service, and
+read-only fallback queries.
 """
 from __future__ import annotations
 
@@ -8,7 +10,7 @@ import json
 import math
 from typing import Any
 
-from zd_agent.integrations.signoz_mcp import run_signoz_sz
+from zd_agent.integrations.signoz_mcp import call_signoz_tool, run_signoz_sz
 from zd_agent.tools.base import Tool, ToolResult
 
 _GROUP = "platform_issue"
@@ -17,6 +19,207 @@ _MIN_HOURS = 0.01
 _MAX_HOURS = 168.0
 _MIN_LIMIT = 1
 _MAX_LIMIT = 1000
+
+
+_AGGREGATIONS = [
+    "count",
+    "count_distinct",
+    "avg",
+    "min",
+    "max",
+    "sum",
+    "p50",
+    "p75",
+    "p90",
+    "p95",
+    "p99",
+]
+
+SIGNOZ_STRUCTURED_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "signoz_list_services",
+        "description": (
+            "列出活跃 SigNoz services 和 Kubernetes deployments；"
+            "不确定服务名时先调用，避免猜 deployment。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "timeRange": {"type": "string", "description": "相对时间窗，如 30m、2h、1d；默认 1h"},
+                "environment": {"type": "string", "description": "可选 deployment.environment"},
+                "limit": {"type": "integer", "description": "1-1000；默认 30"},
+            },
+        },
+    },
+    {
+        "name": "signoz_get_trace_details",
+        "description": (
+            "按精确 trace ID 读取完整 span 链，包含父子关系、服务、operation、"
+            "耗时、状态、HTTP 字段和 attributes。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "traceId": {"type": "string", "description": "32 位十六进制 trace ID"},
+                "timeRange": {"type": "string", "description": "相对时间窗；默认 6h"},
+                "limit": {"type": "integer", "description": "1-1000；默认 500"},
+            },
+            "required": ["traceId"],
+        },
+    },
+    {
+        "name": "signoz_list_metrics",
+        "description": "发现可用 SigNoz metric 名和元数据；查询容量或资源指标前先用它找真实名称。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "searchText": {"type": "string", "description": "metric 名子串"},
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "limit": {"type": "integer", "description": "1-1000；默认 50"},
+            },
+        },
+    },
+    {
+        "name": "signoz_get_field_keys",
+        "description": "从有界近期样本发现 logs、traces 或 metrics 的 intrinsic/attribute/resource 字段。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "signal": {"type": "string", "enum": ["logs", "traces", "metrics"]},
+                "searchText": {"type": "string"},
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "limit": {"type": "integer", "description": "默认 100"},
+            },
+            "required": ["signal"],
+        },
+    },
+    {
+        "name": "signoz_get_field_values",
+        "description": "列出一个安全日志、trace 或 metric 字段的高频值，用于确认真实字段取值。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "signal": {"type": "string", "enum": ["logs", "traces", "metrics"]},
+                "name": {"type": "string"},
+                "fieldContext": {
+                    "type": "string",
+                    "enum": ["attribute", "resource", "intrinsic"],
+                },
+                "searchText": {"type": "string"},
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "limit": {"type": "integer", "description": "默认 50"},
+            },
+            "required": ["signal", "name", "fieldContext"],
+        },
+    },
+    {
+        "name": "signoz_search_logs",
+        "description": "按环境、deployment、tenant、severity、trace ID 和正文搜索近期日志。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "environment": {"type": "string"},
+                "deployment": {"type": "string"},
+                "tenant": {"type": "string"},
+                "severity": {"type": "string"},
+                "traceId": {"type": "string"},
+                "searchText": {"type": "string"},
+                "limit": {"type": "integer", "description": "默认 100"},
+                "offset": {"type": "integer", "description": "默认 0"},
+            },
+        },
+    },
+    {
+        "name": "signoz_aggregate_logs",
+        "description": "对近期日志做安全计数、分组、分位数或时间序列聚合；用于先确认影响范围再看样本。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "aggregation": {"type": "string", "enum": _AGGREGATIONS},
+                "aggregateOn": {"type": "string"},
+                "groupBy": {"type": "string", "description": "逗号分隔安全字段，最多 3 个"},
+                "requestType": {"type": "string", "enum": ["scalar", "time_series"]},
+                "stepInterval": {"type": "integer", "description": "秒"},
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "environment": {"type": "string"},
+                "deployment": {"type": "string"},
+                "tenant": {"type": "string"},
+                "severity": {"type": "string"},
+                "searchText": {"type": "string"},
+                "limit": {"type": "integer", "description": "默认 100"},
+            },
+        },
+    },
+    {
+        "name": "signoz_search_traces",
+        "description": "按服务、operation、tenant、错误状态、耗时或精确 trace ID 搜索近期 spans。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "service": {"type": "string"},
+                "operation": {"type": "string"},
+                "tenant": {"type": "string"},
+                "environment": {"type": "string"},
+                "deployment": {"type": "string"},
+                "traceId": {"type": "string"},
+                "error": {"type": "boolean"},
+                "minDuration": {"type": "integer", "description": "纳秒"},
+                "maxDuration": {"type": "integer", "description": "纳秒"},
+                "limit": {"type": "integer", "description": "默认 100"},
+                "offset": {"type": "integer", "description": "默认 0"},
+            },
+        },
+    },
+    {
+        "name": "signoz_aggregate_traces",
+        "description": "按延迟、错误、服务、operation、tenant 等安全字段聚合 spans，可输出时间序列。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "aggregation": {"type": "string", "enum": _AGGREGATIONS},
+                "aggregateOn": {"type": "string"},
+                "groupBy": {"type": "string", "description": "逗号分隔安全字段，最多 3 个"},
+                "requestType": {"type": "string", "enum": ["scalar", "time_series"]},
+                "stepInterval": {"type": "integer", "description": "秒"},
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "service": {"type": "string"},
+                "operation": {"type": "string"},
+                "tenant": {"type": "string"},
+                "environment": {"type": "string"},
+                "deployment": {"type": "string"},
+                "error": {"type": "boolean"},
+                "minDuration": {"type": "integer"},
+                "maxDuration": {"type": "integer"},
+                "limit": {"type": "integer", "description": "默认 100"},
+            },
+        },
+    },
+    {
+        "name": "signoz_query_metrics",
+        "description": "按安全聚合和 Kubernetes 过滤查询 metric；metric 名未知时先用 signoz_list_metrics。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "metricName": {"type": "string"},
+                "aggregation": {
+                    "type": "string",
+                    "enum": ["avg", "min", "max", "sum", "latest"],
+                },
+                "groupBy": {"type": "string", "description": "逗号分隔安全字段，最多 3 个"},
+                "requestType": {"type": "string", "enum": ["scalar", "time_series"]},
+                "stepInterval": {"type": "integer", "description": "秒"},
+                "timeRange": {"type": "string", "description": "默认 1h"},
+                "environment": {"type": "string"},
+                "deployment": {"type": "string"},
+                "pod": {"type": "string"},
+                "limit": {"type": "integer", "description": "默认 100"},
+            },
+            "required": ["metricName"],
+        },
+    },
+)
 
 
 def _coerce_hours(args: dict[str, Any], default: float) -> float | ToolResult:
@@ -86,6 +289,44 @@ def _rows_to_text(rows: Any) -> str:
         else:
             lines.append(str(r))
     return "\n".join(lines)
+
+
+class SignozStructuredTool(Tool):
+    """Thin agent-facing wrapper around one validated remote SigNoz tool."""
+
+    group = _GROUP
+    concurrency_safe = True
+    max_output_tokens = _MAX_OUT
+
+    def __init__(self, spec: dict[str, Any]) -> None:
+        self.name = str(spec["name"])
+        self.description = str(spec["description"])
+        self.parameters = dict(spec["parameters"])
+
+    async def execute(self, args: dict[str, Any], session: Any) -> ToolResult:
+        payload = await call_signoz_tool(self.name, args)
+        if not payload.get("success"):
+            code = payload.get("code") or "UNKNOWN"
+            error = payload.get("error") or "unknown error"
+            return ToolResult(
+                success=False,
+                error=f"SigNoz MCP failed [{code}]: {error}",
+                metadata={"mcp_code": str(code)},
+            )
+
+        output = payload.get("output")
+        if isinstance(output, str) and output.strip():
+            return ToolResult(output=output)
+        data = payload.get("data")
+        if data is None:
+            return ToolResult(output="(查询成功，无返回数据)")
+        return ToolResult(
+            output=json.dumps(data, ensure_ascii=False, indent=2, default=str),
+        )
+
+
+def structured_signoz_tools() -> list[SignozStructuredTool]:
+    return [SignozStructuredTool(spec) for spec in SIGNOZ_STRUCTURED_SPECS]
 
 
 class SignozErrors(Tool):

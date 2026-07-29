@@ -16,7 +16,9 @@ from zd_agent.tools.git_source import (
 )
 from zd_agent.tools.github_pr import (
     GithubCodeSearch,
+    GithubGetIssue,
     GithubGetPr,
+    GithubSearchIssues,
     GithubSearchPrs,
 )
 from zd_agent.tools.knowledge import KnowledgeRead, KnowledgeSearch
@@ -50,9 +52,10 @@ from zd_agent.tools.zendesk_public_reply import ZendeskPublicReply
 from zd_agent.tools.saas_version import SaasDeployedVersion
 from zd_agent.tools.signoz_tools import (
     SignozErrors,
-    SignozTraceback,
-    SignozServices,
     SignozQuery,
+    SignozServices,
+    SignozTraceback,
+    structured_signoz_tools,
 )
 
 
@@ -87,6 +90,8 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(ListRepoTags())
     registry.register(GithubSearchPrs())
     registry.register(GithubGetPr())
+    registry.register(GithubSearchIssues())
+    registry.register(GithubGetIssue())
     registry.register(GithubCodeSearch())
 
     # 线上版本感知（SigNoz 实时遥测 + saas-deploy 兜底）
@@ -133,6 +138,8 @@ def create_tool_registry() -> ToolRegistry:
     registry.register(SignozTraceback())
     registry.register(SignozServices())
     registry.register(SignozQuery())
+    for tool in structured_signoz_tools():
+        registry.register(tool)
 
     registry.register(CustomMcpCall())
 

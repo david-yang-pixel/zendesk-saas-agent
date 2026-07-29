@@ -154,6 +154,20 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
         fully_isolated=True,
         notes="GitHub PR reads execute through github-mcp.",
     ),
+    "github_search_issues": _boundary(
+        "remote_mcp",
+        "github-mcp",
+        service_backed=True,
+        fully_isolated=True,
+        notes="GitHub Issue search executes through github-mcp.",
+    ),
+    "github_get_issue": _boundary(
+        "remote_mcp",
+        "github-mcp",
+        service_backed=True,
+        fully_isolated=True,
+        notes="GitHub Issue reads execute through github-mcp.",
+    ),
     "github_code_search": _boundary(
         "remote_mcp",
         "github-mcp",
@@ -184,6 +198,16 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     "signoz_traceback": _SIGNOZ_MCP,
     "signoz_services": _SIGNOZ_MCP,
     "signoz_query": _SIGNOZ_MCP,
+    "signoz_list_services": _SIGNOZ_MCP,
+    "signoz_get_trace_details": _SIGNOZ_MCP,
+    "signoz_list_metrics": _SIGNOZ_MCP,
+    "signoz_get_field_keys": _SIGNOZ_MCP,
+    "signoz_get_field_values": _SIGNOZ_MCP,
+    "signoz_search_logs": _SIGNOZ_MCP,
+    "signoz_aggregate_logs": _SIGNOZ_MCP,
+    "signoz_search_traces": _SIGNOZ_MCP,
+    "signoz_aggregate_traces": _SIGNOZ_MCP,
+    "signoz_query_metrics": _SIGNOZ_MCP,
     # Local environment and sandbox tools
     "run_script": _boundary(
         "remote_mcp",

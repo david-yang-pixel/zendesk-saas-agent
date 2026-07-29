@@ -88,6 +88,18 @@ def test_next_batch_tools_are_fully_isolated_mcp_services() -> None:
     assert github_pr.service_backed is True
     assert github_pr.fully_isolated is True
 
+    github_issue = get_tool_service_boundary("github_search_issues")
+    assert github_issue.execution_boundary == "remote_mcp"
+    assert github_issue.service == "github-mcp"
+    assert github_issue.service_backed is True
+    assert github_issue.fully_isolated is True
+
+    signoz_structured = get_tool_service_boundary("signoz_aggregate_traces")
+    assert signoz_structured.execution_boundary == "remote_mcp"
+    assert signoz_structured.service == "signoz-mcp"
+    assert signoz_structured.service_backed is True
+    assert signoz_structured.fully_isolated is True
+
     official_docs = get_tool_service_boundary("official_docs_search")
     assert official_docs.execution_boundary == "remote_mcp"
     assert official_docs.service == "docs-tool-service"

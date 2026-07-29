@@ -40,14 +40,18 @@ ACK/error note 也走 Zendesk MCP。
 
 ## 平台日志工具组
 
-### SigNoz（经远程 sz MCP）
+### SigNoz（经远程 SigNoz MCP）
 远程 SigNoz MCP 是统一观测查询入口，不只是查日志。它覆盖
 logs / traces / metrics / services / schema / ClickHouse SQL：
 
-- `signoz_errors`：查 ERROR/FATAL logs，可按 `tenant` / `grep`(body 子串) / `deployment` / `env` / `hours` / `limit` 过滤；这是便利工具，做广谱聚合或 0 行复查时改用 `signoz_query`
-- `signoz_traceback`：从 logs 里的 exception 字段拉完整 Python stacktrace（按 `id` / `tenant` / `grep`）。要看堆栈用这个，不要用 signoz_errors
-- `signoz_services`：列当前活跃 service / k8s deployment；查不到 logs/traces 时先用它核对服务名和 deployment 名
-- `signoz_query`：统一 ClickHouse 查询入口，可查 logs、traces、metrics，也可做聚合和 schema 探测。常用表先用 `DESCRIBE signoz_logs.distributed_logs_v2`，traces/metrics 字段不确定时先跑 `DESCRIBE signoz_traces...` / `DESCRIBE signoz_metrics...` 找真实表名和列；字段不确定时先查 schema，不要靠记忆猜字段。
+- 发现：`signoz_list_services`、`signoz_get_field_keys`、`signoz_get_field_values`、`signoz_list_metrics`。服务名、deployment、字段或 metric 名未知时先发现，禁止靠记忆猜。
+- 日志：先用 `signoz_aggregate_logs` 确认数量、影响范围和分组，再用 `signoz_search_logs` 取少量样本；完整 Python stacktrace 可用便利工具 `signoz_traceback`。
+- Trace：用 `signoz_search_traces` 找异常/慢 span，再用 `signoz_get_trace_details` 按 trace ID 还原完整父子链；需要 p50/p90/p95/错误率时用 `signoz_aggregate_traces`。
+- Metrics：先 `signoz_list_metrics` 找真实 metric 名，再用 `signoz_query_metrics` 按环境、deployment、Pod 和时间窗聚合。
+- 便利/兜底：`signoz_errors`、`signoz_traceback`、`signoz_services` 保留给聚焦查询；只有结构化工具表达不了的只读调查才用 `signoz_query`。字段不确定时先查 schema/field discovery；raw SQL 可 `DESCRIBE signoz_logs.distributed_logs_v2` / `DESCRIBE signoz_traces...` / `DESCRIBE signoz_metrics...`，不要靠记忆猜字段。
+
+结构化工具失败会返回原始 MCP 错误码和错误文本。失败调用不是证据；修正参数或换
+一条有明确目的的查询，仍失败就记录准确缺口，不得把 0 行或错误改写成“线上无异常”。
 
 远程 SigNoz MCP 不可用时，停止该监控查询路径并在 Internal Note / 飞书摘要里写明
 “MCP 不可用 + 原始错误”。不要使用任何非 MCP 观测路径，不要把 0 结果改写成“线上无异常”。
@@ -68,13 +72,16 @@ logs / traces / metrics / services / schema / ClickHouse SQL：
 - 查线上 SaaS 行为时优先不传 `ref`，让 Source MCP 自动解析 runtime。只有客户明确问某个版本 / PR /
   tag 时才显式指定 ref。`git_grep` 提示 ref 无法解析时，先用 `saas_deployed_version` /
   `list_repo_tags` 确认 ref 再重试，不要反复用同一个错 ref。
-- `github_search_prs` / `github_get_pr`：GitHub API（langgenius/dify 等）
+- `github_search_issues` / `github_get_issue`：查询已知 bug、回归、限制和维护者结论
+- `github_search_prs` / `github_get_pr`：查询候选修复及状态
+- `github_code_search`：查询未在 Source MCP 本地镜像中的 GitHub 源码
 
 ## Subagent 工具
 
 ### `run_subagents_parallel`（复杂并行时使用）
-多证据源工单默认使用：只要需要查看 **代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR**
-中任意 ≥2 类证据源，就按证据源拆给 subagent。单一证据源问题可由主 agent 直接批量调工具。
+仅在 `deep` 调查中使用：当 **代码 / 文档 / 数据库 / 日志 / GitHub PR/Issue**
+存在多个互不依赖的取证任务，且并行会明显加快调查时，才按证据源拆给 subagent。
+不要仅因需要两类证据就机械派发。
 一次调用派发多个独立 subagent，参数 `tasks: [{task, tools, context}]`。
 最多 5 个，推荐 2-3 个；复杂 platform_issue / workflow / 多组件交互可派 3-5 个。每个 subagent 独立上下文，互不污染。
 

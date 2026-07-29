@@ -25,8 +25,8 @@
 
 每多一个 tool 多 150-800 tokens schema。例子：
 - task='搜 dify-billing 代码' → `tools=['git_grep']`
-- task='查 SigNoz 错误' → `tools=['signoz_errors', 'signoz_traceback']`
-- task='看 GitHub PR' → `tools=['github_search_prs', 'github_get_pr']`
+- task='查 SigNoz 错误分布' → `tools=['signoz_aggregate_logs', 'signoz_search_logs']`
+- task='看 GitHub Issue/PR' → `tools=['github_search_issues', 'github_search_prs']`
 
 **❌ 不要传 10 个 tools** — 每个 subagent 应该只做一件事。
 
@@ -61,7 +61,7 @@
 
 1. 先用 `git_grep` 搜 Source MCP 已接入仓库（dify / dify-billing / dify-marketplace-backend / dify-marketplace-frontend / dify-plugin-daemon / saas-deploy）。默认不传 `ref`，让工具查 `runtime`（线上正在运行的代码）。
 2. Source MCP runtime 搜不到 → **立刻** `github_code_search query="..." scope="langgenius"` 覆盖未接入仓库 / 第三方插件仓
-3. 拿到匹配后用 `github_get_pr` / `github_search_prs` 看看有没有 fix PR
+3. 拿到匹配后用 `github_get_issue` / `github_get_pr` 验证 Issue 和候选 fix PR
 
 ## 反例（绝不能这样）
 

@@ -17,9 +17,17 @@ def test_signoz_prompt_declares_remote_mcp_as_observability_path() -> None:
     assert "停止该监控查询路径" in text
 
 
-def test_signoz_prompt_mentions_schema_and_describe_escape_hatch() -> None:
+def test_signoz_prompt_prefers_structured_tools_with_raw_escape_hatch() -> None:
     text = TOOLS_PROMPT.read_text(encoding="utf-8")
 
+    assert "signoz_list_services" in text
+    assert "signoz_aggregate_logs" in text
+    assert "signoz_search_logs" in text
+    assert "signoz_aggregate_traces" in text
+    assert "signoz_search_traces" in text
+    assert "signoz_get_trace_details" in text
+    assert "signoz_list_metrics" in text
+    assert "signoz_query_metrics" in text
     assert "signoz_errors" in text
     assert "signoz_traceback" in text
     assert "signoz_services" in text
@@ -36,9 +44,10 @@ def test_platform_issue_prompt_avoids_zero_rows_false_negative() -> None:
     text = PLATFORM_PROMPT.read_text(encoding="utf-8")
 
     assert "0 行不是无异常" in text
-    assert "先用 `signoz_services`" in text
-    assert "再用 `signoz_query` 聚合" in text
-    assert "必要时用 `signoz_query` 跑 `DESCRIBE" in text
+    assert "先用 `signoz_list_services`" in text
+    assert "再用 `signoz_aggregate_logs`" in text
+    assert "`signoz_get_field_keys` / `signoz_get_field_values`" in text
+    assert "只有结构化工具表达不了时" in text
     assert "不要默认加 `--env production`" in text
     assert "只有确认字段存在且该窗口有环境标签时才加环境过滤" in text
 

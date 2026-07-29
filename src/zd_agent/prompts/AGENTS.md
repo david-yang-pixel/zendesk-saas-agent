@@ -29,8 +29,8 @@
 4. **直接调 tool 查单一证据源**：
    - 源码：`git_grep` / `git_show`（默认经 Source MCP 查 `runtime`，即线上正在运行的代码）/ `github_code_search`（未接入仓库或 PR/Issue 证据）
    - 数据：`inspector_exec` / `sql_query`（数据库查询唯一入口，底层经 DB Gateway MCP）
-   - 日志：`signoz_errors` / `signoz_traceback`（堆栈）/ `signoz_query`（raw SQL）
-   - 历史/文档：`ticket_record_search` / `zendesk_search_articles` / `official_docs_search`
+   - 日志/链路/指标：优先 `signoz_aggregate_logs` / `signoz_search_logs` / `signoz_search_traces` / `signoz_get_trace_details` / `signoz_query_metrics`；raw `signoz_query` 仅兜底
+   - GitHub/文档：`github_search_issues` / `github_get_issue` / `github_search_prs` / `github_get_pr` / `zendesk_search_articles` / `official_docs_search`
 5. **仅在 deep 且任务可独立拆分时派 subagent**（用 `run_subagents_parallel`）：
    - 只有复杂 platform_issue / workflow / 多组件交互同时需要多个互不依赖的证据源，且并行会明显加快取证时才派
    - 默认按证据源拆 2-3 个 subagent：源码、日志、文档、GitHub PR/Issue；不要仅因需要两类证据就机械派发

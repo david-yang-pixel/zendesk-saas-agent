@@ -8,7 +8,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from zd_agent.integrations.signoz_mcp import run_signoz_sz
+from zd_agent.integrations.signoz_mcp import call_signoz_tool, run_signoz_sz
 
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
@@ -58,7 +58,7 @@ async def test_run_signoz_sz_uses_remote_streamable_http() -> None:
 
     transport = httpx.MockTransport(handler)
     with patch(
-        "zd_agent.integrations.signoz_mcp.httpx.AsyncClient",
+        "zd_agent.integrations.tool_service_mcp.httpx.AsyncClient",
         lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
     ):
         result = await run_signoz_sz(
@@ -102,7 +102,7 @@ async def test_run_signoz_sz_parses_sse_response() -> None:
 
     transport = httpx.MockTransport(handler)
     with patch(
-        "zd_agent.integrations.signoz_mcp.httpx.AsyncClient",
+        "zd_agent.integrations.tool_service_mcp.httpx.AsyncClient",
         lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
     ):
         result = await run_signoz_sz("query", "SELECT 1", cfg=cfg)
@@ -146,12 +146,68 @@ async def test_run_signoz_sz_returns_none_on_mcp_error() -> None:
 
     transport = httpx.MockTransport(handler)
     with patch(
-        "zd_agent.integrations.signoz_mcp.httpx.AsyncClient",
+        "zd_agent.integrations.tool_service_mcp.httpx.AsyncClient",
         lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
     ):
         result = await run_signoz_sz("query", "bad", cfg=cfg)
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_call_signoz_tool_preserves_mcp_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["params"] == {
+            "name": "signoz_search_logs",
+            "arguments": {"timeRange": "1h", "tenant": "tenant-1"},
+        }
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(
+                                {
+                                    "success": False,
+                                    "code": "BAD_ARGUMENT",
+                                    "error": "timeRange is invalid",
+                                }
+                            ),
+                        }
+                    ],
+                    "isError": True,
+                },
+            },
+        )
+
+    cfg = SimpleNamespace(
+        signoz=SimpleNamespace(
+            mcp_url="https://ops.example.com/signoz-mcp",
+            mcp_api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.integrations.tool_service_mcp.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        result = await call_signoz_tool(
+            "signoz_search_logs",
+            {"timeRange": "1h", "tenant": "tenant-1"},
+            cfg=cfg,
+        )
+
+    assert result == {
+        "success": False,
+        "code": "BAD_ARGUMENT",
+        "error": "timeRange is invalid",
+    }
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,4 @@
-"""GitHub PR + Code 搜索只读工具。"""
+"""GitHub PR, Issue, and code-search read-only tools."""
 
 from __future__ import annotations
 
@@ -116,6 +116,78 @@ def _format_pr_detail_output(
     ]
     if merged_at:
         lines.append(f"合并时间: {merged_at}")
+    html_url = data.get("html_url")
+    if html_url:
+        lines.append(f"链接: {html_url}")
+    if body:
+        lines.extend(["", body])
+    return ToolResult(output="\n".join(lines))
+
+
+def _format_issue_search_output(
+    *,
+    repo: str,
+    query: str,
+    limit: int,
+    data: dict[str, Any],
+) -> ToolResult:
+    items = data.get("items", [])
+    if not items:
+        return ToolResult(output=f"未找到与「{query}」相关的 GitHub Issue（repo: {repo}）")
+
+    lines = ["# GitHub Issue 搜索结果", f"Repo: {repo}", f"Query: {query}", ""]
+    for item in items[:limit]:
+        number = item.get("number", "N/A")
+        title = item.get("title", "(无标题)")
+        state = item.get("state", "unknown")
+        author = (item.get("user") or {}).get("login", "unknown")
+        labels = [
+            label.get("name", "")
+            for label in (item.get("labels") or [])
+            if isinstance(label, dict) and label.get("name")
+        ]
+        url = item.get("html_url", "")
+        lines.append(f"- #{number} [{state}] {title}")
+        lines.append(f"  作者: {author}")
+        if labels:
+            lines.append(f"  Labels: {', '.join(labels)}")
+        if url:
+            lines.append(f"  链接: {url}")
+    return ToolResult(output="\n".join(lines))
+
+
+def _format_issue_detail_output(
+    *,
+    repo: str,
+    issue_number: int,
+    data: dict[str, Any],
+) -> ToolResult:
+    title = data.get("title", "(无标题)")
+    state = data.get("state", "unknown")
+    state_reason = data.get("state_reason")
+    author = (data.get("user") or {}).get("login", "unknown")
+    labels = [
+        label.get("name", "")
+        for label in (data.get("labels") or [])
+        if isinstance(label, dict) and label.get("name")
+    ]
+    body = (data.get("body") or "").strip()
+    if len(body) > 1800:
+        body = body[:1800] + "\n\n... (摘要已截断)"
+
+    lines = [
+        "# GitHub Issue 详情",
+        f"Repo: {repo}",
+        f"Issue: #{issue_number}",
+        f"标题: {title}",
+        f"状态: {state}" + (f" ({state_reason})" if state_reason else ""),
+        f"作者: {author}",
+        f"创建时间: {data.get('created_at') or 'unknown'}",
+        f"更新时间: {data.get('updated_at') or 'unknown'}",
+        f"评论数: {data.get('comments', 0)}",
+    ]
+    if labels:
+        lines.append(f"Labels: {', '.join(labels)}")
     html_url = data.get("html_url")
     if html_url:
         lines.append(f"链接: {html_url}")
@@ -275,6 +347,115 @@ class GithubGetPr(Tool):
         return _format_pr_detail_output(
             repo=repo,
             pr_number=pr_number,
+            data=_payload_data(payload),
+        )
+
+
+class GithubSearchIssues(Tool):
+    name = "github_search_issues"
+    description = (
+        "搜索 GitHub Issues，用于核对已知 bug、回归报告、已知限制和维护者结论。"
+        "历史 Issue 只是候选证据；仍需核对当前版本和当前工单运行时事实。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "repo": {
+                "type": "string",
+                "description": "仓库全名，例如 langgenius/dify",
+            },
+            "query": {
+                "type": "string",
+                "description": "Issue 搜索关键词，可包含错误信息、模块名或行为描述",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10,
+                "default": 5,
+                "description": "返回结果数量，默认 5",
+            },
+        },
+        "required": ["repo", "query"],
+    }
+
+    group = "source_code"
+    max_output_tokens = 4000
+
+    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        repo = _coerce_required_string_arg(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        query = _coerce_required_string_arg(args, "query")
+        if isinstance(query, ToolResult):
+            return query
+        limit = _coerce_int_arg(args, "limit", 5, minimum=1, maximum=10)
+        if isinstance(limit, ToolResult):
+            return limit
+        if not repo or not query:
+            return ToolResult(success=False, error="repo 和 query 不能为空")
+
+        payload = await call_github_tool(
+            self.name,
+            {"repo": repo, "query": query, "limit": limit},
+        )
+        if not payload.get("success"):
+            return _mcp_failure(payload)
+        if output := _payload_output(payload):
+            return ToolResult(output=output)
+        return _format_issue_search_output(
+            repo=repo,
+            query=query,
+            limit=limit,
+            data=_payload_data(payload),
+        )
+
+
+class GithubGetIssue(Tool):
+    name = "github_get_issue"
+    description = (
+        "读取单个 GitHub Issue 的状态、标签、时间、正文和链接；"
+        "用于验证搜索命中的候选 Issue，而不是直接证明当前生产根因。"
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "repo": {
+                "type": "string",
+                "description": "仓库全名，例如 langgenius/dify",
+            },
+            "issue_number": {
+                "type": "integer",
+                "description": "Issue 编号",
+            },
+        },
+        "required": ["repo", "issue_number"],
+    }
+
+    group = "source_code"
+    max_output_tokens = 4000
+
+    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        repo = _coerce_required_string_arg(args, "repo")
+        if isinstance(repo, ToolResult):
+            return repo
+        issue_number = _coerce_int_arg(args, "issue_number")
+        if isinstance(issue_number, ToolResult):
+            return issue_number
+        if not repo:
+            return ToolResult(success=False, error="repo 不能为空")
+
+        payload = await call_github_tool(
+            self.name,
+            {"repo": repo, "issue_number": issue_number},
+        )
+        if not payload.get("success"):
+            return _mcp_failure(payload)
+        if output := _payload_output(payload):
+            return ToolResult(output=output)
+        return _format_issue_detail_output(
+            repo=repo,
+            issue_number=issue_number,
             data=_payload_data(payload),
         )
 

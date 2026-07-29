@@ -14,8 +14,33 @@ if TYPE_CHECKING:
 _MAX_SUBAGENT_OUTPUT_CHARS = 4000
 _MAX_SUBAGENTS_PER_SESSION = 5
 
-_SOURCE_TOOLS = {"git_grep", "git_show", "git_log", "git_diff", "github_code_search", "github_search_prs", "github_get_pr"}
-_LOG_TOOLS = {"signoz_errors", "signoz_traceback", "signoz_query", "signoz_services"}
+_SOURCE_TOOLS = {
+    "git_grep",
+    "git_show",
+    "git_log",
+    "git_diff",
+    "github_code_search",
+    "github_search_prs",
+    "github_get_pr",
+    "github_search_issues",
+    "github_get_issue",
+}
+_LOG_TOOLS = {
+    "signoz_errors",
+    "signoz_traceback",
+    "signoz_query",
+    "signoz_services",
+    "signoz_list_services",
+    "signoz_get_trace_details",
+    "signoz_list_metrics",
+    "signoz_get_field_keys",
+    "signoz_get_field_values",
+    "signoz_search_logs",
+    "signoz_aggregate_logs",
+    "signoz_search_traces",
+    "signoz_aggregate_traces",
+    "signoz_query_metrics",
+}
 _KNOWLEDGE_TOOLS = {
     "knowledge_search",
     "knowledge_read",
@@ -57,15 +82,15 @@ def _subagent_worker_role(tools: list[str]) -> str:
 class RunSubagentsParallel(Tool):
     name = "run_subagents_parallel"
     description = (
-        "派 subagent 执行独立分析任务。**多证据源工单默认派 subagent**："
-        "只要需要同时查代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR 中"
-        "任意 ≥2 类证据源，就优先用本工具并行拆给独立 subagent。\n\n"
+        "仅在 deep 调查中派 subagent 执行可独立并行的分析任务。"
+        "不要因为需要两类证据就机械派发；只有源码、日志、文档、GitHub PR/Issue"
+        "等任务互不依赖且并行能明显加快取证时使用。\n\n"
         "**Subagent 预算规则（每个工单累计）**：\n"
         "- 简单问题（usage-howto / product_usage / yes-no）：累计 **0-1 个** subagent\n"
         "- 中等多证据源问题（billing / refund / api / permissions / knowledge_base）：累计 **2-3 个**\n"
         "- 复杂问题（platform_issue / workflow / 多组件交互）：累计 **3-5 个**，硬上限 **5 个**\n\n"
         "**操作流程**：\n"
-        "1. 先按证据源拆任务：源码、日志、文档/历史、GitHub PR、专项数据核查\n"
+        "1. 先按证据源拆任务：源码、日志、文档、GitHub PR/Issue、专项数据核查\n"
         "2. 一次调用最多传 5 个 task；每个 task 只给 1-3 个真正需要的 tools\n"
         "3. 数据库查询若强依赖 workspace_id / 前序 SQL，可由主 agent 直接跑；"
         "独立统计或大结果摘要再派 subagent\n\n"
