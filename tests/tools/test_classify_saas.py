@@ -6,7 +6,6 @@ from zd_agent.tools.classify import ClassifyTicket, VALID_TYPES
 
 @pytest.mark.asyncio
 async def test_all_new_saas_types_valid(fake_session):
-    tool = ClassifyTicket()
     saas_types = [
         "platform_issue", "knowledge_base", "workflow", "api",
         "permissions", "product_usage", "billing", "refund",
@@ -42,7 +41,9 @@ async def test_classify_refund_loads_strategy(fake_session):
     assert fake_session.ticket_type == "refund"
     # refund strategy content should be included
     assert "退款工单处理策略" in r.output
-    assert "ticket_escalate" in r.output  # 飞书推财务这一步必出现
+    assert "人工业务审批" in r.output
+    assert "不能自行判定" in r.output
+    assert "needs_human=True" in r.output
 
 
 @pytest.mark.asyncio

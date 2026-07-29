@@ -15,8 +15,9 @@ def test_core_router_requires_classify_ticket_first():
     prompt = _build()
 
     assert "Dify SaaS Support Agent Core Router" in prompt
-    assert "第一轮必须尽早调用 `classify_ticket`" in prompt
-    assert "该工具返回本工单要遵循的 Skills" in prompt
+    assert "先调用 `zendesk_get_ticket`" in prompt
+    assert "读取成功后再调用 `classify_ticket`" in prompt
+    assert "不能与 `zendesk_get_ticket` 并行调用" in prompt
 
 
 def test_prompt_forbids_source_paths_in_customer_visible_replies():
@@ -33,6 +34,8 @@ def test_prompt_requires_professional_readable_public_replies_and_internal_analy
     assert "资深技术支持工程师" in prompt
     assert "不用 Markdown 标题、粗体、反引号、emoji 或装饰性分隔线" in prompt
     assert "公开回复成功后，系统会自动写入一条内部分析" in prompt
+    assert "evidence_ledger" in prompt
+    assert "已确认根因" in prompt
 
 
 def test_prompt_requires_customer_update_before_human_or_sre_escalation():
@@ -91,7 +94,7 @@ def test_prompt_requires_attachment_download_for_image_or_file_claims():
 def test_core_router_keeps_legacy_bulk_sections_out_of_system_prompt():
     prompt = _build()
 
-    assert len(prompt) < 5_000
+    assert len(prompt) < 16_000
     assert "高频工单快速分诊" not in prompt
     assert "客户回复模板" not in prompt
     assert "开发转交格式" not in prompt

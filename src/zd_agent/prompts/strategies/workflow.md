@@ -123,7 +123,7 @@ LIMIT 30;
 
 ```sql
 -- [Dify-Prod] 该 app 最近 7d 的 provider/model 聚合
--- 列名以 messages 表实际 schema 为准（参考 system prompt 里的 database_schema 段）
+-- 列名以 messages 表实际 schema 为准；不确定时先查 information_schema.columns
 -- 常见列：model_provider, model_id, provider_response_latency
 SELECT
     model_provider,
@@ -164,9 +164,10 @@ LIMIT 30;
 
 **判读两组数据**：
 - D-1 calls 少（< 50）→ 窄样本，p50/p90 不稳；以 D-2 大样本为主结论
-- D-2 中某个 provider/model 的 p90 远高于其他 → **provider 侧问题**，回复带 provider 名 + p50/p90/max 数字
-- 该 provider 的 max 拖了长尾（如 max=900s, p90=18s）→ **provider 侧偶发抖动 / 重试 / 限流**
-- avg_tokens 高的（>50k）配合长尾大 → **大上下文请求 + 代理通道 = 不稳定**
+- D-2 中某个 provider/model 的 p90 远高于其他 → 只确认“该 provider/model 边界在本样本中更慢”；**不能据此直接写成 provider 侧根因**
+- 该 provider 的 max 拖了长尾（如 max=900s, p90=18s）→ 只确认长尾相关性；重试、限流、上游抖动仍是待验证假设
+- avg_tokens 高的（>50k）配合长尾大 → 只确认 token 与延迟相关；大上下文是否为触发条件**仍需继续排查**
+- 在根因结论前，继续核对对应 trace/log、provider 错误码、重试/限流记录、同对象相邻基线，以及请求是否真的到达/离开该边界
 
 ### Step E — 跨 provider 横向对比（如果同 tenant 有备选 provider）
 
@@ -189,7 +190,7 @@ GROUP BY model_provider, model_id
 ORDER BY p50_s ASC;
 ```
 
-如果同 model 走官方 provider p50=2.6s 而走代理 p50=5.7s → 客户回复直接给数字，建议切官方 provider。
+如果同 model 走官方 provider p50=2.6s 而走代理 p50=5.7s → 可以向客户陈述该时间窗内的对照数字，并在产品支持时建议把官方 provider 作为临时规避选项；仍不能把对照相关性写成根因。
 
 ### Step F — token-vs-latency 关联（解释长尾）
 
@@ -235,19 +236,18 @@ LIMIT 20;
 **原因**：列名硬猜错了（如 `messages.tenant_id` 实际是 `app_id` 反查 tenant）。
 
 **Retry 动作**：
-1. 先查 system prompt 里 `## 数据库 Schema` 段（每次都注入了真实 schema）
-2. schema 段没有该表 → 跑 introspect：
+1. 先跑只读 introspection：
    ```sql
    SELECT column_name, data_type FROM information_schema.columns
    WHERE table_name = '<table>' ORDER BY ordinal_position;
    ```
-3. 拿到真实列名后重写 SQL
+2. 拿到真实列名后重写 SQL
 
 ### 3. `syntax error` / `relation "X" does not exist`
 
 **原因**：表名错（如 `workflow_node_execution` 缺 s）或 reserved keyword 没引号。
 
-**Retry 动作**：参照 schema 段拿正确表名；reserved keyword（`index` / `order` / `user` 等）一律用双引号或 alias 改名。
+**Retry 动作**：先查 `information_schema.tables/columns` 拿正确表名和列名；reserved keyword（`index` / `order` / `user` 等）一律用双引号或 alias 改名。
 
 ### 4. SQL 超时（默认 30s）
 
@@ -322,16 +322,19 @@ LIMIT 20;
 **样本量不足的判断**（D-1 范围下 calls < 50）：必须**额外**跑 D-2（tenant 范围）拿大样本，且 Internal Note 要明示"app 范围 30 calls 样本量不足，引用 workspace 范围 1580 calls 数据"。
 
 **禁止**输出：
-- ❌ "The slowdown is real, but we need more diagnosis to find the root cause." —— 偷懒
+- ❌ 只写泛泛的 “The slowdown is real, but we need more diagnosis.” 而不说明已确认边界、准确未知跳点和下一项核查
+- ✅ 根因尚未确认时可以明确写仍需继续排查，但必须同时说明：已确认的慢点/时间窗、不能据此直接写成 provider 侧根因、下一步将核对的 trace/log/error/retry/baseline
 - ❌ 只写 app 范围的 30 calls 数据当主结论 —— 样本量不够，结论不可靠
 - ❌ 跳过 Step D-2 tenant 范围聚合 —— 这是大样本统计的关键来源
 
 ---
 
-## 常见根因（按概率排序）
+## 待验证假设（不按概率预设根因）
 
-1. **特定 provider/model 慢/限流**（最常见）— 通过 Step D 定位，回复带 provider 名 + 数字
-2. **大上下文（>50k token）在代理通道上不稳定** — Step F 验证
+下面只用于选择下一项核查，不能从列表顺序、单项相关性或历史频率直接选择根因：
+
+1. **特定 provider/model 边界延迟或限流** — Step D 只定位边界，需结合 trace/log/error/retry 证据验证
+2. **大上下文（>50k token）与长尾相关** — Step F 验证相关性后，还需排除 model/provider/queue 等替代解释
 3. **变量作用域 / 类型不匹配**（节点引用了不存在的 variable_node_path）
 4. **HTTP Request 节点超时 / 证书**
 5. **循环/分支逻辑错误**

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from zd_agent.runtime.prompt.builder import PromptBuilder
 from zd_agent.runtime.prompt.section import PromptContext, PromptSection
+from zd_agent.runtime.prompt.skill_context import build_static_skill_context
 from zd_agent.runtime.prompt_loader import load_prompt
 
 
@@ -30,10 +31,7 @@ def _db_schema_path() -> Path:
 
 
 def load_db_schema() -> str:
-    """读取生产库 schema cheat sheet；不存在或读失败返回空串。
-
-    Public API：classify.py 在 ticket_type 需要 SQL 时调用此函数注入。
-    """
+    """Read the optional production schema cheat sheet for operator tooling."""
     p = _db_schema_path()
     try:
         return p.read_text(encoding="utf-8") if p.exists() else ""
@@ -57,6 +55,13 @@ def register_static_sections(builder: PromptBuilder) -> None:
             name="core_router",
             content=load_prompt("CORE_ROUTER.md"),
             order=10,
+        )
+    )
+    builder.register(
+        PromptSection(
+            name="base_skills",
+            content=build_static_skill_context(),
+            order=20,
         )
     )
     agent_override = _admin_agent_prompt_override()

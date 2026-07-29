@@ -1,7 +1,6 @@
 """工单分类工具：SaaS 版分类（对齐 skill 01-08 知识库）。"""
 from __future__ import annotations
 
-from importlib import resources
 from typing import Any
 
 from zd_agent.log import get_logger
@@ -20,60 +19,11 @@ logger = get_logger(module="classify")
 VALID_TYPES = TICKET_TYPE_SET
 DEFAULT_TYPE = DEFAULT_TICKET_TYPE
 
-# Lazy-load 矩阵：每个 ticket_type 在 classify 后需要附加哪些"重型 prompt 段"
-# 到 tool result（不进 system prompt 以保 prompt cache）。
-#
-# - SQL_TEMPLATES + DB_SCHEMA: 需要查 PG/billing 库的类目
-# - REFUND_FLOW: 只有 refund 工单需要
-# - 其他类目（product_usage / insufficient_info / mention / general / api）
-#   完全不附加，节省 ~9-10k tokens
-NEEDS_SQL = {"platform_issue", "billing", "workflow", "knowledge_base", "permissions", "refund"}
-NEEDS_REFUND_FLOW = {"refund"}
-
-
-def _load_prompt_file(package: str, filename: str) -> str:
-    """从 prompts 子包读 .md 文件；失败返回空串。"""
-    try:
-        ref = resources.files(package).joinpath(filename)
-        return ref.read_text(encoding="utf-8")
-    except Exception as e:
-        logger.warning("prompt_file_load_failed", package=package, filename=filename, error=str(e))
-        return ""
-
-
-def _build_lazy_sections(ticket_type: str) -> str:
-    """根据 ticket_type 拼装本次工单需要的"重型 prompt 段"（lazy load）。
-
-    返回拼好的 markdown，调用方（classify tool）会把它附加到 tool result，
-    LLM 在下一轮就能看到。
-    """
-    parts: list[str] = []
-
-    if ticket_type in NEEDS_SQL:
-        sql_md = _load_prompt_file("zd_agent.prompts.sql", "SQL_TEMPLATES.md")
-        if sql_md:
-            parts.append(f"## SQL 查询模板（lazy-loaded）\n\n{sql_md}")
-
-        # DB schema 是运行时生成的，路径不在 package 内
-        from zd_agent.runtime.prompt.defaults import load_db_schema
-        db_schema = load_db_schema()
-        if db_schema:
-            parts.append(f"## 生产库 Schema 速查（lazy-loaded）\n\n{db_schema}")
-
-    if ticket_type in NEEDS_REFUND_FLOW:
-        refund_md = _load_prompt_file("zd_agent.prompts.refund", "REFUND_FLOW.md")
-        if refund_md:
-            parts.append(f"## 退款流程（lazy-loaded）\n\n{refund_md}")
-
-    return "\n\n---\n\n".join(parts)
-
-
 class ClassifyTicket(Tool):
     name = "classify_ticket"
     description = (
-        "读取最新 Zendesk 工单上下文后，对工单进行 SaaS 场景分类。分类结果决定后续"
-        "加载哪些 Skills 和针对性策略 prompt（如 refund → 退款流程）。"
-        "必须在第一轮尽早调用。"
+        "仅在 zendesk_get_ticket 已成功读取最新工单后进行 SaaS 场景分类，"
+        "并加载该类别的精简策略。基础 Skill 已在 system prompt 中，不会重复注入。"
     )
     parameters = {
         "type": "object",
@@ -118,6 +68,15 @@ class ClassifyTicket(Tool):
         reasoning = reasoning.strip()
         if not reasoning:
             return ToolResult(success=False, error="reasoning is empty")
+        if session.context is None:
+            return ToolResult(
+                success=False,
+                error=(
+                    "Fresh Zendesk context is required before classification. "
+                    "Call zendesk_get_ticket successfully, then call "
+                    "classify_ticket in the next tool round."
+                ),
+            )
 
         if ticket_type != provided_ticket_type:
             logger.warning(
@@ -125,6 +84,22 @@ class ClassifyTicket(Tool):
                 ticket_id=session.ticket_id,
                 provided=provided_ticket_type,
                 fallback=DEFAULT_TYPE,
+            )
+
+        if (
+            session.ticket_type == ticket_type
+            and bool(session.classification_reasoning)
+        ):
+            logger.info(
+                "ticket_classification_reused",
+                ticket_id=session.ticket_id,
+                ticket_type=ticket_type,
+            )
+            return ToolResult(
+                output=(
+                    f"工单已分类为 **{ticket_type}**，对应类型策略已注入；"
+                    "无需重复加载。只有最新 Zendesk 内容改变了场景时才重新分类。"
+                )
             )
 
         session.ticket_type = ticket_type
@@ -150,27 +125,9 @@ class ClassifyTicket(Tool):
                 output=f"工单已分类为 [{ticket_type}]，但策略文件加载失败；按默认 SaaS 流程继续。",
             )
 
-        # Lazy-load 重型段：SQL_TEMPLATES + DB_SCHEMA + REFUND_FLOW 不再
-        # always-load 进 system prompt（per改动 3），改为按 ticket_type 选择性
-        # 附加到 tool result。这样：
-        #   - refund/product_usage/insufficient_info/mention/api/general 类工单
-        #     完全不加载这些段 → 节省 ~9-10k tokens
-        #   - 需要查 SQL 的类（platform_issue/billing/workflow/...）按需注入
-        #   - system prompt 永远固定 → prompt cache 不失效
-        lazy_sections = _build_lazy_sections(ticket_type)
-        lazy_section_count = lazy_sections.count("## ") if lazy_sections else 0
-        logger.info(
-            "classify_lazy_sections_attached",
-            ticket_id=session.ticket_id,
-            ticket_type=ticket_type,
-            lazy_section_count=lazy_section_count,
-            lazy_chars=len(lazy_sections),
-        )
-
         skill_context = build_ticket_skill_context(
             ticket_type=ticket_type,
             strategy=strategy,
-            lazy_sections=lazy_sections,
         )
         output_parts = [
             f"工单已分类为 **{ticket_type}**",

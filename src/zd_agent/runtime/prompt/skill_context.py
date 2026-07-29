@@ -122,20 +122,27 @@ def load_ticket_strategy(ticket_type: TicketType) -> str:
     return ref.read_text(encoding="utf-8")
 
 
+def build_static_skill_context() -> str:
+    """Build always-on Skills once in the cacheable system prompt."""
+    active_skills = enabled_prompt_skills()
+    active_names = ", ".join(skill.name for skill in active_skills)
+    return "\n\n---\n\n".join(
+        [
+            "## 已激活的基础 Skills",
+            f"所有工单始终启用: {active_names}",
+            *(load_skill_context(skill) for skill in active_skills),
+        ]
+    )
+
+
 def build_ticket_skill_context(
     *,
     ticket_type: TicketType,
     strategy: str,
-    lazy_sections: str = "",
 ) -> str:
-    active_skills = enabled_prompt_skills()
-    active_names = ", ".join(skill.name for skill in active_skills)
-    parts = [
-        "## 已激活 Skills",
-        f"本次工单启用的 Skills: {active_names}",
-        *(load_skill_context(skill) for skill in active_skills),
-        f"## 类型策略 Skill: {ticket_type}\n\n{strategy}",
-    ]
-    if lazy_sections:
-        parts.extend(["## 按需加载证据上下文", lazy_sections])
-    return "\n\n---\n\n".join(parts)
+    """Build only category-specific context returned by ``classify_ticket``.
+
+    Base Skills live in the static system prompt so reclassification cannot
+    duplicate the full support contract in the conversation history.
+    """
+    return f"## 类型策略 Skill: {ticket_type}\n\n{strategy}"

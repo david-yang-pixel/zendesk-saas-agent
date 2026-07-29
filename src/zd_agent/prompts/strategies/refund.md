@@ -1,7 +1,8 @@
 # 退款工单处理策略
 
-> **流程铁律**：agent 先做 Owner gate；通过后再查证 + public_reply 告知客户判定 + 飞书推财务实际操作。
-> 不再"内部备注全程沉默等 SE"——那样客户体验最差。
+> **流程铁律**：agent 先做 Owner gate；通过后只核实订阅、支付、政策版本和时间线等事实。
+> 退款资格、全额/按比例/拒绝、金额、审批、处理和时效属于**人工业务审批**，agent **不能自行判定**。
+> 不要让客户在没有公开进度的情况下等待人工。
 
 ## ⚡ Subagent A 必查路径（如确实需要派 subagent）
 
@@ -13,7 +14,7 @@
 | **dify-billing** | `app/processors/*subscription*` | 订阅状态机 |
 | dify | `api/services/billing/*` | Cloud 侧调用 |
 
-通常不必派 subagent，主 agent 直接 SQL 即可判定。
+通常不必派 subagent；主 agent 直接查询必要事实即可，但 SQL 结果不能替代业务审批。
 
 ## 关键 SQL（database=billing）
 
@@ -35,7 +36,7 @@ WHERE taj.tenant_id = '<wid>'
   AND lower(a.email) = lower('<requester_email>');
 ```
 
-- requester 是 workspace owner → 再继续查 billing 库并判断退款资格。
+- requester 是 workspace owner → 再继续查 billing 库，收集人工审核所需事实。
 - requester 不是 owner / 查不到 owner 身份 → 立即停止，回复要求 workspace owner
   账号或邮箱确认；不要继续判断退款资格，不要写符合/不符合退款政策，
   不要推送飞书，不要 `ticket_escalate`。
@@ -44,28 +45,29 @@ WHERE taj.tenant_id = '<wid>'
 
 1. **Owner gate**：先确认 requester 是 workspace owner；不是 owner 就停止
 2. **SQL 直查** 订阅状态（sql_query database=billing）
-3. **判定退款类型**：全额 / 按比例 / 拒绝（依据：申请时间 vs 订阅起始时间、是否真使用过）
-4. **ticket_record_search** 看 SE 历史先例
-5. **写 `zendesk_public_reply`**（reply_type="solution"）告诉客户：
-   - 是否符合退款条件 + 具体原因
-   - 若符合：约略金额 + "财务会在 1-2 工作日内通过 Stripe 处理"
-   - 若不符合：清晰原因 + alternative（暂停 / 切换 plan / credit）
-6. **Owner gate 通过且已完成退款资格判定后**，同步 `feishu_push ticket_escalate`
-   推财务（content 必含完整 REFUND REQUEST draft）
-7. `archive_ticket category=refund`
+3. 记录可验证事实：plan、订阅/续费时间、charge、使用时间线、客户请求时间、适用政策版本；缺字段就标 unknown
+4. 历史工单只用于寻找需要核对的字段，不能当作本单资格或金额依据
+5. **写 `zendesk_public_reply(reply_type="handoff")`**：
+   - 只说明已核实的订阅/支付事实
+   - 明确退款资格和金额仍需 Support/Billing 人工业务审批
+   - 不承诺批准、拒绝、金额或完成时间
+6. handoff 成功后由发送层自动写 Internal Analysis 并通知内部团队；不要额外重复调用 `feishu_push`
 
-详见 `refund/REFUND_FLOW.md` 模板。
+详见 `refund/REFUND_FLOW.md`。
 
 ## 绝对不能做
 
-- ❌ **不自动发起 Stripe 退款**（agent 只能告知客户判定，不能实操）
-- ❌ **不承诺具体到账时间**（"1-2 工作日" OK，"3 天内到账" 不行）
+- ❌ **不自动发起 Stripe 退款**
+- ❌ **不能自行判定**符合/不符合、全额/部分、拒绝或替代 credit
+- ❌ **不估算退款金额**
+- ❌ **不承诺处理或到账时间**（包括“1-2 个工作日”）
 - ❌ **不双语对照** —— 客户可见 public reply 一律 English
-- ❌ **不沉默 escalate** —— 必须先 public_reply 告诉客户判定
+- ❌ **不沉默 escalate** —— 必须先公开回复客户已确认事实和人工审核下一步
 
 ## confidence / needs_human 取值
 
-- SQL 查到清晰订阅状态 + 政策匹配明确 → `confidence=high`, `needs_human=False`
-  （财务只需在 Stripe 实操，不需要再决策）
-- SQL 查不到 workspace 或政策模糊 → `confidence=low`, `needs_human=True`
-  低置信度也要先公开说明：当前还不能确认退款判定，需要 Support/Billing 进一步审核；用 `zendesk_public_reply(reply_type="handoff")`，随后自动写 Internal Analysis 并 `feishu_push ticket_escalate`。不要向客户暴露 SQL、内部错误或猜测。
+- 技术事实可按成功证据标 high/medium/low，但只代表事实置信度，不代表退款获批。
+- 所有需要退款资格、金额、审批、Stripe 操作或时效决定的请求均
+  `needs_human=True`。低置信度也要先公开说明：当前能确认什么、什么尚未确认、
+  需要 Support/Billing 进一步审核；用 `zendesk_public_reply(reply_type="handoff")`。
+  不要向客户暴露 SQL、内部错误或猜测。

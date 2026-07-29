@@ -11,6 +11,7 @@
 
 ## 严禁
 - 不要因为"信息不足"、"客户只打招呼"、"没有具体问题"推送飞书 `ticket_escalate`。
+- 不要调用 `feishu_push ticket_escalate`；普通 ask 不需要人工升级。
 - `ticket_escalate` 只用于客户明确要求人工、ask 次数达到上限、退款/财务/SRE/敏感操作等真实人工动作；初次信息不足不属于人工介入。
 
 ## 不要做

@@ -6,6 +6,7 @@ REFUND_STRATEGY_PROMPT = ROOT / "src/zd_agent/prompts/strategies/refund.md"
 REFUND_FLOW_PROMPT = ROOT / "src/zd_agent/prompts/refund/REFUND_FLOW.md"
 SOUL_PROMPT = ROOT / "src/zd_agent/prompts/SOUL.md"
 PLATFORM_PROMPT = ROOT / "src/zd_agent/prompts/strategies/platform_issue.md"
+WORKFLOW_PROMPT = ROOT / "src/zd_agent/prompts/strategies/workflow.md"
 AGENTS_PROMPT = ROOT / "src/zd_agent/prompts/AGENTS.md"
 DIFY_SUPPORT_PROMPT = ROOT / "src/zd_agent/prompts/skills/DIFY_SUPPORT_TICKET.md"
 TOOLS_PROMPT = ROOT / "src/zd_agent/prompts/TOOLS.md"
@@ -24,6 +25,8 @@ def test_refund_prompts_require_owner_gate_before_eligibility() -> None:
         assert "不要继续判断退款资格" in text
         assert "不要推送飞书" in text
         assert "不要 `ticket_escalate`" in text
+        assert "人工业务审批" in text
+        assert "不能自行判定" in text
 
 
 def test_github_pr_gate_requires_candidate_validation() -> None:
@@ -34,6 +37,14 @@ def test_github_pr_gate_requires_candidate_validation() -> None:
     assert "follow-up regression" in text
     assert "客户当前版本是否已包含修复" in text
     assert "不要建议升级到该修复版" in text
+
+
+def test_workflow_prompt_does_not_turn_latency_correlation_into_root_cause() -> None:
+    text = WORKFLOW_PROMPT.read_text(encoding="utf-8")
+
+    assert "不能据此直接写成 provider 侧根因" in text
+    assert "仍需继续排查" in text
+    assert "常见根因（按概率排序）" not in text
 
 
 def test_platform_issue_prompt_treats_batch_tickets_as_incident_signal() -> None:
