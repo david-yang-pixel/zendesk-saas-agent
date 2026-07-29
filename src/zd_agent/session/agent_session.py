@@ -89,6 +89,10 @@ class AgentSession:
     customer_reply_draft: str = ""
     reviewer_checklist: str = ""
     fix_status: str = ""
+    # Structured, program-validated claim ledger frozen with a model-authored
+    # public reply. It is intentionally separate from free-form analysis so
+    # irreversible customer claims can be audited deterministically.
+    evidence_ledger: dict[str, Any] = field(default_factory=dict)
     reply_sent: bool = False
     # Frozen reply type that actually owns the durable delivery attempt.  A
     # handoff is an ownership transfer, not merely different customer prose.

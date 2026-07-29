@@ -47,6 +47,10 @@ from zd_agent.runtime.pre_send_check import (
     FreshnessResult,
 )
 from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
+from zd_agent.runtime.reply_evidence import (
+    render_evidence_ledger,
+    validate_public_reply_evidence,
+)
 from zd_agent.runtime.reply_audit import (
     public_reply_evidence_blockers,
     public_reply_privacy_blockers,
@@ -92,6 +96,103 @@ __all__ = [
 ]
 
 logger = get_logger(module="tools.zendesk_public_reply")
+
+_EVIDENCE_LEDGER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "客户可见 solution 或任何根因断言的结构化证据台账。ask/handoff 在"
+        "不声称根因时可省略。source_tools 只能引用本会话中实际成功且返回结果"
+        "的工具；失败调用、工具参数和历史工单不能证明当前结论。"
+    ),
+    "properties": {
+        "route": {
+            "type": "string",
+            "enum": ["fast", "standard", "deep", "high_risk"],
+        },
+        "decision_scope": {
+            "type": "string",
+            "enum": [
+                "customer_guidance",
+                "technical_diagnosis",
+                "technical_fact_only",
+                "business_decision",
+            ],
+            "description": (
+                "fast 用 customer_guidance；已确认技术根因用 "
+                "technical_diagnosis；高风险场景只陈述核实事实时用 "
+                "technical_fact_only。business_decision 会被发送层拒绝。"
+            ),
+        },
+        "root_cause_status": {
+            "type": "string",
+            "enum": [
+                "confirmed",
+                "evidence_supported",
+                "unknown",
+                "not_applicable",
+            ],
+        },
+        "root_cause_summary": {"type": "string"},
+        "rows": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "causal_role": {
+                        "type": "string",
+                        "enum": [
+                            "symptom",
+                            "failing_boundary",
+                            "immediate_trigger",
+                            "root_cause",
+                            "contributing_factor",
+                            "recovery_event",
+                            "current_state",
+                            "product_fact",
+                        ],
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": [
+                            "confirmed",
+                            "evidence_supported",
+                            "ruled_out",
+                            "unknown",
+                        ],
+                    },
+                    "source_tools": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"type": "string"},
+                    },
+                    "object_identifiers": {"type": "string"},
+                    "time_window": {"type": "string"},
+                    "observed_result": {"type": "string"},
+                    "alternatives_checked": {"type": "string"},
+                },
+                "required": [
+                    "claim",
+                    "causal_role",
+                    "status",
+                    "source_tools",
+                    "object_identifiers",
+                    "time_window",
+                    "observed_result",
+                    "alternatives_checked",
+                ],
+            },
+        },
+    },
+    "required": [
+        "route",
+        "decision_scope",
+        "root_cause_status",
+        "root_cause_summary",
+        "rows",
+    ],
+}
 
 
 @dataclass(frozen=True)
@@ -692,8 +793,9 @@ class ZendeskPublicReply(Tool):
                     "把它写入 Internal Note；不要把这些内部信息写进 body。"
                 ),
             },
+            "evidence_ledger": _EVIDENCE_LEDGER_SCHEMA,
         },
-        "required": ["ticket_id", "body", "reply_type"],
+        "required": ["ticket_id", "body", "reply_type", "internal_analysis"],
     }
     group = "zendesk"
     concurrency_safe = False
@@ -708,6 +810,7 @@ class ZendeskPublicReply(Tool):
         raw_conversation_id = args.get("conversation_id")
         raw_messaging_app_id = args.get("messaging_app_id")
         raw_internal_analysis = args.get("internal_analysis", "")
+        evidence_ledger = args.get("evidence_ledger")
 
         # 先做类型校验，再 strip，避免非法工具参数变成 AttributeError。
         if "ticket_id" not in args:
@@ -853,6 +956,38 @@ class ZendeskPublicReply(Tool):
                 reply_type=reply_type,
             )
             return ToolResult(success=False, error=refund_block)
+
+        evidence_blockers = validate_public_reply_evidence(
+            reply_type=reply_type,
+            body=body,
+            internal_analysis=internal_analysis,
+            evidence_ledger=evidence_ledger,
+            tool_call_log=getattr(session, "tool_call_log", []) or [],
+            ticket_type=str(getattr(session, "ticket_type", "") or ""),
+        )
+        if evidence_blockers:
+            logger.warning(
+                "public_reply_structured_evidence_gate_blocked",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+                blocker_count=len(evidence_blockers),
+                blockers=evidence_blockers[:5],
+            )
+            return ToolResult(
+                success=False,
+                error=(
+                    "Public reply structured evidence gate blocked this reply: "
+                    + "; ".join(evidence_blockers[:5])
+                ),
+            )
+        if isinstance(evidence_ledger, dict) and evidence_ledger:
+            session.evidence_ledger = evidence_ledger
+            rendered_ledger = render_evidence_ledger(evidence_ledger)
+            internal_analysis = (
+                f"{internal_analysis}\n\n{rendered_ledger}"
+                if internal_analysis
+                else rendered_ledger
+            )
 
         # 3. Footer 强制追加（幂等）
         body_with_footer = _append_footer(body, reply_type)

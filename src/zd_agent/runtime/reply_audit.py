@@ -18,7 +18,6 @@
 """
 from __future__ import annotations
 
-import json
 import re
 from typing import Any, Final
 
@@ -38,24 +37,24 @@ _PUBLIC_INTERNAL_SOURCE_PATH_PATTERN: Final = re.compile(
 
 
 def _join_tool_outputs(tool_call_log: list[dict[str, Any]]) -> str:
-    """把所有 tool evidence 拼起来，用于 grep。
+    """Join only successful tool results for customer-claim verification.
 
-    不只看 result_preview：部分 evidence 只存在于 tool args（例如 git_show
-    的 path、sql_query 的 SQL），public reply hard gate 也应视为已查证。
+    Tool arguments express what the model *asked* to inspect, not what the tool
+    proved. Failed calls and their errors are likewise not evidence. Keeping
+    this boundary strict prevents a failed ``git_show(ref=v1.2.3)`` call from
+    satisfying a later "fixed in v1.2.3" claim merely because the requested
+    version appeared in the arguments.
     """
     chunks: list[str] = []
     for item in tool_call_log or []:
         if not isinstance(item, dict):
             continue
-        chunks.append(str(item.get("tool") or ""))
-        args = item.get("args")
-        if args:
-            try:
-                chunks.append(json.dumps(args, ensure_ascii=False, sort_keys=True))
-            except Exception:
-                chunks.append(str(args))
-        chunks.append(str(item.get("error") or ""))
-        chunks.append(str(item.get("result_preview") or ""))
+        if item.get("success") is not True:
+            continue
+        result = str(item.get("result_preview") or "").strip()
+        if not result:
+            continue
+        chunks.append(result)
     return "\n".join(chunks)
 
 

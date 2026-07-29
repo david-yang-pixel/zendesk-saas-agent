@@ -417,6 +417,32 @@ def _make_session(dry_run: bool = False) -> MagicMock:
     return s
 
 
+def _fast_evidence_ledger(
+    source_tool: str,
+    *,
+    claim: str = "The current product state supports this guidance.",
+    role: str = "product_fact",
+) -> dict:
+    return {
+        "route": "fast",
+        "decision_scope": "customer_guidance",
+        "root_cause_status": "not_applicable",
+        "root_cause_summary": "",
+        "rows": [
+            {
+                "claim": claim,
+                "causal_role": role,
+                "status": "confirmed",
+                "source_tools": [source_tool],
+                "object_identifiers": "ticket=42",
+                "time_window": "checked_at=2026-07-29T00:00:00Z",
+                "observed_result": "The successful tool result confirmed the claim.",
+                "alternatives_checked": "Checked the current authoritative source.",
+            },
+        ],
+    }
+
+
 class TestExecute:
     @pytest.mark.asyncio
     async def test_kill_switch_blocks_send(self) -> None:
@@ -595,7 +621,13 @@ class TestExecute:
             return_value=_make_cfg(),
         ):
             r = await tool.execute(
-                {"ticket_id": 42, "body": "Hi customer", "reply_type": "ask"}, sess,
+                {
+                    "ticket_id": 42,
+                    "body": "Hi customer",
+                    "reply_type": "ask",
+                    "internal_analysis": "The customer needs to clarify the request.",
+                },
+                sess,
             )
         assert r.success
         assert "Dry Run" in r.output
@@ -622,6 +654,7 @@ class TestExecute:
                     "body": "Hi there",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The latest customer context was reviewed.",
                 },
                 sess,
             )
@@ -700,6 +733,7 @@ class TestExecute:
                     "body": "Hi there",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The current ticket context was reviewed.",
                 },
                 sess,
             )
@@ -781,6 +815,11 @@ class TestExecute:
                     "body": "This was fixed in PR #33216.",
                     "reply_type": "solution",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "Verified the matching GitHub change.",
+                    "evidence_ledger": _fast_evidence_ledger(
+                        "github_search_prs",
+                        claim="PR #33216 contains the matching timeout fix.",
+                    ),
                 },
                 sess,
             )
@@ -889,6 +928,7 @@ class TestExecute:
                     ),
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "Requester authority is not confirmed.",
                 },
                 sess,
             )
@@ -897,7 +937,7 @@ class TestExecute:
         mock_relay.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_refund_reply_allows_eligibility_after_owner_gate(self) -> None:
+    async def test_refund_reply_requires_human_decision_after_owner_gate(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
         sess.ticket_type = "refund"
@@ -936,8 +976,10 @@ class TestExecute:
                 sess,
             )
 
-        assert r.success
-        mock_relay.assert_awaited_once()
+        assert not r.success
+        assert "Refund decision gate" in (r.error or "")
+        assert "human business approval" in (r.error or "")
+        mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_conversation_id_does_not_fall_back_to_public_comment(self) -> None:
@@ -955,7 +997,13 @@ class TestExecute:
             return_value={},
         ):
             r = await tool.execute(
-                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"}, sess,
+                {
+                    "ticket_id": 42,
+                    "body": "Hi there",
+                    "reply_type": "ask",
+                    "internal_analysis": "The ticket was reviewed before replying.",
+                },
+                sess,
             )
 
         assert not r.success
@@ -1207,6 +1255,7 @@ class TestExecute:
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
                     "messaging_app_id": "app-1",
+                    "internal_analysis": "The current ticket context was reviewed.",
                 },
                 sess,
             )
@@ -1227,6 +1276,15 @@ class TestExecute:
     async def test_successful_public_reply_adds_internal_analysis_note(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)
+        sess.tool_call_log = [
+            {
+                "tool": "zendesk_get_ticket",
+                "args": {"ticket_id": 42},
+                "success": True,
+                "error": None,
+                "result_preview": "The latest customer retry succeeded.",
+            },
+        ]
         mock_relay = AsyncMock()
         mcp_calls: list[tuple[str, dict]] = []
 
@@ -1257,6 +1315,11 @@ class TestExecute:
                     "internal_analysis": (
                         "Confirmed the failed run recovered. The customer can retry; "
                         "monitor the next execution for recurrence."
+                    ),
+                    "evidence_ledger": _fast_evidence_ledger(
+                        "zendesk_get_ticket",
+                        claim="The latest customer retry succeeded.",
+                        role="current_state",
                     ),
                 },
                 sess,
@@ -1331,7 +1394,12 @@ class TestExecute:
             mock_relay,
         ):
             r = await tool.execute(
-                {"ticket_id": 42, "body": "Hi there", "reply_type": "ask"},
+                {
+                    "ticket_id": 42,
+                    "body": "Hi there",
+                    "reply_type": "ask",
+                    "internal_analysis": "The current ticket context was reviewed.",
+                },
                 sess,
             )
 
@@ -1362,6 +1430,7 @@ class TestExecute:
                     "body": "Hi there",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The current ticket context was reviewed.",
                 },
                 sess,
             )
@@ -1399,6 +1468,7 @@ class TestPreSendCheckIntegration:
                     "body": "test",
                     "reply_type": reply_type,
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The customer message snapshot is required.",
                 },
                 sess,
             )
@@ -1431,6 +1501,7 @@ class TestPreSendCheckIntegration:
                     "body": "transferred",
                     "reply_type": "handoff",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The unresolved case is being handed off.",
                 },
                 sess,
             )
@@ -1469,6 +1540,7 @@ class TestPreSendCheckIntegration:
                     "body": "ask",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "Waiting for the latest customer context.",
                 },
                 sess,
             )
@@ -1521,6 +1593,7 @@ class TestPreSendCheckIntegration:
                     "body": "We are checking this for you.",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The latest customer context was reviewed.",
                 },
                 session,
             )
@@ -1552,6 +1625,7 @@ class TestPreSendCheckIntegration:
                     "body": "ask",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The freshness check must succeed first.",
                 },
                 sess,
             )
@@ -1581,6 +1655,7 @@ class TestPreSendCheckIntegration:
                     "body": "ask",
                     "reply_type": "ask",
                     "conversation_id": "conv-1",
+                    "internal_analysis": "The latest Zendesk ticket fetch is required.",
                 },
                 session,
             )

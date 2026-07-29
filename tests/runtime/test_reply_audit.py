@@ -117,6 +117,40 @@ class TestVersionHallucination:
         # tool dump 里有 1.14.1
         assert audit_reply_against_tools(body=body, tool_call_log=log) == []
 
+    def test_failed_tool_arguments_do_not_count_as_evidence(self) -> None:
+        body = "This was fixed in v1.2.3."
+        log = [
+            {
+                "round": 1,
+                "tool": "git_show",
+                "args": {"ref": "v1.2.3"},
+                "success": False,
+                "error": "ref not found",
+                "result_preview": "❌ 错误: ref not found",
+            },
+        ]
+
+        warnings = audit_reply_against_tools(body=body, tool_call_log=log)
+
+        assert any("1.2.3" in warning for warning in warnings)
+
+    def test_failed_tool_result_does_not_count_as_evidence(self) -> None:
+        body = "This was fixed in PR #33216."
+        log = [
+            {
+                "round": 1,
+                "tool": "github_get_pr",
+                "args": {"repo": "langgenius/dify", "pr_number": 33216},
+                "success": False,
+                "error": "GitHub unavailable",
+                "result_preview": "PR #33216 could not be fetched",
+            },
+        ]
+
+        warnings = audit_reply_against_tools(body=body, tool_call_log=log)
+
+        assert any("#33216" in warning for warning in warnings)
+
 
 class TestMultipleWarnings:
     def test_collects_all_types(self) -> None:
