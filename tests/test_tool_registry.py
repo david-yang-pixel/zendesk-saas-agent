@@ -16,3 +16,4 @@ class TestToolRegistry(unittest.TestCase):
         registry = create_tool_registry()
 
         self.assertNotIn("zd_kb_cli_exec", registry)
+        self.assertNotIn("archive_ticket", registry)

@@ -7,7 +7,6 @@ from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.guardrails import Guardrails
 from zd_agent.runtime.llm_client import LLMClient
-from zd_agent.runtime.runner_archive import ensure_archive as _ensure_archive
 from zd_agent.runtime.runner_reporting import report_preflight_failure
 from zd_agent.services.escalation_notifications import (
     send_feishu_escalation_best_effort,
@@ -159,10 +158,8 @@ async def run_agent(session: AgentSession) -> None:
             total_tokens=session.token_usage.total_tokens,
             elapsed=f"{guardrails.elapsed_seconds:.1f}s",
             reply_sent=session.reply_sent,
-            archived=session.archived,
             model=cfg.llm.model,
         )
-        _ensure_archive(session, guardrails)
         return
 
     # 创建 sandbox（根据配置自动选择 Local 或 Docker）
@@ -297,12 +294,8 @@ async def run_agent(session: AgentSession) -> None:
             total_tokens=session.token_usage.total_tokens,
             elapsed=f"{guardrails.elapsed_seconds:.1f}s",
             reply_sent=session.reply_sent,
-            archived=session.archived,
             model=cfg.llm.model,
         )
-
-        # 自动归档保底：如果 LLM 没有调用 archive_ticket，runner 层补充写入 meta.json
-        _ensure_archive(session, guardrails)
 
         if (
             session.status == SessionStatus.COMPLETED

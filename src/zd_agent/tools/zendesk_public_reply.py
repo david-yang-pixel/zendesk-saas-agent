@@ -881,8 +881,8 @@ class ZendeskPublicReply(Tool):
                 success=False,
                 error=(
                     "Public reply already sent in this agent session; "
-                    "do not send another customer-visible reply. Use archive_ticket "
-                    "for the processing summary, or re-fetch the ticket before retrying."
+                    "do not send another customer-visible reply. The successful call "
+                    "already stored its internal analysis; re-fetch the ticket before retrying."
                 ),
             )
         pending_images = getattr(session, "image_urls", None)

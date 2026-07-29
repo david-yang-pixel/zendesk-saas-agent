@@ -33,7 +33,7 @@ class LLMConfig(BaseModel):
     model: str = "gpt-4o"
     # 空字符串 = 由模型使用默认档位。后台会按具体模型限制可选值。
     reasoning_effort: str = ""
-    enable_vision_input: bool = False
+    enable_vision_input: bool = True
     # subagent_model：subagent 用的模型（默认空 = 用主 model 字段，向后兼容）。
     # 设成 mini 类模型可大幅省 token 成本：subagent 干"go fetch this"机械活，
     # mini 完全够用；主 agent 决策、整合、写 reply 才需要强推理模型。
@@ -194,7 +194,7 @@ class TriggerDeciderConfig(BaseModel):
     llm_model: str = "gpt-5.4-mini"
     # 独立配置触发判定及其辅助生成调用；空字符串 = 模型默认档位。
     reasoning_effort: str = ""
-    enable_vision_input: bool = False
+    enable_vision_input: bool = True
     silence_minutes_default: int = 0
     silence_extend_to_minutes: int = 1
     rapid_burst_window_seconds: int = 30

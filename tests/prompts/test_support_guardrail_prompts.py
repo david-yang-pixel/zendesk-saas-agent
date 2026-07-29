@@ -10,6 +10,7 @@ WORKFLOW_PROMPT = ROOT / "src/zd_agent/prompts/strategies/workflow.md"
 AGENTS_PROMPT = ROOT / "src/zd_agent/prompts/AGENTS.md"
 DIFY_SUPPORT_PROMPT = ROOT / "src/zd_agent/prompts/skills/DIFY_SUPPORT_TICKET.md"
 TOOLS_PROMPT = ROOT / "src/zd_agent/prompts/TOOLS.md"
+QUALITY_BAR_PROMPT = ROOT / "src/zd_agent/prompts/references/quality_bar.md"
 
 
 def test_refund_prompts_require_owner_gate_before_eligibility() -> None:
@@ -76,3 +77,16 @@ def test_all_escalation_prompts_require_a_customer_safe_public_update_first() ->
     assert "不可重现 platform_issue 需 SRE drill down | `zendesk_internal_reply`" not in agents
     assert "改走 `zendesk_internal_reply`" not in refund_strategy
     assert "什么情况依然 escalate 不公开回复" not in refund_flow
+
+
+def test_support_prompts_do_not_force_irrelevant_evidence_or_local_mirrors() -> None:
+    soul = SOUL_PROMPT.read_text(encoding="utf-8")
+    tools = TOOLS_PROMPT.read_text(encoding="utf-8")
+    quality = QUALITY_BAR_PROMPT.read_text(encoding="utf-8")
+
+    combined = "\n".join((soul, tools, quality))
+    assert "多证据源工单默认派 subagent" not in combined
+    assert "有 Workspace ID 时**必跑万能起手式**" not in combined
+    assert "archive_ticket" not in combined
+    assert "只有当前结论确实依赖 DB" in combined
+    assert "根因 confirmed 才写明确因果" in combined

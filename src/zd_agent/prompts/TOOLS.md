@@ -35,7 +35,7 @@ ACK/error note 也走 Zendesk MCP。
 ### `sql_query` — 生产库只读查询（核心，经 DB Gateway）
 - `database`: `prod`（langgenius）/ `billing`（billing 库）/ `plugin`（dify_plugin_daemon）
 - 只允许 SELECT；INSERT / UPDATE / DELETE 等会被工具层拒绝
-- 有 Workspace ID 时**必跑万能起手式**（参考 `prompts/sql/SQL_TEMPLATES.md`）
+- 只有当前结论依赖 DB 且已有正确对象标识时才查询；先用 `information_schema` 发现真实表/列，不批量注入或机械执行“万能起手式”
 - DB Gateway 负责 Teleport / DB proxy / 续期；认证过期时会自动挂起工单，无需你处理
 
 ## 平台日志工具组
@@ -90,7 +90,7 @@ logs / traces / metrics / services / schema / ClickHouse SQL：
 
 ### Subagent 任务描述写法（重要）
 
-Subagent 已内置统一 contract（数据类必给 count+p50+p90+max+基线对比；维度查不到时按
+Subagent 已内置统一 contract（统计量按问题类型选择；延迟/间歇问题做基线对比；维度查不到时按
 service.name/endpoint 回退；源码类先 grep 上下文再下结论），**不要在 task 里重复列这些
 通用约束**——重复反而稀释主任务，且每次调用浪费 ~200-400 tokens。
 
@@ -138,13 +138,6 @@ Subagent 返回后先读它的 `Conclusion / Checked / Evidence / Gaps / Parent 
 - `ticket_escalate`：需人工介入（退款财务实操 / 敏感决策 / 已达到 ask 上限 / 已取证后需工程或 SRE 介入）；不要用于仅问候或普通信息不足。
 - `alert`：通用告警（`urgent=true` 会触发 @ 所有人）
 
-## 归档工具
-
-### `archive_ticket`
-- 写入配置的 `ticket_records_dir/<ticket_id>.md`
-- 首次处理 → 建新文件（带 frontmatter）
-- 跟进 → 追加 `## 跟进 <ts>` 段
-
 ## 运维工具
 
 ### `saas_branch_switch`
@@ -158,24 +151,22 @@ Subagent 返回后先读它的 `Conclusion / Checked / Evidence / Gaps / Parent 
   ↓
 Step 1: zendesk_get_ticket
   ↓
-Step 4: classify_ticket → 决定激活哪些工具组
+下一轮: classify_ticket → 加载当前类别策略
   ↓
-├─ platform_issue → signoz_* + sql_query
-├─ knowledge_base → sql_query + ticket_record_*
-├─ workflow       → sql_query + ticket_record_*
-├─ refund         → sql_query (billing 库) + ticket_record_*
-├─ api            → ticket_record_* (sql 通常不需要)
+├─ platform_issue → 结构化 signoz_*；对象状态确实需要时再 sql_query
+├─ knowledge_base → 按执行链选择 sql_query / worker logs / Source
+├─ workflow       → 按执行链选择 sql_query / traces / worker logs / Source
+├─ refund         → Owner gate + billing 事实；资格/金额/审批交人工
+├─ api            → Docs / Source / GitHub / traces 按需取证
 ├─ insufficient_info → 尽量少调工具，直接输出"需客户补充"
 ├─ product_usage  → zendesk_search_articles / zendesk_get_article / official_docs_* 为主
 └─ general        → 广谱
   ↓
-Step 10-14: 单一证据源直接工具排查；多证据源默认 run_subagents_parallel (根因)
+选择 fast / standard / deep / high_risk 调查深度
   ↓
-Step 15-18: 文档/历史/GitHub/日志等跨源核查交给 subagent 并行摘要 (知识)
+仅 deep 且任务可独立并行时使用 run_subagents_parallel
   ↓
-Step 19: zendesk_public_reply（客户可见回复；需要人工/SRE 时也先发 handoff）或仅在公开通道不可用/安全例外时使用 zendesk_internal_reply
-Step 20: archive_ticket
-Step 22: feishu_push ticket_done（content 用固定字段摘要，不要粘贴完整客户回复）
+zendesk_public_reply（solution/因果断言附 evidence_ledger；需要人工/SRE 时先发 handoff）
 ```
 
 ## 避免的反模式
@@ -184,7 +175,7 @@ Step 22: feishu_push ticket_done（content 用固定字段摘要，不要粘贴�
 - ❌ 在不知道 Workspace ID 的情况下跑 SQL → 先跟客户确认或读已有评论找到 ID
 - ❌ 用 `zendesk_internal_reply` 当客户回复 → 客户看不到；客户可见回复必须直接 `zendesk_public_reply`
 - ❌ 需要人工或 SRE 介入时直接沉默升级 → 需要人工或 SRE 介入时，先用 `zendesk_public_reply` 说明客户安全的升级原因和下一步，再通知内部团队
-- ❌ 成功 `zendesk_public_reply` 后再写 Internal Note → 重复且客户不可见，处理摘要交给 `archive_ticket`
+- ❌ 成功 `zendesk_public_reply` 后再写 Internal Note 或本地工单镜像 → 重复且会制造冲突记录
 - ❌ 用 `zendesk_internal_reply` 多次写半成品 → 一次写完整三段
 - ❌ 反复调 `zendesk_get_ticket` → 拉一次就够，后续用 session 里的信息
 - ❌ 自行调用 shell 跑 `tsh proxy db` 之类命令 → DB Gateway 统一管理

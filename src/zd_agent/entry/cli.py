@@ -82,7 +82,6 @@ def run(
     console.print(f"  轮次: {session.round_count}")
     console.print(f"  Token: {session.token_usage.total_tokens}")
     console.print(f"  回复已发送: {'是' if session.reply_sent else '否'}")
-    console.print(f"  已归档: {'是' if session.archived else '否'}")
 
     if session.sandbox_dir and session.sandbox_dir.exists():
         console.print(f"  Sandbox 保留: {session.sandbox_dir}")

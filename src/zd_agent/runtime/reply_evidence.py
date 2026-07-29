@@ -53,7 +53,6 @@ _ROOT_CAUSE_ASSERTION_PATTERNS: Final = (
 
 _HISTORICAL_TOOL_PREFIXES: Final = ("ticket_record_",)
 _NON_EVIDENCE_TOOLS: Final = {
-    "archive_ticket",
     "classify_ticket",
     "feishu_push",
     "run_subagent",

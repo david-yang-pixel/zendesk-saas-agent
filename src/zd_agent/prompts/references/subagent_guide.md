@@ -2,11 +2,10 @@
 
 ## 核心原则
 
-**多证据源工单默认派 subagent**。
-只要需要查看 **代码 / 文档 / 数据库 / 日志 / 历史工单 / GitHub PR** 中任意 ≥2 类证据源，
-就用 `run_subagents_parallel` 按证据源拆任务，而不是让主 agent 串行硬查到底。
+仅在 `deep` 调查中，多个取证任务互不依赖且并行能明显加快完成时派 subagent。
+不要仅因需要两类证据就机械调用 `run_subagents_parallel`。
 
-单一证据源问题仍由主 agent 直接批量调工具；下列情况必须优先派 subagent：
+单一证据源或严格依赖前序对象 ID 的问题由主 agent 直接调工具；下列情况可以派 subagent：
 - 同时查源码 + SigNoz + GitHub / 文档 / 历史工单
 - 单次 tool 输出可能很大（如 SigNoz raw search），让 subagent 在独立 context 处理后返回精简结论
 - 任务复杂，需要多轮 tool 调用闭环（subagent 在自己的 message_store 闭环，不污染主 loop）

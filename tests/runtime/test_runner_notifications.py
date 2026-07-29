@@ -17,7 +17,6 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
     cfg.sandbox.cleanup_on_failure = False
     monkeypatch.setattr(runner, "get_config", lambda: cfg)
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
-    monkeypatch.setattr(runner, "_ensure_archive", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
 
     class FakeSandbox:
@@ -68,7 +67,6 @@ async def test_run_agent_does_not_send_ticket_done_for_handoff(monkeypatch):
     cfg.sandbox.cleanup_on_failure = False
     monkeypatch.setattr(runner, "get_config", lambda: cfg)
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
-    monkeypatch.setattr(runner, "_ensure_archive", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
 
     class FakeSandbox:
@@ -132,7 +130,6 @@ async def test_run_agent_writes_failure_note_when_tool_loop_times_out(monkeypatc
         notify_failure,
         raising=False,
     )
-    monkeypatch.setattr(runner, "_ensure_archive", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
 
     class FakeSandbox:

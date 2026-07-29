@@ -27,6 +27,8 @@ llm:
   subagent_model: gpt-5.4-mini
   # Subagent 独立设置，不继承主模型；空字符串 = Subagent 模型默认。
   subagent_reasoning_effort: ''
+  # 下载 Zendesk 图片后以受控 data URL 注入主模型；附件网络与大小校验仍由工具层强制。
+  enable_vision_input: true
   temperature: 0.2
   max_tokens: 0
 resources:
@@ -94,6 +96,8 @@ trigger_decider:
   llm_model: gpt-5.5
   # 触发判定、自动追问生成和发送前灰区复核共用；空字符串 = 模型默认。
   reasoning_effort: ''
+  # 让触发判定也能读取客户最近上传的图片，避免仅凭空文本误分类。
+  enable_vision_input: true
   silence_minutes_default: 0
   silence_extend_to_minutes: 1
   rapid_burst_window_seconds: 30
@@ -131,7 +135,7 @@ source_mcp:
   mcp_api_key: ''
   request_timeout_seconds: 45
 github_mcp:
-  # GitHub PR / Code Search 只调用独立 github-mcp；GITHUB_TOKEN 属于该服务。
+  # GitHub PR / Issue / Code Search 只调用独立 github-mcp；GITHUB_TOKEN 属于该服务。
   mcp_url: ''
   mcp_api_key: ''
   request_timeout_seconds: 35

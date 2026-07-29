@@ -19,7 +19,6 @@ async def test_run_agent_captures_customer_snapshot_before_tool_loop(
     cfg.sandbox.cleanup_on_success = False
     cfg.sandbox.cleanup_on_failure = False
     monkeypatch.setattr(runner, "get_config", lambda: cfg)
-    monkeypatch.setattr(runner, "_ensure_archive", lambda *_args, **_kwargs: None)
 
     class FakeSandbox:
         async def create(self, ticket_id: int) -> str:
@@ -100,7 +99,6 @@ async def test_run_agent_stops_when_customer_snapshot_is_unavailable(
         AsyncMock(return_value=([], None)),
     )
     create_sandbox = MagicMock()
-    ensure_archive = MagicMock()
     log_info = MagicMock()
     reporter = MagicMock()
     reporter.enabled = True
@@ -108,7 +106,6 @@ async def test_run_agent_stops_when_customer_snapshot_is_unavailable(
     reporter.report_run_finish = AsyncMock()
     reporter.close = AsyncMock()
     monkeypatch.setattr(runner, "create_sandbox", create_sandbox)
-    monkeypatch.setattr(runner, "_ensure_archive", ensure_archive)
     monkeypatch.setattr(runner.logger, "info", log_info)
     monkeypatch.setattr(
         "zd_agent.runtime.runner_reporting.LogReporter",
@@ -121,7 +118,6 @@ async def test_run_agent_stops_when_customer_snapshot_is_unavailable(
     assert session.status is SessionStatus.FAILED
     assert "customer-message snapshot" in (session.error_message or "")
     create_sandbox.assert_not_called()
-    ensure_archive.assert_called_once()
     assert any(call.args == ("agent_done",) for call in log_info.call_args_list)
     reporter.report_run_start.assert_awaited_once()
     reporter.report_run_finish.assert_awaited_once()
