@@ -38,6 +38,9 @@ resources:
   ticket_records_dir: zendesk-cli/工单记录
   attachments_dir: 工单附件
   state_dir: .state
+knowledge:
+  docs_dir: /opt/zd-agent/resources/saas版知识库
+  archive_dir: /opt/zd-agent/resources/agent-runs
 zendesk:
   subdomain: ''
   search_query: status:new tags:saas

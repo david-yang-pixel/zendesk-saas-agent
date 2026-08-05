@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from zd_agent.runtime.investigation import current_investigation_phase
 from zd_agent.session.agent_session import AgentSession
 
 
@@ -33,6 +34,11 @@ def build_archive_meta(
         "session_id": session.session_id,
         "status": session.status.value,
         "ticket_type": session.ticket_type or None,
+        "investigation_policy_enabled": session.investigation_policy_enabled,
+        "investigation_phase": current_investigation_phase(session),
+        "investigation_route": session.investigation_route or None,
+        "investigation_plan": dict(session.investigation_plan),
+        "evidence_ledger": dict(session.evidence_ledger),
         "created_at": archived_at,
         "archived_at": archived_at,
         "rounds": session.round_count,
@@ -73,7 +79,8 @@ def _serialize_tool_call(item: dict[str, Any]) -> dict[str, Any]:
         key: (str(value)[:100] if len(str(value)) > 100 else value)
         for key, value in item.get("args", {}).items()
     }
-    return {
+    serialized = {
+        "call_id": str(item.get("call_id") or ""),
         "round": item.get("round"),
         "tool": item.get("tool", "unknown"),
         "args": args,
@@ -81,3 +88,15 @@ def _serialize_tool_call(item: dict[str, Any]) -> dict[str, Any]:
         "error": item.get("error"),
         "result_preview": item.get("result_preview", ""),
     }
+    metadata = item.get("metadata")
+    if isinstance(metadata, dict):
+        nested_calls = metadata.get("evidence_tool_calls")
+        if isinstance(nested_calls, list):
+            serialized["metadata"] = {
+                "evidence_tool_calls": [
+                    _serialize_tool_call(call)
+                    for call in nested_calls
+                    if isinstance(call, dict)
+                ]
+            }
+    return serialized

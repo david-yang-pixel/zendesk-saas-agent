@@ -174,6 +174,15 @@ def test_repository_config_keeps_both_vision_paths_enabled() -> None:
     assert raw["trigger_decider"]["enable_vision_input"] is True
 
 
+def test_repository_config_persists_agent_archives_under_resources_mount() -> None:
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    assert raw["knowledge"]["archive_dir"] == (
+        "/opt/zd-agent/resources/agent-runs"
+    )
+
+
 def test_llm_config_rejects_reasoning_effort_unsupported_by_model() -> None:
     with pytest.raises(ValidationError, match="does not support reasoning effort 'max'"):
         LLMConfig(model="gpt-5.4-mini", reasoning_effort="max")
