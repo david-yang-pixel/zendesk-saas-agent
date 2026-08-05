@@ -118,6 +118,9 @@ _RUNTIME_CATEGORIES = frozenset(
 _RUNTIME_LANE_MARKERS = frozenset(
     {"runtime", "log", "trace", "metric", "cache", "queue", "worker", "quota"}
 )
+_HIGH_RISK_RUNTIME_LANE_MARKERS = frozenset(
+    {"runtime", "log", "trace", "metric", "cache", "queue", "worker"}
+)
 _SOURCE_LANE_MARKERS = frozenset(
     {"source", "code", "version", "deployment", "implementation"}
 )
@@ -186,24 +189,38 @@ def _investigation_tools(session: AgentSession) -> set[str]:
             lane_text, _SOURCE_LANE_MARKERS
         ):
             allowed.update(_SOURCE_TOOLS)
-        return allowed
-
-    if category in _DATABASE_CATEGORIES:
-        allowed.update(_DATABASE_TOOLS)
-    if category in _SOURCE_CATEGORIES:
-        allowed.update(_SOURCE_TOOLS)
-    if category in _RUNTIME_CATEGORIES or _contains_lane_marker(
-        lane_text, _RUNTIME_LANE_MARKERS
-    ):
-        allowed.update(_SIGNOZ_TOOLS)
-    if _contains_lane_marker(lane_text, _GITHUB_LANE_MARKERS):
-        allowed.update(_GITHUB_TOOLS)
-    if _contains_lane_marker(lane_text, _ARTIFACT_LANE_MARKERS):
-        allowed.update(_ARTIFACT_TOOLS)
-    if _contains_lane_marker(lane_text, _HISTORICAL_LANE_MARKERS):
-        allowed.update(_HISTORICAL_TOOLS)
-    if _parallel_subagents_allowed(session):
-        allowed.add("run_subagents_parallel")
+    elif route == "high_risk":
+        if category in _DATABASE_CATEGORIES:
+            allowed.update(_DATABASE_TOOLS)
+        if category in _SOURCE_CATEGORIES and _contains_lane_marker(
+            lane_text, _SOURCE_LANE_MARKERS
+        ):
+            allowed.update(_SOURCE_TOOLS)
+        if _contains_lane_marker(lane_text, _HIGH_RISK_RUNTIME_LANE_MARKERS):
+            allowed.update(_SIGNOZ_TOOLS)
+        if _contains_lane_marker(lane_text, _GITHUB_LANE_MARKERS):
+            allowed.update(_GITHUB_TOOLS)
+        if _contains_lane_marker(lane_text, _ARTIFACT_LANE_MARKERS):
+            allowed.update(_ARTIFACT_TOOLS)
+        if _contains_lane_marker(lane_text, _HISTORICAL_LANE_MARKERS):
+            allowed.update(_HISTORICAL_TOOLS)
+    else:
+        if category in _DATABASE_CATEGORIES:
+            allowed.update(_DATABASE_TOOLS)
+        if category in _SOURCE_CATEGORIES:
+            allowed.update(_SOURCE_TOOLS)
+        if category in _RUNTIME_CATEGORIES or _contains_lane_marker(
+            lane_text, _RUNTIME_LANE_MARKERS
+        ):
+            allowed.update(_SIGNOZ_TOOLS)
+        if _contains_lane_marker(lane_text, _GITHUB_LANE_MARKERS):
+            allowed.update(_GITHUB_TOOLS)
+        if _contains_lane_marker(lane_text, _ARTIFACT_LANE_MARKERS):
+            allowed.update(_ARTIFACT_TOOLS)
+        if _contains_lane_marker(lane_text, _HISTORICAL_LANE_MARKERS):
+            allowed.update(_HISTORICAL_TOOLS)
+        if _parallel_subagents_allowed(session):
+            allowed.add("run_subagents_parallel")
 
     # Internal notes are a recovery path only after customer delivery failed.
     if any(

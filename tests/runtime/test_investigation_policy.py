@@ -118,6 +118,55 @@ def test_high_risk_billing_exposes_identity_and_billing_tools_without_subagents(
     assert "run_subagents_parallel" not in allowed
 
 
+def test_high_risk_billing_quota_lane_does_not_open_runtime_or_source_tools() -> None:
+    session = _planned_session(ticket_type="billing", route="high_risk")
+    session.investigation_plan["evidence_lanes"] = [
+        "Tenant identity lookup by form email",
+        "Authoritative billing record for the resolved tenant",
+        "Quota/usage record for the resolved tenant",
+    ]
+
+    allowed = allowed_tool_names(
+        session,
+        {
+            "inspector_exec",
+            "sql_query",
+            "signoz_search_logs",
+            "git_grep",
+            "github_search_prs",
+            "zendesk_public_reply",
+        },
+    )
+
+    assert {"inspector_exec", "sql_query", "zendesk_public_reply"} <= allowed
+    assert "signoz_search_logs" not in allowed
+    assert "git_grep" not in allowed
+    assert "github_search_prs" not in allowed
+
+
+def test_high_risk_route_opens_runtime_and_source_only_when_explicitly_planned() -> None:
+    session = _planned_session(ticket_type="billing", route="high_risk")
+    session.investigation_plan["evidence_lanes"] = [
+        "runtime logs for the exact billing request",
+        "source implementation for the deployed version",
+    ]
+
+    allowed = allowed_tool_names(
+        session,
+        {
+            "inspector_exec",
+            "signoz_search_logs",
+            "git_grep",
+            "run_subagents_parallel",
+        },
+    )
+
+    assert "inspector_exec" in allowed
+    assert "signoz_search_logs" in allowed
+    assert "git_grep" in allowed
+    assert "run_subagents_parallel" not in allowed
+
+
 def test_deep_route_requires_two_independent_lanes_before_parallel_subagents() -> None:
     without_lanes = _planned_session(
         ticket_type="platform_issue",
@@ -148,4 +197,3 @@ def test_execution_policy_rejects_unexposed_tool_even_if_registered() -> None:
 
     assert decision.allowed is False
     assert "intake" in decision.reason
-

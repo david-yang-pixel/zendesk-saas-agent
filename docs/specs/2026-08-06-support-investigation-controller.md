@@ -181,19 +181,19 @@ quality rules.
 
 ## Implementation Tasks
 
-- [ ] Add the investigation state and policy module.
+- [x] Add the investigation state and policy module.
   - Acceptance: phases/routes/tool allowlists are pure and unit-tested.
   - Verify: `tests/runtime/test_investigation_policy.py`.
-- [ ] Add and register `plan_investigation`; filter schemas and enforce calls.
+- [x] Add and register `plan_investigation`; filter schemas and enforce calls.
   - Acceptance: provider-visible and execution-time policy agree.
   - Verify: policy and tool-loop tests.
-- [ ] Bind ledger rows to exact successful tool calls and retain nested metadata.
+- [x] Bind ledger rows to exact successful tool calls and retain nested metadata.
   - Acceptance: legacy name-only evidence fails; valid call IDs pass.
   - Verify: reply-evidence and tool-execution tests.
-- [ ] Tighten route-specific solution gates and prompt contract.
+- [x] Tighten route-specific solution gates and prompt contract.
   - Acceptance: route mismatch and incomplete standard/deep diagnosis fail closed.
   - Verify: reply/prompt tests.
-- [ ] Persist archives, run all verification, and deploy safely.
+- [x] Persist archives, run all verification, and deploy safely.
   - Acceptance: mounted archive path, clean tests/build, healthy expected revision.
   - Verify: archive test, production health/config readback, dry-run replay.
 
