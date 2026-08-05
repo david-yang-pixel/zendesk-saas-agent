@@ -409,6 +409,8 @@ def _make_session(dry_run: bool = False) -> MagicMock:
     s.reply_sent = False
     s.ticket_type = ""
     s.tool_call_log = []
+    s.customer_form_data = {}
+    s.customer_profile = {}
     s.customer_msgs_snapshot_count = 0
     s.customer_msgs_snapshot_last_id = ""
     s.customer_msgs_snapshot_captured = True
@@ -950,7 +952,23 @@ class TestExecute:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=True)
         sess.ticket_type = "billing"
+        sess.customer_form_data = {"email": "customer@example.com"}
         sess.tool_call_log = [
+            {
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "customer@example.com",
+                    "section": "tenants",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+                    "EMAIL_WORKSPACE_COUNT=1\n"
+                    "EMAIL_WORKSPACE_TENANT_IDS=tenant-1\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
             {
                 "tool": "inspector_exec",
                 "args": {

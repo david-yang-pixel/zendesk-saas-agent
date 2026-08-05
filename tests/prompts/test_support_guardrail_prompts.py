@@ -11,6 +11,7 @@ AGENTS_PROMPT = ROOT / "src/zd_agent/prompts/AGENTS.md"
 DIFY_SUPPORT_PROMPT = ROOT / "src/zd_agent/prompts/skills/DIFY_SUPPORT_TICKET.md"
 TOOLS_PROMPT = ROOT / "src/zd_agent/prompts/TOOLS.md"
 QUALITY_BAR_PROMPT = ROOT / "src/zd_agent/prompts/references/quality_bar.md"
+BILLING_PROMPT = ROOT / "src/zd_agent/prompts/strategies/billing.md"
 
 
 def test_refund_prompts_require_owner_gate_before_eligibility() -> None:
@@ -90,3 +91,14 @@ def test_support_prompts_do_not_force_irrelevant_evidence_or_local_mirrors() -> 
     assert "archive_ticket" not in combined
     assert "只有当前结论确实依赖 DB" in combined
     assert "根因 confirmed 才写明确因果" in combined
+
+
+def test_billing_prompts_bind_form_email_workspace_to_billing_tenant() -> None:
+    soul = SOUL_PROMPT.read_text(encoding="utf-8")
+    billing = BILLING_PROMPT.read_text(encoding="utf-8")
+
+    for text in (soul, billing):
+        assert "表单 Email" in text
+        assert "section=tenants" in text
+        assert "多个 workspace" in text
+        assert "禁止猜测" in text

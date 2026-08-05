@@ -172,7 +172,7 @@ zendesk_public_reply（solution/因果断言附 evidence_ledger；需要人工/S
 ## 避免的反模式
 
 - ❌ 串行调用 `run_subagent` 5 次查相同阶段的不同源 → 应该 `run_subagents_parallel`
-- ❌ 在不知道 Workspace ID 的情况下跑 SQL → 先跟客户确认或读已有评论找到 ID
+- ❌ 在不知道 Workspace ID 的情况下猜 tenant 跑 SQL → 先用用户表单 Email 调 `inspector_exec section=tenants` 查关联 workspace；多个 workspace 且表单没有可匹配的 Workspace ID 时再向客户澄清
 - ❌ 用 `zendesk_internal_reply` 当客户回复 → 客户看不到；客户可见回复必须直接 `zendesk_public_reply`
 - ❌ 需要人工或 SRE 介入时直接沉默升级 → 需要人工或 SRE 介入时，先用 `zendesk_public_reply` 说明客户安全的升级原因和下一步，再通知内部团队
 - ❌ 成功 `zendesk_public_reply` 后再写 Internal Note 或本地工单镜像 → 重复且会制造冲突记录

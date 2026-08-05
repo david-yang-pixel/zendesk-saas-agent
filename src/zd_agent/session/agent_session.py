@@ -120,6 +120,10 @@ class AgentSession:
     customer_msgs_snapshot_count: int = 0
     customer_msgs_snapshot_last_id: str = ""
     customer_msgs_snapshot_captured: bool = False
+    # Latest merged Zendesk Messaging formResponse identity fields.  The form
+    # email is the primary key for resolving account -> workspace memberships;
+    # requester metadata is only a fallback when the form has no email.
+    customer_form_data: dict[str, str] = field(default_factory=dict)
     freshness_rebase_count: int = 0
     freshness_fetch_error_count: int = 0
 

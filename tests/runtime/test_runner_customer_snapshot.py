@@ -27,18 +27,27 @@ async def test_run_agent_captures_customer_snapshot_before_tool_loop(
         async def cleanup(self) -> None:
             raise AssertionError("cleanup should be disabled in this test")
 
-    observed_snapshot: dict[str, int | str] = {}
+    observed_snapshot: dict[str, object] = {}
 
     async def fake_tool_loop(session: AgentSession, *_args, **_kwargs) -> None:
         observed_snapshot["count"] = session.customer_msgs_snapshot_count
         observed_snapshot["last_id"] = session.customer_msgs_snapshot_last_id
         observed_snapshot["captured"] = session.customer_msgs_snapshot_captured
+        observed_snapshot["form_data"] = session.customer_form_data
+        observed_snapshot["user_prompt"] = session.messages[1]["content"]
         session.status = SessionStatus.COMPLETED
 
     fetch_messages = AsyncMock(return_value=(
         [
             {"id": "msg-1", "body": "Initial issue"},
-            {"id": "msg-2", "body": "Additional context"},
+            {
+                "id": "msg-2",
+                "body": "Additional context",
+                "form_data": {
+                    "email": "form@example.com",
+                    "workspace_id": "workspace-1",
+                },
+            },
         ],
         {"id": 2809},
     ))
@@ -75,7 +84,15 @@ async def test_run_agent_captures_customer_snapshot_before_tool_loop(
         "count": 2,
         "last_id": "msg-2",
         "captured": True,
+        "form_data": {
+            "email": "form@example.com",
+            "workspace_id": "workspace-1",
+        },
+        "user_prompt": observed_snapshot["user_prompt"],
     }
+    assert "form@example.com" in str(observed_snapshot["user_prompt"])
+    assert "workspace-1" in str(observed_snapshot["user_prompt"])
+    assert "表单" in str(observed_snapshot["user_prompt"])
     fetch_messages.assert_awaited_once_with(2809)
 
 

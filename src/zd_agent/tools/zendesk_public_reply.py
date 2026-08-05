@@ -961,6 +961,21 @@ class ZendeskPublicReply(Tool):
         billing_plan_block = billing_plan_claim_block_reason(
             body=body,
             tool_call_log=getattr(session, "tool_call_log", []) or [],
+            form_email=str(
+                (getattr(session, "customer_form_data", {}) or {}).get(
+                    "email", ""
+                )
+            ),
+            form_workspace_id=str(
+                (getattr(session, "customer_form_data", {}) or {}).get(
+                    "workspace_id", ""
+                )
+            ),
+            requester_email=str(
+                (getattr(session, "customer_profile", {}) or {}).get(
+                    "requester_email", ""
+                )
+            ),
         )
         if billing_plan_block:
             logger.warning(

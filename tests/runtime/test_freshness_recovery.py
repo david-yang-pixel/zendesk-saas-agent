@@ -249,6 +249,11 @@ class _RetryReplyAfterRecoveryProvider:
                 "the cursor must not advance before the new formResponse is injected"
             )
             assert "formResponse" in combined_context
+            assert self.session.customer_form_data == {
+                "name": "Ellie",
+                "email": "ellie@example.test",
+                "workspace_id": _WORKSPACE_ID,
+            }
 
         if call_number <= 2:
             call_id = f"reply-{call_number}"

@@ -31,6 +31,18 @@ BILLING
 +---------------------+------------+
 """.strip()
 
+_EMAIL_TENANTS_OUTPUT = """
+ACCOUNT
+---------
+| FIELD | VALUE            |
+| Email | form@example.com |
+
+TENANTS (1)
+-------------
+| TENANT ID | NAME      | PLAN  | STATUS | ROLE  | JOINED     |
+| tenant-1  | Workspace | basic | normal | owner | 2026-01-01 |
+""".strip()
+
 
 @pytest.fixture
 def inspector_config(monkeypatch):
@@ -260,3 +272,36 @@ async def test_all_section_cannot_authorize_a_subscription_plan_claim(
     assert result.success is True
     assert result.output.startswith("AUTHORITATIVE_BILLING_PLAN=unknown\n")
     assert "rerun inspector_exec with tenant_id + section=billing" in result.output
+
+
+@pytest.mark.asyncio
+async def test_email_tenants_section_emits_machine_readable_workspace_resolution(
+    fake_session,
+    inspector_config,
+    monkeypatch,
+) -> None:
+    class CompletedProcess:
+        pid = 4321
+        returncode = 0
+
+        async def communicate(self):
+            return _EMAIL_TENANTS_OUTPUT.encode(), b""
+
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=CompletedProcess()),
+    )
+
+    result = await InspectorExec().execute(
+        {"email": "form@example.com", "section": "tenants"},
+        fake_session,
+    )
+
+    assert result.success is True
+    assert result.output.startswith(
+        "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+        "EMAIL_WORKSPACE_COUNT=1\n"
+        "EMAIL_WORKSPACE_TENANT_IDS=tenant-1\n"
+        "EMAIL_WORKSPACE_SOURCE=prod_membership\n"
+    )
+    assert "Plan is non-authoritative" in result.output

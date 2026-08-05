@@ -83,6 +83,9 @@ _BILLING_PLAN_CODES = {
     "enterprise",
 }
 
+_TENANTS_COUNT_RE = re.compile(r"^TENANTS\s*\((\d+)\)\s*$", re.MULTILINE)
+_TENANT_ID_TOKEN_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,127}$")
+
 
 def _pipe_field_value(output: str, field: str) -> str:
     pattern = re.compile(
@@ -150,6 +153,52 @@ def _authoritative_billing_prefix(output: str, section: str | None) -> str:
     )
 
 
+def _email_workspace_prefix(output: str) -> str:
+    """Promote email -> tenant membership resolution ahead of Prod plan fields."""
+    count_match = _TENANTS_COUNT_RE.search(output)
+    if not count_match:
+        count = -1
+    else:
+        count = int(count_match.group(1))
+
+    tenant_ids: list[str] = []
+    in_tenants = False
+    for line in output.splitlines():
+        if _TENANTS_COUNT_RE.fullmatch(line.strip()):
+            in_tenants = True
+            continue
+        if not in_tenants:
+            continue
+        if line.startswith("提示:"):
+            break
+        row = re.match(r"^\|\s*([^|]+?)\s*\|", line)
+        if not row:
+            continue
+        first_cell = row.group(1).strip()
+        if first_cell.casefold() == "tenant id":
+            continue
+        if _TENANT_ID_TOKEN_RE.fullmatch(first_cell) and first_cell not in tenant_ids:
+            tenant_ids.append(first_cell)
+
+    if count == 0 and not tenant_ids:
+        resolution = "none"
+    elif count == 1 and len(tenant_ids) == 1:
+        resolution = "unique"
+    elif count > 1 and len(tenant_ids) == count:
+        resolution = "ambiguous"
+    else:
+        resolution = "unverified"
+
+    return (
+        f"EMAIL_WORKSPACE_RESOLUTION={resolution}\n"
+        f"EMAIL_WORKSPACE_COUNT={max(count, 0)}\n"
+        f"EMAIL_WORKSPACE_TENANT_IDS={','.join(tenant_ids)}\n"
+        "EMAIL_WORKSPACE_SOURCE=prod_membership\n"
+        "TENANTS table Plan is non-authoritative Prod metadata; use only "
+        "tenant_id/name/status/role for workspace resolution.\n\n"
+    )
+
+
 def _flag_to_cli(flag: str) -> str:
     """``account_id`` → ``--account-id``"""
     return "--" + flag.replace("_", "-")
@@ -212,7 +261,9 @@ class InspectorExec(Tool):
         "document_id / conversation_id / workflow_id / workflow_run_id / id），"
         "可选 section（all / tenants / apps / runs / conversations / billing / quota / members）。"
         "订阅套餐/状态必须先拿 tenant_id，再单独调用 section=billing；email/section=all "
-        "和 TENANT/TENANTS Plan 只能用于定位，不能作为套餐证据。"
+        "和 TENANT/TENANTS Plan 不能作为套餐证据。工作空间定位优先使用用户表单 "
+        "Email + section=tenants；若返回多个 workspace，必须用表单 Workspace ID "
+        "消歧，否则禁止猜测。"
         "+ query（failed / succeeded）+ limit（默认 50）+ from / to（YYYY-MM-DD）。"
     )
     parameters = {
@@ -499,6 +550,8 @@ class InspectorExec(Tool):
             bytes=len(out),
             ticket_id=session.ticket_id,
         )
+        if primary_flag == "email" and section == "tenants":
+            out = _email_workspace_prefix(out) + out
         if section in {"billing", "all"}:
             out = _authoritative_billing_prefix(out, section) + out
         return ToolResult(output=out)

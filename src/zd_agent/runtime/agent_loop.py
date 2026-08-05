@@ -458,6 +458,23 @@ async def _apply_freshness_recovery(
             + json.dumps(rendered_messages, ensure_ascii=False)
             + vision_warning
         )
+    from zd_agent.services.ticket_messages import extract_form_data_from_msgs
+
+    form_updates = extract_form_data_from_msgs(list(recovery.new_messages))
+    if form_updates:
+        session.customer_form_data = {
+            **session.customer_form_data,
+            **form_updates,
+        }
+        logger.info(
+            "freshness_form_identity_rebased",
+            ticket_id=session.ticket_id,
+            updated_fields=sorted(form_updates),
+            has_form_email=bool(session.customer_form_data.get("email")),
+            has_form_workspace_id=bool(
+                session.customer_form_data.get("workspace_id")
+            ),
+        )
     # Cursor advancement is deliberately last: the context must already be in
     # MessageStore before a subsequent send is allowed against the new cursor.
     session.customer_msgs_snapshot_count = recovery.next_snapshot_count

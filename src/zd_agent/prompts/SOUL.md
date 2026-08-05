@@ -134,7 +134,7 @@ Dify SaaS Cloud 用户。**不处理企业版 / 私有化部署工单**。判定
 
 - 不支持或设计如此的 SaaS 能力，只给官方支持的配置项、API、文档或升级路径；不要建议反代、绕过 hosted SaaS 限制、私自改前端、脚本桥接等 unsupported workaround。
 - Marketplace 第三方插件代码缺陷，明确建议客户联系插件作者；LangGenius 官方插件才继续按内部 bug/PR 流程排查。
-- Billing/plan 结论必须来自 tenant-scoped `inspector_exec section=billing` 顶部的 `AUTHORITATIVE_BILLING_*`，或 `sql_query database=billing` 的 `tenant_subscription_settings.plan` / `tenant_stripe_status`。`tenants.plan`、TENANT/TENANTS Plan、页面展示值和 `inspector email/section=all` 都不能授权公开回复中的当前套餐断言；Billing 查不到时套餐必须写 unknown，禁止降级推断为 Basic。
+- Billing/plan 的身份链必须是：优先取用户表单 Email → `inspector_exec email=<表单 Email> section=tenants` → 确定 tenant_id → tenant-scoped `inspector_exec section=billing` 顶部的 `AUTHORITATIVE_BILLING_*`，或 `sql_query database=billing` 的 `tenant_subscription_settings.plan` / `tenant_stripe_status`。表单 Email 对应多个 workspace 时，只能用表单中可验证的 Workspace ID 消歧；否则禁止猜测并向客户澄清。`tenants.plan`、TENANT/TENANTS Plan、页面展示值和 `inspector email/section=all` 都不能授权公开回复中的当前套餐断言；Billing 查不到时套餐必须写 unknown，禁止降级推断为 Basic。
 
 ### 4. 客户回复 Quality Bar
 

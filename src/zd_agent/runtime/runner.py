@@ -31,7 +31,10 @@ _FAILURE_NOTE_TEMPLATE = (
 
 
 async def _capture_customer_message_snapshot(session: AgentSession) -> None:
-    from zd_agent.services.ticket_messages import _fetch_customer_messages
+    from zd_agent.services.ticket_messages import (
+        _fetch_customer_messages,
+        extract_form_data_from_msgs,
+    )
 
     customer_messages, ticket = await _fetch_customer_messages(session.ticket_id)
     if ticket is None:
@@ -50,11 +53,14 @@ async def _capture_customer_message_snapshot(session: AgentSession) -> None:
         else ""
     )
     session.customer_msgs_snapshot_captured = True
+    session.customer_form_data = extract_form_data_from_msgs(customer_messages)
     logger.info(
         "customer_message_snapshot_captured",
         ticket_id=session.ticket_id,
         customer_message_count=session.customer_msgs_snapshot_count,
         customer_last_message_id=session.customer_msgs_snapshot_last_id or None,
+        has_form_email=bool(session.customer_form_data.get("email")),
+        has_form_workspace_id=bool(session.customer_form_data.get("workspace_id")),
     )
 
 
@@ -193,6 +199,26 @@ async def run_agent(session: AgentSession) -> None:
     # 当前日期（agent 可能引用，但不能放 system prompt 否则每天 cache miss）
     from datetime import date as _date
     user_content_parts.append(f"\n\n_当前日期: {_date.today().isoformat()}_")
+
+    # Zendesk Messaging formResponse is the primary identity source for SaaS
+    # workspace lookup.  Keep requester metadata separate because the two can
+    # differ after forwarded/shared conversations.
+    if session.customer_form_data:
+        form_email = " ".join(
+            str(session.customer_form_data.get("email") or "").split()
+        )[:320]
+        form_workspace_id = " ".join(
+            str(session.customer_form_data.get("workspace_id") or "").split()
+        )[:160]
+        user_content_parts.append(
+            "\n\n## 用户表单身份（工作空间定位的首选证据）\n"
+            f"- 表单 Email: {form_email or '(未提供)'}\n"
+            f"- 表单 Workspace ID: {form_workspace_id or '(未提供)'}\n"
+            "- 涉及套餐、配额或 workspace 状态时，先用表单 Email 调用 "
+            "`inspector_exec section=tenants` 获取关联 workspace；再用确定的 "
+            "tenant_id 查询对应数据。多个 workspace 且表单没有可匹配的 "
+            "Workspace ID 时禁止猜测。"
+        )
 
     # customer_profile 注入到 user message
     if customer_profile:

@@ -20,8 +20,9 @@
 
 ## 关键步骤
 1. 收集：Workspace ID、涉及时间段、具体金额 / 发票号
-2. **套餐判断必须走两步，不能用 `section=all` 代替**：
-   - 身份定位：`inspector_exec email=<customer@example.com>`，这里只取 account / tenant_id / role；其中 TENANT/TENANTS 的 Plan 是 Prod 辅助字段，禁止作为当前套餐结论。
+2. **套餐判断必须走身份绑定，不能用 `section=all` 代替**：
+   - 身份定位优先使用用户表单 Email：`inspector_exec email=<表单 Email> section=tenants`，这里只取 account / tenant_id / name / status / role；其中 TENANT/TENANTS 的 Plan 是 Prod 辅助字段，禁止作为当前套餐结论。只有表单没有 Email 时才退回 requester email。
+   - 表单 Email 只对应一个 workspace → 使用该 tenant_id；对应多个 workspace → 仅当表单 Workspace ID 位于返回列表中时才能选择，否则禁止猜测套餐，向客户澄清目标 workspace。
    - 套餐 / 订阅 / Stripe 状态：拿到 tenant_id 后必须调用 `inspector_exec tenant_id=<workspace_id> section=billing`，只采用工具顶部的 `AUTHORITATIVE_BILLING_*` 与 `Source=billing_db` 结果。
    - 配额 / 用量（apps / 文档 / 知识库存储 / 成员）：`inspector_exec tenant_id=<workspace_id> section=quota` —— 含 TiDB 知识库存储（手写 SQL 拿不到）
    - `email + section=all` 以及 `tenant_id + section=all` 都不能授权公开回复中的当前套餐断言。
