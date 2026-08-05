@@ -1,6 +1,5 @@
 """Test decision log JSONL append."""
 import json
-from pathlib import Path
 
 from zd_agent.trigger.decision_log import log_decision
 

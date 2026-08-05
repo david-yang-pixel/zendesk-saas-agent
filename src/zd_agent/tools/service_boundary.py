@@ -257,6 +257,12 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
         "agent-process",
         migration_target="tool-service/workflow",
     ),
+    "plan_investigation": _boundary(
+        "in_process",
+        "agent-process",
+        migration_target="tool-service/workflow",
+        notes="Validates and freezes the current session investigation plan.",
+    ),
     "run_subagent": _boundary(
         "in_process",
         "agent-process",

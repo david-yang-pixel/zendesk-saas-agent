@@ -1,5 +1,5 @@
 """Test silence manager (connection-burst detection)."""
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import pytest
 
