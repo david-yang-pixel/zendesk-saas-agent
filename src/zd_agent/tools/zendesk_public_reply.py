@@ -172,7 +172,8 @@ _EVIDENCE_LEDGER_SCHEMA: dict[str, Any] = {
                         "type": "array",
                         "description": (
                             "本会话中支撑该 claim 的精确成功 tool call id。"
-                            "不能只写工具名；子 Agent 证据使用其返回的 child call id。"
+                            "不能只写工具名；调用参数或返回结果必须包含"
+                            "冻结计划中的对象标识。子 Agent 证据使用其返回的 child call id。"
                         ),
                         "items": {"type": "string"},
                     },

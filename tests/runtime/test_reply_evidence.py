@@ -12,12 +12,13 @@ def _success(
     result: str = "confirmed live result",
     *,
     call_id: str | None = None,
+    args: dict | None = None,
 ) -> dict:
     return {
         "call_id": call_id or f"call-{tool}",
         "round": 1,
         "tool": tool,
-        "args": {},
+        "args": args or {},
         "success": True,
         "error": None,
         "result_preview": result,
@@ -413,3 +414,143 @@ def test_deep_solution_requires_impact_scope_and_baseline_plan_lanes() -> None:
 
     assert any("impact_scope" in blocker for blocker in blockers)
     assert any("baseline" in blocker for blocker in blockers)
+
+
+def test_material_rows_must_bind_to_frozen_plan_objects() -> None:
+    ledger = _root_cause_ledger()
+    for row in ledger["rows"]:
+        row["object_identifiers"] = "workspace=w-other, provider=p1"
+        row["source_call_ids"] = ["logs-1", "db-1"]
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success(
+                "signoz_search_logs",
+                call_id="logs-1",
+                args={"workspace_id": "w-other"},
+            ),
+            _success(
+                "sql_query",
+                call_id="db-1",
+                args={"workspace_id": "w-other"},
+            ),
+        ],
+        ticket_type="workflow",
+        planned_route="standard",
+        investigation_plan={
+            "route": "standard",
+            "object_identifiers": ["ticket=3798", "workspace=w1"],
+            "time_window": "2026-07-29T01:00:00Z/2026-07-29T01:10:00Z",
+        },
+    )
+
+    assert any("frozen plan object" in blocker for blocker in blockers)
+
+
+def test_cited_calls_must_contain_a_frozen_object_anchor() -> None:
+    ledger = _root_cause_ledger()
+    for row in ledger["rows"]:
+        row["source_call_ids"] = ["logs-1", "db-1"]
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success(
+                "signoz_search_logs",
+                result="authentication rejection for a different object",
+                call_id="logs-1",
+                args={"workspace_id": "w9"},
+            ),
+            _success(
+                "sql_query",
+                result="credential version for a different object",
+                call_id="db-1",
+                args={"workspace_id": "w9"},
+            ),
+        ],
+        ticket_type="workflow",
+        planned_route="standard",
+        investigation_plan={
+            "route": "standard",
+            "object_identifiers": ["ticket=3798", "workspace=w1", "provider=p1"],
+            "time_window": "2026-07-29T01:00:00Z/2026-07-29T01:10:00Z",
+        },
+    )
+
+    assert any("cited calls do not contain" in blocker for blocker in blockers)
+
+
+def test_incident_rows_must_match_frozen_time_window() -> None:
+    ledger = _root_cause_ledger()
+    for row in ledger["rows"]:
+        row["source_call_ids"] = ["logs-1", "db-1"]
+        row["time_window"] = "2026-07-28T01:00:00Z/2026-07-28T01:10:00Z"
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success(
+                "signoz_search_logs",
+                result="workspace=w1 provider=p1 authentication rejection",
+                call_id="logs-1",
+            ),
+            _success(
+                "sql_query",
+                result="workspace=w1 provider=p1 stale credential",
+                call_id="db-1",
+            ),
+        ],
+        ticket_type="workflow",
+        planned_route="standard",
+        investigation_plan={
+            "route": "standard",
+            "object_identifiers": ["ticket=3798", "workspace=w1", "provider=p1"],
+            "time_window": "2026-07-29T01:00:00Z/2026-07-29T01:10:00Z",
+        },
+    )
+
+    assert any("frozen investigation time window" in blocker for blocker in blockers)
+
+
+def test_plan_bound_calls_and_incident_window_allow_solution() -> None:
+    ledger = _root_cause_ledger()
+    for row in ledger["rows"]:
+        row["source_call_ids"] = ["logs-1", "db-1"]
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success(
+                "signoz_search_logs",
+                result="workspace=w1 provider=p1 authentication rejection",
+                call_id="logs-1",
+            ),
+            _success(
+                "sql_query",
+                result="workspace=w1 provider=p1 stale credential version",
+                call_id="db-1",
+            ),
+        ],
+        ticket_type="workflow",
+        planned_route="standard",
+        investigation_plan={
+            "route": "standard",
+            "object_identifiers": ["ticket=3798", "workspace=w1", "provider=p1"],
+            "time_window": "2026-07-29T01:00:00Z/2026-07-29T01:10:00Z",
+        },
+    )
+
+    assert blockers == []

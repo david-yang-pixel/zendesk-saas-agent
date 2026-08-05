@@ -36,6 +36,8 @@ def test_core_router_binds_material_claims_to_exact_tool_call_ids():
     assert "source_call_ids" in prompt
     assert "精确成功调用 ID" in prompt
     assert "只写 source_tools 工具名不能证明 claim" in prompt
+    assert "冻结计划中的对象标识" in prompt
+    assert "调用参数或返回结果" in prompt
 
 
 def test_core_router_exhausts_support_side_evidence_before_asking_customer():

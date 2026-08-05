@@ -60,6 +60,23 @@ _NON_EVIDENCE_TOOLS: Final = {
     "run_subagents_parallel",
     "zendesk_public_reply",
 }
+_GENERIC_IDENTIFIER_TOKENS: Final = {
+    "account",
+    "app",
+    "application",
+    "customer",
+    "dataset",
+    "email",
+    "environment",
+    "provider",
+    "request",
+    "subscription",
+    "tenant",
+    "ticket",
+    "user",
+    "workflow",
+    "workspace",
+}
 
 
 def body_asserts_root_cause(body: str) -> bool:
@@ -70,6 +87,45 @@ def body_asserts_root_cause(body: str) -> bool:
 
 def _clean_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _identifier_tokens(value: Any) -> set[str]:
+    """Extract concrete values while ignoring generic object field names."""
+    if isinstance(value, dict):
+        tokens: set[str] = set()
+        for item in value.values():
+            tokens.update(_identifier_tokens(item))
+        return tokens
+    if isinstance(value, (list, tuple, set)):
+        tokens = set()
+        for item in value:
+            tokens.update(_identifier_tokens(item))
+        return tokens
+    if value is None or isinstance(value, bool):
+        return set()
+
+    tokens = set(
+        re.findall(
+            r"[A-Za-z0-9][A-Za-z0-9_.@:/-]*",
+            str(value).casefold(),
+        )
+    )
+    return {
+        token
+        for token in tokens
+        if token not in _GENERIC_IDENTIFIER_TOKENS
+        and (len(token) >= 3 or any(char.isdigit() for char in token))
+    }
+
+
+def _time_windows_match(row_window: str, plan_window: str) -> bool:
+    row_normalized = re.sub(r"\s+", "", row_window).casefold()
+    plan_normalized = re.sub(r"\s+", "", plan_window).casefold()
+    return (
+        row_normalized == plan_normalized
+        or row_normalized in plan_normalized
+        or plan_normalized in row_normalized
+    )
 
 
 def _successful_evidence_calls(
@@ -118,6 +174,7 @@ def _validate_row(
     index: int,
     route: str,
     successful_calls: dict[str, dict[str, Any]],
+    investigation_plan: dict[str, Any] | None,
 ) -> tuple[list[str], dict[str, Any] | None]:
     label = f"evidence_ledger.rows[{index}]"
     if not isinstance(row, dict):
@@ -185,6 +242,7 @@ def _validate_row(
                 f"{label}.source_call_ids must cite exact successful calls."
             )
         cited_tools: set[str] = set()
+        cited_object_anchors: set[str] = set()
         for call_id in source_call_ids:
             call = successful_calls.get(call_id)
             if call is None:
@@ -195,6 +253,10 @@ def _validate_row(
                 continue
             source_tool = _clean_text(call.get("tool"))
             cited_tools.add(source_tool)
+            cited_object_anchors.update(_identifier_tokens(call.get("args")))
+            cited_object_anchors.update(
+                _identifier_tokens(call.get("result_preview"))
+            )
             if _is_historical_tool(source_tool):
                 blockers.append(
                     f"{label} cites historical tool {source_tool}; historical "
@@ -211,6 +273,43 @@ def _validate_row(
                 blockers.append(
                     f"{label} lists source tool {source_tool} without citing an "
                     "exact successful source_call_id from that tool."
+                )
+
+        if (
+            route in {"standard", "deep", "high_risk"}
+            and isinstance(investigation_plan, dict)
+            and investigation_plan
+        ):
+            plan_anchors = _identifier_tokens(
+                investigation_plan.get("object_identifiers")
+            )
+            row_anchors = _identifier_tokens(object_identifiers)
+            if not plan_anchors:
+                blockers.append(
+                    "The frozen investigation plan must contain at least one "
+                    "concrete object identifier for material claims."
+                )
+            elif not row_anchors.intersection(plan_anchors):
+                blockers.append(
+                    f"{label}.object_identifiers do not bind to any frozen plan "
+                    "object identifier."
+                )
+            elif not cited_object_anchors.intersection(plan_anchors):
+                blockers.append(
+                    f"{label} cited calls do not contain a frozen plan object "
+                    "identifier in their arguments or returned evidence."
+                )
+
+            plan_window = _clean_text(investigation_plan.get("time_window"))
+            if (
+                plan_window
+                and plan_window.casefold() not in {"current", "not_applicable"}
+                and role not in {"current_state", "recovery_event"}
+                and not _time_windows_match(time_window, plan_window)
+            ):
+                blockers.append(
+                    f"{label}.time_window does not match the frozen investigation "
+                    "time window."
                 )
 
     normalized = {
@@ -305,6 +404,7 @@ def validate_public_reply_evidence(
             index=index,
             route=route,
             successful_calls=successful_calls,
+            investigation_plan=investigation_plan,
         )
         blockers.extend(row_blockers)
         if normalized is not None:

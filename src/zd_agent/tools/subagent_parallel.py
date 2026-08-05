@@ -82,7 +82,8 @@ def _subagent_worker_role(tools: list[str]) -> str:
 class RunSubagentsParallel(Tool):
     name = "run_subagents_parallel"
     description = (
-        "仅在 deep 调查中派 subagent 执行可独立并行的分析任务。"
+        "仅在 standard/deep 调查的冻结计划中已定义至少 2 个"
+        " independent_lanes 时，派 subagent 执行可独立并行的分析任务。"
         "不要因为需要两类证据就机械派发；只有源码、日志、文档、GitHub PR/Issue"
         "等任务互不依赖且并行能明显加快取证时使用。\n\n"
         "**Subagent 预算规则（每个工单累计）**：\n"
