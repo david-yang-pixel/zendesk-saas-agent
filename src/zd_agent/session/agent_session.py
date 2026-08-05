@@ -157,14 +157,18 @@ class AgentSession:
         *,
         success: bool,
         error: str | None,
+        call_id: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.tool_call_log.append({
+            "call_id": call_id,
             "round": self.round_count,
             "tool": tool_name,
             "args": args,
             "success": success,
             "error": error,
             "result_preview": result[:500],
+            "metadata": dict(metadata or {}),
         })
 
     def mark_waiting_for_auth(self) -> None:

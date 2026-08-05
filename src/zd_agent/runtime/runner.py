@@ -130,6 +130,9 @@ async def run_agent(session: AgentSession) -> None:
     4. 清理 sandbox
     """
     cfg = get_config()
+    # Production and dry-run ticket sessions use the same deterministic
+    # intake -> classify -> plan -> investigate -> reply controller.
+    session.investigation_policy_enabled = True
     guardrails = Guardrails(config=cfg.agent.guardrails)
 
     try:

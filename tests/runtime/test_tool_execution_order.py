@@ -76,6 +76,27 @@ class _FailingSqlTool(Tool):
         return ToolResult(success=False, error="DB gateway query timed out")
 
 
+class _EvidenceMetadataTool(Tool):
+    name = "evidence"
+    description = "returns nested evidence metadata"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
+        return ToolResult(
+            output="parent synthesis",
+            metadata={
+                "evidence_tool_calls": [
+                    {
+                        "call_id": "child-1",
+                        "tool": "signoz_search_logs",
+                        "success": True,
+                        "result_preview": "matching runtime error",
+                    }
+                ]
+            },
+        )
+
+
 @pytest.mark.asyncio
 async def test_unsafe_tool_calls_run_serially() -> None:
     probe = _ConcurrencyProbe()
@@ -187,3 +208,52 @@ async def test_repeated_slow_sql_failures_open_session_circuit(
     assert len(events) == 3
     assert session.slow_sql_failure_count == 3
     assert session.slow_sql_circuit_open is True
+
+
+@pytest.mark.asyncio
+async def test_tool_log_retains_call_id_and_nested_evidence_metadata() -> None:
+    registry = ToolRegistry()
+    registry.register(_EvidenceMetadataTool())
+    session = AgentSession(ticket_id=1)
+    store = MessageStore(_FakeProvider())
+
+    events = [
+        event
+        async for event in _execute_tool_calls(
+            [ToolCallRequest(id="parent-1", name="evidence", arguments="{}")],
+            registry,
+            session,
+            store,
+            1,
+        )
+    ]
+
+    assert events[0].success is True
+    assert session.tool_call_log[0]["call_id"] == "parent-1"
+    assert session.tool_call_log[0]["metadata"]["evidence_tool_calls"][0][
+        "call_id"
+    ] == "child-1"
+
+
+@pytest.mark.asyncio
+async def test_execution_boundary_blocks_tool_outside_current_phase() -> None:
+    registry = ToolRegistry()
+    registry.register(_ProbeTool(_ConcurrencyProbe(), concurrency_safe=True))
+    session = AgentSession(ticket_id=1)
+    session.investigation_policy_enabled = True
+    store = MessageStore(_FakeProvider())
+
+    events = [
+        event
+        async for event in _execute_tool_calls(
+            [ToolCallRequest(id="blocked-1", name="probe", arguments="{}")],
+            registry,
+            session,
+            store,
+            1,
+        )
+    ]
+
+    assert events[0].success is False
+    assert "intake" in (events[0].error or "")
+    assert session.tool_call_log[0]["call_id"] == "blocked-1"

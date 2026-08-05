@@ -32,6 +32,11 @@ from zd_agent.runtime.compaction import (
 )
 from zd_agent.runtime.events import AgentEvent, LoopFinished, LoopProgress, ToolExecuted
 from zd_agent.runtime.guardrails import GuardrailTriggered, Guardrails
+from zd_agent.runtime.investigation import (
+    current_investigation_phase,
+    evaluate_tool_call,
+    filter_tool_schemas,
+)
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
 from zd_agent.runtime.messages import MessageStore
 from zd_agent.runtime.pre_send_check import (
@@ -632,6 +637,7 @@ async def _run_tool_call(
             output,
             success=False,
             error=error,
+            call_id=tc.id,
         )
         message_store.append_tool_result(tc.id, tc.name, output)
         logger.warning(
@@ -673,6 +679,8 @@ async def _run_tool_call(
         output,
         success=result.success,
         error=result.error,
+        call_id=tc.id,
+        metadata=result.metadata,
     )
     message_store.append_tool_result(tc.id, tc.name, output)
     return ToolExecuted(
@@ -710,8 +718,13 @@ async def _execute_tool_calls(
     subprocess. Their ``concurrency_safe=False`` flag used to be ignored by the
     main agent loop, so a model could trigger multiple writes in the same round.
     """
+    policy_decisions = {
+        tc.id: evaluate_tool_call(session=session, tool_name=tc.name)
+        for tc in tool_calls
+    }
     has_handoff_reply = any(
         tc.name == "zendesk_public_reply"
+        and policy_decisions[tc.id].allowed
         and _parse_tool_arguments(tc.arguments).get("reply_type") == "handoff"
         for tc in tool_calls
     )
@@ -764,6 +777,19 @@ async def _execute_tool_calls(
     safe_batch: list[ToolCallRequest] = []
     for index, tc in enumerate(tool_calls):
         if tc.id in suppressed_feishu_ids:
+            continue
+        policy_decision = policy_decisions[tc.id]
+        if not policy_decision.allowed:
+            async for event in _run_safe_batch(safe_batch):
+                yield event
+            safe_batch = []
+            yield _tool_policy_blocked_event(
+                tc,
+                session,
+                message_store,
+                current_round,
+                policy_decision.reason,
+            )
             continue
         tool = registry.get(tc.name)
         # A public reply is a terminal external write even if a test double or
@@ -864,6 +890,15 @@ def _tool_execution_error_event(
     error: Exception,
 ) -> ToolExecuted:
     err_text = f"❌ 工具执行异常: {error}"
+    args = _parse_tool_arguments(tc.arguments)
+    session.log_tool_call(
+        tc.name,
+        args,
+        err_text,
+        success=False,
+        error=str(error),
+        call_id=tc.id,
+    )
     message_store.append_tool_result(tc.id, tc.name, err_text)
     logger.error(
         "tool_execution_error",
@@ -878,6 +913,51 @@ def _tool_execution_error_event(
         output_length=len(err_text),
         elapsed=0.0,
         error=str(error),
+        arguments=args,
+        output=err_text[:4000],
+    )
+
+
+def _tool_policy_blocked_event(
+    tc: ToolCallRequest,
+    session: AgentSession,
+    message_store: MessageStore,
+    current_round: int,
+    reason: str,
+) -> ToolExecuted:
+    error = f"Investigation policy blocked tool call: {reason}"
+    output = f"❌ 错误: {error}"
+    args = _parse_tool_arguments(tc.arguments)
+    metadata = {"investigation_policy_blocked": True}
+    session.log_tool_call(
+        tc.name,
+        args,
+        output,
+        success=False,
+        error=error,
+        call_id=tc.id,
+        metadata=metadata,
+    )
+    message_store.append_tool_result(tc.id, tc.name, output)
+    logger.warning(
+        "investigation_tool_blocked",
+        ticket_id=session.ticket_id,
+        session_id=session.session_id,
+        round=current_round,
+        phase=current_investigation_phase(session),
+        tool=tc.name,
+        reason=reason,
+    )
+    return ToolExecuted(
+        round=current_round,
+        tool_name=tc.name,
+        success=False,
+        output_length=len(output),
+        elapsed=0.0,
+        error=error,
+        arguments=args,
+        output=output[:4000],
+        metadata=metadata,
     )
 
 
@@ -1039,6 +1119,19 @@ async def agent_loop(
             guardrails.increment_round()
             session.round_count = guardrails.current_round
 
+            active_tool_schemas = filter_tool_schemas(session, tool_schemas)
+            logger.info(
+                "investigation_tool_surface",
+                ticket_id=session.ticket_id,
+                session_id=session.session_id,
+                round=session.round_count,
+                phase=current_investigation_phase(session),
+                route=session.investigation_route or None,
+                ticket_type=session.ticket_type or None,
+                tool_count=len(active_tool_schemas),
+                tool_names=[schema.name for schema in active_tool_schemas],
+            )
+
             llm_start = time.monotonic()
 
             async def _chat_with_retry() -> LLMResponse:
@@ -1060,7 +1153,7 @@ async def agent_loop(
                     try:
                         return await provider.chat(
                             message_store.to_api_messages(),
-                            tools=tool_schemas,
+                            tools=active_tool_schemas,
                             temperature=0.2,
                         )
                     except Exception as e:

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, TypeVar
 
 if TYPE_CHECKING:
     from zd_agent.session.agent_session import AgentSession
+
+_ToolSchemaT = TypeVar("_ToolSchemaT")
 
 
 VALID_INVESTIGATION_ROUTES = frozenset(
@@ -261,3 +263,17 @@ def evaluate_tool_call(
         f"Tool {tool_name} is not allowed during investigation phase {phase}. {next_step}",
     )
 
+
+def filter_tool_schemas(
+    session: AgentSession,
+    tool_schemas: Iterable[_ToolSchemaT],
+) -> list[_ToolSchemaT]:
+    """Filter provider schemas using the same policy as execution."""
+    schemas = list(tool_schemas)
+    names = {
+        str(getattr(schema, "name", ""))
+        for schema in schemas
+        if str(getattr(schema, "name", ""))
+    }
+    allowed = allowed_tool_names(session, names)
+    return [schema for schema in schemas if getattr(schema, "name", "") in allowed]
