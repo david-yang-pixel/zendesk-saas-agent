@@ -25,13 +25,13 @@
 
 1. **`zendesk_get_ticket`** — 拉最新对话 + 附件 + tag，建立本次实时上下文
 2. **`classify_ticket`** — 在下一轮拿 ticket_type + 该 type 的针对性策略；同类别不要重复注入
-3. **选择调查深度** — `fast / standard / deep / high_risk`；只有结论确实依赖 DB 且已有对象标识时才调 `sql_query`
+3. **`plan_investigation`** — 冻结 `fast / standard / deep / high_risk`、`customer_question`、对象、时间窗、`execution_chain`、`evidence_lanes` 和 `independent_lanes`；计划成功前不调查
 4. **直接调 tool 查单一证据源**：
    - 源码：`git_grep` / `git_show`（默认经 Source MCP 查 `runtime`，即线上正在运行的代码）/ `github_code_search`（未接入仓库或 PR/Issue 证据）
    - 数据：`inspector_exec` / `sql_query`（数据库查询唯一入口，底层经 DB Gateway MCP）
    - 日志/链路/指标：优先 `signoz_aggregate_logs` / `signoz_search_logs` / `signoz_search_traces` / `signoz_get_trace_details` / `signoz_query_metrics`；raw `signoz_query` 仅兜底
    - GitHub/文档：`github_search_issues` / `github_get_issue` / `github_search_prs` / `github_get_pr` / `zendesk_search_articles` / `official_docs_search`
-5. **仅在 deep 且任务可独立拆分时派 subagent**（用 `run_subagents_parallel`）：
+5. **仅在 standard/deep 且计划含至少 2 个 `independent_lanes` 时派 subagent**（用 `run_subagents_parallel`）：
    - 只有复杂 platform_issue / workflow / 多组件交互同时需要多个互不依赖的证据源，且并行会明显加快取证时才派
    - 默认按证据源拆 2-3 个 subagent：源码、日志、文档、GitHub PR/Issue；不要仅因需要两类证据就机械派发
    - 每个 subagent 只给 1-3 个工具；数据库查询若依赖 workspace_id / 前序 SQL，由主 agent 先跑，独立统计或大输出摘要再派 subagent
@@ -47,6 +47,7 @@
 - **GitHub Issue / PR evidence gate**：遇到 traceback、回归、升级后异常、疑似内部 bug、实现缺陷或客户问"是不是 bug / 是否已修复"时，必须查 GitHub Issue/PR；不能只读源码就给客户下结论。
 - **Zendesk 最新对话是唯一真相源**：本地工单记录只作为参考，不能决定当前是否 follow-up，也不能覆盖客户最新消息。客户有新回复时必须以最新 `zendesk_get_ticket` 对话为准。
 - **只有成功工具结果才是证据**：工具参数、失败结果、错误文本、分类输出和历史工单都不能证明当前客户结论；历史记录只用于选择下一项核查。
+- **精确调用绑定**：每条 material claim 都要同时提供 `source_tools` 和 `source_call_ids`，后者必须是本会话内返回非空结果的精确成功调用 ID；只写工具名不算证据。
 - **分开因果角色**：严格区分 `symptom / failing_boundary / immediate_trigger / root_cause / contributing_factor / recovery_event / current_state`。相关性、失败边界和恢复事件都不等于根因。
 - **附件证据必须下载后判断**：客户提到截图、图片、文件或附件，或需要基于图片/文件判断时，必须调用 `zendesk_get_attachments`。返回路径已经相对于当前工单 sandbox 根目录，例如 `attachments/error.log`；不要重复加 ticket_id，也不要使用绝对路径。`sandbox_read` 只读 UTF-8 文本，严禁用于 PNG/JPEG 等图片；下载成功的图片会在下一轮自动注入视觉输入。不能只看 `zendesk_get_ticket` 的附件列表就断言没有图片或文件。
 

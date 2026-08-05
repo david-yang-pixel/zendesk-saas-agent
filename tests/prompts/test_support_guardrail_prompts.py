@@ -102,3 +102,15 @@ def test_billing_prompts_bind_form_email_workspace_to_billing_tenant() -> None:
         assert "section=tenants" in text
         assert "多个 workspace" in text
         assert "禁止猜测" in text
+
+
+def test_support_contract_requires_planned_bounded_subagents_and_call_ids() -> None:
+    agents = AGENTS_PROMPT.read_text(encoding="utf-8")
+    support = DIFY_SUPPORT_PROMPT.read_text(encoding="utf-8")
+    tools = TOOLS_PROMPT.read_text(encoding="utf-8")
+
+    for text in (agents, support, tools):
+        assert "plan_investigation" in text
+        assert "source_call_ids" in text
+        assert "independent_lanes" in text
+    assert "父 Agent 不得重复查询子 Agent 已返回的同一证据" in support

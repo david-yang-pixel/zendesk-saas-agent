@@ -15,6 +15,7 @@ SigNoz 走 SigNoz MCP，GitHub 走 GitHub MCP，官方文档走 Docs Tool Servic
 | 工具 | 用途 |
 |------|------|
 | `zendesk_get_ticket` | Step 1 起手，拉工单详情 + 对话 |
+| `plan_investigation` | 分类后冻结 route、对象、时间窗、执行链和证据 lanes；成功前不得调用调查工具 |
 | `zendesk_get_attachments` | Step 7，有附件时下载（截图 / 文件） |
 | `zendesk_search` | 按语法搜工单（如 `requester:xxx status:solved`） |
 | `zendesk_search_articles` / `zendesk_get_article` | Help Center 查询（经 Zendesk MCP） |
@@ -79,7 +80,7 @@ logs / traces / metrics / services / schema / ClickHouse SQL：
 ## Subagent 工具
 
 ### `run_subagents_parallel`（复杂并行时使用）
-仅在 `deep` 调查中使用：当 **代码 / 文档 / 数据库 / 日志 / GitHub PR/Issue**
+仅在 `standard/deep` 调查且已冻结计划中有至少 2 个 `independent_lanes` 时使用：当 **代码 / 文档 / 数据库 / 日志 / GitHub PR/Issue**
 存在多个互不依赖的取证任务，且并行会明显加快调查时，才按证据源拆给 subagent。
 不要仅因需要两类证据就机械派发。
 一次调用派发多个独立 subagent，参数 `tasks: [{task, tools, context}]`。
@@ -153,6 +154,8 @@ Step 1: zendesk_get_ticket
   ↓
 下一轮: classify_ticket → 加载当前类别策略
   ↓
+调用 plan_investigation 冻结 route / customer_question / execution_chain / evidence_lanes / independent_lanes
+  ↓
 ├─ platform_issue → 结构化 signoz_*；对象状态确实需要时再 sql_query
 ├─ knowledge_base → 按执行链选择 sql_query / worker logs / Source
 ├─ workflow       → 按执行链选择 sql_query / traces / worker logs / Source
@@ -164,9 +167,9 @@ Step 1: zendesk_get_ticket
   ↓
 选择 fast / standard / deep / high_risk 调查深度
   ↓
-仅 deep 且任务可独立并行时使用 run_subagents_parallel
+仅 standard/deep 且存在至少 2 个 independent_lanes 时使用 run_subagents_parallel
   ↓
-zendesk_public_reply（solution/因果断言附 evidence_ledger；需要人工/SRE 时先发 handoff）
+zendesk_public_reply（solution/因果断言附 evidence_ledger；每条 claim 同时填 source_tools 和精确 source_call_ids；需要人工/SRE 时先发 handoff）
 ```
 
 ## 避免的反模式

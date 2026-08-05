@@ -20,6 +20,31 @@ def test_core_router_requires_classify_ticket_first():
     assert "不能与 `zendesk_get_ticket` 并行调用" in prompt
 
 
+def test_core_router_requires_structured_plan_before_evidence_tools():
+    prompt = _build()
+
+    assert "调用 `plan_investigation`" in prompt
+    assert "计划成功前不要调用 DB、SigNoz、Source、GitHub 或 subagent" in prompt
+    assert "customer_question" in prompt
+    assert "execution_chain" in prompt
+    assert "independent_lanes" in prompt
+
+
+def test_core_router_binds_material_claims_to_exact_tool_call_ids():
+    prompt = _build()
+
+    assert "source_call_ids" in prompt
+    assert "精确成功调用 ID" in prompt
+    assert "只写 source_tools 工具名不能证明 claim" in prompt
+
+
+def test_core_router_exhausts_support_side_evidence_before_asking_customer():
+    prompt = _build()
+
+    assert "先穷尽当前支持侧可取得的证据" in prompt
+    assert "无法从现有身份、对象和工具结果推导" in prompt
+
+
 def test_prompt_forbids_source_paths_in_customer_visible_replies():
     prompt = _build()
 
