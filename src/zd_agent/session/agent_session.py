@@ -83,6 +83,13 @@ class AgentSession:
     ticket_type: str = ""
     classification_reasoning: str = ""
 
+    # Deterministic local-Codex-style investigation controller. Production
+    # runner enables the policy; direct low-level unit tests stay compatible by
+    # opting in explicitly.
+    investigation_policy_enabled: bool = False
+    investigation_route: str = ""
+    investigation_plan: dict[str, Any] = field(default_factory=dict)
+
     # 产出物
     analysis: str = ""
     reply_draft: str = ""

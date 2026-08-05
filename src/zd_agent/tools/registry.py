@@ -32,6 +32,7 @@ from zd_agent.tools.script_runner import RunScript, SandboxExec
 from zd_agent.tools.feishu_tools import FeishuPush
 from zd_agent.tools.saas_branch import SaasBranchSwitch
 from zd_agent.tools.inspector_exec import InspectorExec
+from zd_agent.tools.investigation import PlanInvestigation
 from zd_agent.tools.sql_query import SqlQuery
 from zd_agent.tools.ticket_record import TicketRecordRead, TicketRecordSearch
 from zd_agent.tools.subagent import RunSubagent
@@ -108,6 +109,7 @@ def create_tool_registry() -> ToolRegistry:
 
     # 分类工具
     registry.register(ClassifyTicket())
+    registry.register(PlanInvestigation())
 
     # Subagent 工具
     registry.register(RunSubagent())
