@@ -85,6 +85,26 @@ SUBAGENT_SYSTEM_PROMPT = """你是一个专注于特定分析任务的子 Agent�
 _MAX_SUBAGENT_OUTPUT_CHARS = 4000
 
 
+def _export_evidence_tool_calls(session: AgentSession) -> list[dict[str, Any]]:
+    """Namespace child call IDs so the parent can cite them without collisions."""
+    exported: list[dict[str, Any]] = []
+    for index, item in enumerate(session.tool_call_log, start=1):
+        if not isinstance(item, dict):
+            continue
+        raw_call_id = str(item.get("call_id") or f"call-{index}").strip()
+        exported.append(
+            {
+                "call_id": f"{session.session_id}:{raw_call_id}",
+                "tool": str(item.get("tool") or ""),
+                "args": dict(item.get("args") or {}),
+                "success": item.get("success") is True,
+                "error": item.get("error"),
+                "result_preview": str(item.get("result_preview") or ""),
+            }
+        )
+    return exported
+
+
 def _truncate_subagent_output(text: str) -> tuple[str, bool]:
     """把 subagent 输出截断到 _MAX_SUBAGENT_OUTPUT_CHARS。
 
@@ -317,6 +337,18 @@ async def run_subagent(
 
     # P1-4：硬截断 subagent 输出（避免父 loop history 暴涨触发 token guardrail）
     final_content_trunc, was_truncated = _truncate_subagent_output(final_content)
+    evidence_tool_calls = _export_evidence_tool_calls(sub_session)
+    evidence_call_lines = [
+        f"- {item['call_id']} ({item['tool']})"
+        for item in evidence_tool_calls
+        if item["success"] and item["result_preview"]
+    ]
+    evidence_call_block = (
+        "\n\n[Evidence call IDs for parent ledger]\n"
+        + "\n".join(evidence_call_lines)
+        if evidence_call_lines
+        else ""
+    )
 
     logger.info(
         "subagent_done",
@@ -338,5 +370,7 @@ async def run_subagent(
             f"(子 Agent 用了 {sub_session.round_count} 轮, "
             f"{sub_session.token_usage.total_tokens:,} tokens"
             f"{'，输出已截断' if was_truncated else ''})"
+            f"{evidence_call_block}"
         ),
+        metadata={"evidence_tool_calls": evidence_tool_calls},
     )

@@ -408,6 +408,9 @@ def _make_session(dry_run: bool = False) -> MagicMock:
     s.reply_draft = ""
     s.reply_sent = False
     s.ticket_type = ""
+    s.investigation_policy_enabled = False
+    s.investigation_route = ""
+    s.investigation_plan = {}
     s.tool_call_log = []
     s.customer_form_data = {}
     s.customer_profile = {}
@@ -436,6 +439,7 @@ def _fast_evidence_ledger(
                 "causal_role": role,
                 "status": "confirmed",
                 "source_tools": [source_tool],
+                "source_call_ids": [f"call-{source_tool}"],
                 "object_identifiers": "ticket=42",
                 "time_window": "checked_at=2026-07-29T00:00:00Z",
                 "observed_result": "The successful tool result confirmed the claim.",

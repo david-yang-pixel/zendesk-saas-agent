@@ -227,6 +227,7 @@ class RunSubagentsParallel(Tool):
         lines: list[str] = []
         any_success = False
         usable_count = 0
+        evidence_tool_calls: list[dict[str, Any]] = []
         for i, (spec, res) in enumerate(zip(tasks, results), start=1):
             title = str(spec.get("task", ""))[:80]
             lines.append(f"=== Subagent {i}: {title} ===")
@@ -241,6 +242,11 @@ class RunSubagentsParallel(Tool):
                             res.output or "(empty output)"
                         )
                     )
+                    nested = res.metadata.get("evidence_tool_calls")
+                    if isinstance(nested, list):
+                        evidence_tool_calls.extend(
+                            item for item in nested if isinstance(item, dict)
+                        )
                 else:
                     lines.append(f"[FAILED] {res.error}")
             else:
@@ -260,6 +266,7 @@ class RunSubagentsParallel(Tool):
                 "log_arguments": {
                     "batch_id": batch_id,
                     "child_count": len(tasks),
-                }
+                },
+                "evidence_tool_calls": evidence_tool_calls,
             },
         )

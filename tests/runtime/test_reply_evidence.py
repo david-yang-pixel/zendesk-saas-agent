@@ -7,8 +7,14 @@ from zd_agent.runtime.reply_evidence import (
 )
 
 
-def _success(tool: str, result: str = "confirmed live result") -> dict:
+def _success(
+    tool: str,
+    result: str = "confirmed live result",
+    *,
+    call_id: str | None = None,
+) -> dict:
     return {
+        "call_id": call_id or f"call-{tool}",
         "round": 1,
         "tool": tool,
         "args": {},
@@ -30,10 +36,28 @@ def _root_cause_ledger(*, route: str = "standard") -> dict:
                 "causal_role": "root_cause",
                 "status": "confirmed",
                 "source_tools": ["signoz_search_logs", "sql_query"],
+                "source_call_ids": [
+                    "call-signoz_search_logs",
+                    "call-sql_query",
+                ],
                 "object_identifiers": "workspace=w1, provider=p1",
                 "time_window": "2026-07-29T01:00:00Z/2026-07-29T01:10:00Z",
                 "observed_result": "Matching auth rejection and stale credential version.",
                 "alternatives_checked": "Rate limit and provider outage were ruled out.",
+            },
+            {
+                "claim": "The provider boundary rejected the request.",
+                "causal_role": "failing_boundary",
+                "status": "confirmed",
+                "source_tools": ["signoz_search_logs", "sql_query"],
+                "source_call_ids": [
+                    "call-signoz_search_logs",
+                    "call-sql_query",
+                ],
+                "object_identifiers": "workspace=w1, provider=p1",
+                "time_window": "2026-07-29T01:00:00Z/2026-07-29T01:10:00Z",
+                "observed_result": "The provider returned an authentication rejection.",
+                "alternatives_checked": "The request reached the provider boundary.",
             },
         ],
     }
@@ -51,6 +75,7 @@ def _fast_ledger() -> dict:
                 "causal_role": "product_fact",
                 "status": "confirmed",
                 "source_tools": ["official_docs_read"],
+                "source_call_ids": ["call-official_docs_read"],
                 "object_identifiers": "Dify Cloud API",
                 "time_window": "not_applicable",
                 "observed_result": "The current API reference documents the endpoint.",
@@ -140,6 +165,7 @@ def test_failed_tools_cannot_satisfy_ledger_sources() -> None:
 def test_historical_ticket_cannot_prove_current_root_cause() -> None:
     ledger = _root_cause_ledger()
     ledger["rows"][0]["source_tools"] = ["ticket_record_read"]
+    ledger["rows"][0]["source_call_ids"] = ["call-ticket_record_read"]
 
     blockers = validate_public_reply_evidence(
         reply_type="solution",
@@ -204,6 +230,7 @@ def test_high_risk_technical_fact_can_be_replied_without_business_decision() -> 
                 "causal_role": "current_state",
                 "status": "confirmed",
                 "source_tools": ["sql_query"],
+                "source_call_ids": ["call-sql_query"],
                 "object_identifiers": "workspace=w1, subscription=s1",
                 "time_window": "checked_at=2026-07-29T02:00:00Z",
                 "observed_result": "Subscription status is canceled.",
@@ -248,3 +275,141 @@ def test_rendered_ledger_preserves_auditable_fields() -> None:
     assert "causal_role: root_cause" in rendered
     assert "signoz_search_logs" in rendered
     assert "workspace=w1" in rendered
+
+
+def test_material_row_cannot_be_proved_by_tool_name_only() -> None:
+    ledger = _root_cause_ledger()
+    ledger["rows"][0].pop("source_call_ids")
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[_success("signoz_search_logs"), _success("sql_query")],
+        ticket_type="workflow",
+        planned_route="standard",
+    )
+
+    assert any("source_call_ids" in blocker for blocker in blockers)
+
+
+def test_material_row_accepts_exact_successful_call_ids() -> None:
+    ledger = _root_cause_ledger()
+    for row in ledger["rows"]:
+        row["source_call_ids"] = ["logs-1", "db-1"]
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success("signoz_search_logs", call_id="logs-1"),
+            _success("sql_query", call_id="db-1"),
+        ],
+        ticket_type="workflow",
+        planned_route="standard",
+    )
+
+    assert blockers == []
+
+
+def test_unknown_or_failed_source_call_id_is_blocked() -> None:
+    ledger = _root_cause_ledger()
+    ledger["rows"][0]["source_call_ids"] = ["missing-call"]
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[_success("signoz_search_logs", call_id="logs-1")],
+        ticket_type="workflow",
+        planned_route="standard",
+    )
+
+    assert any("missing-call" in blocker for blocker in blockers)
+
+
+def test_solution_route_must_match_frozen_investigation_plan() -> None:
+    ledger = _root_cause_ledger(route="deep")
+    ledger["rows"][0]["source_call_ids"] = ["logs-1", "db-1"]
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success("signoz_search_logs", call_id="logs-1"),
+            _success("sql_query", call_id="db-1"),
+        ],
+        ticket_type="workflow",
+        planned_route="standard",
+    )
+
+    assert any("planned route" in blocker.lower() for blocker in blockers)
+
+
+def test_deep_solution_requires_failing_boundary_and_current_state() -> None:
+    ledger = _root_cause_ledger(route="deep")
+    ledger["rows"] = [
+        row for row in ledger["rows"] if row["causal_role"] != "failing_boundary"
+    ]
+    ledger["rows"][0]["source_call_ids"] = ["logs-1", "db-1"]
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success("signoz_search_logs", call_id="logs-1"),
+            _success("sql_query", call_id="db-1"),
+        ],
+        ticket_type="workflow",
+        planned_route="deep",
+        investigation_plan={
+            "route": "deep",
+            "evidence_lanes": ["customer_object", "impact_scope", "baseline"],
+        },
+    )
+
+    assert any("failing_boundary" in blocker for blocker in blockers)
+    assert any("current_state" in blocker for blocker in blockers)
+
+
+def test_deep_solution_requires_impact_scope_and_baseline_plan_lanes() -> None:
+    ledger = _root_cause_ledger(route="deep")
+    ledger["rows"].extend(
+        [
+            {
+                **ledger["rows"][0],
+                "claim": "The provider boundary rejected the request.",
+                "causal_role": "failing_boundary",
+            },
+            {
+                **ledger["rows"][0],
+                "claim": "A matching request now succeeds.",
+                "causal_role": "current_state",
+            },
+        ]
+    )
+
+    blockers = validate_public_reply_evidence(
+        reply_type="solution",
+        body="The stale provider credential caused the authentication failure.",
+        internal_analysis="Checked the exact workspace and incident window.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success("signoz_search_logs"),
+            _success("sql_query"),
+        ],
+        ticket_type="workflow",
+        planned_route="deep",
+        investigation_plan={"route": "deep", "evidence_lanes": ["customer_object"]},
+    )
+
+    assert any("impact_scope" in blocker for blocker in blockers)
+    assert any("baseline" in blocker for blocker in blockers)

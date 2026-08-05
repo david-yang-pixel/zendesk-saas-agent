@@ -168,6 +168,14 @@ _EVIDENCE_LEDGER_SCHEMA: dict[str, Any] = {
                         "minItems": 1,
                         "items": {"type": "string"},
                     },
+                    "source_call_ids": {
+                        "type": "array",
+                        "description": (
+                            "本会话中支撑该 claim 的精确成功 tool call id。"
+                            "不能只写工具名；子 Agent 证据使用其返回的 child call id。"
+                        ),
+                        "items": {"type": "string"},
+                    },
                     "object_identifiers": {"type": "string"},
                     "time_window": {"type": "string"},
                     "observed_result": {"type": "string"},
@@ -178,6 +186,7 @@ _EVIDENCE_LEDGER_SCHEMA: dict[str, Any] = {
                     "causal_role",
                     "status",
                     "source_tools",
+                    "source_call_ids",
                     "object_identifiers",
                     "time_window",
                     "observed_result",
@@ -886,6 +895,21 @@ class ZendeskPublicReply(Tool):
                     "already stored its internal analysis; re-fetch the ticket before retrying."
                 ),
             )
+        if (
+            reply_type == "solution"
+            and bool(getattr(session, "investigation_policy_enabled", False))
+            and (
+                not str(getattr(session, "investigation_route", "") or "")
+                or not (getattr(session, "investigation_plan", {}) or {})
+            )
+        ):
+            return ToolResult(
+                success=False,
+                error=(
+                    "Investigation plan gate blocked this solution reply. "
+                    "Complete plan_investigation before claiming a verified solution."
+                ),
+            )
         pending_images = getattr(session, "image_urls", None)
         if (
             reply_type in {"ask", "solution", "closed"}
@@ -992,6 +1016,12 @@ class ZendeskPublicReply(Tool):
             evidence_ledger=evidence_ledger,
             tool_call_log=getattr(session, "tool_call_log", []) or [],
             ticket_type=str(getattr(session, "ticket_type", "") or ""),
+            planned_route=str(
+                getattr(session, "investigation_route", "") or ""
+            ),
+            investigation_plan=(
+                getattr(session, "investigation_plan", {}) or {}
+            ),
         )
         if evidence_blockers:
             logger.warning(

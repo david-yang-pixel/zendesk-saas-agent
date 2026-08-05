@@ -54,6 +54,7 @@ _ROOT_CAUSE_ASSERTION_PATTERNS: Final = (
 _HISTORICAL_TOOL_PREFIXES: Final = ("ticket_record_",)
 _NON_EVIDENCE_TOOLS: Final = {
     "classify_ticket",
+    "plan_investigation",
     "feishu_push",
     "run_subagent",
     "run_subagents_parallel",
@@ -71,17 +72,30 @@ def _clean_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _successful_evidence_tools(
+def _successful_evidence_calls(
     tool_call_log: list[dict[str, Any]],
-) -> set[str]:
-    names: set[str] = set()
+) -> dict[str, dict[str, Any]]:
+    calls: dict[str, dict[str, Any]] = {}
+
+    def _record(item: dict[str, Any]) -> None:
+        name = _clean_text(item.get("tool"))
+        call_id = _clean_text(item.get("call_id")) or (
+            f"call-{name}" if name else ""
+        )
+        result = _clean_text(item.get("result_preview"))
+        if (
+            call_id
+            and name
+            and result
+            and item.get("success") is True
+            and name not in _NON_EVIDENCE_TOOLS
+        ):
+            calls[call_id] = item
+
     for item in tool_call_log or []:
         if not isinstance(item, dict) or item.get("success") is not True:
             continue
-        name = _clean_text(item.get("tool"))
-        result = _clean_text(item.get("result_preview"))
-        if name and result and name not in _NON_EVIDENCE_TOOLS:
-            names.add(name)
+        _record(item)
         metadata = item.get("metadata")
         if not isinstance(metadata, dict):
             continue
@@ -89,17 +103,9 @@ def _successful_evidence_tools(
         if not isinstance(nested, list):
             continue
         for child in nested:
-            if not isinstance(child, dict) or child.get("success") is not True:
-                continue
-            child_name = _clean_text(child.get("tool"))
-            child_result = _clean_text(child.get("result_preview"))
-            if (
-                child_name
-                and child_result
-                and child_name not in _NON_EVIDENCE_TOOLS
-            ):
-                names.add(child_name)
-    return names
+            if isinstance(child, dict):
+                _record(child)
+    return calls
 
 
 def _is_historical_tool(name: str) -> bool:
@@ -111,7 +117,7 @@ def _validate_row(
     row: Any,
     index: int,
     route: str,
-    successful_tools: set[str],
+    successful_calls: dict[str, dict[str, Any]],
 ) -> tuple[list[str], dict[str, Any] | None]:
     label = f"evidence_ledger.rows[{index}]"
     if not isinstance(row, dict):
@@ -126,6 +132,7 @@ def _validate_row(
     observed_result = _clean_text(row.get("observed_result"))
     alternatives_checked = _clean_text(row.get("alternatives_checked"))
     raw_source_tools = row.get("source_tools")
+    raw_source_call_ids = row.get("source_call_ids")
 
     if not claim:
         blockers.append(f"{label}.claim is required.")
@@ -149,6 +156,20 @@ def _validate_row(
         if not source_tools:
             blockers.append(f"{label}.source_tools must not be empty.")
 
+    if not isinstance(raw_source_call_ids, list) or not all(
+        isinstance(call_id, str) and call_id.strip()
+        for call_id in raw_source_call_ids
+    ):
+        source_call_ids: list[str] = []
+        if status in {"confirmed", "evidence_supported", "ruled_out"}:
+            blockers.append(
+                f"{label}.source_call_ids must be a non-empty string list."
+            )
+    else:
+        source_call_ids = list(
+            dict.fromkeys(call_id.strip() for call_id in raw_source_call_ids)
+        )
+
     material_status = status in {"confirmed", "evidence_supported", "ruled_out"}
     if material_status:
         if not object_identifiers:
@@ -159,17 +180,37 @@ def _validate_row(
             blockers.append(f"{label}.observed_result is required.")
         if not alternatives_checked:
             blockers.append(f"{label}.alternatives_checked is required.")
-        for source_tool in source_tools:
+        if not source_call_ids:
+            blockers.append(
+                f"{label}.source_call_ids must cite exact successful calls."
+            )
+        cited_tools: set[str] = set()
+        for call_id in source_call_ids:
+            call = successful_calls.get(call_id)
+            if call is None:
+                blockers.append(
+                    f"{label} cites source call id {call_id}, but no successful "
+                    "non-empty evidence result with that id exists in this session."
+                )
+                continue
+            source_tool = _clean_text(call.get("tool"))
+            cited_tools.add(source_tool)
             if _is_historical_tool(source_tool):
                 blockers.append(
                     f"{label} cites historical tool {source_tool}; historical "
                     "tickets may guide the next check but cannot prove the "
                     "current ticket."
                 )
-            elif source_tool not in successful_tools:
+            if source_tool not in source_tools:
                 blockers.append(
-                    f"{label} cites {source_tool}, but no successful tool result "
-                    "from that source exists in this session."
+                    f"{label} source call {call_id} belongs to {source_tool}, "
+                    "which is absent from source_tools."
+                )
+        for source_tool in source_tools:
+            if source_tool not in cited_tools:
+                blockers.append(
+                    f"{label} lists source tool {source_tool} without citing an "
+                    "exact successful source_call_id from that tool."
                 )
 
     normalized = {
@@ -177,6 +218,7 @@ def _validate_row(
         "causal_role": role,
         "status": status,
         "source_tools": source_tools,
+        "source_call_ids": source_call_ids,
         "object_identifiers": object_identifiers,
         "time_window": time_window,
         "observed_result": observed_result,
@@ -193,6 +235,8 @@ def validate_public_reply_evidence(
     evidence_ledger: Any,
     tool_call_log: list[dict[str, Any]],
     ticket_type: str = "",
+    planned_route: str = "",
+    investigation_plan: dict[str, Any] | None = None,
 ) -> list[str]:
     """Validate the evidence contract for one model-authored public reply.
 
@@ -229,6 +273,11 @@ def validate_public_reply_evidence(
         blockers.append(
             f"evidence_ledger.route must be one of {sorted(_VALID_ROUTES)}."
         )
+    if planned_route and route != planned_route:
+        blockers.append(
+            f"Evidence ledger route {route or '(missing)'} does not match the "
+            f"frozen planned route {planned_route}."
+        )
     if decision_scope not in _VALID_DECISION_SCOPES:
         blockers.append(
             "evidence_ledger.decision_scope must be one of "
@@ -248,14 +297,14 @@ def validate_public_reply_evidence(
         blockers.append("evidence_ledger.rows must be a non-empty list.")
         return blockers
 
-    successful_tools = _successful_evidence_tools(tool_call_log)
+    successful_calls = _successful_evidence_calls(tool_call_log)
     normalized_rows: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
         row_blockers, normalized = _validate_row(
             row=row,
             index=index,
             route=route,
-            successful_tools=successful_tools,
+            successful_calls=successful_calls,
         )
         blockers.extend(row_blockers)
         if normalized is not None:
@@ -265,6 +314,18 @@ def validate_public_reply_evidence(
         row
         for row in normalized_rows
         if row["causal_role"] == "root_cause" and row["status"] == "confirmed"
+    ]
+    confirmed_failing_boundaries = [
+        row
+        for row in normalized_rows
+        if row["causal_role"] == "failing_boundary"
+        and row["status"] == "confirmed"
+    ]
+    confirmed_current_states = [
+        row
+        for row in normalized_rows
+        if row["causal_role"] == "current_state"
+        and row["status"] == "confirmed"
     ]
     confirmed_fast_facts = [
         row
@@ -312,6 +373,29 @@ def validate_public_reply_evidence(
                     "decision_scope=technical_diagnosis."
                 )
             needs_confirmed_root_cause = True
+            if not confirmed_failing_boundaries:
+                blockers.append(
+                    "Standard/deep diagnosis replies require a confirmed "
+                    "failing_boundary ledger row backed by exact successful calls."
+                )
+            if route == "deep":
+                if not confirmed_current_states:
+                    blockers.append(
+                        "Deep diagnosis replies require a confirmed current_state "
+                        "ledger row backed by exact successful calls."
+                    )
+                if isinstance(investigation_plan, dict):
+                    lane_text = " ".join(
+                        str(item).strip().casefold()
+                        for item in investigation_plan.get("evidence_lanes", [])
+                        if str(item).strip()
+                    )
+                    for required_lane in ("impact_scope", "baseline"):
+                        if required_lane not in lane_text:
+                            blockers.append(
+                                "Deep diagnosis investigation plan must include "
+                                f"the {required_lane} evidence lane."
+                            )
 
     if needs_confirmed_root_cause:
         if root_cause_status != "confirmed" or not confirmed_root_causes:
@@ -347,6 +431,12 @@ def render_evidence_ledger(evidence_ledger: dict[str, Any]) -> str:
             if isinstance(source_tools, list)
             else ""
         )
+        source_call_ids = row.get("source_call_ids")
+        source_call_text = (
+            ", ".join(str(call_id) for call_id in source_call_ids)
+            if isinstance(source_call_ids, list)
+            else ""
+        )
         lines.extend(
             [
                 "",
@@ -355,6 +445,7 @@ def render_evidence_ledger(evidence_ledger: dict[str, Any]) -> str:
                 f"- causal_role: {_clean_text(row.get('causal_role'))}",
                 f"- status: {_clean_text(row.get('status'))}",
                 f"- source_tools: {source_text}",
+                f"- source_call_ids: {source_call_text}",
                 (
                     "- object_identifiers: "
                     f"{_clean_text(row.get('object_identifiers'))}"

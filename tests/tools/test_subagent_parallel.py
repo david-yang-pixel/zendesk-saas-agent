@@ -320,6 +320,47 @@ async def test_parallel_dispatch_attaches_log_metadata(fake_session):
 
 
 @pytest.mark.asyncio
+async def test_parallel_dispatch_aggregates_child_evidence_calls(
+    fake_session,
+    monkeypatch,
+):
+    async def fake_subagent(task, tools, context, session, log_metadata=None):
+        index = log_metadata["sibling_index"]
+        return ToolResult(
+            output=f"child {index}",
+            metadata={
+                "evidence_tool_calls": [
+                    {
+                        "call_id": f"child-{index}:call-1",
+                        "tool": tools[0],
+                        "args": {},
+                        "success": True,
+                        "error": None,
+                        "result_preview": f"evidence {index}",
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr("zd_agent.runtime.subagent.run_subagent", fake_subagent)
+    result = await RunSubagentsParallel().execute(
+        {
+            "tasks": [
+                {"task": "logs", "tools": ["signoz_search_logs"], "context": ""},
+                {"task": "source", "tools": ["git_grep"], "context": ""},
+            ]
+        },
+        fake_session,
+    )
+
+    calls = result.metadata["evidence_tool_calls"]
+    assert [call["call_id"] for call in calls] == [
+        "child-0:call-1",
+        "child-1:call-1",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_docs_tools_are_classified_as_knowledge_work(fake_session):
     tool = RunSubagentsParallel()
     captured = []
