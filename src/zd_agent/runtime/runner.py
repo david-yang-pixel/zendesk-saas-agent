@@ -7,6 +7,7 @@ from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.guardrails import Guardrails
 from zd_agent.runtime.llm_client import LLMClient
+from zd_agent.runtime.runner_archive import ensure_archive
 from zd_agent.runtime.runner_reporting import report_preflight_failure
 from zd_agent.services.escalation_notifications import (
     send_feishu_escalation_best_effort,
@@ -154,6 +155,7 @@ async def run_agent(session: AgentSession) -> None:
             model=cfg.llm.model,
             reason=str(e),
         )
+        ensure_archive(session, guardrails)
         if not session.dry_run:
             await _report_agent_failure(session, str(e))
         logger.info(
@@ -332,6 +334,8 @@ async def run_agent(session: AgentSession) -> None:
             and session.public_reply_type != "handoff"
         ):
             await notify_ticket_done_best_effort(session)
+
+        ensure_archive(session, guardrails)
 
         # sandbox 清理策略
         should_clean = (

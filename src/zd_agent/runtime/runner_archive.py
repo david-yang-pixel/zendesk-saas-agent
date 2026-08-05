@@ -38,18 +38,20 @@ def _archive_session_dir(session: AgentSession) -> Path:
 
 
 def ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
-    archive_dir = _archive_session_dir(session)
-    meta_path = archive_dir / "meta.json"
-    if meta_path.exists():
-        return
-
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    meta = build_archive_meta(
-        session=session,
-        archived_at=datetime.now(timezone.utc).isoformat(),
-        elapsed_seconds=guardrails.elapsed_seconds,
-    )
+    archive_dir: Path | None = None
     try:
+        archive_dir = _archive_session_dir(session)
+        meta_path = archive_dir / "meta.json"
+        if meta_path.exists():
+            session.archived = True
+            return
+
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        meta = build_archive_meta(
+            session=session,
+            archived_at=datetime.now(timezone.utc).isoformat(),
+            elapsed_seconds=guardrails.elapsed_seconds,
+        )
         meta_path.write_text(
             json.dumps(meta, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -69,9 +71,11 @@ def ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
             ticket_id=session.ticket_id,
             path=str(archive_dir),
         )
+        session.archived = True
     except Exception as exc:
         logger.warning(
             "auto_archive_failed",
             ticket_id=session.ticket_id,
+            path=str(archive_dir or ""),
             error=str(exc),
         )

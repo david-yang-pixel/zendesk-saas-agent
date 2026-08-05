@@ -130,3 +130,25 @@ def test_archive_meta_retains_investigation_and_exact_evidence_calls() -> None:
     nested = meta["tool_calls"][0]["metadata"]["evidence_tool_calls"]
     assert nested[0]["call_id"] == "child-1:billing-1"
     assert nested[0]["tool"] == "inspector_exec"
+
+
+def test_auto_archive_failure_never_breaks_agent_completion(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    not_a_directory = tmp_path / "not-a-directory"
+    not_a_directory.write_text("occupied", encoding="utf-8")
+    cfg = SimpleNamespace(
+        knowledge=SimpleNamespace(archive_dir=str(not_a_directory)),
+    )
+    monkeypatch.setattr("zd_agent.runtime.runner_archive.get_config", lambda: cfg)
+    session = SimpleNamespace(
+        ticket_id=3485,
+        session_id="archive-failure",
+        analysis="analysis",
+        reply_draft="reply",
+    )
+
+    ensure_archive(session, SimpleNamespace(elapsed_seconds=1.0))
+
+    assert not (not_a_directory / "3485").exists()

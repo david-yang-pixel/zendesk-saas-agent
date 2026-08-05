@@ -31,12 +31,14 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
         session.reply_sent = True
 
     notify = AsyncMock()
+    archive = MagicMock()
     monkeypatch.setattr(runner, "create_sandbox", lambda: FakeSandbox())
     monkeypatch.setattr(runner, "create_tool_registry", lambda: MagicMock())
     monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock())
     monkeypatch.setattr(runner, "Guardrails", lambda config: MagicMock(elapsed_seconds=0))
     monkeypatch.setattr(runner, "run_tool_loop", fake_tool_loop)
     monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
+    monkeypatch.setattr(runner, "ensure_archive", archive, raising=False)
     monkeypatch.setattr(
         "zd_agent.runtime.customer_profile.prefetch_customer_profile",
         AsyncMock(return_value={}),
@@ -54,6 +56,8 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
     await runner.run_agent(session)
 
     notify.assert_awaited_once_with(session)
+    archive.assert_called_once()
+    assert archive.call_args.args[0] is session
 
 
 @pytest.mark.asyncio

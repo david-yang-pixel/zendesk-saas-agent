@@ -124,6 +124,8 @@ async def test_run_agent_stops_when_customer_snapshot_is_unavailable(
     reporter.close = AsyncMock()
     monkeypatch.setattr(runner, "create_sandbox", create_sandbox)
     monkeypatch.setattr(runner.logger, "info", log_info)
+    archive = MagicMock()
+    monkeypatch.setattr(runner, "ensure_archive", archive, raising=False)
     monkeypatch.setattr(
         "zd_agent.runtime.runner_reporting.LogReporter",
         lambda: reporter,
@@ -142,3 +144,5 @@ async def test_run_agent_stops_when_customer_snapshot_is_unavailable(
     assert finish_event.status == "error"
     assert "customer-message snapshot" in finish_event.reason
     reporter.close.assert_awaited_once()
+    archive.assert_called_once()
+    assert archive.call_args.args[0] is session
