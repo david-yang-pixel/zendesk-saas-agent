@@ -906,6 +906,88 @@ class TestExecute:
         mock_relay.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_handoff_blocks_current_plan_claim_from_inspector_all(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.ticket_type = "billing"
+        sess.tool_call_log = [
+            {
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "customer@example.com",
+                    "section": "all",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": "TENANTS (1)\nname,plan\nWorkspace,basic",
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "The workspace associated with this request is currently "
+                        "recorded on the Basic plan."
+                    ),
+                    "reply_type": "handoff",
+                    "internal_analysis": "Inspector all showed a Prod plan value.",
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert "Billing plan evidence gate" in (result.error or "")
+        assert "section=billing" in (result.error or "")
+        assert sess.reply_sent is False
+
+    @pytest.mark.asyncio
+    async def test_handoff_allows_matching_current_plan_from_billing_section(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.ticket_type = "billing"
+        sess.tool_call_log = [
+            {
+                "tool": "inspector_exec",
+                "args": {
+                    "tenant_id": "tenant-1",
+                    "section": "billing",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=team\n"
+                    "AUTHORITATIVE_BILLING_STATUS=active\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Your workspace is currently on the Team plan.",
+                    "reply_type": "handoff",
+                    "internal_analysis": (
+                        "The tenant-scoped billing section confirmed Team."
+                    ),
+                },
+                sess,
+            )
+
+        assert result.success is True
+        assert "Dry Run" in result.output
+        assert sess.reply_sent is False
+
+    @pytest.mark.asyncio
     async def test_refund_reply_allows_owner_confirmation_ask_without_gate(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=False)

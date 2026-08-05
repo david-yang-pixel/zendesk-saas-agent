@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import signal
 import shlex
 from typing import Any, TYPE_CHECKING
@@ -73,6 +74,80 @@ _VALID_SECTIONS = {
 
 # 允许的 query 简写（inspector 内部 enum）
 _VALID_QUERIES = {"failed", "succeeded"}
+
+_BILLING_PLAN_CODES = {
+    "basic",
+    "sandbox",
+    "professional",
+    "team",
+    "enterprise",
+}
+
+
+def _pipe_field_value(output: str, field: str) -> str:
+    pattern = re.compile(
+        rf"^\|\s*{re.escape(field)}\s*\|\s*([^|]+?)\s*\|\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    match = pattern.search(output)
+    return match.group(1).strip() if match else ""
+
+
+def _normalize_plan_code(value: str) -> str:
+    lowered = value.strip().lower()
+    for code in _BILLING_PLAN_CODES:
+        if re.search(rf"(?<![a-z]){re.escape(code)}(?![a-z])", lowered):
+            return code
+    return ""
+
+
+def _authoritative_billing_prefix(output: str, section: str | None) -> str:
+    """Make the billing source hierarchy machine-readable and fail closed.
+
+    Inspector prints ``TENANT.Plan`` from the Prod database before its Billing
+    section.  Those values may legitimately disagree after a subscription
+    change.  A model can over-weight the first table, so a billing decision is
+    allowed only after a tenant-scoped ``section=billing`` call and the wrapper
+    places the authoritative values at the very start of the tool result.
+    """
+    common = (
+        "TENANT/TENANTS Plan is non-authoritative Prod metadata; never use it "
+        "as the current subscription plan.\n"
+    )
+    if section != "billing":
+        return (
+            "AUTHORITATIVE_BILLING_PLAN=unknown\n"
+            "AUTHORITATIVE_BILLING_STATUS=unknown\n"
+            "AUTHORITATIVE_BILLING_SOURCE=unverified\n"
+            f"{common}"
+            "To make a subscription-plan claim, rerun inspector_exec with "
+            "tenant_id + section=billing (or query tenant_subscription_settings "
+            "in database=billing).\n\n"
+        )
+
+    source = _pipe_field_value(output, "Source").lower()
+    plan = _normalize_plan_code(
+        _pipe_field_value(output, "Plan Code")
+        or _pipe_field_value(output, "Current Plan")
+    )
+    status = _pipe_field_value(output, "Subscription Status").lower()
+    if source != "billing_db" or not plan:
+        return (
+            "AUTHORITATIVE_BILLING_PLAN=unknown\n"
+            f"AUTHORITATIVE_BILLING_STATUS={status or 'unknown'}\n"
+            f"AUTHORITATIVE_BILLING_SOURCE={source or 'unavailable'}\n"
+            f"{common}"
+            "The Billing section did not return an authoritative plan. Query "
+            "tenant_subscription_settings in database=billing before making a "
+            "subscription-plan claim.\n\n"
+        )
+
+    return (
+        f"AUTHORITATIVE_BILLING_PLAN={plan}\n"
+        f"AUTHORITATIVE_BILLING_STATUS={status or 'unknown'}\n"
+        "AUTHORITATIVE_BILLING_SOURCE=billing_db\n"
+        f"{common}\n"
+    )
 
 
 def _flag_to_cli(flag: str) -> str:
@@ -135,7 +210,9 @@ class InspectorExec(Tool):
         "（自动识别）、账号或租户的 billing/runs/apps section drill-down。"
         "必须传一个主查询参数（email / account_id / tenant_id / app_id / dataset_id / "
         "document_id / conversation_id / workflow_id / workflow_run_id / id），"
-        "可选 section（all / tenants / apps / runs / conversations / billing / quota / members）"
+        "可选 section（all / tenants / apps / runs / conversations / billing / quota / members）。"
+        "订阅套餐/状态必须先拿 tenant_id，再单独调用 section=billing；email/section=all "
+        "和 TENANT/TENANTS Plan 只能用于定位，不能作为套餐证据。"
         "+ query（failed / succeeded）+ limit（默认 50）+ from / to（YYYY-MM-DD）。"
     )
     parameters = {
@@ -422,4 +499,6 @@ class InspectorExec(Tool):
             bytes=len(out),
             ticket_id=session.ticket_id,
         )
+        if section in {"billing", "all"}:
+            out = _authoritative_billing_prefix(out, section) + out
         return ToolResult(output=out)

@@ -10,6 +10,28 @@ from zd_agent.runtime.agent_loop import _TOOL_CALL_TIMEOUT_SECONDS
 from zd_agent.tools.inspector_exec import InspectorExec, _terminate_process_tree
 
 
+_CONFLICTING_BILLING_OUTPUT = """
+TENANT
+────────
++---------+----------+
+| FIELD   | VALUE    |
++---------+----------+
+| Plan    | basic    |
++---------+----------+
+
+BILLING
+─────────
++---------------------+------------+
+| FIELD               | VALUE      |
++---------------------+------------+
+| Current Plan        | Team 版    |
+| Plan Code           | team       |
+| Subscription Status | active     |
+| Source              | billing_db |
++---------------------+------------+
+""".strip()
+
+
 @pytest.fixture
 def inspector_config(monkeypatch):
     cfg = SimpleNamespace(
@@ -178,3 +200,63 @@ async def test_external_cancellation_terminates_inspector_process_group(
 
     killpg.assert_called_once_with(4321, 9)
     assert process.waited is True
+
+
+@pytest.mark.asyncio
+async def test_billing_section_promotes_billing_db_over_prod_plan(
+    fake_session,
+    inspector_config,
+    monkeypatch,
+) -> None:
+    class CompletedProcess:
+        pid = 4321
+        returncode = 0
+
+        async def communicate(self):
+            return _CONFLICTING_BILLING_OUTPUT.encode(), b""
+
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=CompletedProcess()),
+    )
+
+    result = await InspectorExec().execute(
+        {"tenant_id": "tenant-1", "section": "billing"},
+        fake_session,
+    )
+
+    assert result.success is True
+    assert result.output.startswith(
+        "AUTHORITATIVE_BILLING_PLAN=team\n"
+        "AUTHORITATIVE_BILLING_STATUS=active\n"
+        "AUTHORITATIVE_BILLING_SOURCE=billing_db\n"
+    )
+    assert "TENANT/TENANTS Plan is non-authoritative" in result.output
+
+
+@pytest.mark.asyncio
+async def test_all_section_cannot_authorize_a_subscription_plan_claim(
+    fake_session,
+    inspector_config,
+    monkeypatch,
+) -> None:
+    class CompletedProcess:
+        pid = 4321
+        returncode = 0
+
+        async def communicate(self):
+            return _CONFLICTING_BILLING_OUTPUT.encode(), b""
+
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=CompletedProcess()),
+    )
+
+    result = await InspectorExec().execute(
+        {"tenant_id": "tenant-1", "section": "all"},
+        fake_session,
+    )
+
+    assert result.success is True
+    assert result.output.startswith("AUTHORITATIVE_BILLING_PLAN=unknown\n")
+    assert "rerun inspector_exec with tenant_id + section=billing" in result.output

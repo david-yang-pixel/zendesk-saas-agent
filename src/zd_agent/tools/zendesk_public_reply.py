@@ -46,6 +46,7 @@ from zd_agent.runtime.pre_send_check import (
     FreshnessRecoveryAction,
     FreshnessResult,
 )
+from zd_agent.runtime.billing_plan_gate import billing_plan_claim_block_reason
 from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
 from zd_agent.runtime.reply_evidence import (
     render_evidence_ledger,
@@ -956,6 +957,18 @@ class ZendeskPublicReply(Tool):
                 reply_type=reply_type,
             )
             return ToolResult(success=False, error=refund_block)
+
+        billing_plan_block = billing_plan_claim_block_reason(
+            body=body,
+            tool_call_log=getattr(session, "tool_call_log", []) or [],
+        )
+        if billing_plan_block:
+            logger.warning(
+                "public_reply_billing_plan_gate_blocked",
+                ticket_id=ticket_id,
+                reply_type=reply_type,
+            )
+            return ToolResult(success=False, error=billing_plan_block)
 
         evidence_blockers = validate_public_reply_evidence(
             reply_type=reply_type,
