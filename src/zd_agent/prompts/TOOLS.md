@@ -169,13 +169,13 @@ Step 1: zendesk_get_ticket
   ↓
 仅 standard/deep 且存在至少 2 个 independent_lanes 时使用 run_subagents_parallel
   ↓
-zendesk_public_reply（solution/因果断言附 evidence_ledger；每条 claim 同时填 source_tools 和精确 source_call_ids；需要人工/SRE 时先发 handoff）
+zendesk_public_reply（solution/因果断言及 high_risk handoff 附 evidence_ledger；每条 claim 同时填 source_tools 和精确 source_call_ids；需要人工/SRE 时先发 handoff）
 ```
 
 ## 避免的反模式
 
 - ❌ 串行调用 `run_subagent` 5 次查相同阶段的不同源 → 应该 `run_subagents_parallel`
-- ❌ 在不知道 Workspace ID 的情况下猜 tenant 跑 SQL → 先用用户表单 Email 调 `inspector_exec section=tenants` 查关联 workspace；多个 workspace 且表单没有可匹配的 Workspace ID 时再向客户澄清
+- ❌ 把邮箱格式的表单 Workspace ID 当成无效 UUID 后只查联系邮箱 → 该值是显式目标邮箱；同时查它和表单 Email 的 tenant 映射，套餐/订阅查询绑定显式目标 tenant，候选未查全时不得 handoff 猜测
 - ❌ 用 `zendesk_internal_reply` 当客户回复 → 客户看不到；客户可见回复必须直接 `zendesk_public_reply`
 - ❌ 需要人工或 SRE 介入时直接沉默升级 → 需要人工或 SRE 介入时，先用 `zendesk_public_reply` 说明客户安全的升级原因和下一步，再通知内部团队
 - ❌ 成功 `zendesk_public_reply` 后再写 Internal Note 或本地工单镜像 → 重复且会制造冲突记录

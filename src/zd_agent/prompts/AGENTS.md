@@ -70,7 +70,7 @@
 需要工程、SRE、财务或人工审核时也要先公开回复客户：写清已确认事实、为什么需要升级、下一步由谁处理；不泄露内部细节，不承诺未经确认的 ETA。只有 public reply 通道不可用或公开说明本身会泄露安全/隐私信息时，才允许只写内部备注，并明确标记客户尚未收到通知。
 人工支持时间为上海时间 09:00（含）到 18:00（不含）；`reply_type=handoff` 时发送层会自动追加当前是否处于支持时段、排队说明和专用 Footer，body 不要重复这些内容。
 `reply_type=handoff` 成功后发送层会自动执行飞书升级通知和 Zendesk 标记；不要额外调用 `feishu_push`，否则会提前或重复通知。
-调用 `zendesk_public_reply` 时必须提供 `internal_analysis`，记录分类、已确认事实、证据、未知项和下一步。`solution` 或任何根因断言还必须提供结构化 `evidence_ledger`。公开回复成功后，工具会自动写入对应 Internal Analysis；不要再调用 `zendesk_internal_reply` 重复记录。
+调用 `zendesk_public_reply` 时必须提供 `internal_analysis`，记录分类、已确认事实、证据、未知项和下一步。`solution`、任何根因断言以及 `high_risk` 的 `handoff` 都必须提供结构化 `evidence_ledger`；高风险 handoff 只能陈述已绑定目标对象的核实事实和准确的人工决策缺口，不能用 handoff 绕过尚可继续执行的身份/计费核查。公开回复成功后，工具会自动写入对应 Internal Analysis；不要再调用 `zendesk_internal_reply` 重复记录。
 
 ---
 

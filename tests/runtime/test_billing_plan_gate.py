@@ -174,3 +174,96 @@ def test_billing_tenant_must_match_email_workspace_resolution() -> None:
 
     assert blocker is not None
     assert "resolved workspace" in blocker.lower()
+
+
+def test_email_shaped_workspace_id_selects_the_explicit_target_workspace() -> None:
+    blocker = billing_plan_claim_block_reason(
+        body="Your workspace is currently on the Team plan.",
+        tool_call_log=[
+            _workspace_lookup(
+                email="contact@example.com",
+                tenant_ids=("contact-tenant",),
+            ),
+            _workspace_lookup(
+                email="workspace-owner@example.com",
+                tenant_ids=("target-tenant",),
+            ),
+            {
+                "tool": "inspector_exec",
+                "args": {"tenant_id": "target-tenant", "section": "billing"},
+                "success": True,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=team\n"
+                    "AUTHORITATIVE_BILLING_STATUS=active\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ],
+        form_email="contact@example.com",
+        form_workspace_id="workspace-owner@example.com",
+    )
+
+    assert blocker is None
+
+
+def test_subscription_state_claim_cannot_use_billing_from_contact_email_tenant() -> None:
+    blocker = billing_plan_claim_block_reason(
+        body=(
+            "I could not find an active paid-subscription record for that "
+            "workspace, so a billing review is required."
+        ),
+        tool_call_log=[
+            _workspace_lookup(
+                email="contact@example.com",
+                tenant_ids=("contact-tenant",),
+            ),
+            {
+                "tool": "inspector_exec",
+                "args": {"tenant_id": "contact-tenant", "section": "billing"},
+                "success": True,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=basic\n"
+                    "AUTHORITATIVE_BILLING_STATUS=none\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ],
+        form_email="contact@example.com",
+        form_workspace_id="workspace-owner@example.com",
+    )
+
+    assert blocker is not None
+    assert "workspace id" in blocker.lower()
+    assert "section=tenants" in blocker.lower()
+
+
+def test_subscription_state_claim_accepts_billing_for_email_shaped_target() -> None:
+    blocker = billing_plan_claim_block_reason(
+        body=(
+            "The target workspace subscription is canceled and no longer active."
+        ),
+        tool_call_log=[
+            _workspace_lookup(
+                email="contact@example.com",
+                tenant_ids=("contact-tenant",),
+            ),
+            _workspace_lookup(
+                email="workspace-owner@example.com",
+                tenant_ids=("target-tenant",),
+            ),
+            {
+                "tool": "inspector_exec",
+                "args": {"tenant_id": "target-tenant", "section": "billing"},
+                "success": True,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=basic\n"
+                    "AUTHORITATIVE_BILLING_STATUS=canceled\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ],
+        form_email="contact@example.com",
+        form_workspace_id="workspace-owner@example.com",
+    )
+
+    assert blocker is None

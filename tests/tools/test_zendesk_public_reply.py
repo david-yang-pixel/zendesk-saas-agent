@@ -956,9 +956,11 @@ class TestExecute:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=True)
         sess.ticket_type = "billing"
+        sess.investigation_route = "high_risk"
         sess.customer_form_data = {"email": "customer@example.com"}
         sess.tool_call_log = [
             {
+                "call_id": "identity-customer",
                 "tool": "inspector_exec",
                 "args": {
                     "email": "customer@example.com",
@@ -974,6 +976,7 @@ class TestExecute:
                 ),
             },
             {
+                "call_id": "billing-tenant-1",
                 "tool": "inspector_exec",
                 "args": {
                     "tenant_id": "tenant-1",
@@ -1001,12 +1004,209 @@ class TestExecute:
                     "internal_analysis": (
                         "The tenant-scoped billing section confirmed Team."
                     ),
+                    "evidence_ledger": {
+                        "route": "high_risk",
+                        "decision_scope": "technical_fact_only",
+                        "root_cause_status": "not_applicable",
+                        "root_cause_summary": "",
+                        "rows": [
+                            {
+                                "claim": "The target workspace is on the Team plan.",
+                                "causal_role": "current_state",
+                                "status": "confirmed",
+                                "source_tools": ["inspector_exec"],
+                                "source_call_ids": ["billing-tenant-1"],
+                                "object_identifiers": "tenant=tenant-1",
+                                "time_window": "checked_at=2026-08-06T05:00:00Z",
+                                "observed_result": "Billing returned plan Team and status active.",
+                                "alternatives_checked": "Used Billing rather than the Prod plan field.",
+                            },
+                        ],
+                    },
                 },
                 sess,
             )
 
         assert result.success is True
         assert "Dry Run" in result.output
+        assert sess.reply_sent is False
+
+    @pytest.mark.asyncio
+    async def test_handoff_blocks_3802_style_contact_tenant_billing_lookup(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.ticket_type = "billing"
+        sess.investigation_route = "high_risk"
+        sess.customer_form_data = {
+            "email": "contact@example.com",
+            "workspace_id": "workspace-owner@example.com",
+        }
+        sess.tool_call_log = [
+            {
+                "call_id": "identity-contact",
+                "tool": "inspector_exec",
+                "args": {"email": "contact@example.com", "section": "tenants"},
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+                    "EMAIL_WORKSPACE_COUNT=1\n"
+                    "EMAIL_WORKSPACE_TENANT_IDS=contact-tenant\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+            {
+                "call_id": "billing-contact",
+                "tool": "inspector_exec",
+                "args": {"tenant_id": "contact-tenant", "section": "billing"},
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=basic\n"
+                    "AUTHORITATIVE_BILLING_STATUS=none\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "A support engineer will review the subscription record "
+                        "and follow up."
+                    ),
+                    "reply_type": "handoff",
+                    "internal_analysis": (
+                        "Only the contact email tenant was checked."
+                    ),
+                    "evidence_ledger": {
+                        "route": "high_risk",
+                        "decision_scope": "technical_fact_only",
+                        "root_cause_status": "unknown",
+                        "root_cause_summary": "",
+                        "rows": [
+                            {
+                                "claim": "No active subscription was found.",
+                                "causal_role": "current_state",
+                                "status": "confirmed",
+                                "source_tools": ["inspector_exec"],
+                                "source_call_ids": ["billing-contact"],
+                                "object_identifiers": "tenant=contact-tenant",
+                                "time_window": "checked_at=2026-08-06T05:00:00Z",
+                                "observed_result": "The contact tenant had no paid plan.",
+                                "alternatives_checked": "None.",
+                            },
+                        ],
+                    },
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert "Workspace ID" in (result.error or "")
+        assert "section=tenants" in (result.error or "")
+        assert sess.reply_sent is False
+
+    @pytest.mark.asyncio
+    async def test_handoff_rejects_facts_bound_to_non_target_tenant(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.ticket_type = "billing"
+        sess.investigation_route = "high_risk"
+        sess.customer_form_data = {
+            "email": "contact@example.com",
+            "workspace_id": "workspace-owner@example.com",
+        }
+        sess.tool_call_log = [
+            {
+                "call_id": "identity-contact",
+                "tool": "inspector_exec",
+                "args": {"email": "contact@example.com", "section": "tenants"},
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+                    "EMAIL_WORKSPACE_COUNT=1\n"
+                    "EMAIL_WORKSPACE_TENANT_IDS=contact-tenant\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+            {
+                "call_id": "identity-target",
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "workspace-owner@example.com",
+                    "section": "tenants",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+                    "EMAIL_WORKSPACE_COUNT=1\n"
+                    "EMAIL_WORKSPACE_TENANT_IDS=target-tenant\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+            {
+                "call_id": "billing-contact",
+                "tool": "inspector_exec",
+                "args": {"tenant_id": "contact-tenant", "section": "billing"},
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=basic\n"
+                    "AUTHORITATIVE_BILLING_STATUS=none\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "A support engineer will review the subscription record.",
+                    "reply_type": "handoff",
+                    "internal_analysis": "Both emails were mapped, but billing used contact.",
+                    "evidence_ledger": {
+                        "route": "high_risk",
+                        "decision_scope": "technical_fact_only",
+                        "root_cause_status": "unknown",
+                        "root_cause_summary": "",
+                        "rows": [
+                            {
+                                "claim": "No active subscription was found.",
+                                "causal_role": "current_state",
+                                "status": "confirmed",
+                                "source_tools": ["inspector_exec"],
+                                "source_call_ids": [
+                                    "identity-target",
+                                    "billing-contact",
+                                ],
+                                "object_identifiers": "tenant=target-tenant",
+                                "time_window": "checked_at=2026-08-06T05:00:00Z",
+                                "observed_result": (
+                                    "The target identity resolved, but the billing "
+                                    "result came from the contact tenant."
+                                ),
+                                "alternatives_checked": "Mapped the target email separately.",
+                            },
+                        ],
+                    },
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert "resolved target tenant" in (result.error or "").lower()
         assert sess.reply_sent is False
 
     @pytest.mark.asyncio

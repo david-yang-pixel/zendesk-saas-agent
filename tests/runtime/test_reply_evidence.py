@@ -206,6 +206,64 @@ def test_ask_and_handoff_allow_unknown_root_cause_without_ledger() -> None:
         assert blockers == []
 
 
+def test_high_risk_handoff_requires_a_structured_evidence_ledger() -> None:
+    blockers = validate_public_reply_evidence(
+        reply_type="handoff",
+        body="A support engineer will review the subscription record.",
+        internal_analysis="The billing state requires human review.",
+        evidence_ledger=None,
+        tool_call_log=[],
+        ticket_type="billing",
+        planned_route="high_risk",
+    )
+
+    assert any("high-risk handoff" in blocker.lower() for blocker in blockers)
+
+
+def test_high_risk_handoff_accepts_verified_facts_without_a_root_cause() -> None:
+    ledger = {
+        "route": "high_risk",
+        "decision_scope": "technical_fact_only",
+        "root_cause_status": "unknown",
+        "root_cause_summary": "",
+        "rows": [
+            {
+                "claim": "The target subscription is currently canceled.",
+                "causal_role": "current_state",
+                "status": "confirmed",
+                "source_tools": ["inspector_exec"],
+                "source_call_ids": ["billing-target"],
+                "object_identifiers": "tenant=target-tenant",
+                "time_window": "checked_at=2026-08-06T05:00:00Z",
+                "observed_result": "Billing returned subscription status canceled.",
+                "alternatives_checked": "Checked the target tenant rather than the contact tenant.",
+            },
+        ],
+    }
+
+    blockers = validate_public_reply_evidence(
+        reply_type="handoff",
+        body="The subscription is canceled. A support engineer will review the case.",
+        internal_analysis="Target tenant was resolved before the billing lookup.",
+        evidence_ledger=ledger,
+        tool_call_log=[
+            _success(
+                "inspector_exec",
+                result=(
+                    "tenant=target-tenant "
+                    "AUTHORITATIVE_BILLING_STATUS=canceled"
+                ),
+                call_id="billing-target",
+                args={"tenant_id": "target-tenant", "section": "billing"},
+            )
+        ],
+        ticket_type="billing",
+        planned_route="high_risk",
+    )
+
+    assert blockers == []
+
+
 def test_causal_claim_cannot_bypass_gate_via_handoff() -> None:
     blockers = validate_public_reply_evidence(
         reply_type="handoff",

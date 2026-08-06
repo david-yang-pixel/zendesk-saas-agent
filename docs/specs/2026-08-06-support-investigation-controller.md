@@ -16,13 +16,17 @@ reaches the reply gate without a coherent investigation plan.
 ## Approved Assumptions
 
 1. Zendesk `conversation_log` remains the current-ticket source of truth.
-2. The form email is the primary account-to-workspace identity key; requester
-   email is a fallback only when the form email is absent.
+2. The form email is the primary contact identity key. An email-shaped value in
+   the form Workspace ID field is an explicit target-workspace identity
+   candidate: both emails must be resolved, and target facts bind to the tenant
+   selected by the Workspace ID email. Requester email is a fallback only when
+   neither form field supplies a usable identity email.
 3. Billing subscription facts come from tenant-scoped Billing evidence.
 4. Existing remote MCP services and their read-only boundaries remain unchanged.
 5. Public replies remain enabled, but `solution` replies fail closed unless the
-   investigation and evidence contracts pass. Safe `ask` and `handoff` replies
-   remain available when the cause is unknown.
+   investigation and evidence contracts pass. Safe `ask` and ordinary
+   `handoff` replies remain available when the cause is unknown; a high-risk
+   `handoff` requires a structured target-bound evidence ledger.
 6. Historical tickets and lessons may choose a next check but cannot prove a
    current claim.
 7. No new third-party dependency or database schema is required.
@@ -71,8 +75,11 @@ reaches the reply gate without a coherent investigation plan.
    rejects a tool that was not allowed, even if a provider emits it.
 5. `reply`: `zendesk_public_reply` remains the terminal external write. A
    `solution` must match the stored plan route and bind every material ledger row
-   to exact successful evidence call IDs. A non-causal `ask` or `handoff` may
-   proceed without pretending the root cause is known.
+   to exact successful evidence call IDs. A non-causal `ask` or ordinary
+   `handoff` may proceed without pretending the root cause is known. A high-risk
+   `handoff` must include confirmed technical facts, exact successful call IDs,
+   and the unresolved human-decision hop; it cannot bypass a remaining
+   support-side identity lookup.
 
 ### Route Rules
 
@@ -117,7 +124,11 @@ For a model-authored `solution`:
 - high-risk replies may state confirmed technical facts but cannot make a
   business decision;
 - current plan/subscription claims must additionally pass the existing form
-  email -> workspace -> tenant-scoped Billing gate.
+  identity -> workspace -> tenant-scoped Billing gate;
+- an email-shaped Workspace ID selects the explicit target identity, while the
+  form Email is still resolved as a separate contact candidate for cross-check;
+- high-risk material facts must bind both their ledger row and cited successful
+  tool result to the uniquely resolved target tenant.
 
 ## Code Style
 
@@ -172,12 +183,15 @@ quality rules.
    exact calls without re-running the same source.
 7. A standard/deep solution cannot send without the required confirmed causal
    rows and a plan-route match.
-8. Billing plan claims still require form-email workspace resolution and
-   tenant-scoped Billing evidence.
+8. Billing plan claims require all usable form-identity candidates to be
+   resolved and tenant-scoped Billing evidence for the selected target.
 9. Run archives are written below `/opt/zd-agent/resources/agent-runs`, which is a
    persisted production mount.
 10. Targeted tests, the full suite, Ruff, and package build pass; the deployed
     container reports healthy and the expected revision/config.
+11. An email-shaped Workspace ID cannot be discarded as an invalid tenant UUID,
+    and neither `solution` nor high-risk `handoff` can use subscription evidence
+    from the contact-email tenant when the explicit target resolves elsewhere.
 
 ## Implementation Tasks
 
@@ -196,6 +210,10 @@ quality rules.
 - [x] Persist archives, run all verification, and deploy safely.
   - Acceptance: mounted archive path, clean tests/build, healthy expected revision.
   - Verify: archive test, production health/config readback, dry-run replay.
+- [x] Resolve all form identity candidates and close the high-risk handoff gap.
+  - Acceptance: email-shaped Workspace ID is treated as the explicit target;
+    high-risk handoff requires target-bound exact-call evidence.
+  - Verify: billing-plan, reply-evidence, prompt, and public-reply regression tests.
 
 ## Open Questions
 

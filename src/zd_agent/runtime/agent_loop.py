@@ -1411,6 +1411,9 @@ async def agent_loop(
                 "**如需 SE/SRE/人工兜底 → 必须调 "
                 'zendesk_public_reply(reply_type="handoff")，向客户说明已确认事实、'
                 "升级原因和下一步，并把内部证据放入 internal_analysis**。"
+                "如果冻结路线是 high_risk，handoff 也必须附 "
+                "evidence_ledger，使用 technical_fact_only，并引用目标对象的精确"
+                "成功调用 ID；不能用 handoff 跳过仍可执行的身份或计费核查。"
                 "只有公开回复通道不可用或存在安全/隐私泄露风险时，才调 "
                 "zendesk_internal_reply，并注明客户尚未收到通知。"
                 "不要再调其它工具（SigNoz / SQL / subagent 等都已禁用）。"

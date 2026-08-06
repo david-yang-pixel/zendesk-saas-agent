@@ -22,6 +22,20 @@ _CURRENT_PLAN_CONTEXT_RE: Final = re.compile(
     r"\b(?:your|workspace|account|subscription|associated|current(?:ly)?|recorded)\b",
     re.IGNORECASE,
 )
+_EMAIL_RE: Final = re.compile(
+    r"^[^\s@]+@[^\s@]+\.[^\s@]+$",
+    re.IGNORECASE,
+)
+_SUBSCRIPTION_RE: Final = re.compile(
+    r"\b(?:paid[-\s]?subscription|subscription)\b",
+    re.IGNORECASE,
+)
+_SUBSCRIPTION_STATE_RE: Final = re.compile(
+    r"\b(?:active|inactive|cancel(?:ed|led)|expired|ended|past[_ -]?due|"
+    r"no\s+longer\s+active|no\s+active|not\s+active|could\s+not\s+find|"
+    r"did\s+not\s+find|does\s+not\s+have|has\s+no)\b",
+    re.IGNORECASE,
+)
 _INSPECTOR_PLAN_RE: Final = re.compile(
     r"^AUTHORITATIVE_BILLING_PLAN=(basic|sandbox|professional|team|enterprise)$",
     re.IGNORECASE | re.MULTILINE,
@@ -39,6 +53,11 @@ def _normalize_email(value: object) -> str:
     return str(value or "").strip().casefold()
 
 
+def _email_candidate(value: object) -> str:
+    candidate = _normalize_email(value)
+    return candidate if _EMAIL_RE.fullmatch(candidate) else ""
+
+
 def _normalize_tenant_id(value: object) -> str:
     candidate = str(value or "").strip().lower()
     return candidate if _TENANT_ID_RE.fullmatch(candidate) else ""
@@ -51,6 +70,15 @@ def _asserted_current_plans(body: str) -> set[str]:
             continue
         plans.update(match.lower() for match in _PLAN_WITH_LABEL_RE.findall(sentence))
     return plans
+
+
+def _asserts_current_subscription_state(body: str) -> bool:
+    for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", body or ""):
+        if not _CURRENT_PLAN_CONTEXT_RE.search(sentence):
+            continue
+        if _SUBSCRIPTION_RE.search(sentence) and _SUBSCRIPTION_STATE_RE.search(sentence):
+            return True
+    return False
 
 
 def _plans_from_billing_csv(text: str) -> dict[str, set[str]]:
@@ -171,6 +199,90 @@ def _workspace_resolution_for_email(
     return None
 
 
+def workspace_identity_candidates_block_reason(
+    *,
+    tool_call_log: list[dict[str, Any]],
+    form_email: str = "",
+    form_workspace_id: str = "",
+) -> str | None:
+    """Require support-side lookups for every email-shaped form identity candidate."""
+    workspace_identity_email = _email_candidate(form_workspace_id)
+    if not workspace_identity_email:
+        return None
+
+    target_resolution = _workspace_resolution_for_email(
+        tool_call_log,
+        workspace_identity_email,
+    )
+    if target_resolution is None:
+        return (
+            "Workspace identity evidence gate blocked this public reply: the "
+            "form Workspace ID contains an email-shaped target identifier. "
+            "Resolve that target first with inspector_exec using the Workspace "
+            "ID email + section=tenants; do not reuse evidence from the form "
+            "Email tenant."
+        )
+    if target_resolution.status == "unverified":
+        return (
+            "Workspace identity evidence gate blocked this public reply: the "
+            "email-shaped form Workspace ID lookup was not verified. Repeat "
+            "inspector_exec with the Workspace ID email + section=tenants."
+        )
+
+    form_identity_email = _email_candidate(form_email)
+    if form_identity_email and form_identity_email != workspace_identity_email:
+        contact_resolution = _workspace_resolution_for_email(
+            tool_call_log,
+            form_identity_email,
+        )
+        if contact_resolution is None:
+            return (
+                "Workspace identity evidence gate blocked this public reply: the "
+                "form Email and the email provided in form Workspace ID are "
+                "different. Cross-check the form Email with inspector_exec "
+                "email + section=tenants before replying."
+            )
+        if contact_resolution.status == "unverified":
+            return (
+                "Workspace identity evidence gate blocked this public reply: the "
+                "form Email workspace lookup was not verified. Repeat "
+                "inspector_exec with email + section=tenants."
+            )
+    return None
+
+
+def resolved_target_tenant_id(
+    *,
+    tool_call_log: list[dict[str, Any]],
+    form_email: str = "",
+    form_workspace_id: str = "",
+    requester_email: str = "",
+) -> str:
+    """Return the uniquely resolved target tenant selected by the form identity."""
+    workspace_identity_email = _email_candidate(form_workspace_id)
+    identity_email = (
+        workspace_identity_email
+        or _email_candidate(form_email)
+        or _email_candidate(requester_email)
+    )
+    resolution = _workspace_resolution_for_email(tool_call_log, identity_email)
+    if resolution is None or resolution.status not in {"unique", "ambiguous"}:
+        return ""
+
+    supplied_workspace_id = (
+        "" if workspace_identity_email else _normalize_tenant_id(form_workspace_id)
+    )
+    if supplied_workspace_id:
+        return (
+            supplied_workspace_id
+            if supplied_workspace_id in resolution.tenant_ids
+            else ""
+        )
+    if resolution.status == "unique":
+        return next(iter(resolution.tenant_ids))
+    return ""
+
+
 def billing_plan_claim_block_reason(
     *,
     body: str,
@@ -181,7 +293,8 @@ def billing_plan_claim_block_reason(
 ) -> str | None:
     """Return a blocker unless plan evidence is bound to the customer's workspace."""
     asserted = _asserted_current_plans(body)
-    if not asserted:
+    subscription_state_assertion = _asserts_current_subscription_state(body)
+    if not asserted and not subscription_state_assertion:
         return None
 
     plans_by_tenant = _authoritative_plans_by_tenant(tool_call_log)
@@ -195,14 +308,34 @@ def billing_plan_claim_block_reason(
             "authoritative subscription evidence."
         )
 
-    identity_email = _normalize_email(form_email) or _normalize_email(requester_email)
-    identity_label = "form email" if _normalize_email(form_email) else "requester email"
+    form_identity_email = _email_candidate(form_email)
+    workspace_identity_email = _email_candidate(form_workspace_id)
+    requester_identity_email = _email_candidate(requester_email)
+    identity_email = (
+        workspace_identity_email
+        or form_identity_email
+        or requester_identity_email
+    )
+    if workspace_identity_email:
+        identity_label = "email provided in the form Workspace ID"
+    elif form_identity_email:
+        identity_label = "form email"
+    else:
+        identity_label = "requester email"
     if not identity_email:
         return (
             "Workspace identity evidence gate blocked this public reply: no form "
             "email or requester email is available to resolve the customer workspace. "
             "Do not guess which tenant the Billing result belongs to."
         )
+
+    candidate_block = workspace_identity_candidates_block_reason(
+        tool_call_log=tool_call_log,
+        form_email=form_email,
+        form_workspace_id=form_workspace_id,
+    )
+    if candidate_block:
+        return candidate_block
 
     resolution = _workspace_resolution_for_email(tool_call_log, identity_email)
     if resolution is None:
@@ -219,7 +352,9 @@ def billing_plan_claim_block_reason(
             "Do not infer a tenant or subscription plan."
         )
 
-    supplied_workspace_id = _normalize_tenant_id(form_workspace_id)
+    supplied_workspace_id = (
+        "" if workspace_identity_email else _normalize_tenant_id(form_workspace_id)
+    )
     if supplied_workspace_id and supplied_workspace_id not in resolution.tenant_ids:
         return (
             "Workspace identity evidence gate blocked this public reply: the form "
@@ -231,9 +366,9 @@ def billing_plan_claim_block_reason(
         if not supplied_workspace_id:
             return (
                 "Workspace identity evidence gate blocked this public reply: the "
-                "form email maps to multiple workspaces and the form does not contain "
-                "a matching Workspace ID. Ask the customer to identify the target; "
-                "do not guess a tenant or plan."
+                f"{identity_label} maps to multiple workspaces and the form does "
+                "not contain a matching tenant ID. Ask the customer to identify "
+                "the target; do not guess a tenant or plan."
             )
         resolved_tenant_id = supplied_workspace_id
     else:
@@ -243,7 +378,7 @@ def billing_plan_claim_block_reason(
     if not authoritative:
         return (
             "Workspace identity evidence gate blocked this public reply: the Billing "
-            "evidence does not target the resolved workspace from the form email. "
+            f"evidence does not target the resolved workspace from the {identity_label}. "
             "Run the Billing lookup again with the resolved tenant_id."
         )
 

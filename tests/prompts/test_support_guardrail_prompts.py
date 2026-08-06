@@ -100,6 +100,9 @@ def test_billing_prompts_bind_form_email_workspace_to_billing_tenant() -> None:
     for text in (soul, billing):
         assert "表单 Email" in text
         assert "section=tenants" in text
+        assert "Workspace ID 是邮箱格式" in text
+        assert "显式目标" in text
+        assert "同时查询表单 Email" in text
         assert "多个 workspace" in text
         assert "禁止猜测" in text
 

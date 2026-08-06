@@ -34,6 +34,7 @@ _VALID_FINDING_STATUSES: Final = {
     "ruled_out",
     "unknown",
 }
+_HIGH_RISK_TICKET_TYPES: Final = {"billing", "refund", "permissions"}
 
 _ROOT_CAUSE_ASSERTION_PATTERNS: Final = (
     re.compile(r"\b(?:is|are|was|were)\s+caused\s+by\b", re.IGNORECASE),
@@ -166,6 +167,25 @@ def _successful_evidence_calls(
 
 def _is_historical_tool(name: str) -> bool:
     return name.startswith(_HISTORICAL_TOOL_PREFIXES)
+
+
+def _row_binds_target_tenant(
+    *,
+    row: dict[str, Any],
+    target_tenant_id: str,
+    successful_calls: dict[str, dict[str, Any]],
+) -> bool:
+    target = target_tenant_id.casefold()
+    if target not in _identifier_tokens(row.get("object_identifiers")):
+        return False
+    for call_id in row.get("source_call_ids") or []:
+        call = successful_calls.get(str(call_id))
+        if call is None:
+            continue
+        call_anchors = _identifier_tokens(call.get("args"))
+        if target in call_anchors:
+            return True
+    return False
 
 
 def _validate_row(
@@ -336,6 +356,7 @@ def validate_public_reply_evidence(
     ticket_type: str = "",
     planned_route: str = "",
     investigation_plan: dict[str, Any] | None = None,
+    required_target_tenant_id: str = "",
 ) -> list[str]:
     """Validate the evidence contract for one model-authored public reply.
 
@@ -353,13 +374,22 @@ def validate_public_reply_evidence(
         )
 
     causal_assertion = body_asserts_root_cause(body)
-    ledger_required = reply_type == "solution" or causal_assertion
+    high_risk_handoff = reply_type == "handoff" and (
+        planned_route == "high_risk" or ticket_type in _HIGH_RISK_TICKET_TYPES
+    )
+    ledger_required = reply_type == "solution" or causal_assertion or high_risk_handoff
     if not ledger_required and evidence_ledger in (None, {}):
         return blockers
     if not isinstance(evidence_ledger, dict):
-        blockers.append(
-            "evidence_ledger is required for solution replies and causal claims."
-        )
+        if high_risk_handoff:
+            blockers.append(
+                "A high-risk handoff requires a structured evidence_ledger with "
+                "verified target-bound facts and the exact missing decision hop."
+            )
+        else:
+            blockers.append(
+                "evidence_ledger is required for solution replies and causal claims."
+            )
         return blockers
 
     route = _clean_text(evidence_ledger.get("route"))
@@ -446,6 +476,40 @@ def validate_public_reply_evidence(
             "Automated public replies cannot make a high-risk business decision; "
             "reply with verified technical facts and hand off the decision."
         )
+
+    if high_risk_handoff:
+        if route != "high_risk":
+            blockers.append(
+                "A high-risk handoff must use evidence_ledger.route=high_risk."
+            )
+        if decision_scope != "technical_fact_only":
+            blockers.append(
+                "A high-risk handoff must use decision_scope=technical_fact_only; "
+                "the automated agent cannot make the billing or access decision."
+            )
+        if not confirmed_high_risk_facts:
+            blockers.append(
+                "A high-risk handoff requires a confirmed product_fact, "
+                "current_state, or failing_boundary row backed by exact successful "
+                "calls before escalating the remaining decision."
+            )
+
+    if required_target_tenant_id and route == "high_risk":
+        target_bound_facts = [
+            row
+            for row in confirmed_high_risk_facts
+            if _row_binds_target_tenant(
+                row=row,
+                target_tenant_id=required_target_tenant_id,
+                successful_calls=successful_calls,
+            )
+        ]
+        if not target_bound_facts:
+            blockers.append(
+                "High-risk reply evidence is not bound to the resolved target "
+                f"tenant {required_target_tenant_id}. Re-run the relevant lookup "
+                "for that tenant and cite its exact successful call ID."
+            )
 
     needs_confirmed_root_cause = causal_assertion
     if reply_type == "solution":

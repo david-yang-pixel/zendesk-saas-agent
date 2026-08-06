@@ -21,8 +21,8 @@
 ## 关键步骤
 1. 收集：Workspace ID、涉及时间段、具体金额 / 发票号
 2. **套餐判断必须走身份绑定，不能用 `section=all` 代替**：
-   - 身份定位优先使用用户表单 Email：`inspector_exec email=<表单 Email> section=tenants`，这里只取 account / tenant_id / name / status / role；其中 TENANT/TENANTS 的 Plan 是 Prod 辅助字段，禁止作为当前套餐结论。只有表单没有 Email 时才退回 requester email。
-   - 表单 Email 只对应一个 workspace → 使用该 tenant_id；对应多个 workspace → 仅当表单 Workspace ID 位于返回列表中时才能选择，否则禁止猜测套餐，向客户澄清目标 workspace。
+   - 先读取表单 Email 和 Workspace ID。若 Workspace ID 是邮箱格式，它是客户提供的**显式目标**账号线索：必须用它调用 `inspector_exec email=<Workspace ID 邮箱> section=tenants`，并同时查询表单 Email 做交叉核对；不能因为两者映射不同就默认联系邮箱对应的 workspace 是目标。只有表单没有可用身份邮箱时才退回 requester email。
+   - Workspace ID 是普通 tenant UUID 时，表单 Email 只对应一个 workspace → 使用该 tenant_id；对应多个 workspace → 仅当表单 Workspace ID 位于返回列表中时才能选择。Workspace ID 是邮箱格式时，套餐 / 订阅 / 配额必须绑定该显式目标邮箱解析出的唯一 tenant_id。任一候选未查询、目标映射不唯一或不匹配时禁止猜测套餐，向客户澄清最小缺口。
    - 套餐 / 订阅 / Stripe 状态：拿到 tenant_id 后必须调用 `inspector_exec tenant_id=<workspace_id> section=billing`，只采用工具顶部的 `AUTHORITATIVE_BILLING_*` 与 `Source=billing_db` 结果。
    - 配额 / 用量（apps / 文档 / 知识库存储 / 成员）：`inspector_exec tenant_id=<workspace_id> section=quota` —— 含 TiDB 知识库存储（手写 SQL 拿不到）
    - `email + section=all` 以及 `tenant_id + section=all` 都不能授权公开回复中的当前套餐断言。
@@ -36,3 +36,4 @@
 ## 注意
 - 涉及退款 → 使用 refund 分类（见 refund.md），流程不同
 - 不要直接承诺金额 / 时间；涉及财务的都需人工审批
+- `high_risk` 的 `handoff` 也必须提交结构化 `evidence_ledger`，并用精确成功调用证明已核实事实和目标 tenant；不能用 handoff 绕过身份或计费证据门禁。

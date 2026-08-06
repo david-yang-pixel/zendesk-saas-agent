@@ -46,7 +46,11 @@ from zd_agent.runtime.pre_send_check import (
     FreshnessRecoveryAction,
     FreshnessResult,
 )
-from zd_agent.runtime.billing_plan_gate import billing_plan_claim_block_reason
+from zd_agent.runtime.billing_plan_gate import (
+    billing_plan_claim_block_reason,
+    resolved_target_tenant_id,
+    workspace_identity_candidates_block_reason,
+)
 from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
 from zd_agent.runtime.reply_evidence import (
     render_evidence_ledger,
@@ -98,11 +102,13 @@ __all__ = [
 
 logger = get_logger(module="tools.zendesk_public_reply")
 
+_HIGH_RISK_TICKET_TYPES = frozenset({"billing", "refund", "permissions"})
+
 _EVIDENCE_LEDGER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
-        "客户可见 solution 或任何根因断言的结构化证据台账。ask/handoff 在"
-        "不声称根因时可省略。source_tools 只能引用本会话中实际成功且返回结果"
+        "客户可见 solution、任何根因断言或 high_risk handoff 的结构化证据台账。"
+        "普通 ask/handoff 在不声称根因时可省略。source_tools 只能引用本会话中实际成功且返回结果"
         "的工具；失败调用、工具参数和历史工单不能证明当前结论。"
     ),
     "properties": {
@@ -983,6 +989,33 @@ class ZendeskPublicReply(Tool):
             )
             return ToolResult(success=False, error=refund_block)
 
+        high_risk_reply = reply_type in {"solution", "handoff"} and (
+            str(getattr(session, "investigation_route", "") or "") == "high_risk"
+            or str(getattr(session, "ticket_type", "") or "")
+            in _HIGH_RISK_TICKET_TYPES
+        )
+        if high_risk_reply:
+            identity_candidates_block = workspace_identity_candidates_block_reason(
+                tool_call_log=getattr(session, "tool_call_log", []) or [],
+                form_email=str(
+                    (getattr(session, "customer_form_data", {}) or {}).get(
+                        "email", ""
+                    )
+                ),
+                form_workspace_id=str(
+                    (getattr(session, "customer_form_data", {}) or {}).get(
+                        "workspace_id", ""
+                    )
+                ),
+            )
+            if identity_candidates_block:
+                logger.warning(
+                    "public_reply_identity_candidates_gate_blocked",
+                    ticket_id=ticket_id,
+                    reply_type=reply_type,
+                )
+                return ToolResult(success=False, error=identity_candidates_block)
+
         billing_plan_block = billing_plan_claim_block_reason(
             body=body,
             tool_call_log=getattr(session, "tool_call_log", []) or [],
@@ -1010,6 +1043,28 @@ class ZendeskPublicReply(Tool):
             )
             return ToolResult(success=False, error=billing_plan_block)
 
+        target_tenant_id = (
+            resolved_target_tenant_id(
+                tool_call_log=getattr(session, "tool_call_log", []) or [],
+                form_email=str(
+                    (getattr(session, "customer_form_data", {}) or {}).get(
+                        "email", ""
+                    )
+                ),
+                form_workspace_id=str(
+                    (getattr(session, "customer_form_data", {}) or {}).get(
+                        "workspace_id", ""
+                    )
+                ),
+                requester_email=str(
+                    (getattr(session, "customer_profile", {}) or {}).get(
+                        "requester_email", ""
+                    )
+                ),
+            )
+            if high_risk_reply
+            else ""
+        )
         evidence_blockers = validate_public_reply_evidence(
             reply_type=reply_type,
             body=body,
@@ -1023,6 +1078,7 @@ class ZendeskPublicReply(Tool):
             investigation_plan=(
                 getattr(session, "investigation_plan", {}) or {}
             ),
+            required_target_tenant_id=target_tenant_id,
         )
         if evidence_blockers:
             logger.warning(

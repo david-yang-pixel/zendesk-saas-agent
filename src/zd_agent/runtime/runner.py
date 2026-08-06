@@ -219,10 +219,12 @@ async def run_agent(session: AgentSession) -> None:
             "\n\n## 用户表单身份（工作空间定位的首选证据）\n"
             f"- 表单 Email: {form_email or '(未提供)'}\n"
             f"- 表单 Workspace ID: {form_workspace_id or '(未提供)'}\n"
-            "- 涉及套餐、配额或 workspace 状态时，先用表单 Email 调用 "
-            "`inspector_exec section=tenants` 获取关联 workspace；再用确定的 "
-            "tenant_id 查询对应数据。多个 workspace 且表单没有可匹配的 "
-            "Workspace ID 时禁止猜测。"
+            "- 涉及套餐、配额或 workspace 状态时，先核对两个字段。若 "
+            "Workspace ID 是邮箱格式，它是客户提供的显式目标：必须分别用该 "
+            "邮箱和表单 Email 调 `inspector_exec section=tenants`，目标状态查询 "
+            "绑定 Workspace ID 邮箱解析出的 tenant_id，不能让联系邮箱覆盖它。"
+            "普通 tenant UUID 形式的 Workspace ID 仅用于多个 workspace 消歧；"
+            "候选未查全或目标不唯一时禁止猜测。"
         )
 
     # customer_profile 注入到 user message
