@@ -390,6 +390,14 @@ def workspace_identity_request_block_reason(
             "Workspace ID or workspace name because an internal lookup failed."
         )
     if resolution.status == "none":
+        if supplied_workspace_id:
+            return (
+                "WORKSPACE_IDENTITY_ALREADY_RESOLVED: The form already "
+                "contains a canonical Workspace ID "
+                f"({supplied_workspace_id}). The email membership lookup "
+                "returned no membership, so continue support-side ownership "
+                "or authorization checks instead of asking for the ID again."
+            )
         return None
 
     if resolution.status == "ambiguous":

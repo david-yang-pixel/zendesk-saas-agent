@@ -464,6 +464,32 @@ def test_workspace_identity_ask_is_allowed_after_verified_no_membership() -> Non
     assert blocker is None
 
 
+def test_workspace_identity_ask_is_blocked_when_form_uuid_is_already_known(
+) -> None:
+    lookup = {
+        "tool": "inspector_exec",
+        "args": {"email": "form@example.com", "section": "tenants"},
+        "success": True,
+        "result_preview": (
+            "EMAIL_WORKSPACE_RESOLUTION=none\n"
+            "EMAIL_WORKSPACE_COUNT=0\n"
+            "EMAIL_WORKSPACE_TENANT_IDS=\n"
+            "EMAIL_WORKSPACE_SOURCE=prod_membership"
+        ),
+    }
+
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+        form_workspace_id=TENANT_1,
+    )
+
+    assert blocker is not None
+    assert "already contains" in blocker.lower()
+    assert TENANT_1 in blocker
+
+
 def test_unrelated_customer_only_question_is_not_identity_blocked() -> None:
     blocker = workspace_identity_request_block_reason(
         body="Please share the exact UTC time of the failed request.",
