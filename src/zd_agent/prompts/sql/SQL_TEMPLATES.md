@@ -25,7 +25,7 @@
 > 看那段拿真实结构再写 SQL。
 >
 > **注意事项：**
-> - `<workspace_id>` = 用户提供的 Workspace ID
+> - `<workspace_id>` = 由表单 Email / requester email 的 membership 查询解析出的 tenant ID；只有已验证的多 workspace 歧义才使用客户补充的 canonical Workspace ID 消歧
 > - `database=prod` (langgenius) / `database=billing` / `database=plugin`
 >   (dify_plugin_daemon) 三个独立 DB，**不能跨库 JOIN**
 > - `graph` / `features` 字段是 text 类型，使用 JSON 操作符前需要 `::jsonb` 转换

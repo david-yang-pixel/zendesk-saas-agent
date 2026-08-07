@@ -14,9 +14,9 @@
 Hi,
 
 Thanks for reaching out. To diagnose this faster, could you share:
-- Workspace ID (URL bar after /app/)
 - Full error text or screenshot
 - The exact steps you took before the error
+- The affected app, workflow, dataset, or page if one is involved
 
 Once we have these we can dig in right away.
 
@@ -30,9 +30,9 @@ Dify Support
 您好，
 
 感谢联系。为了更快定位，请提供：
-- Workspace ID（URL 地址栏 `/app/` 后的字符串）
 - 完整报错文本或截图
 - 出错前的具体操作步骤
+- 涉及的应用、工作流、知识库或页面（如适用）
 
 拿到这些信息我们会立即排查。
 

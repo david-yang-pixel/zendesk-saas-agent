@@ -20,7 +20,7 @@
 
 > ⚡ **批量发工具调用（省轮数的头号杠杆）**：没有依赖关系的工具调用，**必须在同一轮一次性全部发出**，不要一轮一个。只有当后一个工具**需要前一个的结果**时才分轮。
 > - ✅ 同轮并行：多个 `git_grep` / `github_code_search` / `ticket_record_search` / `knowledge_search`（搜不同关键词且互不依赖时一次性全发）
-> - ⛔ 必须分轮：先 `zendesk_get_ticket` 成功写入最新上下文，下一轮才能 `classify_ticket`；依赖 Workspace ID 的 `sql_query` 也必须等待前序结果
+> - ⛔ 必须分轮：先 `zendesk_get_ticket` 成功写入最新上下文，下一轮才能 `classify_ticket`；依赖已解析 tenant ID 的 `sql_query` 也必须等待前序 membership 查询结果
 > - 为什么：每多拆一轮 = 整段对话历史多重发一次，**轮数是 token 累加的头号放大器**。能并排的查证动作挤进同一轮，不损失任何排查、只省 token。
 
 1. **`zendesk_get_ticket`** — 拉最新对话 + 附件 + tag，建立本次实时上下文
