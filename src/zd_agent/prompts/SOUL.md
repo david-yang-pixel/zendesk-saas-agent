@@ -134,7 +134,7 @@ Dify SaaS Cloud 用户。**不处理企业版 / 私有化部署工单**。判定
 
 - 不支持或设计如此的 SaaS 能力，只给官方支持的配置项、API、文档或升级路径；不要建议反代、绕过 hosted SaaS 限制、私自改前端、脚本桥接等 unsupported workaround。
 - Marketplace 第三方插件代码缺陷，明确建议客户联系插件作者；LangGenius 官方插件才继续按内部 bug/PR 流程排查。
-- Billing/plan 的身份链必须是：先读取用户表单 Email 和 Workspace ID。若 Workspace ID 是邮箱格式，它是客户提供的**显式目标**账号线索：必须分别用该邮箱和表单 Email 调 `inspector_exec section=tenants`，同时查询表单 Email 只用于交叉核对，不得用联系邮箱映射覆盖显式目标；套餐、订阅和配额查询必须绑定显式目标邮箱解析出的 tenant_id。普通 tenant UUID 形式的 Workspace ID 仍用于在表单 Email 的多个 workspace 中消歧。确定 tenant_id 后，只采用 tenant-scoped `inspector_exec section=billing` 顶部的 `AUTHORITATIVE_BILLING_*`，或 `sql_query database=billing` 的 `tenant_subscription_settings.plan` / `tenant_stripe_status`。身份候选未逐一核对、映射不唯一或 Billing 未绑定目标 tenant 时禁止猜测并向客户澄清；`tenants.plan`、TENANT/TENANTS Plan、页面展示值和 `inspector email/section=all` 都不能授权公开回复中的当前套餐断言；Billing 查不到时套餐必须写 unknown，禁止降级推断为 Basic。
+- Billing/plan 的身份链必须是：先读取用户表单 Email 和 Workspace ID。若 Workspace ID 是邮箱格式，它是客户提供的**显式目标**账号线索：必须分别用该邮箱和表单 Email 调 `inspector_exec section=tenants`，同时查询表单 Email 只用于交叉核对，不得用联系邮箱映射覆盖显式目标；套餐、订阅和配额查询必须绑定显式目标邮箱解析出的 tenant_id。普通 tenant UUID 形式的 Workspace ID 仍用于在表单 Email 的多个 workspace 中消歧；其他非 UUID 文本只是显示名/提示，不能覆盖邮箱唯一映射。邮箱唯一映射时禁止再向客户索取 Workspace ID 或 workspace name；内部查询未执行、失败或未验证时先支持侧重查，只有成功查询证明多 workspace 无法消歧、无 membership 或 canonical ID 冲突时才澄清最小身份信息，任何阶段都禁止猜测目标 tenant。确定 tenant_id 后，只采用 tenant-scoped `inspector_exec section=billing` 顶部的 `AUTHORITATIVE_BILLING_*`，或 `sql_query database=billing` 的 `tenant_subscription_settings.plan` / `tenant_stripe_status`。`tenants.plan`、TENANT/TENANTS Plan、页面展示值和 `inspector email/section=all` 都不能授权公开回复中的当前套餐断言；Billing 查不到时套餐必须写 unknown，禁止降级推断为 Basic。
 
 ### 4. 客户回复 Quality Bar
 

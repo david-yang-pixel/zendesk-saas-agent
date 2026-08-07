@@ -19,10 +19,10 @@
 **正确做法**：搜 `dify-billing/app/services/billing/message_credit_service.py` → 看到 `quota_limit = 5000 (Professional)` 的硬编码 → 知道 **不区分模型**，按 message count 一刀切扣 1 credit/次。
 
 ## 关键步骤
-1. 收集：Workspace ID、涉及时间段、具体金额 / 发票号
+1. 收集涉及时间段、具体金额 / 发票号；工作空间先由表单 Email（无则 requester email）在支持侧解析。邮箱唯一映射时直接使用，禁止再索取 Workspace ID / workspace name；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才向客户澄清最小身份信息。
 2. **套餐判断必须走身份绑定，不能用 `section=all` 代替**：
    - 先读取表单 Email 和 Workspace ID。若 Workspace ID 是邮箱格式，它是客户提供的**显式目标**账号线索：必须用它调用 `inspector_exec email=<Workspace ID 邮箱> section=tenants`，并同时查询表单 Email 做交叉核对；不能因为两者映射不同就默认联系邮箱对应的 workspace 是目标。只有表单没有可用身份邮箱时才退回 requester email。
-   - Workspace ID 是普通 tenant UUID 时，表单 Email 只对应一个 workspace → 使用该 tenant_id；对应多个 workspace → 仅当表单 Workspace ID 位于返回列表中时才能选择。Workspace ID 是邮箱格式时，套餐 / 订阅 / 配额必须绑定该显式目标邮箱解析出的唯一 tenant_id。任一候选未查询、目标映射不唯一或不匹配时禁止猜测套餐，向客户澄清最小缺口。
+   - Workspace ID 是普通 tenant UUID 时，表单 Email 只对应一个 workspace → 使用该 tenant_id；对应多个 workspace → 仅当表单 Workspace ID 位于返回列表中时才能选择。其他非 UUID 文本只是显示名/提示，不得覆盖邮箱唯一映射。Workspace ID 是邮箱格式时，套餐 / 订阅 / 配额必须绑定该显式目标邮箱解析出的唯一 tenant_id。内部查询未执行、失败或未验证时先支持侧重查；只有查询已证明目标真实不唯一、不存在或冲突时才向客户澄清最小缺口，任何阶段都禁止猜测目标 tenant 或套餐。
    - 套餐 / 订阅 / Stripe 状态：拿到 tenant_id 后必须调用 `inspector_exec tenant_id=<workspace_id> section=billing`，只采用工具顶部的 `AUTHORITATIVE_BILLING_*` 与 `Source=billing_db` 结果。
    - 配额 / 用量（apps / 文档 / 知识库存储 / 成员）：`inspector_exec tenant_id=<workspace_id> section=quota` —— 含 TiDB 知识库存储（手写 SQL 拿不到）
    - `email + section=all` 以及 `tenant_id + section=all` 都不能授权公开回复中的当前套餐断言。

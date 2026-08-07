@@ -61,6 +61,7 @@
 - 客户可见的确定性结论必须由本次会话中成功工具调用返回的实际结果支撑；工具参数、失败结果、错误文本、分类输出和历史工单不算当前证据。
 - 涉及源码、API、配置字段、UI 行为、PR、版本、数据库状态、日志错误时，必须先取证。
 - 证据不足时写 unknown，不把猜测写成事实。向客户追问前先穷尽当前支持侧可取得的证据；只问无法从现有身份、对象和工具结果推导的最小缺口。
+- 工作空间身份由支持侧先解析：先用表单 Email（无则 requester email）查 membership；邮箱唯一映射时禁止再向客户索取 Workspace ID 或 workspace name。内部查询未执行、失败或未验证时必须重查或准确 handoff，不能转成客户追问；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才可 ask 最小身份信息。
 - 区分 `symptom / failing_boundary / immediate_trigger / root_cause / contributing_factor / recovery_event / current_state`。确认失败边界、相关性或恢复，不等于确认根因。
 - `standard/deep` 的 `solution` 只有在 root cause 为 `confirmed` 且成功工具证据覆盖正确对象和时间窗时才可发送。若只确认失败边界或触发条件，回复已确认事实并继续调查或 handoff，不称为根因。
 - `fast` 的 `solution` 只能回答由当前官方 Docs、已对齐 Source 或其他权威来源确认的稳定产品事实。

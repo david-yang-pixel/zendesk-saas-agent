@@ -5,7 +5,7 @@
   - 客户名字插入
   - 客户名字为空时去掉空格
   - 不含 footer（footer 在工具层加）
-  - 不重复索取已知字段（Workspace ID 只允许作为 different workspace 条件补充）
+  - 不重复索取已知字段（包括 Workspace ID / workspace name）
   - 一律英文（无中文字符）
 - 模板 C insufficient_info：
   - 调 LLM 生成动态 bullets
@@ -63,8 +63,8 @@ class TestStaticTemplates:
         body = fn(customer_name="Bob").lower()
         assert "your email" not in body
         assert "your workspace id" not in body
-        if "workspace id" in body:
-            assert "different workspace" in body
+        assert "workspace id" not in body
+        assert "workspace name" not in body
 
     @pytest.mark.parametrize("fn", [
         silent_template, greeting_template, retry_template,
@@ -256,7 +256,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=["x"], model="m", api_key="k",
             )
-        assert len(bullets) == 4  # fallback
+        assert len(bullets) == 3  # fallback
         assert all(b.startswith("- ") for b in bullets)
 
     @pytest.mark.asyncio
@@ -268,7 +268,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=["x"], model="m", api_key="k",
             )
-        assert len(bullets) == 4
+        assert len(bullets) == 3
 
     @pytest.mark.asyncio
     async def test_llm_non_200_fallback(self) -> None:
@@ -279,7 +279,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=["x"], model="m", api_key="k",
             )
-        assert len(bullets) == 4
+        assert len(bullets) == 3
 
     @pytest.mark.asyncio
     async def test_empty_customer_messages_uses_fallback(self) -> None:
@@ -288,7 +288,7 @@ class TestMissingInfoBullets:
             bullets = await _generate_missing_info_bullets(
                 customer_messages=[], model="m", api_key="k",
             )
-        assert len(bullets) == 4
+        assert len(bullets) == 3
         mock_post.assert_not_called()
 
     # ── post-filter：LLM 不听话问了已知字段（workspace id / email / name）──
@@ -353,10 +353,11 @@ class TestMissingInfoBullets:
                 customer_messages=["x"], model="m", api_key="k",
             )
         # 全被过滤 → fallback
-        assert len(bullets) == 4
+        assert len(bullets) == 3
         all_text = " ".join(bullets).lower()
         assert "your workspace id" not in all_text
-        assert "different workspace" in all_text
+        assert "workspace id" not in all_text
+        assert "workspace name" not in all_text
         assert "your email" not in all_text
         assert "your name" not in all_text
 
@@ -521,7 +522,8 @@ class TestBuildAskBody:
         body_lower = body.lower()
         assert "missing details" in body_lower
         assert "page or feature" in body_lower
-        assert "different workspace" in body_lower
+        assert "workspace id" not in body_lower
+        assert "workspace name" not in body_lower
         assert "what type of issue" not in body_lower
         assert "issue type" not in body_lower
 
@@ -690,7 +692,7 @@ class TestAskBodyGeneration:
         assert body is None
 
     @pytest.mark.asyncio
-    async def test_llm_generated_ask_body_allows_conditional_workspace_id(self) -> None:
+    async def test_llm_generated_ask_body_rejects_conditional_workspace_id(self) -> None:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.json = MagicMock(return_value={
@@ -714,7 +716,4 @@ class TestAskBodyGeneration:
                 api_key="k",
             )
 
-        assert body == (
-            "Please send what happened. If this is about a different workspace, "
-            "include the Workspace ID."
-        )
+        assert body is None

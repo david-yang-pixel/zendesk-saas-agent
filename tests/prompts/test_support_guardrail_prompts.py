@@ -12,6 +12,14 @@ DIFY_SUPPORT_PROMPT = ROOT / "src/zd_agent/prompts/skills/DIFY_SUPPORT_TICKET.md
 TOOLS_PROMPT = ROOT / "src/zd_agent/prompts/TOOLS.md"
 QUALITY_BAR_PROMPT = ROOT / "src/zd_agent/prompts/references/quality_bar.md"
 BILLING_PROMPT = ROOT / "src/zd_agent/prompts/strategies/billing.md"
+IDENTITY_STRATEGY_PROMPTS = (
+    BILLING_PROMPT,
+    ROOT / "src/zd_agent/prompts/strategies/permissions.md",
+    ROOT / "src/zd_agent/prompts/strategies/knowledge_base.md",
+    ROOT / "src/zd_agent/prompts/strategies/api.md",
+    ROOT / "src/zd_agent/prompts/strategies/platform_issue.md",
+    ROOT / "src/zd_agent/prompts/strategies/workflow.md",
+)
 
 
 def test_refund_prompts_require_owner_gate_before_eligibility() -> None:
@@ -105,6 +113,20 @@ def test_billing_prompts_bind_form_email_workspace_to_billing_tenant() -> None:
         assert "同时查询表单 Email" in text
         assert "多个 workspace" in text
         assert "禁止猜测" in text
+
+
+def test_active_prompts_treat_workspace_identity_as_support_side_resolution() -> None:
+    agents = AGENTS_PROMPT.read_text(encoding="utf-8")
+    support = DIFY_SUPPORT_PROMPT.read_text(encoding="utf-8")
+
+    for text in (agents, support):
+        assert "邮箱唯一映射时禁止再向客户索取 Workspace ID 或 workspace name" in text
+        assert "内部查询未执行、失败或未验证" in text
+
+    for path in IDENTITY_STRATEGY_PROMPTS:
+        text = path.read_text(encoding="utf-8")
+        assert "收集：Workspace ID" not in text
+        assert "邮箱唯一映射" in text
 
 
 def test_support_contract_requires_planned_bounded_subagents_and_call_ids() -> None:

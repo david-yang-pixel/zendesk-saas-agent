@@ -49,7 +49,7 @@ Step 2 快速通道匹配本文。命中者跳过 Step 3-18，直接 Step 19 输
 
 **触发**："invitation email not received"
 **处理**：
-- 确认 Workspace ID + 被邀请邮箱
+- 先用表单 Email 支持侧解析 workspace 并确认被邀请邮箱；邮箱唯一映射时直接使用，不再向客户索取 Workspace ID / workspace name，只有验证后的真实歧义才澄清
 - 建议检查垃圾邮件 / 过滤规则
 - SQL 查：`accounts`（被邀请人是否已存在）+ `tenant_account_joins`（邀请状态）
 - 可能走完整流程（不是纯 playbook 案例）

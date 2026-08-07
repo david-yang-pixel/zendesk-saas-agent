@@ -142,7 +142,7 @@ log / trace / metric → 怀疑 ingest 端故障，参考之前 #2375 处理路�
 
 ## 关键步骤
 
-1. 确认客户 Workspace ID、出错时间段、具体端点/路径
+1. 确认出错时间段和具体端点/路径；工作空间先由表单 Email（无则 requester email）在支持侧解析。邮箱唯一映射时直接使用，禁止再索取 Workspace ID / workspace name；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才向客户澄清最小身份信息。
 2. 只有 `deep` 且源码、GitHub、SigNoz 三条取证确实互不依赖时，才并行派 subagent；
    `standard` 问题由主 agent 直接查，避免机械 fan-out
 3. SQL 查 workspace_runs / 相关业务表，看故障是否单 tenant

@@ -19,7 +19,7 @@
 - `account_integrates WHERE account_id = '<aid>'` — SSO 提供商绑定
 
 ## 关键步骤
-1. 收集：Workspace ID、相关用户邮箱、具体操作路径
+1. 收集相关用户邮箱和具体操作路径；工作空间先由表单 Email（无则 requester email）在支持侧解析。邮箱唯一映射时直接使用，禁止再索取 Workspace ID / workspace name；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才向客户澄清最小身份信息。
 2. SQL 直查 tenants / accounts / tenant_account_joins
 3. 并行 subagent：A. 源码（按上表）+ B. ticket_record_search
 4. 参考本地知识库 `saas版知识库/05-permissions.md`

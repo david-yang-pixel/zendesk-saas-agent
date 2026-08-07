@@ -3,7 +3,7 @@
 设计决策（来自 2026-05-13 跟用户讨论）：
 - **统一 English**：messaging 工单一律英文回复，不跟随客户语言
 - **不重复问已知字段**：customer name / email 在 formResponse 里已有，绝不向客户索取。
-  Workspace ID 仅可作为条件补充："如果不是当前 workspace，请附上对应 Workspace ID"。
+  Workspace ID / workspace name 由支持侧通过表单身份解析，通用 ask 模板一律不索取。
 - **footer 不在这里加**：``ZendeskPublicReply`` 工具层硬编码追加，本模块只输出
   正文 body（不含 footer 不含 ``---`` 分隔线）
 - **追问混合策略**：无消息/仅问候使用固定 ask；信息已经模糊但不完整时，
@@ -162,7 +162,7 @@ Each point should ask for ONE specific thing.
 
 Constraints:
 - **DO NOT** ask for customer name or email — we already have these from the form
-- **DO NOT** ask for Workspace ID by default. Only ask for it as a conditional detail if the customer is referring to a different workspace.
+- **DO NOT** ask for Workspace ID or workspace name. Workspace identity is resolved support-side; only the dedicated public-reply identity gate may allow a targeted clarification after verified ambiguity.
 - Be specific to what's vague in their messages (avoid generic "more info please")
 - Each bullet must start with "- " on its own line
 - Use natural English, polite but direct
@@ -182,6 +182,11 @@ Return JSON: {{"bullets": ["- ...", "- ...", "- ..."]}}"""
 
 
 _FORBIDDEN_BULLET_PHRASES = (
+    "workspace id",
+    "workspace_id",
+    "workspace name",
+    "which workspace",
+    "affected workspace",
     "your workspace",
     "wid:",
     "your email",
@@ -191,25 +196,10 @@ _FORBIDDEN_BULLET_PHRASES = (
     "your account name",
 )
 
-_WORKSPACE_ID_ALLOWED_MARKERS = (
-    "different workspace",
-    "another workspace",
-    "not the current workspace",
-    "not this workspace",
-)
-
-
 def _is_forbidden_bullet(bullet: str) -> bool:
     """判断 bullet 是否要求已知字段（应被过滤）。"""
     low = bullet.lower()
-    asks_workspace_id = "workspace id" in low or "workspace_id" in low
-    asks_workspace_id_unconditionally = (
-        asks_workspace_id
-        and not any(marker in low for marker in _WORKSPACE_ID_ALLOWED_MARKERS)
-    )
-    return asks_workspace_id_unconditionally or any(
-        phrase in low for phrase in _FORBIDDEN_BULLET_PHRASES
-    )
+    return any(phrase in low for phrase in _FORBIDDEN_BULLET_PHRASES)
 
 
 def _ask_template_name(*, verdict_kind: str, ask_count: int) -> AskTemplateName:

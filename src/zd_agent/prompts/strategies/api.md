@@ -31,7 +31,7 @@ github_code_search query="<feature 名 + 错误关键词>" scope="langgenius/dif
 ⚠️ **反例（之前 #2313）**：客户报 Lark Bitable invalid credential，agent 只 git_grep dify 主仓搜 0 hit 就下结论"无相关代码" → 完全错过 dify-official-plugins 仓里的 lark_trigger / lark_bitable 实现。
 
 ## 关键步骤
-1. 收集：Workspace ID、具体端点 / 插件名、请求示例（curl/代码）、完整报错
+1. 收集具体端点 / 插件名、请求示例（curl/代码）和完整报错；工作空间先由表单 Email（无则 requester email）在支持侧解析。邮箱唯一映射时直接使用，禁止再索取 Workspace ID / workspace name；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才向客户澄清最小身份信息。
 2. 检查 API Key 是否有效 / 所属 tenant 匹配（sql_query 可查 `apps` 表）
 3. **判断主 API 类还是插件类**：
    - 主 API → git_grep dify/api/controllers + dify/api/services

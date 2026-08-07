@@ -224,7 +224,10 @@ async def run_agent(session: AgentSession) -> None:
             "邮箱和表单 Email 调 `inspector_exec section=tenants`，目标状态查询 "
             "绑定 Workspace ID 邮箱解析出的 tenant_id，不能让联系邮箱覆盖它。"
             "普通 tenant UUID 形式的 Workspace ID 仅用于多个 workspace 消歧；"
-            "候选未查全或目标不唯一时禁止猜测。"
+            "其他非 UUID 文本只是显示名/提示，不能覆盖邮箱唯一映射。邮箱"
+            "唯一映射时禁止再向客户索取 Workspace ID 或 workspace name；"
+            "内部查询未执行、失败或未验证时先支持侧重查，只有成功查询证明"
+            "真实歧义、无映射或 canonical ID 冲突时才向客户澄清。"
         )
 
     # customer_profile 注入到 user message

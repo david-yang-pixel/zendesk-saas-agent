@@ -19,7 +19,7 @@
 - `document_segments WHERE document_id = '<doc_id>' LIMIT 5` — 看分段质量
 
 ## 关键步骤
-1. 收集：Workspace ID、Dataset ID、Document ID、具体报错或期望 vs 实际
+1. 收集 Dataset ID、Document ID、具体报错或期望 vs 实际；工作空间先由表单 Email（无则 requester email）在支持侧解析。邮箱唯一映射时直接使用，禁止再索取 Workspace ID / workspace name；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才向客户澄清最小身份信息。
 2. SQL 直查 documents / document_segments 状态
 3. 如涉及 embedding：查 embeddings 模型配置 + model_provider 额度
 4. 并行 subagent：A. 源码（按上表）+ B. GitHub Issues + C. ticket_record_search

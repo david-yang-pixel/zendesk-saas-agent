@@ -291,7 +291,7 @@ LIMIT 20;
 
 ## 关键步骤总览
 
-1. **First-Pass 信息抓取**：Workspace ID、App ID（或 Workflow ID / Run ID 反查 app）、慢的具体表现、出现时间窗
+1. **First-Pass 信息抓取**：App ID（或 Workflow ID / Run ID 反查 app）、慢的具体表现、出现时间窗；工作空间先由表单 Email（无则 requester email）在支持侧解析。邮箱唯一映射时直接使用，禁止再索取 Workspace ID / workspace name；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才向客户澄清最小身份信息。
 2. **跑 Step A → B → C** 确定慢点在 workflow 引擎、还是节点级、还是哪个具体节点
 3. **如果慢点在 LLM 节点 → 必须跑 Step D（provider 聚合）+ Step E（跨 provider 对比）**
 4. **客户说"卡在 loading 不动"** → 多半是前端 SSE / polling 问题：

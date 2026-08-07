@@ -30,6 +30,7 @@
 - 只有成功工具调用返回的实际结果可以作为证据。工具参数、失败结果、错误文本、历史工单和分类输出都不能证明客户可见结论。每条 material claim 必须在 `source_call_ids` 中引用本会话的精确成功调用 ID；只写 source_tools 工具名不能证明 claim。claim 的对象和时间窗必须与冻结计划中的对象标识和时间窗一致，且至少一个被引用成功调用的调用参数或返回结果必须实际包含该对象标识。
 - `solution` 必须提交结构化 `evidence_ledger`。`standard/deep` 技术诊断必须有已确认根因；`fast` 只能回答由当前权威来源确认的稳定产品事实；`high_risk` 只能陈述已核实技术事实或已确认技术根因，不能替代人工做业务决定。
 - 根因未知时，先穷尽当前支持侧可取得的证据；只有所需信息无法从现有身份、对象和工具结果推导时，才用 `ask` 索取最小必要信息；或用 `handoff` 告知已确认事实和准确缺口。不得把未知项包装成根因。
+- 工作空间身份属于支持侧先行解析：先用表单 Email（无则 requester email）查询 membership；邮箱唯一映射时禁止再向客户索取 Workspace ID 或 workspace name。内部查询未执行、失败或未验证时必须重查或准确 handoff，不能把内部缺口转成客户追问；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时，才允许 ask 最小身份信息。
 - GitHub PR 候选必须确认是否被 revert、是否有 follow-up regression、客户当前版本是否已包含修复。
 
 ### 客户可见回复

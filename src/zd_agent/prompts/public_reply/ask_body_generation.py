@@ -18,7 +18,6 @@ MISSING_INFO_FALLBACK_BULLETS: Final[tuple[str, ...]] = (
     "- The page or feature involved",
     "- Any error text, screenshot, or what you saw",
     "- When it happened",
-    "- If this is about a different workspace, the Workspace ID",
 )
 
 ASK_BODY_MAX_CHARS: Final = 900
@@ -43,7 +42,7 @@ Rules:
 - Keep it concise: one short paragraph plus up to 3 bullets if bullets help.
 - Ask only for the minimum information needed to make the ticket actionable.
 - Do not ask for customer name, email, plan, or account owner; those are already available from the form or ticket metadata.
-- Do not ask for Workspace ID by default. You may ask for it only as a conditional detail: "If this is about a different workspace, the Workspace ID."
+- Do not ask for a Workspace ID, workspace name, email, plan, or owner. Workspace identity is resolved support-side after intake; a dedicated send gate handles the rare verified ambiguity.
 - Do not mention internal state, trigger decider, confidence, LLM, templates, automation, or tools.
 - Do not claim investigation has already happened.
 - For a ticket with no actual request yet, ask what the customer needs help with. The goal is to get the real question or issue from the customer.
@@ -56,7 +55,11 @@ Rules:
 Return JSON exactly: {{"body": "..."}}"""
 
 FORBIDDEN_BODY_PHRASES: Final[tuple[str, ...]] = (
+    "workspace id",
     "workspace_id",
+    "workspace name",
+    "which workspace",
+    "affected workspace",
     "organization id",
     "org id",
     "email address",
@@ -82,14 +85,6 @@ FORBIDDEN_BODY_PHRASES: Final[tuple[str, ...]] = (
     "what category",
     "which category",
 )
-
-_WORKSPACE_ID_ALLOWED_MARKERS: Final[tuple[str, ...]] = (
-    "different workspace",
-    "another workspace",
-    "not the current workspace",
-    "not this workspace",
-)
-
 
 def _admin_ask_prompt_override() -> str:
     from zd_agent.config import get_config
@@ -130,15 +125,9 @@ def _customer_message_context(customer_messages: list[str]) -> str:
 
 def _is_unsafe_generated_body(body: str) -> bool:
     low = body.lower()
-    asks_workspace_id = "workspace id" in low or "workspace_id" in low
-    asks_workspace_id_unconditionally = (
-        asks_workspace_id
-        and not any(marker in low for marker in _WORKSPACE_ID_ALLOWED_MARKERS)
-    )
     return (
         len(body) < 20
         or len(body) > ASK_BODY_MAX_CHARS
-        or asks_workspace_id_unconditionally
         or any(phrase in low for phrase in FORBIDDEN_BODY_PHRASES)
     )
 
