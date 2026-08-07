@@ -1298,6 +1298,149 @@ class TestExecute:
         assert "resolved target tenant" in (result.error or "").lower()
         assert sess.reply_sent is False
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "Please send the full Workspace ID from your settings.",
+            "Please confirm the exact workspace name before I route this request.",
+            (
+                "Before I route the billing request, please confirm that the "
+                "affected workspace is named Isaac_LK's Workspace."
+            ),
+            (
+                "Please reply with the exact workspace name shown in Dify, "
+                "or paste its Workspace ID."
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_ask_blocks_3821_style_identity_request_after_unique_resolution(
+        self,
+        body: str,
+    ) -> None:
+        tenant_id = "11111111-1111-4111-8111-111111111111"
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.ticket_type = "refund"
+        sess.investigation_route = "high_risk"
+        sess.customer_form_data = {
+            "email": "customer@example.com",
+            "workspace_id": "Isaac_LK",
+        }
+        sess.tool_call_log = [
+            {
+                "call_id": "identity-customer",
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "customer@example.com",
+                    "section": "tenants",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+                    "EMAIL_WORKSPACE_COUNT=1\n"
+                    f"EMAIL_WORKSPACE_TENANT_IDS={tenant_id}\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": body,
+                    "reply_type": "ask",
+                    "internal_analysis": "The form email uniquely resolved.",
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert "support-side" in (result.error or "").lower()
+        assert "already resolved" in (result.error or "").lower()
+
+    @pytest.mark.asyncio
+    async def test_ask_allows_workspace_id_only_after_verified_ambiguity(self) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.customer_form_data = {
+            "email": "customer@example.com",
+            "workspace_id": "display-label",
+        }
+        sess.tool_call_log = [
+            {
+                "call_id": "identity-customer",
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "customer@example.com",
+                    "section": "tenants",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=ambiguous\n"
+                    "EMAIL_WORKSPACE_COUNT=2\n"
+                    "EMAIL_WORKSPACE_TENANT_IDS="
+                    "11111111-1111-4111-8111-111111111111,"
+                    "22222222-2222-4222-8222-222222222222\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "Your email is linked to more than one workspace. "
+                        "Please provide the Workspace ID for the affected one."
+                    ),
+                    "reply_type": "ask",
+                    "internal_analysis": (
+                        "The verified email lookup returned two memberships."
+                    ),
+                },
+                sess,
+            )
+
+        assert result.success is True
+        assert "Dry Run" in result.output
+
+    @pytest.mark.asyncio
+    async def test_ask_requires_support_lookup_before_requesting_workspace_id(
+        self,
+    ) -> None:
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.customer_form_data = {"email": "customer@example.com"}
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Please provide the Workspace ID.",
+                    "reply_type": "ask",
+                    "internal_analysis": "No identity lookup was run yet.",
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert "support_action_required" in (result.error or "").lower()
+        assert "do not ask the customer" in (result.error or "").lower()
+
     @pytest.mark.asyncio
     async def test_refund_reply_allows_owner_confirmation_ask_without_gate(self) -> None:
         tool = ZendeskPublicReply()

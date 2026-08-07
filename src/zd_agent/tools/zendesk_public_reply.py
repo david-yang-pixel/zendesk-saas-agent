@@ -50,6 +50,7 @@ from zd_agent.runtime.billing_plan_gate import (
     billing_plan_claim_block_reason,
     resolved_target_tenant_id,
     workspace_identity_candidates_block_reason,
+    workspace_identity_request_block_reason,
 )
 from zd_agent.runtime.refund_gate import refund_owner_gate_block_reason
 from zd_agent.runtime.reply_evidence import (
@@ -761,7 +762,9 @@ class ZendeskPublicReply(Tool):
         "**不要包含源码路径、内部仓库路径、文件名+行号或内部代码实现位置**。"
         "公开回复确认送达后，系统会自动写入 internal_analysis 作为内部备注。"
         "reply_type 决定 footer 措辞变体："
-        "ask（向客户问问题，模板 A/B/C/D）/ "
+        "ask（只索取支持侧无法推导的最小信息；Workspace ID/name 只有在"
+        "成功身份查询证明多工作区、无映射或 ID 冲突后才能询问，内部查询"
+        "未执行/失败不能转成客户追问；模板 A/B/C/D）/ "
         "solution（给出解决方案，模板 F）/ "
         "handoff（已转人工，模板 E）/ "
         "closed（工单收尾，模板 G）。"
@@ -979,6 +982,34 @@ class ZendeskPublicReply(Tool):
                     + "; ".join(blockers[:5])
                 ),
             )
+
+        if reply_type == "ask":
+            identity_request_block = workspace_identity_request_block_reason(
+                body=body,
+                tool_call_log=getattr(session, "tool_call_log", []) or [],
+                form_email=str(
+                    (getattr(session, "customer_form_data", {}) or {}).get(
+                        "email", ""
+                    )
+                ),
+                form_workspace_id=str(
+                    (getattr(session, "customer_form_data", {}) or {}).get(
+                        "workspace_id", ""
+                    )
+                ),
+                requester_email=str(
+                    (getattr(session, "customer_profile", {}) or {}).get(
+                        "requester_email", ""
+                    )
+                ),
+            )
+            if identity_request_block:
+                logger.warning(
+                    "public_reply_workspace_identity_ask_blocked",
+                    ticket_id=ticket_id,
+                    reply_type=reply_type,
+                )
+                return ToolResult(success=False, error=identity_request_block)
 
         refund_block = refund_owner_gate_block_reason(body=body, session=session)
         if refund_block:

@@ -1,6 +1,7 @@
 from zd_agent.runtime.billing_plan_gate import (
     billing_plan_claim_block_reason,
     resolved_target_tenant_id,
+    workspace_identity_request_block_reason,
 )
 
 
@@ -352,6 +353,122 @@ def test_subscription_state_claim_accepts_billing_for_email_shaped_target() -> N
         ],
         form_email="contact@example.com",
         form_workspace_id="workspace-owner@example.com",
+    )
+
+    assert blocker is None
+
+
+def test_workspace_identity_ask_is_blocked_when_form_email_is_unique() -> None:
+    blocker = workspace_identity_request_block_reason(
+        body="Please send the full Workspace ID from your settings.",
+        tool_call_log=[_workspace_lookup(tenant_ids=(TENANT_1,))],
+        form_email="form@example.com",
+        form_workspace_id="Isaac_LK",
+    )
+
+    assert blocker is not None
+    assert "support-side" in blocker.lower()
+    assert "already resolved" in blocker.lower()
+
+
+def test_workspace_name_confirmation_is_blocked_when_email_is_unique() -> None:
+    blocker = workspace_identity_request_block_reason(
+        body=(
+            "Before I route this request, please confirm that the affected "
+            "workspace is named Isaac_LK's Workspace."
+        ),
+        tool_call_log=[_workspace_lookup(tenant_ids=(TENANT_1,))],
+        form_email="form@example.com",
+        form_workspace_id="Isaac_LK",
+    )
+
+    assert blocker is not None
+    assert "already resolved" in blocker.lower()
+
+
+def test_workspace_identity_ask_requires_support_lookup_before_customer_ask() -> None:
+    blocker = workspace_identity_request_block_reason(
+        body="Could you confirm the affected workspace or share its Workspace ID?",
+        tool_call_log=[],
+        form_email="form@example.com",
+    )
+
+    assert blocker is not None
+    assert "support_action_required" in blocker.lower()
+    assert "section=tenants" in blocker.lower()
+    assert "do not ask the customer" in blocker.lower()
+
+
+def test_workspace_identity_ask_requires_retry_after_unverified_lookup() -> None:
+    lookup = _workspace_lookup(tenant_ids=(TENANT_1,))
+    lookup["result_preview"] = (
+        "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+        "EMAIL_WORKSPACE_COUNT=1\n"
+        f"EMAIL_WORKSPACE_TENANT_IDS={TENANT_1}\n"
+        "EMAIL_WORKSPACE_SOURCE=unknown"
+    )
+
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the system-generated Workspace ID.",
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+    )
+
+    assert blocker is not None
+    assert "support_action_required" in blocker.lower()
+    assert "repeat" in blocker.lower()
+
+
+def test_workspace_identity_ask_is_allowed_for_verified_ambiguity() -> None:
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[_workspace_lookup(tenant_ids=(TENANT_1, TENANT_2))],
+        form_email="form@example.com",
+        form_workspace_id="display-label",
+    )
+
+    assert blocker is None
+
+
+def test_workspace_identity_ask_is_blocked_when_form_uuid_disambiguates() -> None:
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[_workspace_lookup(tenant_ids=(TENANT_1, TENANT_2))],
+        form_email="form@example.com",
+        form_workspace_id=TENANT_2,
+    )
+
+    assert blocker is not None
+    assert "already resolved" in blocker.lower()
+
+
+def test_workspace_identity_ask_is_allowed_after_verified_no_membership() -> None:
+    lookup = {
+        "tool": "inspector_exec",
+        "args": {"email": "form@example.com", "section": "tenants"},
+        "success": True,
+        "result_preview": (
+            "EMAIL_WORKSPACE_RESOLUTION=none\n"
+            "EMAIL_WORKSPACE_COUNT=0\n"
+            "EMAIL_WORKSPACE_TENANT_IDS=\n"
+            "EMAIL_WORKSPACE_SOURCE=prod_membership"
+        ),
+    }
+
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+    )
+
+    assert blocker is None
+
+
+def test_unrelated_customer_only_question_is_not_identity_blocked() -> None:
+    blocker = workspace_identity_request_block_reason(
+        body="Please share the exact UTC time of the failed request.",
+        tool_call_log=[_workspace_lookup(tenant_ids=(TENANT_1,))],
+        form_email="form@example.com",
     )
 
     assert blocker is None

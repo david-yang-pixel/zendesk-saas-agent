@@ -45,6 +45,19 @@ _CANONICAL_TENANT_ID_RE: Final = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+_WORKSPACE_IDENTITY_TERM_RE: Final = re.compile(
+    r"\bworkspace[\s_-]?id\b|\bworkspace\s+name\b|"
+    r"\b(?:affected|target|correct|exact|which)\s+workspace\b|"
+    r"\bworkspace\s+(?:is\s+)?named\b",
+    re.IGNORECASE,
+)
+_WORKSPACE_IDENTITY_REQUEST_RE: Final = re.compile(
+    r"\b(?:please|could\s+you|can\s+you|would\s+you|confirm|provide|"
+    r"share|send|paste|copy|identify|include|reply\s+with|tell\s+us|"
+    r"let\s+us\s+know|need|needs|needed|require|requires|required)\b",
+    re.IGNORECASE,
+)
+_WHICH_WORKSPACE_RE: Final = re.compile(r"\bwhich\s+workspace\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,18 @@ def _canonical_form_tenant_id(value: object) -> str:
     """Return a form value only when it is a canonical system tenant UUID."""
     candidate = str(value or "").strip().lower()
     return candidate if _CANONICAL_TENANT_ID_RE.fullmatch(candidate) else ""
+
+
+def _asks_for_workspace_identity(body: str) -> bool:
+    """Return whether customer prose requests a workspace name or system ID."""
+    for sentence in re.split(r"(?<=[.!?])\s+|[\r\n]+", body or ""):
+        if not _WORKSPACE_IDENTITY_TERM_RE.search(sentence):
+            continue
+        if _WORKSPACE_IDENTITY_REQUEST_RE.search(sentence):
+            return True
+        if _WHICH_WORKSPACE_RE.search(sentence):
+            return True
+    return False
 
 
 def _asserted_current_plans(body: str) -> set[str]:
@@ -293,6 +318,97 @@ def resolved_target_tenant_id(
     if resolution.status == "unique":
         return next(iter(resolution.tenant_ids))
     return ""
+
+
+def workspace_identity_request_block_reason(
+    *,
+    body: str,
+    tool_call_log: list[dict[str, Any]],
+    form_email: str = "",
+    form_workspace_id: str = "",
+    requester_email: str = "",
+) -> str | None:
+    """Block redundant identity asks that Support can resolve itself.
+
+    A customer ask is allowed only after verified evidence shows that the
+    identity is genuinely ambiguous, absent, or contradictory. Missing and
+    unverified lookups are support-side work, not customer-missing information.
+    """
+    if not _asks_for_workspace_identity(body):
+        return None
+
+    workspace_identity_email = _email_candidate(form_workspace_id)
+    supplied_workspace_id = (
+        ""
+        if workspace_identity_email
+        else _canonical_form_tenant_id(form_workspace_id)
+    )
+    if supplied_workspace_id and not (
+        _email_candidate(form_email) or _email_candidate(requester_email)
+    ):
+        return (
+            "WORKSPACE_IDENTITY_ALREADY_RESOLVED: The form already contains a "
+            f"canonical Workspace ID ({supplied_workspace_id}). Do not ask the "
+            "customer to provide it again. Continue the support-side identity "
+            "and authorization checks with that tenant ID."
+        )
+
+    identity_email = (
+        workspace_identity_email
+        or _email_candidate(form_email)
+        or _email_candidate(requester_email)
+    )
+    if not identity_email:
+        return None
+
+    candidate_block = workspace_identity_candidates_block_reason(
+        tool_call_log=tool_call_log,
+        form_email=form_email,
+        form_workspace_id=form_workspace_id,
+    )
+    if candidate_block:
+        return (
+            "WORKSPACE_IDENTITY_SUPPORT_ACTION_REQUIRED: This identity gap is "
+            "support-side resolvable. Do not ask the customer for a Workspace "
+            f"ID or workspace name. {candidate_block}"
+        )
+
+    resolution = _workspace_resolution_for_email(tool_call_log, identity_email)
+    if resolution is None:
+        return (
+            "WORKSPACE_IDENTITY_SUPPORT_ACTION_REQUIRED: This identity gap is "
+            "support-side resolvable. Run inspector_exec with the available "
+            "form/requester email and section=tenants before replying. Do not "
+            "ask the customer for a Workspace ID or workspace name until a "
+            "successful lookup proves that customer clarification is required."
+        )
+    if resolution.status == "unverified":
+        return (
+            "WORKSPACE_IDENTITY_SUPPORT_ACTION_REQUIRED: The existing workspace "
+            "lookup is unverified. Repeat inspector_exec with the available "
+            "identity email and section=tenants. Do not ask the customer for a "
+            "Workspace ID or workspace name because an internal lookup failed."
+        )
+    if resolution.status == "none":
+        return None
+
+    if resolution.status == "ambiguous":
+        if not supplied_workspace_id:
+            return None
+        if supplied_workspace_id not in resolution.tenant_ids:
+            return None
+        target_tenant_id = supplied_workspace_id
+    else:
+        target_tenant_id = next(iter(resolution.tenant_ids))
+        if supplied_workspace_id and supplied_workspace_id != target_tenant_id:
+            return None
+
+    return (
+        "WORKSPACE_IDENTITY_ALREADY_RESOLVED: The target workspace is already "
+        f"resolved support-side to tenant {target_tenant_id}. Do not ask the "
+        "customer to repeat a Workspace ID or workspace name. Continue the "
+        "investigation and bind tenant-scoped evidence to this target."
+    )
 
 
 def billing_plan_claim_block_reason(
