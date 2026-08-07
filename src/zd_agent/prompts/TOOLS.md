@@ -169,7 +169,7 @@ Step 1: zendesk_get_ticket
   ↓
 仅 standard/deep 且存在至少 2 个 independent_lanes 时使用 run_subagents_parallel
   ↓
-zendesk_public_reply（solution/因果断言及 high_risk handoff 附 evidence_ledger；每条 claim 同时填 source_tools 和精确 source_call_ids；需要人工/SRE 时先发 handoff）
+zendesk_public_reply（solution/因果断言及 high_risk handoff 附 evidence_ledger；每条 claim 同时填 source_tools，并把成功结果顶部的 EVIDENCE_CALL_ID exact-id 原样复制到 source_call_ids；需要人工/SRE 时先发 handoff）
 ```
 
 ## 避免的反模式
@@ -177,6 +177,7 @@ zendesk_public_reply（solution/因果断言及 high_risk handoff 附 evidence_l
 - ❌ 串行调用 `run_subagent` 5 次查相同阶段的不同源 → 应该 `run_subagents_parallel`
 - ❌ 把邮箱格式的表单 Workspace ID 当成无效 UUID 后只查联系邮箱 → 该值是显式目标邮箱；同时查它和表单 Email 的 tenant 映射，套餐/订阅查询绑定显式目标 tenant，候选未查全时不得 handoff 猜测
 - ❌ 邮箱已经唯一映射 workspace，或内部 tenant 查询尚未执行/失败，就把 Workspace ID / workspace name 再甩给客户 → 先完成支持侧 membership 查询；只有成功结果证明真实多 workspace 歧义、无映射或 canonical ID 冲突时才允许最小追问
+- ❌ 自行拼接 `functions.tool(...)` 当 `source_call_ids` → 只复制成功证据结果顶部的 `EVIDENCE_CALL_ID=<exact-id>`，失败调用没有该标记且不能作为证据
 - ❌ 用 `zendesk_internal_reply` 当客户回复 → 客户看不到；客户可见回复必须直接 `zendesk_public_reply`
 - ❌ 需要人工或 SRE 介入时直接沉默升级 → 需要人工或 SRE 介入时，先用 `zendesk_public_reply` 说明客户安全的升级原因和下一步，再通知内部团队
 - ❌ 成功 `zendesk_public_reply` 后再写 Internal Note 或本地工单镜像 → 重复且会制造冲突记录

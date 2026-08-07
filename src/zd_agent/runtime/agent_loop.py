@@ -61,6 +61,18 @@ _SLOW_SQL_FAILURE_SECONDS = 25.0
 _MAX_SLOW_SQL_FAILURES = 3
 _MAX_FRESHNESS_REBASES = 2
 _SUBAGENT_BATCH_TOOL_NAME = "run_subagents_parallel"
+_EVIDENCE_CALL_ID_EXCLUDED_TOOLS = frozenset(
+    {
+        "classify_ticket",
+        "plan_investigation",
+        "run_subagent",
+        "run_subagents_parallel",
+        "feishu_push",
+        "zendesk_public_reply",
+        "zendesk_internal_reply",
+    }
+)
+_EVIDENCE_CALL_ID_EXCLUDED_PREFIXES = ("ticket_record_",)
 _SUBAGENT_CONVERGENCE_REMINDER = (
     "[系统提醒] 并行证据收集已完成。请先基于当前已经拿到的 DB / 源码 / 日志 / "
     "历史工单 / 文档证据判断是否足够回复。若关键证据已经覆盖结论，请进入最终"
@@ -612,6 +624,34 @@ def _loop_finished_for_deferred(
     )
 
 
+def _tool_result_for_model(
+    *,
+    registry: ToolRegistry,
+    tool_name: str,
+    call_id: str,
+    output: str,
+    success: bool,
+) -> str:
+    """Expose the exact successful evidence call ID in model-visible content."""
+    tool = registry.get(tool_name)
+    if (
+        not success
+        or not call_id
+        or not output.strip()
+        or tool is None
+        or tool.is_write_operation
+        or tool_name in _EVIDENCE_CALL_ID_EXCLUDED_TOOLS
+        or tool_name.startswith(_EVIDENCE_CALL_ID_EXCLUDED_PREFIXES)
+    ):
+        return output
+    return (
+        f"EVIDENCE_CALL_ID={call_id}\n"
+        "If this successful result supports a material claim, copy this exact "
+        "value into evidence_ledger.source_call_ids.\n\n"
+        f"{output}"
+    )
+
+
 async def _run_tool_call(
     tc: ToolCallRequest,
     registry: ToolRegistry,
@@ -682,7 +722,17 @@ async def _run_tool_call(
         call_id=tc.id,
         metadata=result.metadata,
     )
-    message_store.append_tool_result(tc.id, tc.name, output)
+    message_store.append_tool_result(
+        tc.id,
+        tc.name,
+        _tool_result_for_model(
+            registry=registry,
+            tool_name=tc.name,
+            call_id=tc.id,
+            output=output,
+            success=result.success,
+        ),
+    )
     return ToolExecuted(
         round=current_round,
         tool_name=tc.name,

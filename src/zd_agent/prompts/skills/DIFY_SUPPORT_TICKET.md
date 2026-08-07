@@ -78,7 +78,7 @@
 - `root_cause_status`: `confirmed | evidence_supported | unknown | not_applicable`
 - 每条 material claim 必须写：`claim`、`causal_role`、`status`、`source_tools`、`source_call_ids`、`object_identifiers`、`time_window`、`observed_result`、`alternatives_checked`
 
-`source_tools` 只写工具名，`source_call_ids` 必须引用本会话内实际成功且返回结果的精确调用 ID。material claim 的对象和时间窗必须绑定冻结计划，且被引用调用的参数或返回结果必须实际包含当前对象标识。发送层会拒绝路由与已冻结计划不一致、失败工具、历史工单、缺少对象/时间窗/观察结果的台账，以及没有 confirmed root cause 的 standard/deep solution。普通 `ask`/`handoff` 在不声称根因时可以保持 root cause unknown；`high_risk handoff` 仍须以 `technical_fact_only` 提交台账，至少包含一条绑定目标对象和精确成功调用的 confirmed 事实，并明确剩余人工决策缺口。
+`source_tools` 只写工具名。成功证据结果顶部会显示 `EVIDENCE_CALL_ID=<exact-id>`；必须把 exact-id 原样复制到 `source_call_ids`，禁止自行拼接 `functions.tool(...)` 或其他伪 ID。material claim 的对象和时间窗必须绑定冻结计划，且被引用调用的参数或返回结果必须实际包含当前对象标识。发送层会拒绝路由与已冻结计划不一致、失败工具、历史工单、缺少对象/时间窗/观察结果的台账，以及没有 confirmed root cause 的 standard/deep solution。普通 `ask`/`handoff` 在不声称根因时可以保持 root cause unknown；`high_risk handoff` 仍须以 `technical_fact_only` 提交台账，至少包含一条绑定目标对象和精确成功调用的 confirmed 事实，并明确剩余人工决策缺口。
 
 ### 场景规则
 

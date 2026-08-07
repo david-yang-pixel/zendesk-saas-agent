@@ -48,7 +48,7 @@
 - **Zendesk 最新对话是唯一真相源**：本地工单记录只作为参考，不能决定当前是否 follow-up，也不能覆盖客户最新消息。客户有新回复时必须以最新 `zendesk_get_ticket` 对话为准。
 - **只有成功工具结果才是证据**：工具参数、失败结果、错误文本、分类输出和历史工单都不能证明当前客户结论；历史记录只用于选择下一项核查。
 - **工作空间身份由支持侧先解析**：先用表单 Email（无则 requester email）查 membership；邮箱唯一映射时禁止再向客户索取 Workspace ID 或 workspace name。内部查询未执行、失败或未验证时必须重查或准确 handoff，不能转成客户追问；只有成功查询证明多工作区无法消歧、无 membership 或 canonical ID 冲突时才可 ask 最小身份信息。
-- **精确调用绑定**：每条 material claim 都要同时提供 `source_tools` 和 `source_call_ids`，后者必须是本会话内返回非空结果的精确成功调用 ID；只写工具名不算证据。
+- **精确调用绑定**：成功证据结果顶部会显示 `EVIDENCE_CALL_ID=<exact-id>`。每条 material claim 都要同时提供 `source_tools` 和 `source_call_ids`，把 exact-id 原样复制到后者；禁止自行拼接 `functions.tool(...)` 或其他伪 ID，只写工具名也不算证据。
 - **分开因果角色**：严格区分 `symptom / failing_boundary / immediate_trigger / root_cause / contributing_factor / recovery_event / current_state`。相关性、失败边界和恢复事件都不等于根因。
 - **附件证据必须下载后判断**：客户提到截图、图片、文件或附件，或需要基于图片/文件判断时，必须调用 `zendesk_get_attachments`。返回路径已经相对于当前工单 sandbox 根目录，例如 `attachments/error.log`；不要重复加 ticket_id，也不要使用绝对路径。`sandbox_read` 只读 UTF-8 文本，严禁用于 PNG/JPEG 等图片；下载成功的图片会在下一轮自动注入视觉输入。不能只看 `zendesk_get_ticket` 的附件列表就断言没有图片或文件。
 

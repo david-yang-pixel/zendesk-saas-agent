@@ -137,5 +137,6 @@ def test_support_contract_requires_planned_bounded_subagents_and_call_ids() -> N
     for text in (agents, support, tools):
         assert "plan_investigation" in text
         assert "source_call_ids" in text
+        assert "EVIDENCE_CALL_ID" in text
         assert "independent_lanes" in text
     assert "父 Agent 不得重复查询子 Agent 已返回的同一证据" in support

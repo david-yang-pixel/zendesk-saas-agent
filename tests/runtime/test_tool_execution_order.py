@@ -183,6 +183,7 @@ async def test_tool_call_timeout_is_reported_and_unblocks_batch(
     assert "工具执行超时" in (events[0].error or "")
     assert len(store.raw) == 1
     assert "工具执行超时" in store.raw[0]["content"]
+    assert "EVIDENCE_CALL_ID=" not in store.raw[0]["content"]
     assert session.tool_call_log[0]["success"] is False
 
 
@@ -233,6 +234,8 @@ async def test_tool_log_retains_call_id_and_nested_evidence_metadata() -> None:
     assert session.tool_call_log[0]["metadata"]["evidence_tool_calls"][0][
         "call_id"
     ] == "child-1"
+    assert "EVIDENCE_CALL_ID=parent-1" in store.raw[0]["content"]
+    assert "copy this exact value" in store.raw[0]["content"].lower()
 
 
 @pytest.mark.asyncio
