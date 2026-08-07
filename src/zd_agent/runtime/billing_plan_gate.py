@@ -41,6 +41,10 @@ _INSPECTOR_PLAN_RE: Final = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _TENANT_ID_RE: Final = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,127}$")
+_CANONICAL_TENANT_ID_RE: Final = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -61,6 +65,12 @@ def _email_candidate(value: object) -> str:
 def _normalize_tenant_id(value: object) -> str:
     candidate = str(value or "").strip().lower()
     return candidate if _TENANT_ID_RE.fullmatch(candidate) else ""
+
+
+def _canonical_form_tenant_id(value: object) -> str:
+    """Return a form value only when it is a canonical system tenant UUID."""
+    candidate = str(value or "").strip().lower()
+    return candidate if _CANONICAL_TENANT_ID_RE.fullmatch(candidate) else ""
 
 
 def _asserted_current_plans(body: str) -> set[str]:
@@ -270,7 +280,9 @@ def resolved_target_tenant_id(
         return ""
 
     supplied_workspace_id = (
-        "" if workspace_identity_email else _normalize_tenant_id(form_workspace_id)
+        ""
+        if workspace_identity_email
+        else _canonical_form_tenant_id(form_workspace_id)
     )
     if supplied_workspace_id:
         return (
@@ -353,7 +365,9 @@ def billing_plan_claim_block_reason(
         )
 
     supplied_workspace_id = (
-        "" if workspace_identity_email else _normalize_tenant_id(form_workspace_id)
+        ""
+        if workspace_identity_email
+        else _canonical_form_tenant_id(form_workspace_id)
     )
     if supplied_workspace_id and supplied_workspace_id not in resolution.tenant_ids:
         return (

@@ -1032,6 +1032,95 @@ class TestExecute:
         assert sess.reply_sent is False
 
     @pytest.mark.asyncio
+    async def test_handoff_uses_unique_email_workspace_when_form_value_is_a_label(
+        self,
+    ) -> None:
+        tenant_id = "11111111-1111-4111-8111-111111111111"
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.ticket_type = "billing"
+        sess.investigation_route = "high_risk"
+        sess.customer_form_data = {
+            "email": "customer@example.com",
+            "workspace_id": "Isaac_LK",
+        }
+        sess.tool_call_log = [
+            {
+                "call_id": "identity-customer",
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "customer@example.com",
+                    "section": "tenants",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=unique\n"
+                    "EMAIL_WORKSPACE_COUNT=1\n"
+                    f"EMAIL_WORKSPACE_TENANT_IDS={tenant_id}\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+            {
+                "call_id": "billing-target",
+                "tool": "inspector_exec",
+                "args": {"tenant_id": tenant_id, "section": "billing"},
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=team\n"
+                    "AUTHORITATIVE_BILLING_STATUS=active\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": "Your workspace is currently on the Team plan.",
+                    "reply_type": "handoff",
+                    "internal_analysis": (
+                        "The form value was a label; the email uniquely resolved "
+                        "the target workspace and Billing confirmed Team."
+                    ),
+                    "evidence_ledger": {
+                        "route": "high_risk",
+                        "decision_scope": "technical_fact_only",
+                        "root_cause_status": "not_applicable",
+                        "root_cause_summary": "",
+                        "rows": [
+                            {
+                                "claim": "The target workspace is on the Team plan.",
+                                "causal_role": "current_state",
+                                "status": "confirmed",
+                                "source_tools": ["inspector_exec"],
+                                "source_call_ids": ["billing-target"],
+                                "object_identifiers": f"tenant={tenant_id}",
+                                "time_window": "checked_at=2026-08-07T04:00:00Z",
+                                "observed_result": (
+                                    "Billing returned plan Team and status active."
+                                ),
+                                "alternatives_checked": (
+                                    "Ignored the non-canonical form label and used "
+                                    "the unique email membership."
+                                ),
+                            },
+                        ],
+                    },
+                },
+                sess,
+            )
+
+        assert result.success is True
+        assert "Dry Run" in result.output
+        assert sess.reply_sent is False
+
+    @pytest.mark.asyncio
     async def test_handoff_blocks_3802_style_contact_tenant_billing_lookup(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=True)
