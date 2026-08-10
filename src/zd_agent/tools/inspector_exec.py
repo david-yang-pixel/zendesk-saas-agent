@@ -31,6 +31,7 @@ Inspector 是 langgenius/infra-toolkit 提供的私有 CLI。它把高频查询�
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import signal
@@ -153,16 +154,13 @@ def _authoritative_billing_prefix(output: str, section: str | None) -> str:
     )
 
 
-def _email_workspace_prefix(output: str) -> str:
-    """Promote email -> tenant membership resolution ahead of Prod plan fields."""
-    count_match = _TENANTS_COUNT_RE.search(output)
-    if not count_match:
-        count = -1
-    else:
-        count = int(count_match.group(1))
-
-    tenant_ids: list[str] = []
+def _email_workspace_candidates(output: str) -> list[dict[str, str]]:
+    """Parse tenant IDs and names from Inspector's email membership table."""
+    candidates: list[dict[str, str]] = []
+    seen_tenant_ids: set[str] = set()
     in_tenants = False
+    tenant_id_index: int | None = None
+    name_index: int | None = None
     for line in output.splitlines():
         if _TENANTS_COUNT_RE.fullmatch(line.strip()):
             in_tenants = True
@@ -171,14 +169,48 @@ def _email_workspace_prefix(output: str) -> str:
             continue
         if line.startswith("提示:"):
             break
-        row = re.match(r"^\|\s*([^|]+?)\s*\|", line)
-        if not row:
+        stripped = line.strip()
+        if not (stripped.startswith("|") and stripped.endswith("|")):
             continue
-        first_cell = row.group(1).strip()
-        if first_cell.casefold() == "tenant id":
+        cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+        normalized_headers = [
+            re.sub(r"[\s_-]+", " ", cell).strip().casefold()
+            for cell in cells
+        ]
+        if tenant_id_index is None or name_index is None:
+            if (
+                "tenant id" not in normalized_headers
+                or "name" not in normalized_headers
+            ):
+                continue
+            tenant_id_index = normalized_headers.index("tenant id")
+            name_index = normalized_headers.index("name")
             continue
-        if _TENANT_ID_TOKEN_RE.fullmatch(first_cell) and first_cell not in tenant_ids:
-            tenant_ids.append(first_cell)
+        if len(cells) <= max(tenant_id_index, name_index):
+            continue
+        tenant_id = cells[tenant_id_index]
+        if (
+            not _TENANT_ID_TOKEN_RE.fullmatch(tenant_id)
+            or tenant_id in seen_tenant_ids
+        ):
+            continue
+        seen_tenant_ids.add(tenant_id)
+        candidates.append({"tenant_id": tenant_id, "name": cells[name_index]})
+    return candidates
+
+
+def _email_workspace_prefix(
+    output: str,
+) -> tuple[str, dict[str, Any]]:
+    """Promote email -> tenant membership resolution ahead of Prod plan fields."""
+    count_match = _TENANTS_COUNT_RE.search(output)
+    if not count_match:
+        count = -1
+    else:
+        count = int(count_match.group(1))
+
+    candidates = _email_workspace_candidates(output)
+    tenant_ids = [candidate["tenant_id"] for candidate in candidates]
 
     if count == 0 and not tenant_ids:
         resolution = "none"
@@ -189,14 +221,29 @@ def _email_workspace_prefix(output: str) -> str:
     else:
         resolution = "unverified"
 
-    return (
+    candidates_json = json.dumps(
+        candidates,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    prefix = (
         f"EMAIL_WORKSPACE_RESOLUTION={resolution}\n"
         f"EMAIL_WORKSPACE_COUNT={max(count, 0)}\n"
         f"EMAIL_WORKSPACE_TENANT_IDS={','.join(tenant_ids)}\n"
+        f"EMAIL_WORKSPACE_CANDIDATES_JSON={candidates_json}\n"
         "EMAIL_WORKSPACE_SOURCE=prod_membership\n"
         "TENANTS table Plan is non-authoritative Prod metadata; use only "
         "tenant_id/name/status/role for workspace resolution.\n\n"
     )
+    metadata = {
+        "source": "prod_membership",
+        "status": resolution,
+        "count": max(count, 0),
+        "tenant_ids": tenant_ids,
+        "candidates": candidates,
+    }
+    return prefix, metadata
 
 
 def _flag_to_cli(flag: str) -> str:
@@ -262,8 +309,8 @@ class InspectorExec(Tool):
         "可选 section（all / tenants / apps / runs / conversations / billing / quota / members）。"
         "订阅套餐/状态必须先拿 tenant_id，再单独调用 section=billing；email/section=all "
         "和 TENANT/TENANTS Plan 不能作为套餐证据。工作空间定位优先使用用户表单 "
-        "Email + section=tenants；若返回多个 workspace，必须用表单 Workspace ID "
-        "消歧，否则禁止猜测。"
+        "Email + section=tenants；若返回多个 workspace，只能用表单中的规范 UUID "
+        "或候选集合内唯一精确匹配的 workspace 名称消歧，否则禁止猜测。"
         "+ query（failed / succeeded）+ limit（默认 50）+ from / to（YYYY-MM-DD）。"
     )
     parameters = {
@@ -550,8 +597,11 @@ class InspectorExec(Tool):
             bytes=len(out),
             ticket_id=session.ticket_id,
         )
+        result_metadata: dict[str, Any] = {}
         if primary_flag == "email" and section == "tenants":
-            out = _email_workspace_prefix(out) + out
+            workspace_prefix, workspace_resolution = _email_workspace_prefix(out)
+            out = workspace_prefix + out
+            result_metadata["workspace_resolution"] = workspace_resolution
         if section in {"billing", "all"}:
             out = _authoritative_billing_prefix(out, section) + out
-        return ToolResult(output=out)
+        return ToolResult(output=out, metadata=result_metadata)

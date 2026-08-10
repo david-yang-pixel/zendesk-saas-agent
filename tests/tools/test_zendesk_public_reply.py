@@ -1121,6 +1121,113 @@ class TestExecute:
         assert sess.reply_sent is False
 
     @pytest.mark.asyncio
+    async def test_handoff_uses_3846_exact_candidate_name_to_bind_target(
+        self,
+    ) -> None:
+        tenant_1 = "11111111-1111-4111-8111-111111111111"
+        tenant_2 = "22222222-2222-4222-8222-222222222222"
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.ticket_type = "billing"
+        sess.investigation_route = "high_risk"
+        sess.customer_form_data = {
+            "email": "customer@example.com",
+            "workspace_id": "Dify's Workspace",
+        }
+        sess.tool_call_log = [
+            {
+                "call_id": "identity-customer",
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "customer@example.com",
+                    "section": "tenants",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=ambiguous\n"
+                    "EMAIL_WORKSPACE_COUNT=2\n"
+                    f"EMAIL_WORKSPACE_TENANT_IDS={tenant_1},{tenant_2}\n"
+                    "EMAIL_WORKSPACE_CANDIDATES_JSON="
+                    f"[{{\"tenant_id\":\"{tenant_1}\",\"name\":"
+                    "\"customer@example.com's Workspace\"},"
+                    f"{{\"tenant_id\":\"{tenant_2}\",\"name\":"
+                    "\"Dify's Workspace\"}]\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+            {
+                "call_id": "billing-target",
+                "tool": "inspector_exec",
+                "args": {"tenant_id": tenant_2, "section": "billing"},
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=professional\n"
+                    "AUTHORITATIVE_BILLING_STATUS=active\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "Your workspace currently has an active Professional "
+                        "subscription."
+                    ),
+                    "reply_type": "handoff",
+                    "internal_analysis": (
+                        "The form name uniquely matched one of the email's two "
+                        "workspace memberships, and Billing confirmed the plan."
+                    ),
+                    "evidence_ledger": {
+                        "route": "high_risk",
+                        "decision_scope": "technical_fact_only",
+                        "root_cause_status": "not_applicable",
+                        "root_cause_summary": "",
+                        "rows": [
+                            {
+                                "claim": (
+                                    "The target workspace has an active "
+                                    "Professional subscription."
+                                ),
+                                "causal_role": "current_state",
+                                "status": "confirmed",
+                                "source_tools": ["inspector_exec"],
+                                "source_call_ids": [
+                                    "identity-customer",
+                                    "billing-target",
+                                ],
+                                "object_identifiers": f"tenant={tenant_2}",
+                                "time_window": (
+                                    "checked_at=2026-08-10T02:00:00Z"
+                                ),
+                                "observed_result": (
+                                    "The exact candidate name selected this "
+                                    "tenant and Billing returned Professional."
+                                ),
+                                "alternatives_checked": (
+                                    "The other email membership had a different "
+                                    "workspace name."
+                                ),
+                            },
+                        ],
+                    },
+                },
+                sess,
+            )
+
+        assert result.success is True
+        assert "Dry Run" in result.output
+        assert sess.reply_sent is False
+
+    @pytest.mark.asyncio
     async def test_handoff_blocks_3802_style_contact_tenant_billing_lookup(self) -> None:
         tool = ZendeskPublicReply()
         sess = _make_session(dry_run=True)
@@ -1414,6 +1521,64 @@ class TestExecute:
 
         assert result.success is True
         assert "Dry Run" in result.output
+
+    @pytest.mark.asyncio
+    async def test_ask_blocks_3846_exact_candidate_name_match(self) -> None:
+        tenant_1 = "11111111-1111-4111-8111-111111111111"
+        tenant_2 = "22222222-2222-4222-8222-222222222222"
+        tool = ZendeskPublicReply()
+        sess = _make_session(dry_run=True)
+        sess.customer_form_data = {
+            "email": "customer@example.com",
+            "workspace_id": "Dify's Workspace",
+        }
+        sess.tool_call_log = [
+            {
+                "call_id": "identity-customer",
+                "tool": "inspector_exec",
+                "args": {
+                    "email": "customer@example.com",
+                    "section": "tenants",
+                },
+                "success": True,
+                "error": None,
+                "result_preview": (
+                    "EMAIL_WORKSPACE_RESOLUTION=ambiguous\n"
+                    "EMAIL_WORKSPACE_COUNT=2\n"
+                    f"EMAIL_WORKSPACE_TENANT_IDS={tenant_1},{tenant_2}\n"
+                    "EMAIL_WORKSPACE_CANDIDATES_JSON="
+                    f"[{{\"tenant_id\":\"{tenant_1}\",\"name\":"
+                    "\"customer@example.com's Workspace\"},"
+                    f"{{\"tenant_id\":\"{tenant_2}\",\"name\":"
+                    "\"Dify's Workspace\"}]\n"
+                    "EMAIL_WORKSPACE_SOURCE=prod_membership"
+                ),
+            },
+        ]
+
+        with patch(
+            "zd_agent.tools.zendesk_public_reply.get_config",
+            return_value=_make_cfg(),
+        ):
+            result = await tool.execute(
+                {
+                    "ticket_id": 42,
+                    "body": (
+                        "Your email is linked to more than one workspace. "
+                        "Please provide the Workspace ID for the affected one."
+                    ),
+                    "reply_type": "ask",
+                    "internal_analysis": (
+                        "The form name exactly matches one email candidate."
+                    ),
+                },
+                sess,
+            )
+
+        assert result.success is False
+        assert "already resolved" in (result.error or "").lower()
+        assert tenant_2 in (result.error or "")
+        assert sess.reply_sent is False
 
     @pytest.mark.asyncio
     async def test_ask_requires_support_lookup_before_requesting_workspace_id(

@@ -9,9 +9,10 @@ specific support-side recovery action unless the evidence proves that only the
 customer can disambiguate the target.
 
 This closes the recurring pattern observed in the archived runs for tickets
-3802 and 3821: a display label was treated as a system ID, a high-risk handoff
-was blocked, and the next model turn converted the blocker into repeated public
-identity questions even though the form email mapped to one workspace.
+3802, 3821, and 3846: form identity evidence was available to Support, but the
+reply path either treated a display label as a system ID or failed to use a
+display label that uniquely identified one of the email's candidate workspaces.
+The resulting blocker was converted into a repeated public identity question.
 
 ## Approved Assumptions
 
@@ -19,16 +20,19 @@ identity questions even though the form email mapped to one workspace.
    only when the form does not provide a usable identity email.
 2. An email-shaped form Workspace ID is an explicit target identity and must be
    resolved separately from the contact email.
-3. Only a canonical tenant UUID may disambiguate multiple memberships. Other
-   Workspace ID form values are display labels or hints and never override a
-   unique email membership.
+3. A canonical tenant UUID may disambiguate multiple memberships. A non-UUID
+   Workspace ID form value may also disambiguate them only when its conservatively
+   normalized display name uniquely and exactly matches one candidate returned
+   by the same email-membership lookup. It never overrides a unique email
+   membership, never triggers a global name lookup, and never permits fuzzy
+   matching.
 4. A verified unique email membership is sufficient to continue support-side
    investigation. The customer must not be asked to repeat its workspace name
    or system ID.
 5. A customer identity question is permitted only after a successful lookup
-   proves one of: multiple candidate workspaces without a matching canonical
-   ID, no membership for the supplied identity, or a canonical form ID that
-   conflicts with the resolved candidates.
+   proves one of: multiple candidate workspaces without a matching canonical ID
+   or unique exact candidate name, no membership for the supplied identity, or
+   a canonical form ID that conflicts with the resolved candidates.
 6. A missing, failed, or unverified support lookup is not customer-missing
    information. The agent must retry or hand off the internal lookup without
    asking the customer for data already available to Support.
@@ -74,14 +78,28 @@ For a model-authored ask that requests a workspace name or Workspace ID:
 - unique tenant resolution: block because the target is already resolved;
 - ambiguous resolution plus matching canonical form tenant UUID: block because
   the target is already resolved;
-- ambiguous resolution without a matching canonical tenant UUID: allow the
-  minimum customer clarification;
+- ambiguous resolution plus one unique exact candidate-name match after Unicode
+  normalization, whitespace collapse, and case folding: block because the target
+  is already resolved;
+- ambiguous resolution without either matching mechanism, or with duplicate
+  normalized candidate names: allow the minimum customer clarification;
+- malformed or inconsistent candidate-name metadata: block and require a
+  support-side lookup retry rather than turning an internal evidence failure
+  into a customer question;
 - verified no-membership or conflicting canonical tenant UUID: allow the
   minimum customer clarification;
 - no usable identity email at all: allow a minimum identity question.
 
 The decision is enforced in code before any Browser Relay delivery. Prompt
 wording is guidance only and cannot bypass it.
+
+The Inspector tenants result exposes a machine-readable candidate list at the
+start of the model-visible tool output and in structured tool-call metadata used
+by the live gates. The structured copy prevents the 500-character tool-call
+result preview from truncating a larger candidate set. The gate validates that
+candidate tenant IDs exactly match the verified membership-ID set before using
+any name. Missing legacy candidate metadata preserves the UUID-only fallback;
+present but malformed metadata fails closed.
 
 ### Evidence Call IDs
 
@@ -109,7 +127,8 @@ the resolved target without weakening plan, time-window, or high-risk gates.
 ## Testing Strategy
 
 1. Pure identity-policy tests for unique, ambiguous, none, missing, unverified,
-   explicit-email target, display-label, and conflicting canonical-ID cases.
+   explicit-email target, unique exact candidate-name match, duplicate names,
+   unknown labels, malformed metadata, and conflicting canonical-ID cases.
 2. Public-reply tests proving unique resolution blocks workspace name/ID asks,
    true ambiguity permits a minimal ask, and unrelated missing information is
    unaffected.
@@ -137,6 +156,7 @@ the resolved target without weakening plan, time-window, or high-risk gates.
 - Ask first: new external dependency, DB/schema mutation, globally disabling
   replies, or changing refund/subscription policy.
 - Never: guess among multiple workspaces, use a display label as a tenant UUID,
+  fuzzy-match or globally search a workspace name to bypass email membership,
   cite a failed tool as evidence, weaken human approval gates, send a real
   customer reply as a deployment test, or automatically replay old tickets.
 
@@ -146,15 +166,18 @@ the resolved target without weakening plan, time-window, or high-risk gates.
    the form email has a verified unique membership.
 2. A missing or unverified inspector lookup returns an explicit support-side
    recovery instruction rather than authorizing a customer ask.
-3. A verified ambiguous/no-membership/conflicting-ID case can still ask the
-   customer for the minimum identity detail.
-4. Neither generated ask path nor fallback content requests Workspace ID,
+3. Ticket 3846's two-membership shape resolves to the candidate whose name is
+   exactly `Dify's Workspace`, blocks another Workspace ID ask, and binds
+   tenant-scoped evidence to that candidate.
+4. A verified ambiguous/no-membership/conflicting-ID/duplicate-name case can
+   still ask the customer for the minimum identity detail.
+5. Neither generated ask path nor fallback content requests Workspace ID,
    workspace name, email, plan, or owner by default.
-5. Active category prompts consistently say to resolve workspace identity from
+6. Active category prompts consistently say to resolve workspace identity from
    the form before asking the customer.
-6. The model sees the exact stable ID of every successful evidence call and can
+7. The model sees the exact stable ID of every successful evidence call and can
    use it verbatim in the structured ledger.
-7. Targeted and full tests, Ruff, and build pass; production reports the expected
+8. Targeted and full tests, Ruff, and build pass; production reports the expected
    revision with healthy Agent, Browser Relay, queue, and MCP services.
 
 ## Open Questions

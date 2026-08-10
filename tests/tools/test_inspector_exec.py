@@ -302,6 +302,19 @@ async def test_email_tenants_section_emits_machine_readable_workspace_resolution
         "EMAIL_WORKSPACE_RESOLUTION=unique\n"
         "EMAIL_WORKSPACE_COUNT=1\n"
         "EMAIL_WORKSPACE_TENANT_IDS=tenant-1\n"
+        'EMAIL_WORKSPACE_CANDIDATES_JSON=[{"tenant_id":"tenant-1",'
+        '"name":"Workspace"}]\n'
         "EMAIL_WORKSPACE_SOURCE=prod_membership\n"
     )
     assert "Plan is non-authoritative" in result.output
+    assert result.metadata == {
+        "workspace_resolution": {
+            "source": "prod_membership",
+            "status": "unique",
+            "count": 1,
+            "tenant_ids": ["tenant-1"],
+            "candidates": [
+                {"tenant_id": "tenant-1", "name": "Workspace"},
+            ],
+        },
+    }

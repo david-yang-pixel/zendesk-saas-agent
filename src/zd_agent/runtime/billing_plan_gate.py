@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass
+import json
 import re
+import unicodedata
+from dataclasses import dataclass
 from typing import Any, Final
 
 _PLAN_CODES: Final = {
@@ -58,12 +60,20 @@ _WORKSPACE_IDENTITY_REQUEST_RE: Final = re.compile(
     re.IGNORECASE,
 )
 _WHICH_WORKSPACE_RE: Final = re.compile(r"\bwhich\s+workspace\b", re.IGNORECASE)
+_MISSING_CANDIDATES: Final = object()
+
+
+@dataclass(frozen=True)
+class _WorkspaceCandidate:
+    tenant_id: str
+    name: str
 
 
 @dataclass(frozen=True)
 class _WorkspaceResolution:
     status: str
     tenant_ids: frozenset[str]
+    candidates: tuple[_WorkspaceCandidate, ...] = ()
 
 
 def _normalize_email(value: object) -> str:
@@ -84,6 +94,11 @@ def _canonical_form_tenant_id(value: object) -> str:
     """Return a form value only when it is a canonical system tenant UUID."""
     candidate = str(value or "").strip().lower()
     return candidate if _CANONICAL_TENANT_ID_RE.fullmatch(candidate) else ""
+
+
+def _normalize_workspace_name(value: object) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    return " ".join(normalized.split()).casefold()
 
 
 def _asks_for_workspace_identity(body: str) -> bool:
@@ -186,6 +201,109 @@ def _prefixed_value(text: str, key: str) -> str:
     return match.group(1).strip() if match else ""
 
 
+def _prefixed_value_if_present(text: str, key: str) -> str | None:
+    match = re.search(
+        rf"^{re.escape(key)}=([^\r\n]*)$",
+        text,
+        re.MULTILINE,
+    )
+    return match.group(1).strip() if match else None
+
+
+def _workspace_candidates_from_data(
+    decoded: object,
+    tenant_ids: frozenset[str],
+) -> tuple[_WorkspaceCandidate, ...] | None:
+    if not isinstance(decoded, list):
+        return None
+
+    candidates: list[_WorkspaceCandidate] = []
+    seen_tenant_ids: set[str] = set()
+    for item in decoded:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("tenant_id"), str)
+            or not isinstance(item.get("name"), str)
+        ):
+            return None
+        tenant_id = _normalize_tenant_id(item.get("tenant_id"))
+        if not tenant_id or tenant_id in seen_tenant_ids:
+            return None
+        seen_tenant_ids.add(tenant_id)
+        candidates.append(
+            _WorkspaceCandidate(tenant_id=tenant_id, name=item["name"]),
+        )
+    if seen_tenant_ids != set(tenant_ids):
+        return None
+    return tuple(candidates)
+
+
+def _validated_workspace_resolution(
+    *,
+    status: object,
+    count: object,
+    tenant_values: object,
+    candidates_data: object = _MISSING_CANDIDATES,
+) -> _WorkspaceResolution:
+    if (
+        not isinstance(status, str)
+        or type(count) is not int
+        or not isinstance(tenant_values, (list, tuple))
+        or any(not isinstance(value, str) for value in tenant_values)
+    ):
+        return _WorkspaceResolution("unverified", frozenset())
+
+    normalized_values = [
+        _normalize_tenant_id(value)
+        for value in tenant_values
+    ]
+    tenant_ids = frozenset(value for value in normalized_values if value)
+    if len(tenant_ids) != len(normalized_values):
+        return _WorkspaceResolution("unverified", tenant_ids)
+    if count != len(tenant_ids):
+        return _WorkspaceResolution("unverified", tenant_ids)
+    if status not in {"unique", "ambiguous", "none"}:
+        return _WorkspaceResolution("unverified", tenant_ids)
+    if status == "unique" and count != 1:
+        return _WorkspaceResolution("unverified", tenant_ids)
+    if status == "ambiguous" and count < 2:
+        return _WorkspaceResolution("unverified", tenant_ids)
+    if status == "none" and count != 0:
+        return _WorkspaceResolution("unverified", tenant_ids)
+
+    candidates: tuple[_WorkspaceCandidate, ...] = ()
+    if candidates_data is not _MISSING_CANDIDATES:
+        parsed_candidates = _workspace_candidates_from_data(
+            candidates_data,
+            tenant_ids,
+        )
+        if parsed_candidates is None:
+            return _WorkspaceResolution("unverified", tenant_ids)
+        candidates = parsed_candidates
+    return _WorkspaceResolution(str(status), tenant_ids, candidates)
+
+
+def _workspace_resolution_from_metadata(
+    item: dict[str, Any],
+) -> _WorkspaceResolution | None:
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict) or "workspace_resolution" not in metadata:
+        return None
+    payload = metadata.get("workspace_resolution")
+    if not isinstance(payload, dict):
+        return _WorkspaceResolution("unverified", frozenset())
+    if payload.get("source") != "prod_membership":
+        return _WorkspaceResolution("unverified", frozenset())
+    if "candidates" not in payload:
+        return _WorkspaceResolution("unverified", frozenset())
+    return _validated_workspace_resolution(
+        status=payload.get("status"),
+        count=payload.get("count"),
+        tenant_values=payload.get("tenant_ids"),
+        candidates_data=payload["candidates"],
+    )
+
+
 def _workspace_resolution_for_email(
     tool_call_log: list[dict[str, Any]],
     email: str,
@@ -205,33 +323,89 @@ def _workspace_resolution_for_email(
         if _normalize_email(args.get("email")) != expected_email:
             continue
 
+        metadata_resolution = _workspace_resolution_from_metadata(item)
+        if metadata_resolution is not None:
+            return metadata_resolution
+
         result = str(item.get("result_preview") or "")
         if _prefixed_value(result, "EMAIL_WORKSPACE_SOURCE") != "prod_membership":
             return _WorkspaceResolution("unverified", frozenset())
         status = _prefixed_value(result, "EMAIL_WORKSPACE_RESOLUTION")
         raw_count = _prefixed_value(result, "EMAIL_WORKSPACE_COUNT")
         raw_ids = _prefixed_value(result, "EMAIL_WORKSPACE_TENANT_IDS")
+        raw_candidates = _prefixed_value_if_present(
+            result,
+            "EMAIL_WORKSPACE_CANDIDATES_JSON",
+        )
         try:
             count = int(raw_count)
         except ValueError:
             return _WorkspaceResolution("unverified", frozenset())
-        tenant_ids = frozenset(
-            tenant_id
+        tenant_values = [
+            value
             for value in raw_ids.split(",")
-            if (tenant_id := _normalize_tenant_id(value))
+            if value.strip()
+        ]
+        candidates_data: object = _MISSING_CANDIDATES
+        if raw_candidates is not None:
+            try:
+                candidates_data = json.loads(raw_candidates)
+            except json.JSONDecodeError:
+                base_resolution = _validated_workspace_resolution(
+                    status=status,
+                    count=count,
+                    tenant_values=tenant_values,
+                )
+                return _WorkspaceResolution(
+                    "unverified",
+                    base_resolution.tenant_ids,
+                )
+        return _validated_workspace_resolution(
+            status=status,
+            count=count,
+            tenant_values=tenant_values,
+            candidates_data=candidates_data,
         )
-        if count != len(tenant_ids):
-            return _WorkspaceResolution("unverified", tenant_ids)
-        if status not in {"unique", "ambiguous", "none"}:
-            return _WorkspaceResolution("unverified", tenant_ids)
-        if status == "unique" and count != 1:
-            return _WorkspaceResolution("unverified", tenant_ids)
-        if status == "ambiguous" and count < 2:
-            return _WorkspaceResolution("unverified", tenant_ids)
-        if status == "none" and count != 0:
-            return _WorkspaceResolution("unverified", tenant_ids)
-        return _WorkspaceResolution(status, tenant_ids)
     return None
+
+
+def _candidate_name_target_tenant_id(
+    resolution: _WorkspaceResolution,
+    form_workspace_id: str,
+) -> str:
+    normalized_form_name = _normalize_workspace_name(form_workspace_id)
+    if not normalized_form_name:
+        return ""
+    matches = {
+        candidate.tenant_id
+        for candidate in resolution.candidates
+        if _normalize_workspace_name(candidate.name) == normalized_form_name
+    }
+    return next(iter(matches)) if len(matches) == 1 else ""
+
+
+def _target_tenant_id_from_resolution(
+    resolution: _WorkspaceResolution,
+    *,
+    form_workspace_id: str,
+    workspace_identity_email: str,
+) -> str:
+    supplied_workspace_id = (
+        ""
+        if workspace_identity_email
+        else _canonical_form_tenant_id(form_workspace_id)
+    )
+    if supplied_workspace_id:
+        return (
+            supplied_workspace_id
+            if supplied_workspace_id in resolution.tenant_ids
+            else ""
+        )
+    if resolution.status == "unique":
+        return next(iter(resolution.tenant_ids))
+    if resolution.status == "ambiguous" and not workspace_identity_email:
+        return _candidate_name_target_tenant_id(resolution, form_workspace_id)
+    return ""
 
 
 def workspace_identity_candidates_block_reason(
@@ -304,20 +478,11 @@ def resolved_target_tenant_id(
     if resolution is None or resolution.status not in {"unique", "ambiguous"}:
         return ""
 
-    supplied_workspace_id = (
-        ""
-        if workspace_identity_email
-        else _canonical_form_tenant_id(form_workspace_id)
+    return _target_tenant_id_from_resolution(
+        resolution,
+        form_workspace_id=form_workspace_id,
+        workspace_identity_email=workspace_identity_email,
     )
-    if supplied_workspace_id:
-        return (
-            supplied_workspace_id
-            if supplied_workspace_id in resolution.tenant_ids
-            else ""
-        )
-    if resolution.status == "unique":
-        return next(iter(resolution.tenant_ids))
-    return ""
 
 
 def workspace_identity_request_block_reason(
@@ -400,16 +565,13 @@ def workspace_identity_request_block_reason(
             )
         return None
 
-    if resolution.status == "ambiguous":
-        if not supplied_workspace_id:
-            return None
-        if supplied_workspace_id not in resolution.tenant_ids:
-            return None
-        target_tenant_id = supplied_workspace_id
-    else:
-        target_tenant_id = next(iter(resolution.tenant_ids))
-        if supplied_workspace_id and supplied_workspace_id != target_tenant_id:
-            return None
+    target_tenant_id = _target_tenant_id_from_resolution(
+        resolution,
+        form_workspace_id=form_workspace_id,
+        workspace_identity_email=workspace_identity_email,
+    )
+    if not target_tenant_id:
+        return None
 
     return (
         "WORKSPACE_IDENTITY_ALREADY_RESOLVED: The target workspace is already "
@@ -500,17 +662,20 @@ def billing_plan_claim_block_reason(
             "The target workspace must be clarified before checking its plan."
         )
 
+    resolved_tenant_id = _target_tenant_id_from_resolution(
+        resolution,
+        form_workspace_id=form_workspace_id,
+        workspace_identity_email=workspace_identity_email,
+    )
     if resolution.status == "ambiguous":
-        if not supplied_workspace_id:
+        if not resolved_tenant_id:
             return (
                 "Workspace identity evidence gate blocked this public reply: the "
                 f"{identity_label} maps to multiple workspaces and the form does "
-                "not contain a matching tenant ID. Ask the customer to identify "
-                "the target; do not guess a tenant or plan."
+                "not contain a matching tenant ID or a unique exact candidate "
+                "name. Ask the customer to identify the target; do not guess a "
+                "tenant or plan."
             )
-        resolved_tenant_id = supplied_workspace_id
-    else:
-        resolved_tenant_id = next(iter(resolution.tenant_ids))
 
     authoritative = plans_by_tenant.get(resolved_tenant_id, set())
     if not authoritative:

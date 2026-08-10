@@ -1,3 +1,5 @@
+import json
+
 from zd_agent.runtime.billing_plan_gate import (
     billing_plan_claim_block_reason,
     resolved_target_tenant_id,
@@ -13,8 +15,24 @@ def _workspace_lookup(
     *,
     email: str = "form@example.com",
     tenant_ids: tuple[str, ...] = ("tenant-1",),
+    workspace_names: tuple[str, ...] | None = None,
 ) -> dict:
     resolution = "unique" if len(tenant_ids) == 1 else "ambiguous"
+    candidates_line = ""
+    if workspace_names is not None:
+        assert len(workspace_names) == len(tenant_ids)
+        candidates_line = (
+            "EMAIL_WORKSPACE_CANDIDATES_JSON="
+            + json.dumps(
+                [
+                    {"tenant_id": tenant_id, "name": name}
+                    for tenant_id, name in zip(tenant_ids, workspace_names)
+                ],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
     return {
         "tool": "inspector_exec",
         "args": {"email": email, "section": "tenants"},
@@ -23,6 +41,7 @@ def _workspace_lookup(
             f"EMAIL_WORKSPACE_RESOLUTION={resolution}\n"
             f"EMAIL_WORKSPACE_COUNT={len(tenant_ids)}\n"
             f"EMAIL_WORKSPACE_TENANT_IDS={','.join(tenant_ids)}\n"
+            f"{candidates_line}"
             "EMAIL_WORKSPACE_SOURCE=prod_membership"
         ),
     }
@@ -194,11 +213,106 @@ def test_unique_email_workspace_is_target_when_form_value_is_only_a_label() -> N
     assert target == TENANT_1
 
 
-def test_non_uuid_workspace_label_cannot_disambiguate_multiple_email_workspaces() -> None:
+def test_exact_candidate_name_disambiguates_multiple_email_workspaces() -> None:
     blocker = billing_plan_claim_block_reason(
         body="Your workspace is currently on the Team plan.",
         tool_call_log=[
-            _workspace_lookup(tenant_ids=(TENANT_1, TENANT_2)),
+            _workspace_lookup(
+                email="customer@example.com",
+                tenant_ids=(TENANT_1, TENANT_2),
+                workspace_names=(
+                    "customer@example.com's Workspace",
+                    "Dify's Workspace",
+                ),
+            ),
+            {
+                "tool": "inspector_exec",
+                "args": {"tenant_id": TENANT_2, "section": "billing"},
+                "success": True,
+                "result_preview": (
+                    "AUTHORITATIVE_BILLING_PLAN=team\n"
+                    "AUTHORITATIVE_BILLING_STATUS=active\n"
+                    "AUTHORITATIVE_BILLING_SOURCE=billing_db"
+                ),
+            },
+        ],
+        form_email="customer@example.com",
+        form_workspace_id="Dify's Workspace",
+    )
+
+    assert blocker is None
+
+
+def test_normalized_candidate_name_resolves_target_tenant() -> None:
+    target = resolved_target_tenant_id(
+        tool_call_log=[
+            _workspace_lookup(
+                tenant_ids=(TENANT_1, TENANT_2),
+                workspace_names=("Other Workspace", "Dify's Workspace"),
+            )
+        ],
+        form_email="form@example.com",
+        form_workspace_id="  DIFY'S   WORKSPACE  ",
+    )
+
+    assert target == TENANT_2
+
+
+def test_structured_candidate_metadata_survives_result_preview_truncation() -> None:
+    lookup = _workspace_lookup(tenant_ids=(TENANT_1, TENANT_2))
+    lookup["metadata"] = {
+        "workspace_resolution": {
+            "source": "prod_membership",
+            "status": "ambiguous",
+            "count": 2,
+            "tenant_ids": [TENANT_1, TENANT_2],
+            "candidates": [
+                {"tenant_id": TENANT_1, "name": "Other Workspace"},
+                {"tenant_id": TENANT_2, "name": "Dify's Workspace"},
+            ],
+        },
+    }
+
+    target = resolved_target_tenant_id(
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+        form_workspace_id="Dify's Workspace",
+    )
+
+    assert target == TENANT_2
+
+
+def test_incomplete_structured_candidate_metadata_requires_support_retry() -> None:
+    lookup = _workspace_lookup(tenant_ids=(TENANT_1, TENANT_2))
+    lookup["metadata"] = {
+        "workspace_resolution": {
+            "source": "prod_membership",
+            "status": "ambiguous",
+            "count": 2,
+            "tenant_ids": [TENANT_1, TENANT_2],
+        },
+    }
+
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+        form_workspace_id="Dify's Workspace",
+    )
+
+    assert blocker is not None
+    assert "support_action_required" in blocker.lower()
+    assert "unverified" in blocker.lower()
+
+
+def test_unmatched_workspace_label_cannot_disambiguate_multiple_email_workspaces() -> None:
+    blocker = billing_plan_claim_block_reason(
+        body="Your workspace is currently on the Team plan.",
+        tool_call_log=[
+            _workspace_lookup(
+                tenant_ids=(TENANT_1, TENANT_2),
+                workspace_names=("First Workspace", "Second Workspace"),
+            ),
             {
                 "tool": "inspector_exec",
                 "args": {"tenant_id": TENANT_2, "section": "billing"},
@@ -216,6 +330,48 @@ def test_non_uuid_workspace_label_cannot_disambiguate_multiple_email_workspaces(
 
     assert blocker is not None
     assert "multiple workspaces" in blocker.lower()
+
+
+def test_duplicate_normalized_candidate_names_do_not_select_a_tenant() -> None:
+    lookup = _workspace_lookup(
+        tenant_ids=(TENANT_1, TENANT_2),
+        workspace_names=("Dify's Workspace", "  DIFY'S   WORKSPACE "),
+    )
+
+    target = resolved_target_tenant_id(
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+        form_workspace_id="Dify's Workspace",
+    )
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+        form_workspace_id="Dify's Workspace",
+    )
+
+    assert target == ""
+    assert blocker is None
+
+
+def test_malformed_candidate_metadata_requires_support_retry() -> None:
+    lookup = _workspace_lookup(tenant_ids=(TENANT_1, TENANT_2))
+    lookup["result_preview"] = str(lookup["result_preview"]).replace(
+        "EMAIL_WORKSPACE_SOURCE=prod_membership",
+        "EMAIL_WORKSPACE_CANDIDATES_JSON={not-json}\n"
+        "EMAIL_WORKSPACE_SOURCE=prod_membership",
+    )
+
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[lookup],
+        form_email="form@example.com",
+        form_workspace_id="Dify's Workspace",
+    )
+
+    assert blocker is not None
+    assert "support_action_required" in blocker.lower()
+    assert "unverified" in blocker.lower()
 
 
 def test_canonical_form_workspace_id_must_belong_to_email_memberships() -> None:
@@ -422,12 +578,39 @@ def test_workspace_identity_ask_requires_retry_after_unverified_lookup() -> None
 def test_workspace_identity_ask_is_allowed_for_verified_ambiguity() -> None:
     blocker = workspace_identity_request_block_reason(
         body="Please provide the Workspace ID for the affected workspace.",
-        tool_call_log=[_workspace_lookup(tenant_ids=(TENANT_1, TENANT_2))],
+        tool_call_log=[
+            _workspace_lookup(
+                tenant_ids=(TENANT_1, TENANT_2),
+                workspace_names=("First Workspace", "Second Workspace"),
+            )
+        ],
         form_email="form@example.com",
         form_workspace_id="display-label",
     )
 
     assert blocker is None
+
+
+def test_workspace_identity_ask_is_blocked_after_exact_candidate_name_match() -> None:
+    blocker = workspace_identity_request_block_reason(
+        body="Please provide the Workspace ID for the affected workspace.",
+        tool_call_log=[
+            _workspace_lookup(
+                email="customer@example.com",
+                tenant_ids=(TENANT_1, TENANT_2),
+                workspace_names=(
+                    "customer@example.com's Workspace",
+                    "Dify's Workspace",
+                ),
+            )
+        ],
+        form_email="customer@example.com",
+        form_workspace_id="Dify's Workspace",
+    )
+
+    assert blocker is not None
+    assert "already resolved" in blocker.lower()
+    assert TENANT_2 in blocker
 
 
 def test_workspace_identity_ask_is_blocked_when_form_uuid_disambiguates() -> None:
