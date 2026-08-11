@@ -287,6 +287,7 @@ async def test_durable_retry_persists_original_state_generation_fence(tmp_path) 
 @pytest.mark.asyncio
 async def test_state_fence_read_failure_retries_claim_without_killing_consumer(
     tmp_path,
+    monkeypatch,
 ) -> None:
     queue = DurableTriggerQueue(
         tmp_path / "trigger_queue.sqlite3",
@@ -319,6 +320,16 @@ async def test_state_fence_read_failure_retries_claim_without_killing_consumer(
 
     state = FlakyState()
     handled = asyncio.Event()
+    acknowledged = asyncio.Event()
+    real_ack = queue.ack
+
+    async def observed_ack(message):
+        result = await real_ack(message)
+        if result:
+            acknowledged.set()
+        return result
+
+    monkeypatch.setattr(queue, "ack", observed_ack)
 
     async def handle(**_kwargs) -> None:
         handled.set()
@@ -336,6 +347,7 @@ async def test_state_fence_read_failure_retries_claim_without_killing_consumer(
     )
 
     await asyncio.wait_for(handled.wait(), timeout=1)
+    await asyncio.wait_for(acknowledged.wait(), timeout=1)
     consumer.cancel()
     with pytest.raises(asyncio.CancelledError):
         await consumer
@@ -367,6 +379,16 @@ async def test_consumer_retries_transient_ack_failure_and_keeps_running(
     monkeypatch.setattr(queue._store, "delete", flaky_delete)
     handled: list[int] = []
     second_handled = asyncio.Event()
+    second_acknowledged = asyncio.Event()
+    real_ack = queue.ack
+
+    async def observed_ack(message):
+        result = await real_ack(message)
+        if result and int(message["ticket_id"]) == 2822:
+            second_acknowledged.set()
+        return result
+
+    monkeypatch.setattr(queue, "ack", observed_ack)
 
     async def handle(**kwargs) -> None:
         handled.append(int(kwargs["msg"]["ticket_id"]))
@@ -388,6 +410,7 @@ async def test_consumer_retries_transient_ack_failure_and_keeps_running(
         await asyncio.sleep(0.01)
     await queue.put({"ticket_id": 2822, "source": "zendesk_webhook"})
     await asyncio.wait_for(second_handled.wait(), timeout=1)
+    await asyncio.wait_for(second_acknowledged.wait(), timeout=1)
 
     consumer.cancel()
     with pytest.raises(asyncio.CancelledError):
