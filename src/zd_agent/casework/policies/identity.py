@@ -4,6 +4,7 @@ import re
 import unicodedata
 
 from zd_agent.casework.domain.enums import (
+    AdapterErrorCode,
     LookupStatus,
     ResolutionMethod,
     ResolutionStatus,
@@ -73,6 +74,7 @@ def _unresolved(
     candidates: tuple[WorkspaceCandidate, ...],
     evidence_ids: tuple[str, ...],
     detail: str,
+    error_code: AdapterErrorCode | None = None,
 ) -> IdentityResolution:
     return IdentityResolution(
         contact_email=contact_email,
@@ -80,6 +82,7 @@ def _unresolved(
         status=status,
         candidates=candidates,
         evidence_ids=evidence_ids,
+        error_code=error_code,
         detail=detail,
     )
 
@@ -159,6 +162,7 @@ def resolve_workspace_identity(
                     lookups=tuple(relevant),
                 ),
                 detail=f"support-side lookup failed: {lookup.error_code.value}",
+                error_code=lookup.error_code,
             )
         if lookup.status is LookupStatus.PENDING:
             return _unresolved(

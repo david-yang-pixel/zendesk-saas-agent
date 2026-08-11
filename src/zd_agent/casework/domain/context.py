@@ -114,6 +114,7 @@ class IdentityResolution(FrozenModel):
     selected_workspace_name: str = ""
     selected_role: str = ""
     evidence_ids: tuple[str, ...] = ()
+    error_code: AdapterErrorCode | None = None
     detail: str = ""
 
     @field_validator("contact_email", "target_identity")
@@ -136,6 +137,10 @@ class IdentityResolution(FrozenModel):
                 raise ValueError("resolved identity requires evidence")
         elif self.selected_tenant_id:
             raise ValueError("unresolved identity cannot select a tenant")
+        if self.status is ResolutionStatus.LOOKUP_FAILED and self.error_code is None:
+            raise ValueError("failed identity lookup requires an error code")
+        if self.status is not ResolutionStatus.LOOKUP_FAILED and self.error_code is not None:
+            raise ValueError("identity error code is only valid for a failed lookup")
         return self
 
 

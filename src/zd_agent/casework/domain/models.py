@@ -23,6 +23,8 @@ from zd_agent.casework.domain.decision import (
 )
 from zd_agent.casework.domain.evidence import (
     AdapterFailure,
+    AssessmentBuild,
+    AssessmentProposal,
     CaseAssessment,
     Claim,
     ClaimAdmission,
@@ -32,6 +34,8 @@ from zd_agent.casework.domain.evidence import (
 
 __all__ = [
     "AdapterFailure",
+    "AssessmentBuild",
+    "AssessmentProposal",
     "AttachmentRef",
     "BillingBinding",
     "BillingLookup",

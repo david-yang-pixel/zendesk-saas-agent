@@ -1,0 +1,153 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+from zd_agent.casework.domain.enums import (
+    AdapterErrorCode,
+    AnswerStatus,
+    ResolutionStatus,
+)
+from zd_agent.casework.domain.models import (
+    AdapterFailure,
+    AssessmentBuild,
+    AssessmentProposal,
+    CaseAssessment,
+    CaseContext,
+    Claim,
+    ClaimAdmission,
+    EvidenceItem,
+)
+from zd_agent.casework.policies.evidence import admit_claim
+
+
+_IDENTITY_FIELDS = {
+    "email",
+    "owner",
+    "plan",
+    "workspace_id",
+    "workspace_name",
+    "target_workspace_choice",
+    "target_workspace_identity",
+}
+
+
+def _admit_claims(
+    *,
+    proposal: AssessmentProposal,
+    evidence: tuple[EvidenceItem, ...],
+    as_of: datetime,
+) -> tuple[tuple[ClaimAdmission, ...], tuple[Claim, ...]]:
+    admissions = tuple(
+        admit_claim(claim=claim, evidence=evidence, as_of=as_of)
+        for claim in proposal.proposed_claims
+    )
+    accepted_ids = {
+        admission.claim_id for admission in admissions if admission.accepted
+    }
+    claims = tuple(
+        claim for claim in proposal.proposed_claims if claim.claim_id in accepted_ids
+    )
+    return admissions, claims
+
+
+def _customer_fields(
+    *,
+    context: CaseContext,
+    proposal: AssessmentProposal,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    proposed = tuple(dict.fromkeys(proposal.proposed_customer_fields))
+    identity_fields = tuple(field for field in proposed if field in _IDENTITY_FIELDS)
+    other_fields = tuple(field for field in proposed if field not in _IDENTITY_FIELDS)
+    status = context.identity.status
+    if not identity_fields:
+        return proposed, ()
+    if status is ResolutionStatus.RESOLVED:
+        return other_fields, identity_fields
+    if status in {ResolutionStatus.LOOKUP_PENDING, ResolutionStatus.LOOKUP_FAILED}:
+        return other_fields, identity_fields
+    minimum = (
+        "target_workspace_identity"
+        if status is ResolutionStatus.NO_MEMBERSHIP
+        else "target_workspace_choice"
+    )
+    return tuple(dict.fromkeys((*other_fields, minimum))), identity_fields
+
+
+def _identity_failure(
+    *,
+    context: CaseContext,
+    proposal: AssessmentProposal,
+    answer_status: AnswerStatus,
+) -> AdapterFailure | None:
+    if proposal.blocking_failure is not None:
+        return proposal.blocking_failure
+    if answer_status is not AnswerStatus.INSUFFICIENT:
+        return None
+    status = context.identity.status
+    if status not in {ResolutionStatus.LOOKUP_PENDING, ResolutionStatus.LOOKUP_FAILED}:
+        return None
+    code = (
+        context.identity.error_code
+        if status is ResolutionStatus.LOOKUP_FAILED
+        else AdapterErrorCode.TRANSPORT_UNAVAILABLE
+    )
+    return AdapterFailure(
+        operation="identity.lookup",
+        code=code or AdapterErrorCode.PERMANENT_FAILURE,
+        attempt=1,
+        max_attempts=3,
+        retry_after_seconds=2,
+        evidence_id=(context.identity.evidence_ids[-1] if context.identity.evidence_ids else ""),
+        detail=context.identity.detail,
+    )
+
+
+def build_case_assessment(
+    *,
+    context: CaseContext,
+    proposal: AssessmentProposal,
+    evidence: tuple[EvidenceItem, ...],
+    as_of: datetime,
+) -> AssessmentBuild:
+    """Convert a model proposal into policy-admitted support assessment."""
+    admissions, admitted_claims = _admit_claims(
+        proposal=proposal,
+        evidence=evidence,
+        as_of=as_of,
+    )
+    rejected_material_claim = any(
+        not admission.accepted and claim.material
+        for claim, admission in zip(proposal.proposed_claims, admissions)
+    )
+    answer_status = (
+        AnswerStatus.INSUFFICIENT
+        if rejected_material_claim
+        else proposal.answer_status
+    )
+    customer_fields, rejected_fields = _customer_fields(
+        context=context,
+        proposal=proposal,
+    )
+    assessment = CaseAssessment(
+        question=proposal.question,
+        answer_status=answer_status,
+        admitted_claims=admitted_claims,
+        customer_only_fields=customer_fields,
+        blocking_failure=_identity_failure(
+            context=context,
+            proposal=proposal,
+            answer_status=answer_status,
+        ),
+        human_action=proposal.human_action,
+        evidence_ids=tuple(
+            dict.fromkeys(
+                (*proposal.evidence_ids, *context.identity.evidence_ids),
+            ),
+        ),
+        close_after_reply=proposal.close_after_reply,
+    )
+    return AssessmentBuild(
+        assessment=assessment,
+        admissions=admissions,
+        rejected_customer_fields=rejected_fields,
+    )

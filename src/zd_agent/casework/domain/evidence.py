@@ -164,3 +164,20 @@ class CaseAssessment(FrozenModel):
         if any(not claim.public_allowed for claim in self.admitted_claims):
             raise ValueError("assessment cannot admit internal-only claims")
         return self
+
+
+class AssessmentProposal(FrozenModel):
+    question: str = Field(min_length=1)
+    answer_status: AnswerStatus
+    proposed_claims: tuple[Claim, ...] = ()
+    proposed_customer_fields: tuple[str, ...] = ()
+    blocking_failure: AdapterFailure | None = None
+    human_action: HumanActionRequest | None = None
+    evidence_ids: tuple[str, ...] = ()
+    close_after_reply: bool = False
+
+
+class AssessmentBuild(FrozenModel):
+    assessment: CaseAssessment
+    admissions: tuple[ClaimAdmission, ...] = ()
+    rejected_customer_fields: tuple[str, ...] = ()
