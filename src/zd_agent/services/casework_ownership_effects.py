@@ -49,15 +49,15 @@ async def ensure_casework_ownership_effects(
     if token is None:
         return False
     if notification_sender is None or tag_sender is None:
-        from zd_agent.services import escalation_notifications
+        from zd_agent.services import casework_notifications
 
         notification_sender = (
             notification_sender
-            or escalation_notifications.send_feishu_escalation_best_effort
+            or casework_notifications.send_casework_ownership_notification_best_effort
         )
         tag_sender = (
             tag_sender
-            or escalation_notifications.add_zendesk_escalation_tag_best_effort
+            or casework_notifications.add_casework_ownership_tags_best_effort
         )
     heartbeat = asyncio.create_task(_renew_claim(store, current.reference, token))
     notification_sent = current.notification_sent
@@ -76,13 +76,14 @@ async def ensure_casework_ownership_effects(
                     return False
                 notification_sent = await notification_sender(
                     ticket_id=current.ticket_id,
-                    reason=current.ownership_packet,
+                    ownership_action=current.ownership_action,
+                    reason_code=current.reason_code,
+                    ownership_packet=current.ownership_packet,
+                    customer_reply=current.body,
                     source=(
                         f"casework_v2:{current.ownership_action}:"
                         f"{current.reason_code}"
                     ),
-                    agent_last_reply=current.body,
-                    handoff_reply_sent=True,
                     idempotency_reference=current.reference,
                 )
                 definitely_unsent = notification_sent is False
@@ -102,7 +103,11 @@ async def ensure_casework_ownership_effects(
                 store.clear_notification_ambiguous(current.reference, token)
         if not tag_sent:
             try:
-                tag_sent = await tag_sender(ticket_id=current.ticket_id)
+                tag_sent = await tag_sender(
+                    ticket_id=current.ticket_id,
+                    ownership_action=current.ownership_action,
+                    reason_code=current.reason_code,
+                )
             except Exception as error:  # noqa: BLE001 - durable row retries.
                 logger.warning(
                     "casework_ownership_tag_failed",

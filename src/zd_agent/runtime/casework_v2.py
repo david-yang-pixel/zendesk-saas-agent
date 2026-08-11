@@ -4,12 +4,13 @@ from pathlib import Path
 
 from zd_agent.casework.adapters.audit import render_casework_audit
 from zd_agent.casework.adapters.effects import configured_casework_effects
-from zd_agent.casework.adapters.legacy_tools import (
+from zd_agent.casework.adapters.read_tools import (
     InspectorBillingReader,
     InspectorIdentityReader,
-    LegacySessionToolCaller,
+    ReadOnlySessionToolCaller,
     SystemClock,
 )
+from zd_agent.casework.adapters.ticket_snapshot import build_ticket_snapshot
 from zd_agent.casework.adapters.model import NoOpReplyReviewer, PolicyReplyWriter
 from zd_agent.casework.adapters.ticket import (
     NoVisualAnalyzer,
@@ -37,7 +38,7 @@ from zd_agent.tools.base import ToolRegistry
 
 def _snapshot_session(
     session: AgentSession,
-    customer_messages: list[dict],
+    customer_messages: list[dict[str, object]],
 ) -> None:
     session.customer_msgs_snapshot_count = len(customer_messages)
     session.customer_msgs_snapshot_last_id = (
@@ -55,8 +56,6 @@ async def execute_casework_v2(
     provider: LLMProvider,
     registry: ToolRegistry,
 ) -> CaseworkExecution:
-    from zd_agent.casework.adapters.legacy_ticket import build_ticket_snapshot
-
     clock = SystemClock()
     customer_messages, raw_ticket = await ZendeskCurrentTicketLoader().load(
         session.ticket_id,
@@ -73,7 +72,7 @@ async def execute_casework_v2(
         else NoVisualAnalyzer()
     )
     observations = await visual_analyzer.analyze(ticket)
-    caller = LegacySessionToolCaller(registry, session)
+    caller = ReadOnlySessionToolCaller(registry, session)
     context_builder = CaseContextBuilder(
         identity_reader=InspectorIdentityReader(caller),
         billing_reader=InspectorBillingReader(caller, now=clock.now),

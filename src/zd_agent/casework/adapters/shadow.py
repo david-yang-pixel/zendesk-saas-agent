@@ -9,11 +9,11 @@ from zd_agent.casework.adapters.legacy_evidence import (
     LegacyCaseMaterial,
     build_legacy_case_material,
 )
-from zd_agent.casework.adapters.legacy_ticket import build_ticket_snapshot
-from zd_agent.casework.adapters.legacy_tools import (
+from zd_agent.casework.adapters.ticket_snapshot import build_ticket_snapshot
+from zd_agent.casework.adapters.read_tools import (
     InspectorBillingReader,
     InspectorIdentityReader,
-    LegacySessionToolCaller,
+    ReadOnlySessionToolCaller,
     SystemClock,
 )
 from zd_agent.casework.adapters.model import (
@@ -207,7 +207,7 @@ class ShadowRuntime:
             ticket=raw_ticket,
         )
         observations = await self._visual_analyzer.analyze(ticket)
-        caller = LegacySessionToolCaller(self._registry, self._session)
+        caller = ReadOnlySessionToolCaller(self._registry, self._session)
         context_builder = CaseContextBuilder(
             identity_reader=InspectorIdentityReader(caller),
             billing_reader=InspectorBillingReader(caller, now=self._clock.now),

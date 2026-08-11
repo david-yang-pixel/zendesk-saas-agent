@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from zd_agent.casework.adapters.legacy_evidence import build_case_context_evidence
+from zd_agent.casework.adapters.evidence import build_case_context_evidence
 from zd_agent.casework.adapters.model import (
     NoOpReplyReviewer,
     PolicyReplyWriter,

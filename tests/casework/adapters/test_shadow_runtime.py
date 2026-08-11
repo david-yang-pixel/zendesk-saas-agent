@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any
 
 from zd_agent.casework.adapters.archive import JsonlShadowArchive
-from zd_agent.casework.adapters.legacy_ticket import build_ticket_snapshot
+from zd_agent.casework.adapters.ticket_snapshot import build_ticket_snapshot
 from zd_agent.casework.adapters.shadow import ShadowRuntime, billing_context_required
-from zd_agent.casework.adapters.legacy_tools import SystemClock
+from zd_agent.casework.adapters.read_tools import SystemClock
 from zd_agent.casework.domain.enums import (
     Disposition,
     OwnershipAction,

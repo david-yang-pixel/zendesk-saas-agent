@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 
-from zd_agent.casework.adapters.legacy_tools import (
+from zd_agent.casework.adapters.read_tools import (
     InspectorBillingReader,
     InspectorIdentityReader,
-    LegacySessionToolCaller,
-    LegacyToolObservation,
+    ReadOnlySessionToolCaller,
+    ToolObservation,
 )
 from zd_agent.casework.domain.enums import AdapterErrorCode, LookupStatus
 from zd_agent.session.agent_session import AgentSession
@@ -16,7 +16,7 @@ TENANT = "11111111-1111-4111-8111-111111111111"
 
 
 class FakeCaller:
-    def __init__(self, observation: LegacyToolObservation) -> None:
+    def __init__(self, observation: ToolObservation) -> None:
         self.observation = observation
         self.calls: list[tuple[str, dict[str, object]]] = []
 
@@ -24,14 +24,14 @@ class FakeCaller:
         self,
         tool_name: str,
         args: dict[str, object],
-    ) -> LegacyToolObservation:
+    ) -> ToolObservation:
         self.calls.append((tool_name, args))
         return self.observation
 
 
 class WriteTool(Tool):
     name = "write_tool"
-    description = "must never run in shadow mode"
+    description = "must never cross the read-only boundary"
     parameters: dict[str, object] = {"type": "object"}
     is_write_operation = True
 
@@ -45,7 +45,7 @@ class WriteTool(Tool):
 
 async def test_identity_reader_uses_structured_email_memberships() -> None:
     caller = FakeCaller(
-        LegacyToolObservation(
+        ToolObservation(
             call_id="call-identity",
             success=True,
             output="EMAIL_WORKSPACE_RESOLUTION=unique",
@@ -75,7 +75,7 @@ async def test_identity_reader_uses_structured_email_memberships() -> None:
 
 async def test_identity_reader_fails_closed_on_malformed_metadata() -> None:
     caller = FakeCaller(
-        LegacyToolObservation(
+        ToolObservation(
             call_id="call-malformed",
             success=True,
             output="unexpected output",
@@ -91,7 +91,7 @@ async def test_identity_reader_fails_closed_on_malformed_metadata() -> None:
 
 async def test_identity_reader_rejects_mismatched_tenant_id_summary() -> None:
     caller = FakeCaller(
-        LegacyToolObservation(
+        ToolObservation(
             call_id="call-mismatch",
             success=True,
             metadata={
@@ -116,7 +116,7 @@ async def test_identity_reader_rejects_mismatched_tenant_id_summary() -> None:
 
 async def test_identity_reader_rejects_noncanonical_tenant_identifier() -> None:
     caller = FakeCaller(
-        LegacyToolObservation(
+        ToolObservation(
             call_id="call-invalid-id",
             success=True,
             metadata={
@@ -143,7 +143,7 @@ async def test_identity_reader_rejects_noncanonical_tenant_identifier() -> None:
 
 async def test_identity_reader_maps_transient_tool_failure() -> None:
     caller = FakeCaller(
-        LegacyToolObservation(
+        ToolObservation(
             call_id="call-timeout",
             success=False,
             error="inspector execution timed out after 45 seconds",
@@ -158,7 +158,7 @@ async def test_identity_reader_maps_transient_tool_failure() -> None:
 
 async def test_billing_reader_accepts_only_authoritative_tenant_scoped_result() -> None:
     caller = FakeCaller(
-        LegacyToolObservation(
+        ToolObservation(
             call_id="call-billing",
             success=True,
             output=(
@@ -191,7 +191,7 @@ async def test_billing_reader_accepts_only_authoritative_tenant_scoped_result() 
 
 async def test_billing_reader_rejects_non_authoritative_plan_metadata() -> None:
     caller = FakeCaller(
-        LegacyToolObservation(
+        ToolObservation(
             call_id="call-unverified",
             success=True,
             output=(
@@ -210,11 +210,11 @@ async def test_billing_reader_rejects_non_authoritative_plan_metadata() -> None:
     assert result.plan == ""
 
 
-async def test_legacy_tool_caller_blocks_every_write_tool_in_shadow_mode() -> None:
+async def test_read_only_tool_caller_blocks_every_write_tool() -> None:
     registry = ToolRegistry()
     tool = WriteTool()
     registry.register(tool)
-    caller = LegacySessionToolCaller(registry, AgentSession(ticket_id=123))
+    caller = ReadOnlySessionToolCaller(registry, AgentSession(ticket_id=123))
 
     observation = await caller.call("write_tool", {})
 

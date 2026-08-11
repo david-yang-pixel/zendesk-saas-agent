@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from zd_agent.casework.domain.enums import ExecutionMode
+from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 from zd_agent.config import AppConfig, get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
@@ -133,7 +134,7 @@ async def _report_agent_failure(session: AgentSession, reason: str) -> None:
 async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
     """Run the v2-only decision and effect path without the legacy tool loop."""
     guardrails = Guardrails(config=cfg.agent.guardrails)
-    registry = create_tool_registry()
+    registry = create_casework_tool_registry()
     llm = LLMClient()
     if not session.dry_run:
         await _send_ack_note(session.ticket_id)

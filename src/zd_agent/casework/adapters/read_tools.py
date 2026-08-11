@@ -19,7 +19,7 @@ from zd_agent.tools.base import ToolRegistry
 
 
 @dataclass(frozen=True, slots=True)
-class LegacyToolObservation:
+class ToolObservation:
     call_id: str
     success: bool
     output: str = ""
@@ -27,12 +27,12 @@ class LegacyToolObservation:
     metadata: dict[str, object] = field(default_factory=dict)
 
 
-class LegacyToolCaller(Protocol):
+class ToolCaller(Protocol):
     async def call(
         self,
         tool_name: str,
         args: dict[str, object],
-    ) -> LegacyToolObservation: ...
+    ) -> ToolObservation: ...
 
 
 class SystemClock:
@@ -40,8 +40,8 @@ class SystemClock:
         return datetime.now(timezone.utc)
 
 
-class LegacySessionToolCaller:
-    """Execute only existing read-only tools for a no-write shadow run."""
+class ReadOnlySessionToolCaller:
+    """Execute an existing tool only when its adapter declares it read-only."""
 
     def __init__(self, registry: ToolRegistry, session: AgentSession) -> None:
         self._registry = registry
@@ -51,30 +51,30 @@ class LegacySessionToolCaller:
         self,
         tool_name: str,
         args: dict[str, object],
-    ) -> LegacyToolObservation:
-        call_id = f"shadow-{uuid4().hex}"
+    ) -> ToolObservation:
+        call_id = f"read-{uuid4().hex}"
         tool = self._registry.get(tool_name)
         if tool is None:
-            return LegacyToolObservation(
+            return ToolObservation(
                 call_id=call_id,
                 success=False,
                 error=f"unknown read tool: {tool_name}",
             )
         if tool.is_write_operation:
-            return LegacyToolObservation(
+            return ToolObservation(
                 call_id=call_id,
                 success=False,
-                error=f"shadow mode blocked write tool: {tool_name}",
+                error=f"read-only boundary blocked write tool: {tool_name}",
             )
         try:
             result = await tool.execute(cast(dict[str, Any], args), self._session)
         except Exception as error:
-            return LegacyToolObservation(
+            return ToolObservation(
                 call_id=call_id,
                 success=False,
                 error=f"{type(error).__name__}: {error}",
             )
-        return LegacyToolObservation(
+        return ToolObservation(
             call_id=call_id,
             success=result.success,
             output=result.output,
@@ -102,7 +102,7 @@ def _error_code(detail: str) -> AdapterErrorCode:
 
 def _failed_membership(
     email: str,
-    observation: LegacyToolObservation,
+    observation: ToolObservation,
     code: AdapterErrorCode,
 ) -> WorkspaceMembershipLookup:
     return WorkspaceMembershipLookup(
@@ -176,7 +176,7 @@ def _validated_memberships(metadata: dict[str, object]) -> tuple[WorkspaceCandid
 
 
 class InspectorIdentityReader:
-    def __init__(self, caller: LegacyToolCaller) -> None:
+    def __init__(self, caller: ToolCaller) -> None:
         self._caller = caller
 
     async def find_workspaces(self, email: str) -> WorkspaceMembershipLookup:
@@ -224,7 +224,7 @@ def _pipe_value(output: str, field_name: str) -> str:
 
 def _failed_billing(
     tenant_id: str,
-    observation: LegacyToolObservation,
+    observation: ToolObservation,
     *,
     observed_at: datetime,
     code: AdapterErrorCode,
@@ -241,7 +241,7 @@ def _failed_billing(
 class InspectorBillingReader:
     def __init__(
         self,
-        caller: LegacyToolCaller,
+        caller: ToolCaller,
         *,
         now: Callable[[], datetime],
     ) -> None:

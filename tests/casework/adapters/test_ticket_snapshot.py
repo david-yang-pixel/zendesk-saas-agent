@@ -1,6 +1,6 @@
 import pytest
 
-from zd_agent.casework.adapters.legacy_ticket import build_ticket_snapshot
+from zd_agent.casework.adapters.ticket_snapshot import build_ticket_snapshot
 from zd_agent.session.agent_session import AgentSession
 
 

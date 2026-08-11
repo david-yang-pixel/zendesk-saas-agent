@@ -52,9 +52,18 @@ async def test_typed_ownership_effects_complete_after_confirmed_public_delivery(
     )
 
     assert completed is True
-    assert notifications[0]["reason"].startswith("Target: engineering")
+    assert notifications[0]["ownership_action"] == "engineering"
+    assert notifications[0]["reason_code"] == "confirmed_platform_defect"
+    assert notifications[0]["ownership_packet"].startswith("Target: engineering")
+    assert notifications[0]["customer_reply"] == "Customer-safe answer"
     assert "casework_v2:engineering" in notifications[0]["source"]
-    assert tags == [{"ticket_id": 4001}]
+    assert tags == [
+        {
+            "ticket_id": 4001,
+            "ownership_action": "engineering",
+            "reason_code": "confirmed_platform_defect",
+        },
+    ]
     persisted = store.get(effect.reference)
     assert persisted is not None and persisted.complete is True
 
