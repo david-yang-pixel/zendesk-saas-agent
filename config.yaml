@@ -77,6 +77,10 @@ public_reply:
   # route itself still requires the browser-relay Bearer token.
   freshness_callback_url: https://zendesk.smlershou.top/webhook/relay-pre-send-freshness
   browser_relay_timeout_seconds: 90
+casework:
+  # 新决策核心默认不运行；shadow 仅生成并归档对比结果，绝不发送或转交。
+  mode: legacy
+  shadow_archive_dir: casework-shadow
 sandbox:
   type: local
   base_dir: /opt/zd-agent/resources/sandbox

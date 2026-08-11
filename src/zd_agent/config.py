@@ -8,6 +8,7 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.runtime.openai_reasoning import (
     validate_reasoning_effort,
     validate_trigger_model,
@@ -409,6 +410,13 @@ class LoggingConfig(BaseModel):
     log_dir: str = "/opt/zd-agent/logs"
 
 
+class CaseworkConfig(BaseModel):
+    """New decision core rollout control; legacy is the safe default."""
+
+    mode: ExecutionMode = ExecutionMode.LEGACY
+    shadow_archive_dir: str = "casework-shadow"
+
+
 class AppConfig(BaseModel):
     """应用完整配置"""
 
@@ -441,6 +449,7 @@ class AppConfig(BaseModel):
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
     prompts: PromptOverridesConfig = Field(default_factory=PromptOverridesConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    casework: CaseworkConfig = Field(default_factory=CaseworkConfig)
 
 
 class EnvSettings(BaseSettings):
@@ -470,6 +479,7 @@ class EnvSettings(BaseSettings):
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
     anthropic_api_key: str = ""
     zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
+    zd_casework_mode: ExecutionMode | None = None
     zd_admin_initial_password: str = ""
     hc_client_url: str = ""  # zendesk-hc-client API 地址（如 http://localhost:8000）
     hc_client_api_key: str = ""  # 对应 hc-client 的 AGENT_INNER_API_KEY
@@ -537,6 +547,14 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.repos.base_dir = _resolve(cfg.repos.base_dir)
     cfg.knowledge.docs_dir = _resolve(cfg.knowledge.docs_dir)
     cfg.knowledge.archive_dir = _resolve(cfg.knowledge.archive_dir)
+    shadow_archive_dir = Path(cfg.casework.shadow_archive_dir)
+    if not shadow_archive_dir.is_absolute():
+        shadow_archive_dir = (
+            Path(cfg.resources.base_dir)
+            / cfg.resources.state_dir
+            / shadow_archive_dir
+        )
+    cfg.casework.shadow_archive_dir = str(shadow_archive_dir.resolve())
 
     env = EnvSettings()
 
@@ -551,6 +569,8 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.agent.max_concurrent_sessions = env.zd_max_concurrent
     if env.zd_llm_provider is not None:
         cfg.llm.provider = env.zd_llm_provider
+    if env.zd_casework_mode is not None:
+        cfg.casework.mode = env.zd_casework_mode
     if env.zd_model is not None:
         model_override = env.zd_model.strip()
         if model_override:
