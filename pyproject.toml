@@ -36,6 +36,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1,<2",
     "pytest",
     "pytest-asyncio",
     "ruff>=0.14,<0.15",
@@ -48,6 +49,12 @@ external = ["ANY", "SIZ"]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src/zd_agent/casework", "tests/casework"]
+strict = ["src/zd_agent/casework"]
+pythonVersion = "3.12"
+reportMissingTypeStubs = false
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/zd_agent"]

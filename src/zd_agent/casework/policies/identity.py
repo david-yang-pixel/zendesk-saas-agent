@@ -152,6 +152,7 @@ def resolve_workspace_identity(
             )
         relevant.append(lookup)
         if lookup.status is LookupStatus.FAILED:
+            error_code = lookup.error_code or AdapterErrorCode.PERMANENT_FAILURE
             return _unresolved(
                 contact_email=contact_email,
                 target_identity=target_identity,
@@ -161,8 +162,8 @@ def resolve_workspace_identity(
                     form_evidence_id=form_evidence_id,
                     lookups=tuple(relevant),
                 ),
-                detail=f"support-side lookup failed: {lookup.error_code.value}",
-                error_code=lookup.error_code,
+                detail=f"support-side lookup failed: {error_code.value}",
+                error_code=error_code,
             )
         if lookup.status is LookupStatus.PENDING:
             return _unresolved(
