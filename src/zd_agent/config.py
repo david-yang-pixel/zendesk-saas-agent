@@ -417,19 +417,8 @@ class CaseworkConfig(BaseModel):
 
     mode: ExecutionMode = ExecutionMode.LEGACY
     shadow_archive_dir: str = "casework-shadow"
-
-    @field_validator("mode")
-    @classmethod
-    def _reject_unapproved_delivery_modes(
-        cls,
-        value: ExecutionMode,
-    ) -> ExecutionMode:
-        if value not in {ExecutionMode.LEGACY, ExecutionMode.SHADOW}:
-            raise ValueError(
-                "casework delivery modes are not approved; use legacy or shadow",
-            )
-        return value
-
+    max_investigation_rounds: int = Field(default=10, ge=1, le=20)
+    max_investigation_calls: int = Field(default=16, ge=1, le=40)
 
 class AppConfig(BaseModel):
     """应用完整配置"""

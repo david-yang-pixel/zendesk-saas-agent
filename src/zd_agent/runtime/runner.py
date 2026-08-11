@@ -5,11 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 from zd_agent.casework.domain.enums import ExecutionMode
-from zd_agent.config import get_config
+from zd_agent.config import AppConfig, get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.guardrails import Guardrails
 from zd_agent.runtime.casework_shadow import maybe_run_casework_shadow
+from zd_agent.runtime.casework_v2 import (
+    apply_casework_execution_to_session,
+    execute_casework_v2,
+)
 from zd_agent.runtime.llm_client import LLMClient
 from zd_agent.runtime.runner_archive import ensure_archive
 from zd_agent.runtime.runner_reporting import report_preflight_failure
@@ -126,6 +130,61 @@ async def _report_agent_failure(session: AgentSession, reason: str) -> None:
     )
 
 
+async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
+    """Run the v2-only decision and effect path without the legacy tool loop."""
+    guardrails = Guardrails(config=cfg.agent.guardrails)
+    registry = create_tool_registry()
+    llm = LLMClient()
+    if not session.dry_run:
+        await _send_ack_note(session.ticket_id)
+    logger.info(
+        "casework_v2_start",
+        ticket_id=session.ticket_id,
+        session_id=session.session_id,
+        execution_mode=cfg.casework.mode.value,
+        dry_run=session.dry_run,
+    )
+    try:
+        execution = await execute_casework_v2(
+            session=session,
+            cfg=cfg,
+            provider=llm._provider,
+            registry=registry,
+        )
+        apply_casework_execution_to_session(session, execution)
+    except Exception as error:
+        logger.error(
+            "casework_v2_error",
+            ticket_id=session.ticket_id,
+            session_id=session.session_id,
+            error=str(error),
+            exc_info=True,
+        )
+        session.status = SessionStatus.FAILED
+        session.error_message = str(error)
+        if not session.dry_run:
+            await _report_agent_failure(session, str(error))
+    if (
+        session.status is SessionStatus.COMPLETED
+        and session.reply_sent
+        and session.casework_ownership_action in {"", "none"}
+    ):
+        await notify_ticket_done_best_effort(session)
+    ensure_archive(session, guardrails)
+    logger.info(
+        "casework_v2_done",
+        ticket_id=session.ticket_id,
+        session_id=session.session_id,
+        status=session.status.value,
+        rounds=session.round_count,
+        total_tokens=session.token_usage.total_tokens,
+        reply_sent=session.reply_sent,
+        disposition=session.casework_disposition,
+        ownership_action=session.casework_ownership_action,
+        delivery_state=session.casework_delivery_state,
+    )
+
+
 async def run_agent(session: AgentSession) -> None:
     """运行 Agent 处理单个工单的完整流程
 
@@ -175,6 +234,10 @@ async def run_agent(session: AgentSession) -> None:
             reply_sent=session.reply_sent,
             model=cfg.llm.model,
         )
+        return
+
+    if cfg.casework.mode in {ExecutionMode.CANARY, ExecutionMode.CASEWORK}:
+        await _run_casework_agent(session, cfg)
         return
 
     # 创建 sandbox（根据配置自动选择 Local 或 Docker）

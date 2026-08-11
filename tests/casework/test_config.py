@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError
 
 from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.config import AppConfig, CaseworkConfig, load_config
@@ -54,22 +53,21 @@ def test_repository_config_keeps_casework_on_legacy_path() -> None:
     assert raw["casework"]["mode"] == "legacy"
 
 
-@pytest.mark.parametrize(
-    "mode",
-    [ExecutionMode.CANARY, ExecutionMode.CASEWORK],
-)
-def test_unapproved_delivery_modes_are_rejected(mode: ExecutionMode) -> None:
-    with pytest.raises(ValidationError, match="not approved"):
-        AppConfig(casework=CaseworkConfig(mode=mode))
+@pytest.mark.parametrize("mode", [ExecutionMode.CANARY, ExecutionMode.CASEWORK])
+def test_v2_delivery_modes_are_explicitly_configurable(mode: ExecutionMode) -> None:
+    config = AppConfig(casework=CaseworkConfig(mode=mode))
+
+    assert config.casework.mode is mode
 
 
-def test_unapproved_environment_mode_is_rejected(
+def test_casework_environment_mode_loads_explicitly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text("casework:\n  mode: legacy\n")
-    monkeypatch.setenv("ZD_CASEWORK_MODE", "canary")
+    monkeypatch.setenv("ZD_CASEWORK_MODE", "casework")
 
-    with pytest.raises(ValidationError, match="not approved"):
-        load_config(str(config_path))
+    config = load_config(str(config_path))
+
+    assert config.casework.mode is ExecutionMode.CASEWORK

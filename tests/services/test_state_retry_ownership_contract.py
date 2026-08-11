@@ -267,3 +267,31 @@ def test_unowned_legacy_processing_allows_only_no_reply_recovery(tmp_path) -> No
     assert persisted is not None
     assert persisted.state == "in_silence_window"
     assert persisted.consecutive_agent_failures == 1
+
+
+def test_v2_typed_ownership_terminalizes_without_handoff_reply_type(tmp_path) -> None:
+    tracker = TicketStateTracker(tmp_path / "v2-ownership.json")
+    tracker.set(
+        4001,
+        TicketState(
+            state="processing",
+            first_seen=_NOW - timedelta(minutes=5),
+            active_session_id="session-current",
+        ),
+    )
+    session = _owned_session(
+        4001,
+        status=SessionStatus.COMPLETED,
+        reply_sent=True,
+        reply_type="",
+    )
+    session.casework_ownership_action = "engineering"
+    session.casework_reason_code = "confirmed_platform_defect"
+
+    apply_session_finished(tracker, session, now=_NOW)
+
+    persisted = TicketStateTracker(tracker.path).get(4001)
+    assert persisted is not None
+    assert persisted.state == "escalated_to_human"
+    assert persisted.escalated_reason == "confirmed_platform_defect"
+    assert persisted.last_verdict == "confirmed_platform_defect"

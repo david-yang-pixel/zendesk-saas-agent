@@ -104,6 +104,14 @@ class AgentSession:
     # Frozen reply type that actually owns the durable delivery attempt.  A
     # handoff is an ownership transfer, not merely different customer prose.
     public_reply_type: str = ""
+    # Zendesk Agent v2 terminal facts. These replace reply_type-based ownership
+    # inference and are populated only from a validated CaseworkExecution.
+    casework_disposition: str = ""
+    casework_ownership_action: str = ""
+    casework_reason_code: str = ""
+    casework_delivery_state: str = ""
+    casework_ownership_state: str = ""
+    casework_effect_reference: str = ""
     archived: bool = False
     error_message: str = ""
 

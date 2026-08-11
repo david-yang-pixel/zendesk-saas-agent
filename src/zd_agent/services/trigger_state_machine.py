@@ -334,7 +334,14 @@ def apply_session_finished(
             from_state=ticket_state.state,
             session_status=session.status.value,
         )
-        is_handoff = getattr(session, "public_reply_type", "") == "handoff"
+        casework_owner = str(
+            getattr(session, "casework_ownership_action", "") or "",
+        )
+        has_casework_ownership = casework_owner not in {"", "none"}
+        is_handoff = (
+            has_casework_ownership
+            or getattr(session, "public_reply_type", "") == "handoff"
+        )
         ticket_state.state = (
             "escalated_to_human" if is_handoff else "processed"
         )
@@ -351,9 +358,12 @@ def apply_session_finished(
             )
             ticket_state.last_eval_at = finished_at
         if is_handoff:
+            ownership_reason = str(
+                getattr(session, "casework_reason_code", "") or "agent_handoff",
+            )
             ticket_state.escalated_at = finished_at
-            ticket_state.escalated_reason = "agent_handoff"
-            ticket_state.last_verdict = "agent_handoff"
+            ticket_state.escalated_reason = ownership_reason
+            ticket_state.last_verdict = ownership_reason
         state.set(session.ticket_id, ticket_state)
         return True
 

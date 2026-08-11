@@ -13,6 +13,10 @@ from zd_agent.log import get_logger
 from zd_agent.services.app_context import install_saas_app_context
 from zd_agent.services.app_lifecycle import wire_session_finished_callback
 from zd_agent.services.admin_config import AdminConfigStore
+from zd_agent.services.casework_effect_store import CaseworkEffectStore
+from zd_agent.services.casework_ownership_effects import (
+    reconcile_casework_ownership_effects,
+)
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.public_reply_internal_note import (
     PostPublicInternalNoteStore,
@@ -147,15 +151,20 @@ def prepare_saas_app_runtime(
             handoff_store = PostPublicHandoffStore(
                 state_dir / "post_public_handoff_outbox.sqlite3"
             )
+            casework_store = CaseworkEffectStore(
+                state_dir / "casework_effects.sqlite3"
+            )
             note_pending = bool(note_store.pending(limit=1))
             handoff_pending = bool(handoff_store.pending(limit=1))
-            if not note_pending and not handoff_pending:
+            casework_pending = bool(casework_store.pending_ownership(limit=1))
+            if not note_pending and not handoff_pending and not casework_pending:
                 return
             delivery_store = PublicReplyDeliveryStore(
                 state_dir / "public_reply_outbox.sqlite3"
             )
             reconciled_notes = 0
             reconciled_handoffs = 0
+            reconciled_casework = 0
             if note_pending:
                 reconciled_notes = await asyncio.wait_for(
                     reconcile_pending_post_public_internal_notes(
@@ -173,10 +182,16 @@ def prepare_saas_app_runtime(
                     ),
                     timeout=90,
                 )
+            if casework_pending:
+                reconciled_casework = await asyncio.wait_for(
+                    reconcile_casework_ownership_effects(store=casework_store),
+                    timeout=90,
+                )
             logger.info(
                 "post_public_side_effects_startup_reconciled",
                 notes=reconciled_notes,
                 handoffs=reconciled_handoffs,
+                casework_ownership=reconciled_casework,
             )
         except Exception as exc:  # noqa: BLE001 - startup recovery is best effort.
             logger.warning(
