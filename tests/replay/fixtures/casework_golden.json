@@ -119,16 +119,73 @@
       "renewal_status": "will_not_renew",
       "entitlement_status": "free_fallback"
     },
+    "evidence": [
+      {
+        "evidence_id": "ev-3802-account-state",
+        "call_id": "call-3802-account-state",
+        "source": "account-runtime-reader",
+        "authority": "current_authoritative",
+        "result_status": "success",
+        "targets": [
+          {"kind": "tenant_id", "value": "22222222-2222-4222-8222-222222222222"}
+        ],
+        "observed_at": "2026-08-11T05:00:00Z",
+        "supports_roles": ["current_state", "impact", "recovery"],
+        "payload": {
+          "free_request_allowance": 5000,
+          "remaining_requests": 0,
+          "requests_rejected": true,
+          "recovery_path": "Settings > Billing > Upgrade"
+        }
+      }
+    ],
     "assessment": {
       "question": "Why did the request allowance change?",
       "answer_status": "supported",
       "proposed_claims": [
         {
           "claim_id": "claim-3802-ended",
-          "statement": "The annual subscription ended after its scheduled cancellation.",
+          "statement": "The annual Professional subscription ended after its scheduled cancellation, so it did not renew.",
           "role": "current_state",
           "status": "confirmed",
           "supporting_evidence_ids": ["ev-3802-target", "ev-3802-billing"],
+          "targets": [
+            {"kind": "tenant_id", "value": "22222222-2222-4222-8222-222222222222"}
+          ],
+          "public_allowed": true
+        },
+        {
+          "claim_id": "claim-3802-fallback",
+          "statement": "The workspace therefore reverted to the free 5,000-request allowance, and no requests remain in the current allowance.",
+          "role": "current_state",
+          "status": "confirmed",
+          "supporting_evidence_ids": [
+            "ev-3802-target",
+            "ev-3802-billing",
+            "ev-3802-account-state"
+          ],
+          "targets": [
+            {"kind": "tenant_id", "value": "22222222-2222-4222-8222-222222222222"}
+          ],
+          "public_allowed": true
+        },
+        {
+          "claim_id": "claim-3802-impact",
+          "statement": "API and workflow requests are currently being rejected because that request allowance is exhausted.",
+          "role": "impact",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-3802-account-state"],
+          "targets": [
+            {"kind": "tenant_id", "value": "22222222-2222-4222-8222-222222222222"}
+          ],
+          "public_allowed": true
+        },
+        {
+          "claim_id": "claim-3802-recovery",
+          "statement": "To restore service, sign in as a workspace owner or admin and start a new Professional subscription from Settings > Billing > Upgrade; after payment, reply here so we can verify the entitlement, quota, and one actual request.",
+          "role": "recovery",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-3802-account-state"],
           "targets": [
             {"kind": "tenant_id", "value": "22222222-2222-4222-8222-222222222222"}
           ],
@@ -143,7 +200,18 @@
       "reply_kind": "answer",
       "ownership_action": "none",
       "reason_code": "resolved_with_evidence",
-      "admitted_claim_ids": ["claim-3802-ended"],
+      "admitted_claim_ids": [
+        "claim-3802-ended",
+        "claim-3802-fallback",
+        "claim-3802-impact",
+        "claim-3802-recovery"
+      ],
+      "required_reply_phrases": [
+        "annual Professional subscription ended",
+        "free 5,000-request allowance",
+        "requests are currently being rejected",
+        "Settings > Billing > Upgrade"
+      ],
       "forbidden_customer_fields": ["workspace_id", "workspace_name"],
       "forbidden_reply_phrases": ["different workspace", "billing specialist"]
     }
@@ -249,8 +317,12 @@
           {"kind": "tenant_id", "value": "55555555-5555-4555-8555-555555555555"}
         ],
         "observed_at": "2026-08-11T05:00:00Z",
-        "supports_roles": ["limitation"],
-        "payload": {"matching_managed_provider_run": false}
+        "supports_roles": ["limitation", "recovery"],
+        "payload": {
+          "matching_managed_provider_run": false,
+          "custom_provider_success_only": true,
+          "verification_next_step": "run one request with the managed provider"
+        }
       }
     ],
     "assessment": {
@@ -259,8 +331,30 @@
       "proposed_claims": [
         {
           "claim_id": "claim-3846-boundary",
-          "statement": "No matching managed-provider run is available to confirm recovery.",
+          "statement": "We cannot yet confirm that Dify-managed AI Credits have recovered for this workspace because no matching managed-provider request is available.",
           "role": "limitation",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-3846-recovery-check"],
+          "targets": [
+            {"kind": "tenant_id", "value": "55555555-5555-4555-8555-555555555555"}
+          ],
+          "public_allowed": true
+        },
+        {
+          "claim_id": "claim-3846-custom-boundary",
+          "statement": "The available successful request used a custom model provider, so it does not verify the Dify-managed AI Credits path.",
+          "role": "limitation",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-3846-recovery-check"],
+          "targets": [
+            {"kind": "tenant_id", "value": "55555555-5555-4555-8555-555555555555"}
+          ],
+          "public_allowed": true
+        },
+        {
+          "claim_id": "claim-3846-next-step",
+          "statement": "Please run one request with the Dify-managed provider in this workspace; we can then verify that exact execution before confirming recovery.",
+          "role": "recovery",
           "status": "confirmed",
           "supporting_evidence_ids": ["ev-3846-recovery-check"],
           "targets": [
@@ -277,7 +371,16 @@
       "reply_kind": "answer",
       "ownership_action": "none",
       "reason_code": "bounded_authoritative_answer",
-      "admitted_claim_ids": ["claim-3846-boundary"],
+      "admitted_claim_ids": [
+        "claim-3846-boundary",
+        "claim-3846-custom-boundary",
+        "claim-3846-next-step"
+      ],
+      "required_reply_phrases": [
+        "cannot yet confirm",
+        "custom model provider",
+        "run one request with the Dify-managed provider"
+      ],
       "forbidden_customer_fields": ["workspace_id", "workspace_name"],
       "forbidden_reply_phrases": ["workspace id", "support specialist"]
     }

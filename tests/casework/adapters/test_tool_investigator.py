@@ -240,6 +240,11 @@ async def test_investigator_calls_tools_itself_and_returns_typed_evidence() -> N
     second_messages = provider.calls[1][0]
     assert "EVIDENCE_ID=call-docs" in str(second_messages[-1]["content"])
     assert session.tool_call_log[0]["call_id"] == "call-docs"
+    system_prompt = str(provider.calls[0][0][0]["content"])
+    assert "Answer the latest customer question first" in system_prompt
+    assert "all customer-useful confirmed facts" in system_prompt
+    assert "recovery or next step" in system_prompt
+    assert "Do not stop at the first plausible explanation" in system_prompt
 
 
 async def test_investigator_fails_closed_on_unexposed_or_write_tool_call() -> None:
