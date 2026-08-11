@@ -1,4 +1,5 @@
 """Zendesk ticket message fetching and attachment helpers."""
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
@@ -191,7 +192,7 @@ async def _fetch_customer_messages(
     ticket_id: int,
     *,
     log_success: bool = True,
-) -> tuple[list[dict], dict | None]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """拉工单 + 客户消息（含 messaging 渠道）。"""
     try:
         data = await load_complete_ticket_payload(ticket_id)
@@ -209,6 +210,9 @@ async def _fetch_customer_messages(
 
     ticket, comments = dict(t), c
     ticket["_zd_agent_conversation_events"] = events
+    ticket["_zd_agent_comments"] = [
+        comment for comment in comments if isinstance(comment, dict)
+    ]
     msgs = _customer_public_comments(ticket, comments)
     if events:
         msgs.extend(_messaging_customer_messages(events))
@@ -223,6 +227,15 @@ async def _fetch_customer_messages(
             via=(ticket.get("via") or {}).get("channel"),
         )
     return msgs, ticket
+
+
+async def fetch_current_customer_messages(
+    ticket_id: int,
+    *,
+    log_success: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Public typed boundary for loading the latest customer-visible ticket state."""
+    return await _fetch_customer_messages(ticket_id, log_success=log_success)
 
 
 async def fetch_customer_messages_for_freshness(ticket_id: int) -> list[dict]:

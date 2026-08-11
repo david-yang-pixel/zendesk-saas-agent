@@ -29,7 +29,9 @@ def _action(
     )
 
 
-async def test_exhausted_automation_reply_explains_retry_without_requesting_identity() -> None:
+async def test_exhausted_automation_reply_explains_retry_without_requesting_identity() -> (
+    None
+):
     action = _action(
         OwnershipAction.SUPPORT,
         ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
@@ -59,7 +61,9 @@ async def test_exhausted_automation_reply_explains_retry_without_requesting_iden
     assert "workspace id" not in candidate.body.casefold()
 
 
-async def test_business_approval_reply_names_the_decision_not_a_generic_handoff() -> None:
+async def test_business_approval_reply_names_the_decision_not_a_generic_handoff() -> (
+    None
+):
     action = _action(
         OwnershipAction.BILLING,
         ReasonCode.BUSINESS_APPROVAL_REQUIRED,

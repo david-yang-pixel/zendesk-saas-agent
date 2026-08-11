@@ -146,11 +146,11 @@ async def test_orchestrator_defaults_to_casework_mode() -> None:
         evidence_id="ev-identity",
         call_id="call-identity",
         source="identity-reader",
-        authority=EvidenceAuthority.CURRENT_AUTHORITATIVE,
+        authority=EvidenceAuthority.TARGET_BINDING,
         result_status=EvidenceResultStatus.SUCCESS,
         targets=(target,),
         observed_at=NOW,
-        supports_roles=(ClaimRole.CURRENT_STATE,),
+        supports_roles=(),
         payload={"resolved": True},
     )
     billing_evidence = EvidenceItem(

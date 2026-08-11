@@ -1,4 +1,5 @@
 """RED contracts for active-session ownership and bounded retry recovery."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +11,7 @@ import pytest
 from zd_agent.config import (
     AppConfig,
     PublicReplyConfig,
-    TriggerDeciderConfig,
+    IntakeConfig,
     ZendeskConfig,
 )
 from zd_agent.services.silence_waker import scan_once
@@ -18,7 +19,6 @@ from zd_agent.services.trigger_errors import TriggerDeferredError
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 from zd_agent.services.trigger_state_machine import (
     apply_session_finished,
-    apply_silence_window_expired,
 )
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
@@ -38,8 +38,7 @@ def _cfg() -> AppConfig:
         min_ticket_id=0,
         agent_user_id=45433304089364,
     )
-    cfg.trigger_decider = TriggerDeciderConfig(
-        llm_model="gpt-test",
+    cfg.intake = IntakeConfig(
         silence_minutes_default=0,
         post_agent_cooldown_seconds=180,
     )
@@ -76,23 +75,25 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
             state=state,
             cfg=_cfg(),
             log_path=tmp_path / "trigger.jsonl",
-            fetch_customer_messages_fn=AsyncMock(return_value=(
-                [
+            fetch_customer_messages_fn=AsyncMock(
+                return_value=(
+                    [
+                        {
+                            "id": "customer-message-during-session",
+                            "body": "One more detail while you investigate.",
+                            "created_at": _NOW.isoformat(),
+                            "content_type": "text",
+                        },
+                    ],
                     {
-                        "id": "customer-message-during-session",
-                        "body": "One more detail while you investigate.",
-                        "created_at": _NOW.isoformat(),
-                        "content_type": "text",
+                        "id": _TICKET_ID,
+                        "status": "open",
+                        "assignee_id": None,
+                        "via": {"channel": "native_messaging"},
+                        "_zd_agent_conversation_events": [],
                     },
-                ],
-                {
-                    "id": _TICKET_ID,
-                    "status": "open",
-                    "assignee_id": None,
-                    "via": {"channel": "native_messaging"},
-                    "_zd_agent_conversation_events": [],
-                },
-            )),
+                )
+            ),
             human_takeover_fn=AsyncMock(),
             detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
         )
@@ -161,15 +162,9 @@ async def test_three_failures_retry_only_typed_ownership_persistence(
             retryable = tracker.get(_TICKET_ID)
             assert retryable is not None
             assert retryable.state == "in_silence_window"
-            transition = apply_silence_window_expired(
-                tracker,
-                _TICKET_ID,
-                now=attempt_time + timedelta(seconds=1),
-            )
-            assert transition is not None
-            assert transition.queue_source == "silence_waker"
             processing = tracker.get(_TICKET_ID)
             assert processing is not None
+            processing.state = "processing"
             processing.active_session_id = f"session-attempt-{index + 1}"
             tracker.set(_TICKET_ID, processing)
 
@@ -185,10 +180,13 @@ async def test_three_failures_retry_only_typed_ownership_persistence(
         lambda: _NOW + timedelta(hours=1),
     )
     queue: asyncio.Queue[dict] = asyncio.Queue()
-    assert await scan_once(
-        state=TicketStateTracker(state_path),
-        trigger_queue=queue,
-    ) == 1
+    assert (
+        await scan_once(
+            state=TicketStateTracker(state_path),
+            trigger_queue=queue,
+        )
+        == 1
+    )
     assert queue.get_nowait()["source"] == "silence_waker"
 
 

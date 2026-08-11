@@ -78,9 +78,11 @@ def _freshness_callback_url(cfg: AppConfig) -> str:
     Do not silently fall back to localhost: that would either fail delivery or
     remove the final freshness guard entirely.
     """
-    configured = str(
-        getattr(cfg.public_reply, "freshness_callback_url", "") or ""
-    ).strip().rstrip("/")
+    configured = (
+        str(getattr(cfg.public_reply, "freshness_callback_url", "") or "")
+        .strip()
+        .rstrip("/")
+    )
     relay_url = str(getattr(cfg.public_reply, "browser_relay_url", "") or "")
     try:
         relay_origin = _url_origin(relay_url)
@@ -91,8 +93,7 @@ def _freshness_callback_url(cfg: AppConfig) -> str:
     relay_is_loopback = _is_loopback_url(relay_url)
     if not configured and relay_is_loopback:
         fallback_url = (
-            f"http://127.0.0.1:{cfg.webhook.listen_port}"
-            "/internal/pre-send-freshness"
+            f"http://127.0.0.1:{cfg.webhook.listen_port}/internal/pre-send-freshness"
         )
         try:
             _url_origin(fallback_url)
@@ -107,8 +108,7 @@ def _freshness_callback_url(cfg: AppConfig) -> str:
         callback_host = (parsed.hostname or "").lower()
     except ValueError as exc:
         raise PublicReplyTransportError(
-            "Remote browser relay requires an HTTPS non-loopback freshness "
-            "callback URL"
+            "Remote browser relay requires an HTTPS non-loopback freshness callback URL"
         ) from exc
     has_unsafe_components = bool(
         not callback_host
@@ -130,7 +130,8 @@ def _freshness_callback_url(cfg: AppConfig) -> str:
             has_unsafe_components
             or parsed.scheme not in {"http", "https"}
             or not callback_is_loopback
-            or parsed.path not in {
+            or parsed.path
+            not in {
                 "/internal/pre-send-freshness",
                 "/webhook/relay-pre-send-freshness",
             }
@@ -164,9 +165,7 @@ def validate_public_reply_transport_config(cfg: AppConfig) -> None:
         return
     relay_url = str(cfg.public_reply.browser_relay_url or "").strip()
     if not relay_url:
-        raise PublicReplyTransportError(
-            "Zendesk browser relay URL is not configured"
-        )
+        raise PublicReplyTransportError("Zendesk browser relay URL is not configured")
     if not str(cfg.public_reply.browser_relay_api_key or "").strip():
         raise PublicReplyTransportError(
             "Zendesk browser relay API key is not configured"
@@ -261,8 +260,11 @@ def _iter_existing_public_replies(
             for key in ("body", "plain_body", "html_body"):
                 value = comment.get(key)
                 if isinstance(value, str) and value.strip():
-                    yield value, _reply_created_at(
-                        comment.get("created_at") or comment.get("timestamp")
+                    yield (
+                        value,
+                        _reply_created_at(
+                            comment.get("created_at") or comment.get("timestamp")
+                        ),
                     )
                     break
     conversation_log = data.get("conversation_log")
@@ -279,8 +281,9 @@ def _iter_existing_public_replies(
             continue
         text = _conversation_event_text(event)
         if text:
-            yield text, _reply_created_at(
-                event.get("created_at") or event.get("timestamp")
+            yield (
+                text,
+                _reply_created_at(event.get("created_at") or event.get("timestamp")),
             )
 
 
@@ -314,13 +317,17 @@ async def recent_duplicate_public_reply_exists(
         )
     data = payload.get("data")
     if not isinstance(data, dict):
-        raise PublicReplyTransportError("Public reply duplicate check returned invalid data")
+        raise PublicReplyTransportError(
+            "Public reply duplicate check returned invalid data"
+        )
     # A single conversation page is not enough to prove a previous send did
     # not happen.  Follow every cursor or fail closed before a retry can click
     # Send again.
     events, meta = _conversation_page_parts(data)
     if len(events) >= _DUPLICATE_CHECK_MAX_EVENTS:
-        raise PublicReplyTransportError("Public reply duplicate check conversation cap reached")
+        raise PublicReplyTransportError(
+            "Public reply duplicate check conversation cap reached"
+        )
     has_more = bool(meta.get("has_more"))
     cursor = meta.get("after_cursor")
     seen: set[str] = set()
@@ -331,10 +338,14 @@ async def recent_duplicate_public_reply_exists(
     complete_conversation = dict(conversation) if isinstance(conversation, dict) else {}
     while has_more:
         if page_count >= _DUPLICATE_CHECK_MAX_PAGES:
-            raise PublicReplyTransportError("Public reply duplicate check conversation page cap reached")
+            raise PublicReplyTransportError(
+                "Public reply duplicate check conversation page cap reached"
+            )
         cursor_text = str(cursor or "").strip()
         if not cursor_text or cursor_text in seen:
-            raise PublicReplyTransportError("Public reply duplicate check conversation cursor incomplete")
+            raise PublicReplyTransportError(
+                "Public reply duplicate check conversation cursor incomplete"
+            )
         seen.add(cursor_text)
         page = await zendesk_tool_caller(
             "get_ticket_conversation_log",
@@ -352,11 +363,15 @@ async def recent_duplicate_public_reply_exists(
             )
         page_data = page.get("data")
         if not isinstance(page_data, dict):
-            raise PublicReplyTransportError("Public reply duplicate check conversation page invalid")
+            raise PublicReplyTransportError(
+                "Public reply duplicate check conversation page invalid"
+            )
         page_events, page_meta = _conversation_page_parts(page_data)
         events.extend(page_events)
         if len(events) >= _DUPLICATE_CHECK_MAX_EVENTS:
-            raise PublicReplyTransportError("Public reply duplicate check conversation cap reached")
+            raise PublicReplyTransportError(
+                "Public reply duplicate check conversation cap reached"
+            )
         page_count += 1
         has_more = bool(page_meta.get("has_more"))
         cursor = page_meta.get("after_cursor")
@@ -450,12 +465,8 @@ async def send_public_reply_safely(
                 reply_type=reply_type,
                 body=body_with_footer,
                 internal_analysis=internal_analysis,
-                snapshot_customer_message_count=(
-                    snapshot_customer_message_count
-                ),
-                snapshot_customer_last_message_id=(
-                    snapshot_customer_last_message_id
-                ),
+                snapshot_customer_message_count=(snapshot_customer_message_count),
+                snapshot_customer_last_message_id=(snapshot_customer_last_message_id),
             )
             if refreshed.delivered:
                 return False
@@ -518,7 +529,8 @@ async def send_public_reply_safely(
                 and delivery_store is not None
                 and delivery_claim_token is not None
                 and not delivery_store.begin_send(
-                    delivery_attempt.delivery_key, delivery_claim_token,
+                    delivery_attempt.delivery_key,
+                    delivery_claim_token,
                 )
             ):
                 raise PublicReplyTransportError(
@@ -534,15 +546,18 @@ async def send_public_reply_safely(
                 freshness_check_url=freshness_check_url,
                 freshness_check_api_key=(
                     cfg.public_reply.browser_relay_api_key
-                    if freshness_check_url else None
+                    if freshness_check_url
+                    else None
                 ),
                 snapshot_customer_message_count=(
                     snapshot_customer_message_count
-                    if relay_readiness_protected else None
+                    if relay_readiness_protected
+                    else None
                 ),
                 snapshot_customer_last_message_id=(
                     snapshot_customer_last_message_id
-                    if relay_readiness_protected else None
+                    if relay_readiness_protected
+                    else None
                 ),
             )
         except BrowserRelayDefiniteUnsentError:

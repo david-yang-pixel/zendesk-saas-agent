@@ -24,7 +24,7 @@ class ToolObservation:
     success: bool
     output: str = ""
     error: str = ""
-    metadata: dict[str, object] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=lambda: {})
 
 
 class ToolCaller(Protocol):
@@ -92,7 +92,10 @@ def _error_code(detail: str) -> AdapterErrorCode:
         (("permission denied", "forbidden", "403"), AdapterErrorCode.PERMISSION_DENIED),
         (("not found", "no record", "404"), AdapterErrorCode.NOT_FOUND),
         (("invalid", "bad request", "400"), AdapterErrorCode.INVALID_REQUEST),
-        (("connection", "transport", "unavailable"), AdapterErrorCode.TRANSPORT_UNAVAILABLE),
+        (
+            ("connection", "transport", "unavailable"),
+            AdapterErrorCode.TRANSPORT_UNAVAILABLE,
+        ),
     )
     return next(
         (code for values, code in markers if any(value in lowered for value in values)),
@@ -113,17 +116,21 @@ def _failed_membership(
     )
 
 
-def _membership_candidates(payload: dict[str, object]) -> tuple[WorkspaceCandidate, ...] | None:
+def _membership_candidates(
+    payload: dict[str, object],
+) -> tuple[WorkspaceCandidate, ...] | None:
     raw_candidates = payload.get("candidates")
     if not isinstance(raw_candidates, list):
         return None
+    candidate_values = cast(list[object], raw_candidates)
     candidates: list[WorkspaceCandidate] = []
-    for value in raw_candidates:
+    for value in candidate_values:
         if not isinstance(value, dict):
             return None
-        tenant_id = value.get("tenant_id")
-        name = value.get("name")
-        role = value.get("role", "")
+        candidate = cast(dict[str, object], value)
+        tenant_id = candidate.get("tenant_id")
+        name = candidate.get("name")
+        role = candidate.get("role", "")
         if not isinstance(tenant_id, str) or not isinstance(name, str):
             return None
         if not isinstance(role, str):
@@ -144,7 +151,9 @@ def _membership_candidates(payload: dict[str, object]) -> tuple[WorkspaceCandida
     return tuple(candidates)
 
 
-def _validated_memberships(metadata: dict[str, object]) -> tuple[WorkspaceCandidate, ...] | None:
+def _validated_memberships(
+    metadata: dict[str, object],
+) -> tuple[WorkspaceCandidate, ...] | None:
     raw_payload = metadata.get("workspace_resolution")
     if not isinstance(raw_payload, dict):
         return None
@@ -157,13 +166,21 @@ def _validated_memberships(metadata: dict[str, object]) -> tuple[WorkspaceCandid
         payload.get("source") != "prod_membership"
         or candidates is None
         or not isinstance(raw_tenant_ids, list)
-        or not all(isinstance(value, str) for value in raw_tenant_ids)
     ):
         return None
-    tenant_ids = tuple(cast(str, value).casefold() for value in raw_tenant_ids)
+    tenant_id_values = cast(list[object], raw_tenant_ids)
+    if not all(isinstance(value, str) for value in tenant_id_values):
+        return None
+    tenant_ids = tuple(
+        value.casefold() for value in tenant_id_values if isinstance(value, str)
+    )
     if tenant_ids != tuple(candidate.tenant_id for candidate in candidates):
         return None
-    if not isinstance(count, int) or isinstance(count, bool) or count != len(candidates):
+    if (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or count != len(candidates)
+    ):
         return None
     if len({candidate.tenant_id for candidate in candidates}) != len(candidates):
         return None
@@ -210,7 +227,9 @@ _PREFIX_RE = re.compile(r"^([A-Z_]+)=([^\r\n]*)$", re.MULTILINE)
 
 
 def _prefixed_values(output: str) -> dict[str, str]:
-    return {match.group(1): match.group(2).strip() for match in _PREFIX_RE.finditer(output)}
+    return {
+        match.group(1): match.group(2).strip() for match in _PREFIX_RE.finditer(output)
+    }
 
 
 def _pipe_value(output: str, field_name: str) -> str:

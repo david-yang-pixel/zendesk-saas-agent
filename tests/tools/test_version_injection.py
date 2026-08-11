@@ -1,4 +1,5 @@
 """线上版本注入文本块渲染测试。"""
+
 from zd_agent.tools.saas_version import DeployedVersion, render_deployed_version_block
 
 

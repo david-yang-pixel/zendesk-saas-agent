@@ -1,4 +1,5 @@
 """Decision logger: append JSONL records for every trigger decision."""
+
 from __future__ import annotations
 
 import json

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from typing import Any
 
@@ -13,9 +15,23 @@ except ImportError as e:
 from anthropic.types.message import Message
 
 from zd_agent.log import get_logger
-from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
+from zd_agent.runtime.llm.types import (
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+    ToolSchema,
+)
 
 logger = get_logger(module="llm.anthropic")
+
+_ANTHROPIC_IMAGE_MEDIA_TYPES = frozenset(
+    {
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    }
+)
 
 
 def _tool_schemas_to_anthropic(tools: list[ToolSchema]) -> list[dict[str, Any]]:
@@ -37,7 +53,9 @@ def _collect_system_text(content: Any) -> str | None:
     return None
 
 
-def _extract_system(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
+def _extract_system(
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
     system_chunks: list[str] = []
     rest: list[dict[str, Any]] = []
     for msg in messages:
@@ -58,16 +76,53 @@ def _user_content_from_openai(content: Any) -> str | list[dict[str, Any]]:
     if isinstance(content, str):
         return content
     if not isinstance(content, list):
-        return json.dumps(content, ensure_ascii=False) if isinstance(content, (dict, list)) else str(content)
+        return (
+            json.dumps(content, ensure_ascii=False)
+            if isinstance(content, (dict, list))
+            else str(content)
+        )
     blocks: list[dict[str, Any]] = []
     for part in content:
         if not isinstance(part, dict):
             continue
         if part.get("type") == "text":
             blocks.append({"type": "text", "text": str(part.get("text", ""))})
+        elif part.get("type") == "image_url":
+            blocks.append(_anthropic_image_from_openai(part))
         else:
             blocks.append(part)
     return blocks if blocks else ""
+
+
+def _anthropic_image_from_openai(part: dict[str, Any]) -> dict[str, Any]:
+    image_url = part.get("image_url")
+    if not isinstance(image_url, dict):
+        raise ValueError("Anthropic image requires an image_url object")
+    url = image_url.get("url")
+    if not isinstance(url, str) or not url.startswith("data:"):
+        raise ValueError("Anthropic image requires an inline base64 data URL")
+
+    header, separator, data = url.partition(",")
+    if not separator or not header.endswith(";base64"):
+        raise ValueError("Anthropic image data URL must use base64 encoding")
+    media_type = header.removeprefix("data:").removesuffix(";base64").lower()
+    if media_type not in _ANTHROPIC_IMAGE_MEDIA_TYPES:
+        raise ValueError(f"Anthropic image media type is unsupported: {media_type}")
+    try:
+        decoded = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("Anthropic image contains invalid base64 data") from exc
+    if not decoded:
+        raise ValueError("Anthropic image data must not be empty")
+
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        },
+    }
 
 
 def _assistant_blocks_from_openai(msg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -128,7 +183,12 @@ def _openai_messages_to_anthropic(rest: list[dict[str, Any]]) -> list[dict[str, 
             if blocks:
                 out.append({"role": "assistant", "content": blocks})
         elif role == "user":
-            out.append({"role": "user", "content": _user_content_from_openai(msg.get("content"))})
+            out.append(
+                {
+                    "role": "user",
+                    "content": _user_content_from_openai(msg.get("content")),
+                }
+            )
         else:
             continue
     return out

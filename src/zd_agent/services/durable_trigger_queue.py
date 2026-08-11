@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio  # noqa: ANY001 - reusable clearable event coordinates many consumers.
+from hashlib import sha256
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from zd_agent.services.cancellation import await_durable_cleanup
 from zd_agent.services.durable_trigger_store import DurableTriggerStore
 
 
@@ -20,6 +22,7 @@ class DurableTriggerQueue:
         max_materialization_defers: int = 20,
         retry_base_seconds: float = 5.0,
         lease_seconds: float = 30 * 60,
+        poll_interval_seconds: float = 0.5,
         now_fn: Callable[[], float] = time.time,
     ) -> None:
         self.path = Path(path)
@@ -27,6 +30,7 @@ class DurableTriggerQueue:
         self.max_materialization_defers = max(1, max_materialization_defers)
         self.retry_base_seconds = max(0.0, retry_base_seconds)
         self.lease_seconds = max(1.0, lease_seconds)
+        self.poll_interval_seconds = max(0.01, poll_interval_seconds)
         self._now = now_fn
         self._wake = asyncio.Event()
         self._store = DurableTriggerStore(
@@ -87,7 +91,7 @@ class DurableTriggerQueue:
         # Queue identity and customer-delivery identity serve different jobs.
         # The pre-crash trigger may still hold a live queue lease under the
         # delivery id, so startup recovery needs its own independent key.
-        event_key = f"startup-recovery:{ticket_id}"
+        event_key = _processing_recovery_key(ticket_id, delivery_attempt_id)
         payload = {
             "source": "startup_recovery",
             "ticket_id": ticket_id,
@@ -97,7 +101,7 @@ class DurableTriggerQueue:
         available_at = self._now()
         inserted = self._store.insert(event_key, payload, available_at)
         if not inserted:
-            inserted = self._store.revive_dead_letter(
+            inserted = self._store.revive_recovery(
                 event_key,
                 payload,
                 available_at,
@@ -109,15 +113,31 @@ class DurableTriggerQueue:
     async def get(self) -> dict[str, Any]:
         while True:
             self._wake.clear()
-            message, next_available_at = await asyncio.to_thread(
-                self._store.claim_ready
+            claim_task = asyncio.create_task(
+                asyncio.to_thread(self._store.claim_ready),
             )
+            try:
+                message, next_available_at = await asyncio.shield(claim_task)
+            except asyncio.CancelledError:
+                # ``to_thread`` cannot be cancelled after SQLite has committed
+                # the processing lease. Repeated lifecycle cancellation must
+                # not interrupt the claim/release cleanup and strand the row.
+                message, _next_available_at = await await_durable_cleanup(claim_task)
+                if message is not None:
+                    release_task = asyncio.create_task(self.release(message))
+                    await await_durable_cleanup(release_task)
+                raise
             if message is not None:
                 return message
 
-            timeout = None
+            # The event is process-local.  A bounded poll is also required so a
+            # consumer observes inserts committed by another queue instance.
+            timeout = self.poll_interval_seconds
             if next_available_at is not None:
-                timeout = max(0.0, next_available_at - self._now())
+                timeout = min(
+                    timeout,
+                    max(0.0, next_available_at - self._now()),
+                )
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=timeout)
             except TimeoutError:
@@ -137,6 +157,7 @@ class DurableTriggerQueue:
             claim_token,
             0.0,
             "consumer_cancelled",
+            payload=message,
         )
         if released:
             self._wake.set()
@@ -152,10 +173,7 @@ class DurableTriggerQueue:
         claim_token = _claim_token(message)
         is_materialization_wait = reason == "ticket_not_materialized"
         deferrals = int(message.get("_queue_deferrals") or 0)
-        if (
-            is_materialization_wait
-            and deferrals + 1 >= self.max_materialization_defers
-        ):
+        if is_materialization_wait and deferrals + 1 >= self.max_materialization_defers:
             attempts = int(message.get("_queue_attempts") or 0) + 1
             failed = await asyncio.to_thread(
                 self._store.mark_failed,
@@ -165,6 +183,7 @@ class DurableTriggerQueue:
                 False,
                 0.0,
                 f"{reason}: deferral budget exhausted",
+                message,
             )
             return False if failed else None
         deferred = await asyncio.to_thread(
@@ -174,6 +193,7 @@ class DurableTriggerQueue:
             max(0.0, delay_seconds),
             reason,
             increment_deferrals=is_materialization_wait,
+            payload=message,
         )
         if deferred:
             self._wake.set()
@@ -194,6 +214,7 @@ class DurableTriggerQueue:
             pending,
             delay,
             error,
+            message,
         )
         if not failed:
             return None
@@ -204,10 +225,19 @@ class DurableTriggerQueue:
     async def pending_count(self) -> int:
         return await asyncio.to_thread(self._store.count, "pending")
 
+    async def dead_letter_count(self) -> int:
+        return await asyncio.to_thread(self._store.count, "dead_letter")
+
     async def list_dead_letters(self, limit: int = 100) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
             self._store.dead_letters,
             max(1, min(limit, 500)),
+        )
+
+    async def resolve_dead_letter(self, message: dict[str, Any]) -> bool:
+        return await asyncio.to_thread(
+            self._store.resolve_dead_letter,
+            _event_id(message),
         )
 
 
@@ -218,6 +248,13 @@ def _event_id(message: dict[str, Any]) -> int:
             "durable trigger message is missing _queue_event_id"
         )
     return value
+
+
+def _processing_recovery_key(ticket_id: int, delivery_attempt_id: str) -> str:
+    if not delivery_attempt_id:
+        return f"startup-recovery:{ticket_id}"
+    generation = sha256(delivery_attempt_id.encode("utf-8")).hexdigest()[:16]
+    return f"startup-recovery:{ticket_id}:{generation}"
 
 
 def _claim_token(message: dict[str, Any]) -> str:

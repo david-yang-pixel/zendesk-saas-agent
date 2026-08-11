@@ -8,7 +8,9 @@ from pathlib import Path
 
 
 class MentionTracker:
-    def __init__(self, state_file: str | Path = ".state/processed_mentions.json") -> None:
+    def __init__(
+        self, state_file: str | Path = ".state/processed_mentions.json"
+    ) -> None:
         self._path = Path(state_file)
         self._data: dict[str, str] = {}
         self._load()
@@ -40,8 +42,7 @@ class MentionTracker:
         """删除超过 days 天的记录。"""
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         to_delete = [
-            cid for cid, ts in self._data.items()
-            if datetime.fromisoformat(ts) < cutoff
+            cid for cid, ts in self._data.items() if datetime.fromisoformat(ts) < cutoff
         ]
         for cid in to_delete:
             del self._data[cid]

@@ -1,59 +1,28 @@
-"""Zendesk 工具组：通过远程 Zendesk MCP 执行读写操作。"""
+"""Read-only Zendesk evidence tools used by casework v2."""
 
 from __future__ import annotations
 
-import base64
-import binascii
 import re
-from pathlib import Path
 from typing import Any
 
 from zd.cli import (
     _collect_all_image_urls,
 )
 
-from zd_agent.config import get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.ticket_images import (
     collect_image_urls_from_attachments,
-    detected_image_content_type,
     extract_inline_image_urls,
     filename_from_url,
 )
 from zd_agent.services.ticket_message_parsing import normalize_messaging_content
 from zd_agent.services.ticket_messages import load_complete_ticket_payload
 from zd_agent.runtime.source_selector import suggest_sources
-from zd_agent.runtime.image_evidence import (
-    guard_against_stale_no_image_claim,
-    guard_text_values_against_stale_no_image_claim,
-)
-from zd_agent.session.agent_session import AgentSession, TicketContext
+from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolResult
 
 logger = get_logger(module="tools.zendesk")
-
-_VISION_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024
-_MAX_QUEUED_VISION_ATTACHMENTS = 10
-_IMAGE_CONTENT_TYPE_BY_SUFFIX = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-}
-
-_INTERNAL_REPLY_BANNER = (
-    "> **AI-generated reply for reference only.**"
-)
-def _mention_footer() -> str:
-    """动态从 config 读 mention_trigger，避免老 agent 轮询到硬编码 @support-agent 造成循环。"""
-    try:
-        trigger = get_config().zendesk.mention_trigger or "@agent"
-    except Exception:
-        trigger = "@agent"
-    return f"\n\n---\n*You can follow up by mentioning {trigger} in an internal note.*"
 
 _JA_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -65,14 +34,14 @@ _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 _URL_RE = re.compile(r"https?://\S+")
 _TECHNICAL_LINE_RE = re.compile(
     r"^[ \t]*(?:"
-    r"at\s+[\w.$<>/]+|"                          # Java/JS/Go 堆栈行
-    r'File\s+"[^"]+"|'                            # Python 堆栈行
-    r"Traceback\s+\(|"                            # Python traceback 头
-    r"[\w.]*(?:Error|Exception|Warning)[:\s]|"    # 错误/异常行
-    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|"         # 日志时间戳
-    r"(?:WARN|INFO|DEBUG|ERROR|FATAL)[\s\[]|"     # 日志级别
-    r"[A-Z_]{3,}=|"                               # ENV_VAR=value
-    r"(?:kubectl|docker|helm|npm|pip|git)\s"       # CLI 命令
+    r"at\s+[\w.$<>/]+|"  # Java/JS/Go 堆栈行
+    r'File\s+"[^"]+"|'  # Python 堆栈行
+    r"Traceback\s+\(|"  # Python traceback 头
+    r"[\w.]*(?:Error|Exception|Warning)[:\s]|"  # 错误/异常行
+    r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}|"  # 日志时间戳
+    r"(?:WARN|INFO|DEBUG|ERROR|FATAL)[\s\[]|"  # 日志级别
+    r"[A-Z_]{3,}=|"  # ENV_VAR=value
+    r"(?:kubectl|docker|helm|npm|pip|git)\s"  # CLI 命令
     r").*$",
     re.MULTILINE,
 )
@@ -155,7 +124,10 @@ def _is_external_author(author_type: str) -> bool:
 
 
 def _extract_reply_language_hint(
-    *, thread_type: str, thread_items: list[dict[str, Any]], ticket_description: str,
+    *,
+    thread_type: str,
+    thread_items: list[dict[str, Any]],
+    ticket_description: str,
 ) -> dict[str, str] | None:
     """从最近一条客户公开消息中提取回复语言建议。"""
     if thread_type == "conversation_log":
@@ -190,7 +162,8 @@ def _extract_reply_language_hint(
 
 
 def _format_custom_fields(
-    custom_fields: list[dict[str, Any]], field_map: dict[int, dict[str, Any]],
+    custom_fields: list[dict[str, Any]],
+    field_map: dict[int, dict[str, Any]],
 ) -> list[str]:
     """将工单的 custom_fields 数组格式化为可读文本行"""
     lines: list[str] = []
@@ -231,7 +204,8 @@ def _format_mcp_error(tool_name: str, payload: dict[str, Any]) -> str:
 
 
 def _extract_custom_field_values(
-    raw_custom: list[dict[str, Any]], field_map: dict[int, dict[str, Any]],
+    raw_custom: list[dict[str, Any]],
+    field_map: dict[int, dict[str, Any]],
 ) -> dict[str, str]:
     """把 Zendesk 自定义字段整理成 title -> 可读值。"""
     values: dict[str, str] = {}
@@ -263,7 +237,9 @@ def _extract_custom_field_values(
     return values
 
 
-def _format_source_recommendations(custom_fields: dict[str, str], ticket: dict[str, Any]) -> list[str]:
+def _format_source_recommendations(
+    custom_fields: dict[str, str], ticket: dict[str, Any]
+) -> list[str]:
     """根据工单内容给出默认知识源建议。"""
     recommendations = suggest_sources(
         subject=ticket.get("subject", ""),
@@ -278,11 +254,15 @@ def _format_source_recommendations(custom_fields: dict[str, str], ticket: dict[s
         "local_knowledge": "knowledge_search / knowledge_read",
         "official_docs_enterprise": "official_docs_search(source=official_docs_enterprise) / official_docs_read",
         "official_docs_community": "official_docs_search(source=official_docs_community) / official_docs_read",
-        "source_code": "list_repos / list_repo_tags / sandbox_search / sandbox_read",
-        "attachments": "zendesk_get_attachments + sandbox_read",
+        "source_code": "list_repos / list_repo_tags / git_grep / git_show",
+        "attachments": "工单快照已自动提取附件与视觉证据",
     }
 
-    lines = ["## 初始知识源建议", "以下建议由代码规则生成，仅作为默认起点，你仍需根据证据动态调整：", ""]
+    lines = [
+        "## 初始知识源建议",
+        "以下建议由代码规则生成，仅作为默认起点，你仍需根据证据动态调整：",
+        "",
+    ]
     for item in recommendations[:5]:
         lines.append(f"- **{item.source}**: {item.reason}")
         if hint := tool_hints.get(item.source):
@@ -320,7 +300,9 @@ def _coerce_optional_string_arg(
     return value
 
 
-def _image_record(url: str, *, source: str, index: int, file_name: str = "") -> dict[str, Any]:
+def _image_record(
+    url: str, *, source: str, index: int, file_name: str = ""
+) -> dict[str, Any]:
     return {
         "url": url,
         "file_name": file_name or filename_from_url(url),
@@ -342,7 +324,8 @@ def _dedupe_image_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _collect_additional_image_urls(
-    thread_type: str, thread_items: list[dict[str, Any]],
+    thread_type: str,
+    thread_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     if thread_type == "conversation_log":
@@ -352,37 +335,56 @@ def _collect_additional_image_urls(
             if content_type == "image":
                 url = str(content.get("media_url") or "").strip()
                 if url:
-                    records.append(_image_record(
-                        url,
-                        source="conversation_image",
-                        index=index,
-                        file_name=content.get("alt_text") or "",
-                    ))
+                    records.append(
+                        _image_record(
+                            url,
+                            source="conversation_image",
+                            index=index,
+                            file_name=content.get("alt_text") or "",
+                        )
+                    )
             for field in ("body", "text", "text_fallback"):
                 for url in extract_inline_image_urls(content.get(field)):
-                    records.append(_image_record(
-                        url, source="conversation_inline_image", index=index,
-                    ))
+                    records.append(
+                        _image_record(
+                            url,
+                            source="conversation_inline_image",
+                            index=index,
+                        )
+                    )
             for url in collect_image_urls_from_attachments(event.get("attachments")):
-                records.append(_image_record(
-                    url, source="conversation_attachment", index=index,
-                ))
+                records.append(
+                    _image_record(
+                        url,
+                        source="conversation_attachment",
+                        index=index,
+                    )
+                )
     else:
         for index, comment in enumerate(thread_items, 1):
             for field in ("body", "html_body", "plain_body"):
                 for url in extract_inline_image_urls(comment.get(field)):
-                    records.append(_image_record(
-                        url, source="comment_inline_image", index=index,
-                    ))
+                    records.append(
+                        _image_record(
+                            url,
+                            source="comment_inline_image",
+                            index=index,
+                        )
+                    )
             for url in collect_image_urls_from_attachments(comment.get("attachments")):
-                records.append(_image_record(
-                    url, source="comment_attachment", index=index,
-                ))
+                records.append(
+                    _image_record(
+                        url,
+                        source="comment_attachment",
+                        index=index,
+                    )
+                )
     return _dedupe_image_records(records)
 
 
 def _collect_ticket_image_urls(
-    thread_type: str, thread_items: list[dict[str, Any]],
+    thread_type: str,
+    thread_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     return _dedupe_image_records(
         list(_collect_all_image_urls(thread_type, thread_items))
@@ -405,182 +407,6 @@ def _mcp_ticket_thread(data: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]
     if isinstance(comments, list):
         return "comments", [c for c in comments if isinstance(c, dict)]
     return "comments", []
-
-
-def _mcp_attachment_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
-    attachments = data.get("attachments") or []
-    rows: list[dict[str, Any]] = []
-    if not isinstance(attachments, list):
-        return rows
-    for index, attachment in enumerate(attachments, 1):
-        if not isinstance(attachment, dict):
-            continue
-        url = str(attachment.get("content_url") or attachment.get("url") or "").strip()
-        if not url:
-            continue
-        rows.append(
-            {
-                "url": url,
-                "file_name": attachment.get("file_name")
-                or attachment.get("filename")
-                or attachment.get("name")
-                or filename_from_url(url),
-                "content_type": attachment.get("content_type")
-                or attachment.get("mime_type")
-                or "",
-                "source": attachment.get("source") or "zendesk_mcp",
-                "index": attachment.get("comment_id")
-                or attachment.get("event_id")
-                or index,
-            }
-        )
-    return rows
-
-
-def _safe_attachment_name(name: str, url: str, index: int) -> str:
-    candidate = str(name or filename_from_url(url) or f"attachment-{index}").strip()
-    candidate = candidate.replace("\x00", "")
-    candidate = Path(candidate).name
-    if not candidate or candidate in {".", ".."}:
-        candidate = f"attachment-{index}"
-    return candidate
-
-
-def _dedupe_attachment_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for record in records:
-        url = str(record.get("url") or "").strip()
-        if not url or url in seen:
-            continue
-        seen.add(url)
-        out.append({**record, "url": url})
-    return out
-
-
-async def _download_attachment_records_via_mcp(
-    records: list[dict[str, Any]],
-    out_dir: Path,
-) -> tuple[dict[str, Path], list[dict[str, Any]], dict[str, Path]]:
-    downloaded: dict[str, Path] = {}
-    failed: list[dict[str, Any]] = []
-    skipped: dict[str, Path] = {}
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    for index, record in enumerate(records, 1):
-        url = str(record.get("url") or "").strip()
-        if not url:
-            continue
-        file_name = _safe_attachment_name(str(record.get("file_name") or ""), url, index)
-        save_path = out_dir / file_name
-        if save_path.exists():
-            skipped[url] = save_path
-            continue
-
-        payload = await call_zendesk_tool(
-            "download_attachment",
-            {"content_url": url, "file_name": file_name},
-        )
-        if not payload.get("success"):
-            failed.append({
-                **record,
-                "file_name": file_name,
-                "reason": _format_mcp_error("download_attachment", payload),
-            })
-            continue
-        data = payload.get("data") or {}
-        if not isinstance(data, dict):
-            failed.append({**record, "file_name": file_name, "reason": "invalid MCP payload"})
-            continue
-        encoded = data.get("data_base64")
-        if not isinstance(encoded, str) or not encoded:
-            failed.append({**record, "file_name": file_name, "reason": "missing data_base64"})
-            continue
-        try:
-            content = base64.b64decode(encoded, validate=True)
-        except (binascii.Error, ValueError) as e:
-            failed.append({**record, "file_name": file_name, "reason": str(e)[:80]})
-            continue
-
-        response_name = _safe_attachment_name(
-            str(data.get("file_name") or file_name),
-            url,
-            index,
-        )
-        save_path = out_dir / response_name
-        save_path.write_bytes(content)
-        downloaded[url] = save_path
-
-    return downloaded, failed, skipped
-
-
-def _queue_downloaded_images_for_vision(
-    *,
-    records: list[dict[str, Any]],
-    local_files: dict[str, Path],
-    session: AgentSession,
-) -> int:
-    records_by_url = {
-        str(record.get("url") or ""): record
-        for record in records
-        if record.get("url")
-    }
-    queued: list[dict[str, str]] = []
-    for url, path in local_files.items():
-        if len(queued) >= _MAX_QUEUED_VISION_ATTACHMENTS:
-            break
-        try:
-            size = path.stat().st_size
-            if size > _VISION_ATTACHMENT_MAX_BYTES:
-                logger.warning(
-                    "zendesk_attachment_vision_too_large",
-                    ticket_id=session.ticket_id,
-                    file_name=path.name,
-                    size=size,
-                    limit=_VISION_ATTACHMENT_MAX_BYTES,
-                )
-                continue
-            content = path.read_bytes()
-        except OSError:
-            continue
-        record = records_by_url.get(url, {})
-        declared_content_type = str(record.get("content_type") or "")
-        if not declared_content_type:
-            declared_content_type = _IMAGE_CONTENT_TYPE_BY_SUFFIX.get(
-                path.suffix.lower(),
-                "",
-            )
-        content_type = detected_image_content_type(
-            declared_content_type,
-            content,
-        )
-        if content_type is None:
-            continue
-        encoded = base64.b64encode(content).decode("ascii")
-        queued.append({
-            "url": f"data:{content_type};base64,{encoded}",
-            "file_name": path.name,
-            "source": "zendesk_get_attachments",
-            "comment_index": "0",
-        })
-
-    if not queued:
-        return 0
-    existing = list(session.image_urls) if isinstance(session.image_urls, list) else []
-    downloaded_urls = set(local_files)
-    existing_remote = [
-        item for item in existing
-        if not str(item.get("url") or "").startswith("data:image/")
-        and str(item.get("url") or "") not in downloaded_urls
-    ]
-    session.image_urls = queued + existing_remote
-    session.images_injected = False
-    logger.info(
-        "zendesk_attachment_images_queued_for_vision",
-        ticket_id=session.ticket_id,
-        count=len(queued),
-    )
-    return len(queued)
 
 
 class ZendeskGetTicket(Tool):
@@ -652,21 +478,6 @@ class ZendeskGetTicket(Tool):
                     lines.extend(cf_lines)
                     lines.append("")
 
-            session.context = TicketContext(
-                ticket_id=tid,
-                subject=ticket.get("subject", ""),
-                description=ticket.get("description", ""),
-                customer_language="",
-                customer_version=custom_fields.get("Version", ""),
-                deployment_method=custom_fields.get("Environment", ""),
-                raw_data={
-                    "ticket": ticket,
-                    "tags": ticket.get("tags", []),
-                    "custom_fields": custom_fields,
-                    "field_map": field_map,
-                },
-            )
-
             lines.extend(_format_source_recommendations(custom_fields, ticket))
 
             reply_language_hint = _extract_reply_language_hint(
@@ -687,27 +498,29 @@ class ZendeskGetTicket(Tool):
                     }
 
             if reply_language_hint:
-                session.context.customer_language = reply_language_hint["language"]
-                session.context.raw_data["reply_language_hint"] = reply_language_hint
                 source_label = (
                     "（来源: @mention 触发评论）"
                     if reply_language_hint.get("source") == "mention_hint"
                     else ""
                 )
-                lines.extend([
-                    "## 回复语言建议（初步检测，仅供参考）",
-                    f"- 以下为基于字符统计的初步检测结果，仅供参考{source_label}",
-                    "- 请你结合对话全文独立判断客户实际使用的语言，并使用该语言撰写回复",
-                    (
-                        f"- 初步检测: {reply_language_hint['language']} "
-                        f"({ _language_label(reply_language_hint['language']) })"
-                    ),
-                    f"- 参考文本: {reply_language_hint['evidence']}",
-                    "",
-                ])
+                lines.extend(
+                    [
+                        "## 回复语言建议（初步检测，仅供参考）",
+                        f"- 以下为基于字符统计的初步检测结果，仅供参考{source_label}",
+                        "- 请你结合对话全文独立判断客户实际使用的语言，并使用该语言撰写回复",
+                        (
+                            f"- 初步检测: {reply_language_hint['language']} "
+                            f"({_language_label(reply_language_hint['language'])})"
+                        ),
+                        f"- 参考文本: {reply_language_hint['evidence']}",
+                        "",
+                    ]
+                )
 
             if collected_images:
-                lines.append(f"**截图数量**: {len(collected_images)} 张（已自动提交给你查看）")
+                lines.append(
+                    f"**截图数量**: {len(collected_images)} 张（由 v2 工单快照视觉链路读取）"
+                )
                 lines.append("")
 
             lines.append("## 对话记录")
@@ -721,14 +534,18 @@ class ZendeskGetTicket(Tool):
 
                     body = normalize_messaging_content(content)["body"]
 
-                    lines.append(f"\n### 消息 #{i} ({author} [{author_type}], {created})")
+                    lines.append(
+                        f"\n### 消息 #{i} ({author} [{author_type}], {created})"
+                    )
                     lines.append(body.strip() if body else "(空)")
 
                     attachments = event.get("attachments", [])
                     if attachments:
                         lines.append("\n**附件:**")
                         for att in attachments:
-                            fname = att.get("file_name") or att.get("alt_text", "unknown")
+                            fname = att.get("file_name") or att.get(
+                                "alt_text", "unknown"
+                            )
                             lines.append(f"  - {fname}")
             else:
                 for i, c in enumerate(thread_items, 1):
@@ -746,139 +563,10 @@ class ZendeskGetTicket(Tool):
                             fname = att.get("file_name", "unknown")
                             ctype = att.get("content_type", "")
                             size = att.get("size", 0)
-                            size_str = f"{size // 1024}KB" if size >= 1024 else f"{size}B"
+                            size_str = (
+                                f"{size // 1024}KB" if size >= 1024 else f"{size}B"
+                            )
                             lines.append(f"  - {fname} ({ctype}, {size_str})")
-
-            # 将图片 URL 存到 session，由 tool_loop 注入多模态消息
-            if collected_images:
-                for img in collected_images:
-                    url = img.get("url", "")
-                    if url and not url.startswith("data:"):
-                        session.image_urls.append({
-                            "url": url,
-                            "file_name": img.get("file_name", "image"),
-                            "source": img.get("source", ""),
-                            "comment_index": img.get("index", 0),
-                        })
-
-            return ToolResult(output="\n".join(lines))
-
-        except Exception as e:
-            return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
-
-
-class ZendeskGetAttachments(Tool):
-    name = "zendesk_get_attachments"
-    description = (
-        "下载工单的所有附件和图片到本地目录。"
-        "返回已下载文件列表和路径，文本类附件可用 sandbox_read 读取内容。"
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "ticket_id": {
-                "type": "integer",
-                "description": "工单 ID",
-            },
-        },
-        "required": ["ticket_id"],
-    }
-
-    group = "zendesk"
-
-    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        tid = _coerce_positive_int_arg(args, "ticket_id")
-        if isinstance(tid, ToolResult):
-            return tid
-
-        if not session.sandbox_dir:
-            return ToolResult(success=False, error="Sandbox 未初始化")
-
-        try:
-            payload = await call_zendesk_tool(
-                "list_attachments",
-                {
-                    "ticket_id": tid,
-                    "include_conversation_log": True,
-                    "force_refresh": True,
-                },
-            )
-            if not payload.get("success"):
-                return ToolResult(
-                    success=False,
-                    error=_format_mcp_error("list_attachments", payload),
-                )
-            data = payload.get("data") or {}
-            if not isinstance(data, dict):
-                return ToolResult(
-                    success=False,
-                    error="Zendesk MCP list_attachments returned invalid payload",
-            )
-            att_rows = _mcp_attachment_rows(data)
-            ticket_payload = await call_zendesk_tool(
-                "get_ticket",
-                {
-                    "ticket_id": tid,
-                    "include_comments": True,
-                    "include_conversation_log": True,
-                    "force_refresh": True,
-                },
-            )
-            thread_images: list[dict[str, Any]] = []
-            if ticket_payload.get("success"):
-                ticket_data = ticket_payload.get("data") or {}
-                if isinstance(ticket_data, dict):
-                    thread_type, thread_items = _mcp_ticket_thread(ticket_data)
-                    thread_images = _collect_ticket_image_urls(thread_type, thread_items)
-            else:
-                logger.warning(
-                    "zendesk_mcp_attachment_thread_image_probe_failed",
-                    ticket_id=tid,
-                    error=ticket_payload.get("error"),
-                    code=ticket_payload.get("code"),
-                )
-
-            att_urls = {r.get("url") for r in att_rows if r.get("url")}
-            extra_images = [img for img in thread_images if img.get("url") not in att_urls]
-
-            total = len(att_rows) + len(extra_images)
-            if total == 0:
-                return ToolResult(output="该工单没有附件或图片")
-
-            out_dir = session.sandbox_dir / "attachments"
-            download_records = _dedupe_attachment_records(att_rows + extra_images)
-            downloaded, failed, skipped = await _download_attachment_records_via_mcp(
-                download_records,
-                out_dir,
-            )
-
-            queued_images = _queue_downloaded_images_for_vision(
-                records=download_records,
-                local_files={**skipped, **downloaded},
-                session=session,
-            )
-            lines = [
-                "附件下载目录: attachments/（相对于当前工单 sandbox 根目录）",
-                "文本附件使用 sandbox_read('attachments/<文件名>')；"
-                "不要加 ticket_id，不要传绝对路径，图片不要交给 sandbox_read。",
-            ]
-            if downloaded:
-                lines.append(f"\n已下载 {len(downloaded)} 个文件:")
-                for url, path in downloaded.items():
-                    lines.append(f"  ✓ attachments/{path.name}")
-            if skipped:
-                lines.append(f"\n复用本地缓存 {len(skipped)} 个:")
-                for url, path in skipped.items():
-                    lines.append(f"  ↺ attachments/{path.name}")
-            if queued_images:
-                lines.append(
-                    f"\n已将 {queued_images} 张图片排入下一轮视觉输入；"
-                    "无需、也不要使用 sandbox_read 读取图片。"
-                )
-            if failed:
-                lines.append(f"\n下载失败 {len(failed)} 个:")
-                for f_item in failed:
-                    lines.append(f"  ✗ {f_item.get('file_name', '?')} — {f_item.get('reason', '?')}")
 
             return ToolResult(output="\n".join(lines))
 
@@ -979,9 +667,7 @@ class ZendeskSearchArticles(Tool):
 
             lines = [f"找到 {len(results)} 篇相关文章:\n"]
             for a in results[:10]:
-                lines.append(
-                    f"- **[{a.get('id')}]** {a.get('title', 'N/A')}"
-                )
+                lines.append(f"- **[{a.get('id')}]** {a.get('title', 'N/A')}")
                 if a.get("html_url"):
                     lines.append(f"  链接: {a['html_url']}")
             return ToolResult(output="\n".join(lines))
@@ -1031,6 +717,7 @@ class ZendeskGetArticle(Tool):
             article = data.get("article", data)
 
             import re
+
             body_html = article.get("body", "")
             body_plain = re.sub(r"<[^>]+>", "", body_html).strip() if body_html else ""
             if len(body_plain) > 5000:
@@ -1046,462 +733,6 @@ class ZendeskGetArticle(Tool):
             ]
             return ToolResult(output="\n".join(lines))
 
-        except Exception as e:
-            return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
-
-
-class ZendeskInternalReply(Tool):
-    name = "zendesk_internal_reply"
-    description = (
-        "向工单发送 Internal Note（内部备注，客户不可见）。"
-        "它只记录分析，不会自动同步 Public Reply，也不会算作客户已收到回复。"
-        "需要回复客户时必须直接调用 zendesk_public_reply。"
-        "必须同时提供 body（Markdown 正文）和 summary（结构化摘要），"
-        "系统会自动将其渲染为带摘要卡片的 HTML 格式。"
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "ticket_id": {
-                "type": "integer",
-                "description": "工单 ID",
-            },
-            "body": {
-                "type": "string",
-                "description": "回复正文（Markdown 格式），应包含三段：## Suggested Reply、## Internal Analysis、## Review Guide",
-            },
-            "summary": {
-                "type": "object",
-                "description": "结构化摘要信息，用于渲染快速摘要卡片",
-                "properties": {
-                    "problem_type": {
-                        "type": "string",
-                        "description": "问题分类（如 code-bug / config-deploy / usage-howto / feature-request）",
-                    },
-                    "confidence": {
-                        "type": "string",
-                        "enum": ["high", "medium", "low"],
-                        "description": (
-                            "置信度判定标准（不要默认 medium 兜底）：\n"
-                            "- high: 有直接证据（DB 行返回 / 源码具体行 / GitHub PR / 历史工单同类 / 官方文档明确条款）"
-                            "证明根因或答案，且客户诉求无歧义。**大多数处理充分的工单都应该是 high**。\n"
-                            "- medium: 证据是间接的或部分的（如：能查到现象但无法定位根因；或客户描述含 2-3 种可能解读）。\n"
-                            "- low: 已按 strategies 段完整跑过所有必查路径仍无法定位（罕见）。\n"
-                            "**不要因为'怕错'而打 medium**——agent 的 confidence 应该反映证据强度，不是反映安全感。"
-                        ),
-                    },
-                    "confidence_reason": {
-                        "type": "string",
-                        "description": "置信度判断依据（如：来自源码验证 + 官方文档交叉确认）",
-                    },
-                    "customer_language": {
-                        "type": "string",
-                        "description": "客户使用的语言（如：中文 / English / 日本語）",
-                    },
-                    "version": {
-                        "type": "string",
-                        "description": "客户版本（如：Enterprise 3.7.3 (chart) / App 1.11.2）",
-                    },
-                    "key_finding": {
-                        "type": "string",
-                        "description": "一句话核心结论",
-                    },
-                    "fix_status": {
-                        "type": "string",
-                        "description": "Fix status (released / merged_unreleased / in_progress / not_fixed / unknown)",
-                        "enum": ["released", "merged_unreleased", "in_progress", "not_fixed", "unknown"],
-                    },
-                    "fix_status_detail": {
-                        "type": "string",
-                        "description": "修复状态补充说明（如版本号 v1.12.0）",
-                    },
-                    "needs_human": {
-                        "type": "boolean",
-                        "description": (
-                            "是否需要人工复核才能发送给客户。**默认应该是 false**——"
-                            "agent 写的 Suggested Reply 是为了 SE 可以直接 forward 给客户，"
-                            "不是给 SE 改的。只有下列场景才设 true：\n"
-                            "- refund / 计费纠纷（任何 Stripe 操作）\n"
-                            "- 账号级敏感操作（封号 / 数据删除 / 转移）\n"
-                            "- 不可重现的 platform_issue（agent 没拿到决定性证据，需 SRE 进一步 drill down）\n"
-                            "- agent 已按 strategies 跑完所有必查路径仍 confidence=low\n"
-                            "**不要因为'怕错'而 opt-in 人工审核**——大多数充分调查过的工单 needs_human 应该是 false。"
-                        ),
-                    },
-                    "needs_human_reason": {
-                        "type": "string",
-                        "description": "needs_human=true 的具体原因（如：'退款金额需财务审批' / 'platform_issue 但 SigNoz 未见错误信号'）。needs_human=false 可省略。",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "工单标签列表",
-                    },
-                },
-                "required": [
-                    "problem_type", "confidence", "confidence_reason",
-                    "customer_language", "key_finding", "needs_human",
-                ],
-            },
-        },
-        "required": ["ticket_id", "body", "summary"],
-    }
-
-    group = "zendesk"
-    concurrency_safe = False
-    is_write_operation = True
-
-    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        if "body" not in args:
-            return ToolResult(success=False, error="body is required")
-        if "summary" not in args:
-            return ToolResult(success=False, error="summary is required")
-
-        body_md = args["body"]
-        summary = args.get("summary", {})
-        ticket_id = _coerce_positive_int_arg(args, "ticket_id")
-        if isinstance(ticket_id, ToolResult):
-            return ticket_id
-        if not isinstance(body_md, str):
-            return ToolResult(success=False, error="body must be a string")
-        if not body_md.strip():
-            return ToolResult(success=False, error="body is empty")
-        if not isinstance(summary, dict):
-            return ToolResult(success=False, error="summary must be an object")
-        body_md = guard_against_stale_no_image_claim(body_md, session)
-        summary = guard_text_values_against_stale_no_image_claim(summary, session)
-
-        if getattr(session, "reply_sent", False):
-            logger.info(
-                "internal_reply_skipped_public_already_sent",
-                ticket_id=ticket_id,
-            )
-            return ToolResult(
-                output=(
-                    f"Skipped Internal Note for ticket #{ticket_id} "
-                    "because a customer-visible public reply was already sent."
-                ),
-            )
-
-        try:
-            public_reply_enabled = bool(get_config().public_reply.enabled)
-        except Exception:
-            public_reply_enabled = False
-        if public_reply_enabled and summary.get("needs_human") is False:
-            return ToolResult(
-                success=False,
-                error=(
-                    "needs_human=false means this ticket is customer-resolvable; "
-                    "use zendesk_public_reply instead of zendesk_internal_reply."
-                ),
-            )
-
-        # LLM 判定的客户语言（以 LLM 判断为准，覆盖字符统计的初步检测）
-        llm_language = summary.get("customer_language", "")
-        if llm_language and session.context:
-            session.context.customer_language = llm_language
-
-        # P2-9: 工具使用审计 - 检测 reply 里的 PR#/源码路径/版本号
-        # 是否真的出现过在 tool_call_log 里，可能虚构 → 加 warning section
-        try:
-            from zd_agent.runtime.reply_audit import audit_reply_against_tools
-            audit_warnings = audit_reply_against_tools(
-                body=body_md,
-                tool_call_log=session.tool_call_log,
-                current_ticket_id=session.ticket_id,
-            )
-            if audit_warnings:
-                logger.warning(
-                    "reply_audit_warnings",
-                    ticket_id=session.ticket_id,
-                    warning_count=len(audit_warnings),
-                    warnings=audit_warnings[:5],
-                )
-                # 把 warning 追加到 body_md 末尾，render_internal_note 会照样渲染
-                body_md += (
-                    "\n\n## ⚠️ Audit Warnings (potential hallucination)\n\n"
-                    + "\n".join(f"- {w}" for w in audit_warnings)
-                )
-        except Exception as e:
-            logger.warning(
-                "reply_audit_failed",
-                ticket_id=session.ticket_id, error=str(e)[:200],
-            )
-
-        # 纯文本版（作为 body 回退）
-        plain_body = _prepend_internal_reply_banner(body_md)
-        plain_body = _append_mention_footer(plain_body)
-
-        session.reply_draft = plain_body
-
-        if session.dry_run:
-            return ToolResult(output="[Dry Run] 回复已保存到草稿，未实际发送")
-
-        try:
-            payload = await call_zendesk_tool(
-                "add_internal_note",
-                {
-                    "ticket_id": ticket_id,
-                    "body": plain_body,
-                    "explicit_user_internal_note_request": "agent internal escalation",
-                    "dry_run": False,
-                    "confirm": True,
-                    "actor": "zd-agent",
-                },
-            )
-            if not payload.get("success"):
-                return ToolResult(
-                    success=False,
-                    error=_format_mcp_error("add_internal_note", payload),
-                )
-        except Exception as e:
-            return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
-
-        return ToolResult(
-            output=(
-                f"已发送 Internal Note 到工单 #{ticket_id} "
-                "(not customer-visible; use zendesk_public_reply for customer replies)"
-            ),
-        )
-
-
-# B 路径辅助函数 (2026-05-26)：从 agent 写的结构化 body 里抽客户面 Suggested
-# Reply 段，丢给 public_reply。匹配 ## Suggested Reply / ## 客户回复建议
-# 等中英文标题（含 emoji 前缀如 ## 💬 Suggested Reply）。
-_SUGGESTED_REPLY_HEADERS = (
-    "Suggested Reply",
-    "客户回复建议",
-    "Customer Reply",
-    "Reply Suggestion",
-    "建议客户回复",
-)
-
-
-def _extract_suggested_reply_section(body_md: str) -> str:
-    """从 agent body 里抽 Suggested Reply 段正文。
-
-    支持两种实际格式（agent 输出不一定带 ## 前缀）：
-    1. ``## Suggested Reply\\n\\n<content>\\n## Next Section``（标准 markdown）
-    2. ``💬 Suggested Reply\\n\\n<content>\\n⚠️ Audit Warnings``（实际 agent
-       常见格式，emoji 充当 header 标志，**没有 ## 前缀**）
-
-    截止条件：下一个 section header（## / emoji header / 'Audit Warnings' /
-    'Internal Analysis' / 'Review Guide' / '人工指引' 等）或 body 末尾。
-
-    返回 trim 后的正文，找不到返回空串。
-    """
-    # 下一段终止符：另一个 ## 标题，或常见 emoji header 行
-    # （📋 / 💬 / 🔍 / ✅ / ⚠️ / _You can / _Detailed analysis），或 body 末尾
-    next_section = (
-        r"(?=\n##\s"
-        r"|\n📋\s|\n💬\s|\n🔍\s|\n✅\s|\n⚠️\s"
-        r"|\n_You can|\n_Detailed analysis"
-        r"|\Z)"
-    )
-    for header in _SUGGESTED_REPLY_HEADERS:
-        # 同时匹配：(a) "## [emoji ]Header" markdown 标准
-        #          (b) "[emoji ]Header" 行首裸标题（实际 agent 输出）
-        # 用同义的捕获：(?:##\s+)?\s*(?:emoji\s+)? 然后 header 文本
-        pattern = re.compile(
-            r"(?:^|\n)(?:##\s+)?(?:[💬📋🔍✅⚠️]+\s+)?"
-            + re.escape(header)
-            + r"\s*\n+(.*?)"
-            + next_section,
-            re.DOTALL,
-        )
-        m = pattern.search(body_md)
-        if m:
-            return m.group(1).strip()
-    return ""
-
-
-# Reply_type 推断：Suggested Reply 段含问句信号 → ask；否则 solution
-_ASK_SIGNAL_PATTERNS = (
-    "could you share", "could you provide", "could you confirm",
-    "please share", "please provide", "please confirm",
-    "请提供", "请确认", "能否分享", "能否提供",
-)
-
-
-def _infer_reply_type(suggested_reply: str) -> str:
-    low = suggested_reply.lower()
-    for sig in _ASK_SIGNAL_PATTERNS:
-        if sig in low:
-            return "ask"
-    return "solution"
-
-
-def _prepend_internal_reply_banner(body: str) -> str:
-    """为 Internal Reply 统一添加顶部 AI 提示，避免重复追加。"""
-    normalized = body.lstrip()
-    if normalized.startswith(_INTERNAL_REPLY_BANNER):
-        return body
-    return f"{_INTERNAL_REPLY_BANNER}\n\n{body}"
-
-
-def _append_mention_footer(body: str) -> str:
-    """为 Internal Reply 追加 @mention 追问提示，避免重复追加。"""
-    footer = _mention_footer()
-    if body.endswith(footer):
-        return body
-    return body + footer
-
-
-_ALLOWED_TAGS = frozenset({
-    "bug", "feature", "plugin", "workflow-and-rag",
-    "enterprise-backend", "dify-backend", "dify-frontend",
-    "enterprise-frontend", "helm", "k8s",
-})
-
-
-class ZendeskAddTags(Tool):
-    name = "zendesk_add_tags"
-    description = (
-        "为工单增量添加标签（不影响已有标签，不可删除标签）。"
-        "可用标签：bug, feature, plugin, workflow-and-rag, "
-        "enterprise-backend, dify-backend, dify-frontend, "
-        "enterprise-frontend, helm, k8s。一次可加多个。"
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "ticket_id": {
-                "type": "integer",
-                "description": "工单 ID",
-            },
-            "tags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "要添加的标签列表，只能使用允许的标签："
-                    "bug, feature, plugin, workflow-and-rag, "
-                    "enterprise-backend, dify-backend, dify-frontend, "
-                    "enterprise-frontend, helm, k8s"
-                ),
-            },
-        },
-        "required": ["ticket_id", "tags"],
-    }
-
-    group = "zendesk"
-    concurrency_safe = False
-    is_write_operation = True
-
-    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        ticket_id = _coerce_positive_int_arg(args, "ticket_id")
-        if isinstance(ticket_id, ToolResult):
-            return ticket_id
-        if "tags" not in args:
-            return ToolResult(success=False, error="tags is required")
-        raw_tags = args["tags"]
-        if not isinstance(raw_tags, list) or not all(isinstance(t, str) for t in raw_tags):
-            return ToolResult(success=False, error="tags must be a list of strings")
-        tags = list(dict.fromkeys(t.strip().lower() for t in raw_tags if t.strip()))
-        if not tags:
-            return ToolResult(success=False, error="标签列表不能为空")
-
-        invalid = [t for t in tags if t not in _ALLOWED_TAGS]
-        if invalid:
-            return ToolResult(
-                success=False,
-                error=f"不允许的标签: {', '.join(invalid)}。"
-                f"可用标签: {', '.join(sorted(_ALLOWED_TAGS))}",
-            )
-
-        if session.dry_run:
-            return ToolResult(output=f"[Dry Run] 将为工单 #{ticket_id} 添加标签: {', '.join(tags)}")
-
-        try:
-            payload = await call_zendesk_tool(
-                "update_ticket_metadata",
-                {
-                    "ticket_id": ticket_id,
-                    "add_tags": tags,
-                    "explicit_user_metadata_request": "agent add tags",
-                    "dry_run": False,
-                    "confirm": True,
-                    "actor": "zd-agent",
-                },
-            )
-            if not payload.get("success"):
-                return ToolResult(
-                    success=False,
-                    error=_format_mcp_error("update_ticket_metadata", payload),
-                )
-            after = payload.get("after") or {}
-            updated = after.get("tags", [])
-            if not updated:
-                updated = tags
-            return ToolResult(output=f"工单 #{ticket_id} 标签已更新: {', '.join(updated)}")
-        except Exception as e:
-            return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
-
-
-class ZendeskFollowTicket(Tool):
-    name = "zendesk_follow_ticket"
-    description = (
-        "关注 Zendesk 工单。默认让当前 MCP 配置的 Zendesk agent 账号关注该工单；"
-        "可选指定 user_id 或 user_email。"
-    )
-    parameters = {
-        "type": "object",
-        "properties": {
-            "ticket_id": {
-                "type": "integer",
-                "description": "工单 ID",
-            },
-            "user_id": {
-                "type": "integer",
-                "description": "可选：要添加为 follower 的 Zendesk user_id",
-            },
-            "user_email": {
-                "type": "string",
-                "description": "可选：要添加为 follower 的邮箱；不填则使用 MCP 配置的 ZENDESK_EMAIL",
-            },
-        },
-        "required": ["ticket_id"],
-    }
-
-    group = "zendesk"
-    concurrency_safe = False
-    is_write_operation = True
-
-    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        ticket_id = _coerce_positive_int_arg(args, "ticket_id")
-        if isinstance(ticket_id, ToolResult):
-            return ticket_id
-        if "user_id" in args and "user_email" in args:
-            return ToolResult(success=False, error="provide either user_id or user_email, not both")
-        payload_args: dict[str, Any] = {
-            "ticket_id": ticket_id,
-            "explicit_user_follow_request": "agent follow ticket",
-            "dry_run": bool(session.dry_run),
-            "confirm": not bool(session.dry_run),
-            "actor": "zd-agent",
-        }
-        if args.get("user_id") is not None:
-            user_id = _coerce_positive_int_arg(args, "user_id")
-            if isinstance(user_id, ToolResult):
-                return user_id
-            payload_args["user_id"] = user_id
-        if args.get("user_email") is not None:
-            user_email = _coerce_optional_string_arg(args, "user_email", default="")
-            if isinstance(user_email, ToolResult):
-                return user_email
-            if not user_email.strip():
-                return ToolResult(success=False, error="user_email is empty")
-            payload_args["user_email"] = user_email.strip()
-
-        try:
-            payload = await call_zendesk_tool("follow_ticket", payload_args)
-            if not payload.get("success"):
-                return ToolResult(
-                    success=False,
-                    error=_format_mcp_error("follow_ticket", payload),
-                )
-            if session.dry_run:
-                return ToolResult(output=f"[Dry Run] 将关注工单 #{ticket_id}")
-            return ToolResult(output=f"已关注工单 #{ticket_id}")
         except Exception as e:
             return ToolResult(success=False, error=f"{type(e).__name__}: {e}")
 

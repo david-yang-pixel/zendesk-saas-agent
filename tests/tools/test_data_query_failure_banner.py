@@ -1,4 +1,5 @@
 """Tests: ToolRegistry 给 database_query 类工具失败附防臆造横幅（堵 #2709 幻觉）。"""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock

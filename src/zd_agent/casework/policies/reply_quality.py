@@ -17,13 +17,33 @@ _INTERNAL_EVIDENCE_RE = re.compile(
     re.IGNORECASE,
 )
 _HUMAN_FOLLOWUP_RE = re.compile(
-    r"\b(?:human|support engineer|billing team|engineering team|SRE team)\b"
-    r".{0,50}\b(?:follow up|take over|review|reply)\b",
+    r"(?:\b(?:human|person|representative|support (?:engineer|specialist)|"
+    r"billing (?:team|specialist)|engineering team|SRE team|site reliability team|"
+    r"security team|our team|someone|colleague)\b.{0,70}\b"
+    r"(?:follow up|take over|review|reply|contact|continue)\b|"
+    r"\bwe\s+will\s+have\s+someone\s+(?:contact|reply\s+to)\b|"
+    r"\b(?:escalated|forwarded|assigned)\b.{0,55}\b(?:human|person|"
+    r"representative|specialist|engineers?|support|billing|engineering|sre|"
+    r"site reliability|security|team|colleague)\b|"
+    r"\b(?:engineers?|specialist|team|colleague)\b.{0,50}\b(?:are\s+)?"
+    r"(?:looking into|assigned|reach out|get back|follow up|take over)\b|"
+    r"\b(?:case|ticket)\b.{0,30}\b(?:is\s+now\s+with|has\s+been\s+assigned\s+to)\b"
+    r".{0,35}\b(?:billing|engineering|support|security|sre|team|specialist)\b|"
+    r"\bwe(?:'ll|\s+will)\s+(?:get back|reach out|follow up)\b|"
+    r"\bexpect\b.{0,35}\b(?:response|reply)\b.{0,35}\b(?:team|specialist|"
+    r"engineer|support)\b)",
     re.IGNORECASE,
 )
-_WORKSPACE_ID_REQUEST_RE = re.compile(
-    r"\b(?:please|could you|can you|provide|share|send|confirm)\b"
-    r".{0,45}\bworkspace\s+(?:id|name)\b",
+_WORKSPACE_IDENTITY_REQUEST_RE = re.compile(
+    r"(?:"
+    r"\b(?:what\s+is(?:\s+your)?|which)\b.{0,35}\bworkspace\b|"
+    r"\b(?:tell\s+(?:me|us)|let\s+us\s+know|provide|share|send|confirm|"
+    r"name|identify)\b.{0,45}\b(?:workspace|account)\b|"
+    r"\b(?:i|we)\s+need(?:\s+you\s+to)?\b.{0,45}\b(?:identify|name|"
+    r"provide|share)\b.{0,30}\b(?:workspace|account)\b|"
+    r"\b(?:workspace|account)\b.{0,45}\b(?:id|name|url|identity|"
+    r"identified)\b"
+    r")",
     re.IGNORECASE,
 )
 
@@ -36,11 +56,11 @@ def _claim_reasons(
     used_ids = set(candidate.used_claim_ids)
     reasons: list[str] = []
     if unknown_ids := used_ids - admitted_ids:
-        reasons.append(f"reply uses unknown claim IDs: {', '.join(sorted(unknown_ids))}")
+        reasons.append(
+            f"reply uses unknown claim IDs: {', '.join(sorted(unknown_ids))}"
+        )
     required_ids = {
-        claim.claim_id
-        for claim in assessment.admitted_claims
-        if claim.material
+        claim.claim_id for claim in assessment.admitted_claims if claim.material
     }
     if missing_ids := required_ids - used_ids:
         reasons.append(
@@ -54,15 +74,19 @@ def _customer_field_reasons(
     decision: DispositionDecision,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
-    if set(candidate.requested_customer_fields) != set(decision.required_customer_fields):
-        reasons.append("reply customer fields do not match the disposition decision")
-    if candidate.reply_kind is not ReplyKind.ASK and candidate.requested_customer_fields:
-        reasons.append("non-ask reply cannot request customer fields")
-    if (
-        _WORKSPACE_ID_REQUEST_RE.search(candidate.body)
-        and not {"workspace_id", "workspace_name"}
-        & set(decision.required_customer_fields)
+    if set(candidate.requested_customer_fields) != set(
+        decision.required_customer_fields
     ):
+        reasons.append("reply customer fields do not match the disposition decision")
+    if (
+        candidate.reply_kind is not ReplyKind.ASK
+        and candidate.requested_customer_fields
+    ):
+        reasons.append("non-ask reply cannot request customer fields")
+    if _WORKSPACE_IDENTITY_REQUEST_RE.search(candidate.body) and not {
+        "workspace_id",
+        "workspace_name",
+    } & set(decision.required_customer_fields):
         reasons.append("reply introduces an unapproved workspace identity request")
     return tuple(reasons)
 

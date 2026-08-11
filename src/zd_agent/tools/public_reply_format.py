@@ -77,7 +77,9 @@ def _strip_docs_md_suffix(body: str) -> str:
 
 def _format_reply_body(body: str) -> str:
     raw_lines = (body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    lines = _collapse_blank_lines([_normalize_customer_line(line) for line in raw_lines])
+    lines = _collapse_blank_lines(
+        [_normalize_customer_line(line) for line in raw_lines]
+    )
     out: list[str] = []
     for line in lines:
         stripped = line.strip()

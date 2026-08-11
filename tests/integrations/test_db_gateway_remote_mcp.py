@@ -1,4 +1,5 @@
 """Tests for DB Gateway remote MCP transport."""
+
 from __future__ import annotations
 
 import json
@@ -143,7 +144,7 @@ async def test_query_db_gateway_mcp_accepts_url_that_already_ends_with_mcp() -> 
                 "jsonrpc": "2.0",
                 "id": body["id"],
                 "result": {
-                    "content": [{"type": "text", "text": "{\"success\": true}"}],
+                    "content": [{"type": "text", "text": '{"success": true}'}],
                     "isError": False,
                 },
             },
@@ -241,7 +242,7 @@ async def test_query_db_gateway_mcp_handles_non_list_content() -> None:
             json={
                 "jsonrpc": "2.0",
                 "id": body["id"],
-                "result": {"content": {"type": "text", "text": "{\"success\": true}"}},
+                "result": {"content": {"type": "text", "text": '{"success": true}'}},
             },
         )
 
@@ -316,7 +317,7 @@ async def test_query_db_gateway_mcp_handles_non_object_tool_text() -> None:
                 "jsonrpc": "2.0",
                 "id": body["id"],
                 "result": {
-                    "content": [{"type": "text", "text": "[\"not\", \"an\", \"object\"]"}],
+                    "content": [{"type": "text", "text": '["not", "an", "object"]'}],
                     "isError": False,
                 },
             },

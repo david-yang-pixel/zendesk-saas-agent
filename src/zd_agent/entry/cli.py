@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from collections.abc import Callable
+from functools import wraps
+from typing import Optional, ParamSpec, TypeVar
 
 import typer
+from click import get_current_context
 from rich.console import Console
 from rich.table import Table
 
@@ -27,13 +30,28 @@ app.add_typer(tool_app, name="tool")
 
 console = Console()
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+_RUNTIME_INITIALIZED = "zd_agent_runtime_initialized"
 
-@app.callback()
-def main(
-    json_log: bool = typer.Option(False, "--json-log", help="输出 JSON 格式日志"),
-) -> None:
-    """Zendesk 工单自动处理 Agent"""
-    from zd_agent.config import EnvSettings, get_config
+
+def _initialize_cli_runtime() -> None:
+    """Load persisted configuration only for a command that will execute.
+
+    Click invokes the root callback before rendering subcommand help. Keeping
+    stateful bootstrap work out of that callback ensures commands such as
+    ``zd-agent run --help`` remain read-only and work outside a production host.
+    """
+
+    context = get_current_context(silent=True)
+    if context is None:
+        # Direct Python calls in focused unit tests are not CLI invocations.
+        return
+    root = context.find_root()
+    if root.meta.get(_RUNTIME_INITIALIZED):
+        return
+
+    from zd_agent.config import EnvSettings
     from zd_agent.services.app_bootstrap import apply_saved_admin_config
 
     env = EnvSettings()
@@ -41,8 +59,33 @@ def main(
     apply_saved_admin_config(cfg)
     jsonl_dir = cfg.logging.log_dir if cfg.logging.jsonl_enabled else None
     setup_logging(
-        json_output=json_log, log_level=env.zd_log_level, jsonl_dir=jsonl_dir,
+        json_output=bool(root.params.get("json_log", False)),
+        log_level=env.zd_log_level,
+        jsonl_dir=jsonl_dir,
     )
+    root.meta[_RUNTIME_INITIALIZED] = True
+
+
+def _runtime_command(command: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Initialize runtime state immediately before a command body executes."""
+
+    @wraps(command)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        _initialize_cli_runtime()
+        return command(*args, **kwargs)
+
+    return wrapped
+
+
+@app.callback()
+def main(
+    json_log: bool = typer.Option(False, "--json-log", help="输出 JSON 格式日志"),
+) -> None:
+    """Zendesk 工单自动处理 Agent.
+
+    Runtime initialization is deliberately deferred to executable commands so
+    nested ``--help`` requests never touch production state.
+    """
 
 
 @app.command()
@@ -52,6 +95,7 @@ def version() -> None:
 
 
 @app.command()
+@_runtime_command
 def run(
     ticket_id: int = typer.Argument(..., help="工单 ID"),
     hint: Optional[str] = typer.Option(None, "--hint", "-h", help="额外提示信息"),
@@ -78,13 +122,12 @@ def run(
     }.get(session.status.value, "bold")
 
     console.print(f"\n{'=' * 60}")
-    console.print(f"[{status_style}]处理完成 — 状态: {session.status.value}[/{status_style}]")
+    console.print(
+        f"[{status_style}]处理完成 — 状态: {session.status.value}[/{status_style}]"
+    )
     console.print(f"  轮次: {session.round_count}")
     console.print(f"  Token: {session.token_usage.total_tokens}")
     console.print(f"  回复已发送: {'是' if session.reply_sent else '否'}")
-
-    if session.sandbox_dir and session.sandbox_dir.exists():
-        console.print(f"  Sandbox 保留: {session.sandbox_dir}")
 
     if session.analysis:
         console.print(f"\n{'=' * 60}")
@@ -96,11 +139,14 @@ def run(
         console.print("[bold green]回复草稿:[/bold green]\n")
         console.print(session.reply_draft.strip())
     elif session.analysis and not session.reply_sent:
-        console.print("\n[yellow]提示：Agent 没有调用 zendesk_internal_reply 生成正式回复。[/yellow]")
-        console.print("[yellow]上方的分析结果即为 Agent 的最终输出。[/yellow]")
+        console.print(
+            "\n[yellow]提示：本次 v2 casework 未确认可发送的客户回复。[/yellow]"
+        )
+        console.print("[yellow]请查看上方 disposition、证据与下一步记录。[/yellow]")
 
 
 @app.command()
+@_runtime_command
 def batch(
     ticket_ids: list[int] = typer.Argument(..., help="工单 ID 列表"),
     hint: Optional[str] = typer.Option(None, "--hint", "-h", help="额外提示信息"),
@@ -111,7 +157,9 @@ def batch(
 
     cfg = get_config()
 
-    console.print(f"[bold]批量处理 {len(ticket_ids)} 个工单[/bold]  并发上限: {cfg.agent.max_concurrent_sessions}")
+    console.print(
+        f"[bold]批量处理 {len(ticket_ids)} 个工单[/bold]  并发上限: {cfg.agent.max_concurrent_sessions}"
+    )
     for tid in ticket_ids:
         console.print(f"  - #{tid}")
     if dry_run:
@@ -131,7 +179,9 @@ def batch(
 
     for r in results:
         status_style = {
-            "completed": "green", "failed": "red", "timeout": "yellow",
+            "completed": "green",
+            "failed": "red",
+            "timeout": "yellow",
         }.get(str(r["status"]), "")
         table.add_row(
             f"#{r['ticket_id']}",
@@ -145,6 +195,7 @@ def batch(
 
 
 @app.command()
+@_runtime_command
 def serve(
     poll_interval: Optional[int] = typer.Option(
         None, "--interval", "-i", help="轮询间隔（秒），覆盖 config.yaml"
@@ -156,17 +207,33 @@ def serve(
     from zd_agent.services.saas_app import run_saas_app
 
     cfg = get_config()
-    manager = create_configured_session_manager(cfg)
+    # Typer supplies ``OptionInfo`` when this command function is called
+    # directly from Python. Only the literal boolean True enables the
+    # server-wide no-write boundary.
+    force_dry_run = dry_run is True
+    manager = create_configured_session_manager(
+        cfg,
+        force_dry_run=force_dry_run,
+    )
     console.print("[bold green]Starting zd-agent SaaS service...[/bold green]")
-    console.print(f"  Webhook host: {cfg.webhook.listen_host}:{cfg.webhook.listen_port}")
+    console.print(
+        f"  Webhook host: {cfg.webhook.listen_host}:{cfg.webhook.listen_port}"
+    )
     console.print(f"  Zendesk path: {cfg.webhook.zendesk_path}")
+    if force_dry_run:
+        console.print(
+            "  [yellow]Dry Run 模式：所有 webhook 仅分析并保存草稿，外部写入已禁用[/yellow]"
+        )
 
     run_saas_app(manager)
 
 
 @app.command()
+@_runtime_command
 def clean(
-    ticket_id: Optional[int] = typer.Argument(None, help="指定工单 ID 的 sandbox，不指定则清理全部"),
+    ticket_id: Optional[int] = typer.Argument(
+        None, help="指定工单 ID 的 sandbox，不指定则清理全部"
+    ),
     force: bool = typer.Option(False, "--force", "-f", help="强制清理，不提示确认"),
 ) -> None:
     """清理保留的 sandbox 目录"""
@@ -202,6 +269,7 @@ def clean(
 
 
 @app.command()
+@_runtime_command
 def status() -> None:
     """查看 sandbox 目录中保留的 session 状态"""
     from pathlib import Path
@@ -237,7 +305,51 @@ def status() -> None:
     console.print(table)
 
 
+@app.command("reconcile-delivery")
+@_runtime_command
+def reconcile_delivery(
+    ticket_id: int = typer.Argument(..., help="工单 ID"),
+    delivery_attempt_id: str = typer.Option(
+        ...,
+        "--attempt-id",
+        help="被隔离的精确 delivery attempt ID",
+    ),
+    outcome: str = typer.Option(
+        ...,
+        "--outcome",
+        help="人工核验结果：delivered 或 unsent",
+    ),
+    reason: str = typer.Option(..., "--reason", help="人工核验证据摘要"),
+    actor: str = typer.Option("cli", "--actor", help="执行人标识"),
+) -> None:
+    """人工核对 Zendesk 后解除 ambiguous public delivery 隔离。"""
+    from pathlib import Path
+
+    from zd_agent.services.manual_reconciliation import reconcile_manual_delivery
+
+    if outcome not in {"delivered", "unsent"}:
+        raise typer.BadParameter(
+            "must be delivered or unsent",
+            param_hint="--outcome",
+        )
+    cfg = get_config()
+    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
+    result = reconcile_manual_delivery(
+        state_dir=state_dir,
+        ticket_id=ticket_id,
+        delivery_attempt_id=delivery_attempt_id,
+        outcome=outcome,
+        reason=reason,
+        actor=actor,
+    )
+    console.print(
+        f"[bold green]工单 #{ticket_id} 已完成人工 delivery 对账[/bold green] "
+        f"→ {result.state}",
+    )
+
+
 @app.command()
+@_runtime_command
 def log(
     ticket_id: int = typer.Argument(..., help="工单 ID"),
 ) -> None:
@@ -262,15 +374,20 @@ def log(
         return
 
     if result.kind == "sandbox":
-        console.print(f"[bold]工单 #{ticket_id} Sandbox 内容[/bold]  ({result.base_dir})\n")
+        console.print(
+            f"[bold]工单 #{ticket_id} Sandbox 内容[/bold]  ({result.base_dir})\n"
+        )
         for entry in result.entries:
             console.print(f"  {entry['path']}")
         return
 
-    console.print(f"[yellow]未找到工单 #{ticket_id} 的记录（归档和 sandbox 均不存在）[/yellow]")
+    console.print(
+        f"[yellow]未找到工单 #{ticket_id} 的记录（归档和 sandbox 均不存在）[/yellow]"
+    )
 
 
 @app.command()
+@_runtime_command
 def stats(
     last: str = typer.Option("7d", "--last", "-l", help="统计时间范围（如 7d, 30d）"),
 ) -> None:
@@ -318,6 +435,7 @@ def stats(
 
 
 @tool_app.command("list")
+@_runtime_command
 def tool_list() -> None:
     """列出所有注册的工具"""
     from zd_agent.services.cli_tools import collect_tool_list
@@ -335,6 +453,7 @@ def tool_list() -> None:
 
 
 @tool_app.command("schema")
+@_runtime_command
 def tool_schema(
     tool_name: str = typer.Argument(..., help="工具名"),
 ) -> None:
@@ -355,9 +474,14 @@ def tool_schema(
 
 
 @repos_app.command("fetch")
+@_runtime_command
 def repos_fetch(
-    repo_names: Optional[list[str]] = typer.Argument(None, help="指定仓库名，不指定则 fetch 全部"),
-    clone: bool = typer.Option(True, "--clone/--no-clone", help="仓库不存在时是否自动 bare clone"),
+    repo_names: Optional[list[str]] = typer.Argument(
+        None, help="指定仓库名，不指定则 fetch 全部"
+    ),
+    clone: bool = typer.Option(
+        True, "--clone/--no-clone", help="仓库不存在时是否自动 bare clone"
+    ),
 ) -> None:
     """手动 fetch（或初始 clone）仓库"""
     from zd_agent.services.cli_repos import run_repo_fetch
@@ -375,14 +499,19 @@ def repos_fetch(
 
     for row in result.rows:
         if row["ok"]:
-            console.print(f"  [green]✓[/green] [cyan]{row['name']}[/cyan]  {row['message']}")
+            console.print(
+                f"  [green]✓[/green] [cyan]{row['name']}[/cyan]  {row['message']}"
+            )
         else:
-            console.print(f"  [red]✗[/red] [cyan]{row['name']}[/cyan]  [red]{row['message']}[/red]")
+            console.print(
+                f"  [red]✗[/red] [cyan]{row['name']}[/cyan]  [red]{row['message']}[/red]"
+            )
 
     console.print(f"\n[bold]完成: {result.success_count}/{result.total} 成功[/bold]")
 
 
 @repos_app.command("status")
+@_runtime_command
 def repos_status() -> None:
     """查看仓库状态"""
     from zd_agent.services.cli_repos import collect_repo_status
@@ -412,6 +541,7 @@ def repos_status() -> None:
 
 
 @repos_app.command("tags")
+@_runtime_command
 def repos_tags(
     repo_name: str = typer.Argument(..., help="仓库名"),
     limit: int = typer.Option(30, "--limit", "-n", help="显示最近 N 个 tag"),
@@ -428,7 +558,9 @@ def repos_tags(
         console.print(f"[yellow]仓库 {repo_name} 没有 tag[/yellow]")
         return
 
-    console.print(f"[bold]仓库 {repo_name} 的 tag（共 {result.total} 个，显示最近 {len(result.tags)} 个）[/bold]\n")
+    console.print(
+        f"[bold]仓库 {repo_name} 的 tag（共 {result.total} 个，显示最近 {len(result.tags)} 个）[/bold]\n"
+    )
     for tag in result.tags:
         console.print(f"  {tag}")
     if result.remaining > 0:

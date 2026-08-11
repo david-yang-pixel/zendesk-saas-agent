@@ -87,7 +87,9 @@ def run_repo_fetch(
     fetch_repo_fn: RepoOperation = _default_fetch_repo,
 ) -> RepoFetchResult:
     """Run clone/fetch operations for selected configured repositories."""
-    available = list(repositories if repositories is not None else _default_repositories())
+    available = list(
+        repositories if repositories is not None else _default_repositories()
+    )
     selected = available
     not_found: set[str] = set()
     if repo_names:

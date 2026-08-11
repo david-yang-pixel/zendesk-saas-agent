@@ -26,9 +26,20 @@ IMAGE_KEEP_RECENT="${ZD_AGENT_IMAGE_KEEP_RECENT:-3}"
 ENV_FILE="${ZD_AGENT_ENV_FILE:-/opt/zd-agent/.env}"
 CONFIG_FILE="${ZD_AGENT_CONFIG_FILE:-/opt/zd-agent/code/config.yaml}"
 RESOURCES_DIR="${ZD_AGENT_RESOURCES_DIR:-/opt/zd-agent/resources}"
+STATE_DIR="${RESOURCES_DIR}/.state"
+ROLLBACK_DIR="${ZD_AGENT_ROLLBACK_DIR:-${RESOURCES_DIR}/.release-rollbacks}"
+ROLLBACK_KEEP_RECENT="${ZD_AGENT_ROLLBACK_KEEP_RECENT:-2}"
 SYSTEMD_UNIT_SOURCE="${ZD_AGENT_SYSTEMD_UNIT_SOURCE:-${SCRIPT_DIR}/systemd/zd-agent.service}"
 SYSTEMD_UNIT_TARGET="${ZD_AGENT_SYSTEMD_UNIT_TARGET:-/etc/systemd/system/zd-agent.service}"
 DEPLOY_LOCK_FILE="${ZD_AGENT_DEPLOY_LOCK_FILE:-/run/lock/zd-agent-deploy.lock}"
+INSTANCE_FENCE_SCRIPT="${ZD_AGENT_INSTANCE_FENCE_SCRIPT:-${SCRIPT_DIR}/verify-instance-fence.sh}"
+
+if [[ "$RESOURCES_DIR" != /* ]] || [[ "$STATE_DIR" == "/" ]] || \
+  [[ "$STATE_DIR" != "$RESOURCES_DIR/"* ]] || \
+  [[ "$ROLLBACK_DIR" != "$RESOURCES_DIR/"* ]]; then
+  echo "ZD_AGENT_RESOURCES_DIR must be an absolute, scoped directory" >&2
+  exit 2
+fi
 
 if [[ ! "$TAG" =~ ^sha-([0-9a-f]{40})$ ]]; then
   echo "Deployment requires an immutable sha-<40 hex commit> tag" >&2
@@ -49,6 +60,14 @@ fi
 if [[ ! "$HEALTH_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
   echo "ZD_AGENT_HEALTH_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
+fi
+if [[ ! "$ROLLBACK_KEEP_RECENT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ZD_AGENT_ROLLBACK_KEEP_RECENT must be a positive integer" >&2
+  exit 2
+fi
+if ! ZD_AGENT_RESOURCES_DIR="$RESOURCES_DIR" "$INSTANCE_FENCE_SCRIPT"; then
+  echo "Refusing deployment on a host that does not own the Agent instance fence" >&2
+  exit 1
 fi
 
 contains_image_id() {
@@ -143,8 +162,15 @@ validate_running_config() {
 
 rollback_armed=0
 previous_image_id=""
+previous_revision=""
 unit_backup=""
 preserve_unit_backup=0
+previous_config_backup=""
+state_backup=""
+state_snapshot_temp=""
+failed_target_state_dir=""
+preserve_release_backup=0
+rollback_bundle_temp=""
 preflight_env_file=""
 preflight_resources_dir=""
 preflight_container_name=""
@@ -162,6 +188,183 @@ cleanup_temporary_files() {
     rm -rf "$preflight_resources_dir"
     preflight_resources_dir=""
   fi
+  if (( preserve_release_backup == 0 )); then
+    if [[ -n "$previous_config_backup" ]]; then
+      rm -f "$previous_config_backup"
+      previous_config_backup=""
+    fi
+    if [[ -n "$state_backup" ]]; then
+      rm -f "$state_backup"
+      state_backup=""
+    fi
+    if [[ -n "$state_snapshot_temp" ]]; then
+      rm -f "$state_snapshot_temp"
+      state_snapshot_temp=""
+    fi
+    if [[ -n "$failed_target_state_dir" ]]; then
+      rm -rf "$failed_target_state_dir"
+      failed_target_state_dir=""
+    fi
+    if [[ -n "$rollback_bundle_temp" ]]; then
+      rm -rf "$rollback_bundle_temp"
+      rollback_bundle_temp=""
+    fi
+  fi
+}
+
+stop_and_fence_service() {
+  local active_state running_container
+  if ! systemctl stop "$SERVICE"; then
+    echo "Could not stop ${SERVICE} before the state boundary" >&2
+    return 1
+  fi
+  active_state="$(
+    systemctl show "$SERVICE" --property=ActiveState --value 2>/dev/null || true
+  )"
+  if [[ "$active_state" == "active" || "$active_state" == "activating" || \
+    "$active_state" == "reloading" ]]; then
+    echo "${SERVICE} remained active after stop" >&2
+    return 1
+  fi
+  running_container="$(
+    docker ps --filter "name=^/${SERVICE}$" --format '{{.ID}}' 2>/dev/null || true
+  )"
+  if [[ -n "$running_container" ]]; then
+    echo "${SERVICE} container remained active after stop" >&2
+    return 1
+  fi
+  return 0
+}
+
+snapshot_state_for_rollback() {
+  if [[ ! -d "$STATE_DIR" || -L "$STATE_DIR" ]]; then
+    echo "State directory is missing or unsafe: ${STATE_DIR}" >&2
+    return 1
+  fi
+  state_snapshot_temp="$(
+    mktemp "${RESOURCES_DIR}/.state.deploy-backup.XXXXXX.tar"
+  )"
+  if ! tar -C "$STATE_DIR" -cpf "$state_snapshot_temp" . || \
+    ! tar -tf "$state_snapshot_temp" >/dev/null; then
+    echo "Could not snapshot ${STATE_DIR}" >&2
+    rm -f "$state_snapshot_temp"
+    state_snapshot_temp=""
+    return 1
+  fi
+  state_backup="$state_snapshot_temp"
+  state_snapshot_temp=""
+}
+
+restore_state_snapshot() {
+  [[ -n "$state_backup" && -f "$state_backup" ]] || return 0
+  if [[ ! -d "$STATE_DIR" || -L "$STATE_DIR" ]]; then
+    echo "Current state directory is missing or unsafe: ${STATE_DIR}" >&2
+    return 1
+  fi
+  failed_target_state_dir="$(
+    mktemp -d "${RESOURCES_DIR}/.state.failed-target.XXXXXX"
+  )"
+  rmdir "$failed_target_state_dir"
+  if ! mv -- "$STATE_DIR" "$failed_target_state_dir"; then
+    echo "Could not preserve failed target state" >&2
+    return 1
+  fi
+  if ! mkdir -m 0700 "$STATE_DIR" || \
+    ! tar -C "$STATE_DIR" -xpf "$state_backup"; then
+    rm -rf "$STATE_DIR"
+    if ! mv -- "$failed_target_state_dir" "$STATE_DIR"; then
+      echo "State restore failed and target state could not be recovered" >&2
+    fi
+    failed_target_state_dir=""
+    return 1
+  fi
+  return 0
+}
+
+retain_rollback_bundle() {
+  local bundle_dir manifest current_count old_bundle
+  local state_sha256 config_sha256 unit_sha256 created_at_epoch
+  [[ -n "$state_backup" && -f "$state_backup" ]] || return 1
+  [[ -n "$previous_config_backup" && -f "$previous_config_backup" ]] || return 1
+  [[ -n "$unit_backup" && -f "$unit_backup" ]] || return 1
+
+  if ! mkdir -p -m 0700 "$ROLLBACK_DIR" || ! chmod 0700 "$ROLLBACK_DIR"; then
+    return 1
+  fi
+  if ! rollback_bundle_temp="$(
+    mktemp -d "${ROLLBACK_DIR}/.${previous_revision}.XXXXXX"
+  )"; then
+    rollback_bundle_temp=""
+    return 1
+  fi
+  if ! install -m 0600 "$state_backup" "$rollback_bundle_temp/state.tar" || \
+    ! install -m 0600 "$previous_config_backup" \
+      "$rollback_bundle_temp/config.yaml" || \
+    ! install -m 0600 "$unit_backup" \
+      "$rollback_bundle_temp/zd-agent.service"; then
+    return 1
+  fi
+  if ! tar -tf "$rollback_bundle_temp/state.tar" >/dev/null; then
+    return 1
+  fi
+  if ! state_sha256="$(sha256sum "$rollback_bundle_temp/state.tar")" || \
+    ! config_sha256="$(sha256sum "$rollback_bundle_temp/config.yaml")" || \
+    ! unit_sha256="$(sha256sum "$rollback_bundle_temp/zd-agent.service")"; then
+    return 1
+  fi
+  state_sha256="${state_sha256%% *}"
+  config_sha256="${config_sha256%% *}"
+  unit_sha256="${unit_sha256%% *}"
+  if ! created_at_epoch="$(date +%s)"; then
+    return 1
+  fi
+  manifest="$rollback_bundle_temp/manifest"
+  if ! {
+    printf 'previous_revision=%s\n' "$previous_revision"
+    printf 'previous_image_id=%s\n' "$previous_image_id"
+    printf 'created_at_epoch=%s\n' "$created_at_epoch"
+    printf 'state_sha256=%s\n' "$state_sha256"
+    printf 'config_sha256=%s\n' "$config_sha256"
+    printf 'unit_sha256=%s\n' "$unit_sha256"
+  } >"$manifest" || ! chmod 0600 "$manifest"; then
+    return 1
+  fi
+
+  bundle_dir="${ROLLBACK_DIR}/${previous_revision}"
+  if ! rm -rf -- "$bundle_dir" || \
+    ! mv -- "$rollback_bundle_temp" "$bundle_dir"; then
+    return 1
+  fi
+  rollback_bundle_temp=""
+
+  if [[ ! -f "$bundle_dir/state.tar" || \
+    ! -f "$bundle_dir/config.yaml" || \
+    ! -f "$bundle_dir/zd-agent.service" || \
+    ! -f "$bundle_dir/manifest" ]] || \
+    ! tar -tf "$bundle_dir/state.tar" >/dev/null; then
+    return 1
+  fi
+
+  if ! rm -f "$state_backup" "$previous_config_backup" "$unit_backup"; then
+    return 1
+  fi
+  state_backup=""
+  previous_config_backup=""
+  unit_backup=""
+
+  current_count=0
+  while IFS= read -r old_bundle; do
+    [[ -n "$old_bundle" ]] || continue
+    current_count=$((current_count + 1))
+    if (( current_count > ROLLBACK_KEEP_RECENT )); then
+      rm -rf -- "$old_bundle"
+    fi
+  done < <(
+    find "$ROLLBACK_DIR" -mindepth 1 -maxdepth 1 -type d \
+      ! -name '.*' -print0 \
+      | xargs -0 ls -1dt 2>/dev/null || true
+  )
+  echo "Retained downgrade-safe rollback bundle: ${bundle_dir}"
 }
 
 wait_for_service_health() {
@@ -177,8 +380,28 @@ wait_for_service_health() {
 
 rollback_deployment() {
   rollback_armed=0
-  local failed=0 unit_restored=0 restored_image_id=""
-  echo "Rolling back ${SERVICE} to the previous image and systemd unit" >&2
+  local failed=0 unit_restored=0 restored_image_id="" service_stopped=0
+  echo "Rolling back ${SERVICE} to the previous image, config, and state" >&2
+  if stop_and_fence_service; then
+    service_stopped=1
+  else
+    echo "Rollback could not fence the failed target service" >&2
+    failed=1
+  fi
+  if (( service_stopped > 0 )) && ! restore_state_snapshot; then
+    echo "Rollback could not restore the pre-deployment state snapshot" >&2
+    failed=1
+  fi
+  if (( service_stopped > 0 )) && \
+    ! git -C "$REPO_ROOT" checkout --detach "$previous_revision"; then
+    echo "Rollback could not restore source revision ${previous_revision}" >&2
+    failed=1
+  fi
+  if (( service_stopped > 0 )) && \
+    ! install -m 0644 "$previous_config_backup" "$CONFIG_FILE"; then
+    echo "Rollback could not restore revision ${previous_revision} config" >&2
+    failed=1
+  fi
   if ! docker tag "$previous_image_id" "$LOCAL_IMAGE"; then
     echo "Rollback could not restore ${LOCAL_IMAGE}" >&2
     failed=1
@@ -193,7 +416,9 @@ rollback_deployment() {
     echo "Rollback systemd daemon-reload failed" >&2
     failed=1
   fi
-  if ! systemctl restart "$SERVICE"; then
+  if (( service_stopped == 0 || failed > 0 )); then
+    echo "Rollback did not restart because state/config restoration was incomplete" >&2
+  elif ! systemctl restart "$SERVICE"; then
     echo "Rollback could not restart ${SERVICE}" >&2
     failed=1
   fi
@@ -211,9 +436,19 @@ rollback_deployment() {
   if (( failed == 0 && unit_restored > 0 )); then
     rm -f "$unit_backup"
     unit_backup=""
+    rm -f "$previous_config_backup" "$state_backup"
+    previous_config_backup=""
+    state_backup=""
+    rm -rf "$failed_target_state_dir"
+    failed_target_state_dir=""
   else
     preserve_unit_backup=1
+    preserve_release_backup=1
     echo "Rollback backup preserved at ${unit_backup}" >&2
+    [[ -n "$state_backup" ]] && \
+      echo "State snapshot preserved at ${state_backup}" >&2
+    [[ -n "$previous_config_backup" ]] && \
+      echo "Config snapshot preserved at ${previous_config_backup}" >&2
   fi
   if (( failed > 0 )); then
     echo "Automatic rollback was incomplete; manual recovery is required" >&2
@@ -280,7 +515,7 @@ if [[ "$actual_source_revision" != "$EXPECTED_REVISION" ]] || \
 fi
 
 prune_historical_agent_images() {
-  local running_id local_id
+  local running_id local_id bundle_manifest bundle_image_id
   if ! running_id="$(docker inspect "$SERVICE" --format '{{.Image}}')"; then
     echo "Could not inspect the running Agent image; skipping cleanup" >&2
     return 0
@@ -300,6 +535,23 @@ prune_historical_agent_images() {
   local recent_count=0
   local created ref raw_id image_id
   local image_list sorted_images
+
+  if [[ -d "$ROLLBACK_DIR" ]]; then
+    while IFS= read -r bundle_manifest; do
+      [[ -f "$bundle_manifest" && ! -L "$bundle_manifest" ]] || continue
+      bundle_image_id="$(
+        awk -F= '$1 == "previous_image_id" { print $2 }' "$bundle_manifest"
+      )"
+      if [[ "$bundle_image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        protected_ids+=("${bundle_image_id#sha256:}")
+      else
+        echo "Ignoring invalid rollback bundle image identity: ${bundle_manifest}" >&2
+      fi
+    done < <(
+      find "$ROLLBACK_DIR" -mindepth 2 -maxdepth 2 -type f \
+        -name manifest -print 2>/dev/null || true
+    )
+  fi
 
   if ! image_list="$(
     docker image ls --no-trunc \
@@ -384,9 +636,28 @@ if ! previous_image_id="$(docker inspect "$SERVICE" --format '{{.Image}}')"; the
   echo "Could not inspect the current ${SERVICE} image for safe rollback" >&2
   exit 1
 fi
+previous_revision="$(
+  docker image inspect "$previous_image_id" \
+    --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+)"
+if [[ ! "$previous_revision" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Previous Agent image has no immutable source revision for rollback" >&2
+  exit 1
+fi
+previous_config_backup="$(mktemp "${CONFIG_FILE}.previous.XXXXXX")"
+if ! git -C "$REPO_ROOT" show \
+  "${previous_revision}:config.yaml" >"$previous_config_backup"; then
+  echo "Could not materialize previous revision config for rollback" >&2
+  exit 1
+fi
 unit_backup="$(mktemp "${SYSTEMD_UNIT_TARGET}.deploy-backup.XXXXXX")"
 cp -p -- "$SYSTEMD_UNIT_TARGET" "$unit_backup"
 rollback_armed=1
+
+echo "Stopping and fencing ${SERVICE} before snapshot"
+stop_and_fence_service
+echo "Snapshotting ${STATE_DIR} for downgrade-safe rollback"
+snapshot_state_for_rollback
 
 echo "Tagging ${REMOTE_IMAGE} as ${LOCAL_IMAGE}"
 docker tag "$REMOTE_IMAGE" "$REVISION_IMAGE"
@@ -422,9 +693,10 @@ for ((attempt = 1; attempt <= HEALTH_TIMEOUT_SECONDS; attempt++)); do
     if [[ "$running_deployed_image_id" != "$target_image_id" ]]; then
       rollback_and_exit "Running Agent image does not match the target digest"
     fi
+    if ! retain_rollback_bundle; then
+      rollback_and_exit "Could not retain downgrade-safe rollback bundle"
+    fi
     rollback_armed=0
-    rm -f "$unit_backup"
-    unit_backup=""
     prune_historical_agent_images
     echo
     echo "Deployment complete: ${REMOTE_IMAGE} -> ${LOCAL_IMAGE}"

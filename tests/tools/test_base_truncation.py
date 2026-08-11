@@ -4,6 +4,7 @@
 146 KB 塞回 agent message_store。修改 ToolRegistry.execute 在每次工具
 返回后强制截断。
 """
+
 from __future__ import annotations
 
 import pytest
@@ -106,7 +107,9 @@ class TestRegistryEnforces:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("args_json", ["[]", "null", '"query"'])
-    async def test_registry_execute_rejects_non_object_args(self, args_json: str) -> None:
+    async def test_registry_execute_rejects_non_object_args(
+        self, args_json: str
+    ) -> None:
         reg = ToolRegistry()
         reg.register(_NormalTool())
 

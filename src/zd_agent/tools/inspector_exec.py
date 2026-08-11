@@ -28,6 +28,7 @@ Inspector 是 langgenius/infra-toolkit 提供的私有 CLI。它把高频查询�
 - 子进程单次 timeout 45s，最多重试一次
 - stdin 关闭，无任意命令注入面
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -174,8 +175,7 @@ def _email_workspace_candidates(output: str) -> list[dict[str, str]]:
             continue
         cells = [cell.strip() for cell in stripped[1:-1].split("|")]
         normalized_headers = [
-            re.sub(r"[\s_-]+", " ", cell).strip().casefold()
-            for cell in cells
+            re.sub(r"[\s_-]+", " ", cell).strip().casefold() for cell in cells
         ]
         if tenant_id_index is None or name_index is None:
             if (
@@ -189,10 +189,7 @@ def _email_workspace_candidates(output: str) -> list[dict[str, str]]:
         if len(cells) <= max(tenant_id_index, name_index):
             continue
         tenant_id = cells[tenant_id_index]
-        if (
-            not _TENANT_ID_TOKEN_RE.fullmatch(tenant_id)
-            or tenant_id in seen_tenant_ids
-        ):
+        if not _TENANT_ID_TOKEN_RE.fullmatch(tenant_id) or tenant_id in seen_tenant_ids:
             continue
         seen_tenant_ids.add(tenant_id)
         candidates.append({"tenant_id": tenant_id, "name": cells[name_index]})
@@ -320,7 +317,10 @@ class InspectorExec(Tool):
             "account_id": {"type": "string", "description": "Account UUID"},
             "tenant_id": {"type": "string", "description": "Tenant/Workspace UUID"},
             "app_id": {"type": "string", "description": "App UUID"},
-            "dataset_id": {"type": "string", "description": "Dataset/Knowledge base UUID"},
+            "dataset_id": {
+                "type": "string",
+                "description": "Dataset/Knowledge base UUID",
+            },
             "document_id": {"type": "string", "description": "Document UUID"},
             "conversation_id": {"type": "string", "description": "Conversation UUID"},
             "workflow_id": {"type": "string", "description": "Workflow UUID"},
@@ -361,12 +361,12 @@ class InspectorExec(Tool):
     max_output_tokens = 8000
 
     async def execute(
-        self, args: dict[str, Any], session: "AgentSession",
+        self,
+        args: dict[str, Any],
+        session: "AgentSession",
     ) -> ToolResult:
         # 1. 主查询参数校验：必须且只能传一个
-        primary = [
-            f for f in _PRIMARY_QUERY_FLAGS if args.get(f)
-        ]
+        primary = [f for f in _PRIMARY_QUERY_FLAGS if args.get(f)]
         if len(primary) == 0:
             return ToolResult(
                 success=False,
@@ -391,7 +391,8 @@ class InspectorExec(Tool):
             return ToolResult(success=False, error=str(e))
         if not primary_value:
             return ToolResult(
-                success=False, error=f"{primary_flag} value is empty",
+                success=False,
+                error=f"{primary_flag} value is empty",
             )
 
         # 2. section 校验
@@ -433,9 +434,11 @@ class InspectorExec(Tool):
         cfg = get_config()
         cmd: list[str] = [
             cfg.inspector.binary,
-            "--config", cfg.inspector.config_file,
+            "--config",
+            cfg.inspector.config_file,
             "search",
-            _flag_to_cli(primary_flag), primary_value,
+            _flag_to_cli(primary_flag),
+            primary_value,
         ]
         if section:
             cmd += ["--section", section]
@@ -477,7 +480,8 @@ class InspectorExec(Tool):
             )
             try:
                 out_b, err_b = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout,
+                    proc.communicate(),
+                    timeout=timeout,
                 )
                 return proc.returncode, out_b, err_b
             except asyncio.CancelledError:
@@ -533,7 +537,8 @@ class InspectorExec(Tool):
                         session_id=session.session_id,
                     )
                     # ⚠️ 两次都超时 = 没拿到任何数据。错误文本必须明确告诉
-                    # agent：别臆造结果，改用 sql_query 直查具体表，或标 needs_human。
+                    # investigator：别臆造结果，改用 sql_query 直查具体表，
+                    # 或让 v2 evidence policy 保守决策。
                     cli = _flag_to_cli(primary_flag)
                     return ToolResult(
                         success=False,
@@ -550,8 +555,9 @@ class InspectorExec(Tool):
                             f"FROM providers WHERE tenant_id='{primary_value}'\n"
                             f"   - workflow run：SELECT ... FROM workflow_runs / "
                             f"workflow_node_executions WHERE ...\n"
-                            f"2. 若仍查不到 → Internal Note 标 needs_human=True，"
-                            f"诚实写'inspector 超时未获取数据'，**不要**给客户编一个根因。"
+                            f"2. 若仍查不到 → 在证据账本记录 inspector 超时，"
+                            f"由 v2 决定继续取证、澄清或创建类型化支持归属；"
+                            f"**不要**给客户编一个根因。"
                         ),
                     )
         except FileNotFoundError:

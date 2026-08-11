@@ -17,7 +17,9 @@ def _config() -> AppConfig:
     return config
 
 
-async def test_casework_notification_describes_typed_ownership_without_handoff_wording() -> None:
+async def test_casework_notification_describes_typed_ownership_without_handoff_wording() -> (
+    None
+):
     push = AsyncMock(return_value={"success": True})
     with (
         patch("zd_agent.config.get_config", return_value=_config()),

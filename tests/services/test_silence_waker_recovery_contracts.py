@@ -1,4 +1,5 @@
 """RED regression contracts for silence-waker recovery and readiness."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +11,7 @@ import pytest
 from zd_agent.config import (
     AppConfig,
     PublicReplyConfig,
-    TriggerDeciderConfig,
+    IntakeConfig,
     ZendeskConfig,
 )
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
@@ -35,8 +36,7 @@ def _cfg() -> AppConfig:
         min_ticket_id=0,
         agent_user_id=45433304089364,
     )
-    cfg.trigger_decider = TriggerDeciderConfig(
-        llm_model="gpt-test",
+    cfg.intake = IntakeConfig(
         silence_minutes_default=0,
         post_agent_cooldown_seconds=180,
     )
@@ -124,23 +124,25 @@ async def test_silence_waker_checks_latest_ticket_for_pending_form_before_dispat
     manager.dispatch = AsyncMock(
         return_value=AgentSession(ticket_id=_TICKET_ID, session_id="too-early"),
     )
-    fetch_latest = AsyncMock(return_value=(
-        [
+    fetch_latest = AsyncMock(
+        return_value=(
+            [
+                {
+                    "id": "m1",
+                    "body": "I cannot view existing knowledge documents.",
+                    "created_at": "2026-07-16T04:28:00Z",
+                    "content_type": "text",
+                },
+            ],
             {
-                "id": "m1",
-                "body": "I cannot view existing knowledge documents.",
-                "created_at": "2026-07-16T04:28:00Z",
-                "content_type": "text",
+                "id": _TICKET_ID,
+                "status": "new",
+                "assignee_id": None,
+                "via": {"channel": "native_messaging"},
+                "_zd_agent_conversation_events": [_pending_answer_bot_form()],
             },
-        ],
-        {
-            "id": _TICKET_ID,
-            "status": "new",
-            "assignee_id": None,
-            "via": {"channel": "native_messaging"},
-            "_zd_agent_conversation_events": [_pending_answer_bot_form()],
-        },
-    ))
+        )
+    )
 
     result = await handle_trigger_message(
         msg={
@@ -149,7 +151,8 @@ async def test_silence_waker_checks_latest_ticket_for_pending_form_before_dispat
             "expected_state_revision": pending.state_revision,
             "expected_silence_window_end": (
                 pending.silence_window_end.isoformat()
-                if pending.silence_window_end else ""
+                if pending.silence_window_end
+                else ""
             ),
         },
         manager=manager,

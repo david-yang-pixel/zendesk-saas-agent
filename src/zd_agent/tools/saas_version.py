@@ -4,6 +4,7 @@
 - SaasDeployedVersion：agent 深挖工具。
 版本信息是锦上添花，任何失败都返回 None / 明确 error，绝不中断工单处理。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -45,11 +46,11 @@ _VERSION_SQL = (
 
 @dataclass(frozen=True)
 class DeployedVersion:
-    image_tag: str        # SigNoz container.image.tag，如 hotfix-1.14.2-fix.4
-    git_ref: str          # 转换+验证后可 git_show 的 ref，如 hotfix/1.14.2-fix.4
-    base_version: str     # 1.14.2
-    ref_verified: bool    # git_ref 是否真的在 dify 仓存在
-    source: str           # "signoz" | "saas-deploy-fallback"
+    image_tag: str  # SigNoz container.image.tag，如 hotfix-1.14.2-fix.4
+    git_ref: str  # 转换+验证后可 git_show 的 ref，如 hotfix/1.14.2-fix.4
+    base_version: str  # 1.14.2
+    ref_verified: bool  # git_ref 是否真的在 dify 仓存在
+    source: str  # "signoz" | "saas-deploy-fallback"
 
 
 def image_tag_to_git_ref(tag: str) -> str:
@@ -61,7 +62,7 @@ def image_tag_to_git_ref(tag: str) -> str:
     if not tag:
         return ""
     if tag.startswith("hotfix-"):
-        return "hotfix/" + tag[len("hotfix-"):]
+        return "hotfix/" + tag[len("hotfix-") :]
     return tag
 
 
@@ -74,7 +75,8 @@ def extract_base_version(tag: str) -> str:
 def render_deployed_version_block(dv: "DeployedVersion") -> str:
     """把 DeployedVersion 渲染成注入 user message 的 Markdown 块。"""
     src_line = (
-        "SigNoz 实时遥测" if dv.source == "signoz"
+        "SigNoz 实时遥测"
+        if dv.source == "signoz"
         else "saas-deploy 声明值（SigNoz 不可达，可能非实时）"
     )
     if dv.ref_verified:
@@ -115,8 +117,15 @@ async def _verify_ref(ref: str) -> bool:
 
     async def _rev_parse() -> bool:
         proc = await asyncio.create_subprocess_exec(
-            "git", "-C", str(repo_dir), "rev-parse", "--verify", "-q", f"{ref}^{{commit}}",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            "git",
+            "-C",
+            str(repo_dir),
+            "rev-parse",
+            "--verify",
+            "-q",
+            f"{ref}^{{commit}}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         await proc.communicate()
         return proc.returncode == 0
@@ -161,12 +170,14 @@ def _select_primary_image_tag(rows: list[dict[str, Any]]) -> str | None:
             legacy_first = tag_s
         if "log_count" not in row and "latest_ts" not in row:
             continue
-        candidates.append((
-            _coerce_int(row.get("log_count")),
-            _coerce_timestamp(row.get("latest_ts")),
-            -len(candidates),
-            tag_s,
-        ))
+        candidates.append(
+            (
+                _coerce_int(row.get("log_count")),
+                _coerce_timestamp(row.get("latest_ts")),
+                -len(candidates),
+                tag_s,
+            )
+        )
     if not candidates:
         return legacy_first
     candidates.sort(reverse=True)
@@ -206,8 +217,13 @@ async def _read_saas_deploy_tag() -> str | None:
         logger.warning("saas_deploy_fetch_failed", error=str(e))
 
     proc = await asyncio.create_subprocess_exec(
-        "git", "-C", str(repo_dir), "show", f"main:{_KUSTOMIZATION_PATH}",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        "git",
+        "-C",
+        str(repo_dir),
+        "show",
+        f"main:{_KUSTOMIZATION_PATH}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
     out_b, _ = await proc.communicate()
     if proc.returncode != 0:
@@ -283,30 +299,38 @@ class SaasDeployedVersion(Tool):
             base_version = data.get("base_version") or "(未知)"
             deployment = data.get("deployment") or "dify-api-oltp"
             commit_line = f"- commit: `{commit}`\n" if commit else ""
-            return ToolResult(output=(
-                "## cloud.dify.ai 生产 dify-api 运行版本\n"
-                f"- deployment: `{deployment}`\n"
-                f"- 镜像 tag: `{image_tag}`\n"
-                f"- 基线版本: {base_version}\n"
-                f"- 源码 ref: `{ref}`\n"
-                f"{commit_line}"
-                f"- 数据来源: Source MCP / {source}\n"
-                "  → 不传 ref 调 git_show / git_grep 时默认查这个线上运行 ref"
-            ))
+            return ToolResult(
+                output=(
+                    "## cloud.dify.ai 生产 dify-api 运行版本\n"
+                    f"- deployment: `{deployment}`\n"
+                    f"- 镜像 tag: `{image_tag}`\n"
+                    f"- 基线版本: {base_version}\n"
+                    f"- 源码 ref: `{ref}`\n"
+                    f"{commit_line}"
+                    f"- 数据来源: Source MCP / {source}\n"
+                    "  → 不传 ref 调 git_show / git_grep 时默认查这个线上运行 ref"
+                )
+            )
 
         dv = await resolve_deployed_version()
         if dv is None:
             return ToolResult(
                 output="未能确定线上版本（SigNoz 与 saas-deploy 均不可达）。"
-                       "可稍后重试，或用 list_repo_tags 看 dify 仓可用版本。"
+                "可稍后重试，或用 list_repo_tags 看 dify 仓可用版本。"
             )
         ref_note = "✓ 已验证" if dv.ref_verified else "⚠️ 未在 dify 仓验证到该 ref"
-        src_note = "SigNoz 实时遥测" if dv.source == "signoz" else "saas-deploy 声明值（SigNoz 不可达，可能非实时）"
-        return ToolResult(output=(
-            f"## cloud.dify.ai 生产 dify-api 运行版本\n"
-            f"- 镜像 tag: `{dv.image_tag}`\n"
-            f"- 基线版本: {dv.base_version or '(未知)'}\n"
-            f"- 源码 ref: `{dv.git_ref}` （{ref_note}）\n"
-            f"  → 用 git_show / git_grep 查这个 ref = 线上实际在跑的代码\n"
-            f"- 数据来源: {src_note}"
-        ))
+        src_note = (
+            "SigNoz 实时遥测"
+            if dv.source == "signoz"
+            else "saas-deploy 声明值（SigNoz 不可达，可能非实时）"
+        )
+        return ToolResult(
+            output=(
+                f"## cloud.dify.ai 生产 dify-api 运行版本\n"
+                f"- 镜像 tag: `{dv.image_tag}`\n"
+                f"- 基线版本: {dv.base_version or '(未知)'}\n"
+                f"- 源码 ref: `{dv.git_ref}` （{ref_note}）\n"
+                f"  → 用 git_show / git_grep 查这个 ref = 线上实际在跑的代码\n"
+                f"- 数据来源: {src_note}"
+            )
+        )

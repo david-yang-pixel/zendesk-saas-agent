@@ -29,8 +29,8 @@ let modalReturnFocus = null;
 const SUBTITLES = {
   "总览": "服务健康、今日处理和关键状态摘要",
   "运行记录": "每次 agent 处理工单的完整日志中心",
-  "触发配置": "webhook、轮询、@mention 和触发判定规则",
-  "回复策略": "自动 public reply、ask、handoff 和等待策略",
+  "触发配置": "webhook、轮询、@mention 和 v2 intake 规则",
+  "回复策略": "v2 自动 public reply、可靠送达和等待策略",
   "模型与运行": "模型、Base URL、API key、并发和运行护栏",
   "工具与集成": "Zendesk、DB、SigNoz、GitHub、Docs、Sandbox 等远程服务",
   "存储配置": "配置运行记录、审计日志、附件缓存和配置持久化路径",
@@ -40,19 +40,19 @@ const SUBTITLES = {
 
 const GROUP_DESCRIPTIONS = {
   "触发配置": [
-    "控制 agent 什么时候开始处理、什么时候等待，以及什么时候主动追问。",
-    "判定模型放在「模型与运行」里；这里聚焦入口、窗口和扫描策略。"
+    "控制 v2 什么时候开始处理、什么时候等待，以及如何合并客户消息。",
+    "这里聚焦 durable queue、intake 窗口和漏消息恢复。"
   ],
   "回复策略": [
-    "控制 agent 什么时候发送 public reply、什么时候 ask、什么时候交给人工。",
-    "Browser Relay 的 URL/API Key 已移到「工具与集成」，这里只保留回复行为策略。"
+    "控制 v2 public reply 的写入总开关、合并窗口和可靠送达参数。",
+    "人工所有权由类型化策略决定，不再由追问次数或旧回复模板触发。"
   ],
   "模型与运行": [
-    "配置主回复模型、Subagent 模型、触发判定模型、API Key、并发、轮次、超时和系统提示词。",
+    "配置 v2 调查与回复模型、API Key、并发、轮次和超时。",
     "模型名是可编辑输入框，不限制为固定下拉选项。"
   ],
   "工具与集成": [
-    "配置 agent 使用的 Skills、远程 MCP/Tool Service 和 Browser Relay。",
+    "配置 v2 使用的远程 MCP/Tool Service 和 Browser Relay。",
     "这里可以测试连通性；检测结果会写入审计日志。"
   ],
   "存储配置": [
@@ -86,7 +86,7 @@ const FIELD_SECTIONS = {
     },
     {
       title: "Webhook 入口",
-      description: "Tickets、Messaging 和飞书 webhook 的监听地址、路径与签名密钥。",
+      description: "Tickets 与 Messaging webhook 的监听地址、路径与签名密钥。",
       paths: [
         "webhook.signing_secret",
         "webhook.messaging_signing_secret",
@@ -94,22 +94,14 @@ const FIELD_SECTIONS = {
         "webhook.listen_port",
         "webhook.zendesk_path",
         "webhook.zendesk_messaging_path",
-        "webhook.feishu_path"
       ]
     },
     {
-      title: "触发判定与等待策略",
-      description: "客户消息合并、信息不足等待、仅问候告警和主动公开询问开关。",
+      title: "v2 Intake 与等待策略",
+      description: "durable queue 入队前的静默窗口与处理后冷却。",
       paths: [
-        "trigger_decider.silence_minutes_default",
-        "trigger_decider.silence_extend_to_minutes",
-        "trigger_decider.rapid_burst_window_seconds",
-        "trigger_decider.rapid_burst_threshold",
-        "trigger_decider.insufficient_timeout_minutes",
-        "trigger_decider.abandoned_hours",
-        "trigger_decider.greeting_only_alert_minutes",
-        "trigger_decider.enable_public_nudge",
-        "trigger_decider.post_agent_cooldown_seconds"
+        "intake.silence_minutes_default",
+        "intake.post_agent_cooldown_seconds"
       ]
     },
     {
@@ -118,8 +110,7 @@ const FIELD_SECTIONS = {
       paths: [
         "silence_waker.scan_interval_seconds",
         "waiting_poller.scan_interval_seconds",
-        "waiting_poller.abandoned_hours",
-        "waiting_poller.greeting_alert_minutes",
+        "waiting_poller.customer_wait_timeout_hours",
         "waiting_poller.poll_new_messages"
       ]
     }
@@ -127,44 +118,31 @@ const FIELD_SECTIONS = {
   "回复策略": [
     {
       title: "Public reply 策略",
-      description: "是否允许自动公开回复、ask 次数上限和 Browser Relay 调用超时。",
+      description: "是否允许 v2 自动公开回复以及 Browser Relay 调用超时。",
       paths: [
         "public_reply.enabled",
-        "public_reply.max_ask_count",
         "public_reply.browser_relay_timeout_seconds"
       ]
     },
     {
-      title: "等待与追问窗口",
-      description: "客户消息到达后的等待、合并、ask 告警和放弃等待时间。",
+      title: "消息合并窗口",
+      description: "工单创建和客户消息到达后的 durable queue 延迟窗口。",
       paths: [
         "public_reply.silent_initial_wait_seconds",
-        "public_reply.silence_window_seconds",
-        "public_reply.ask_followup_alert_minutes",
-        "public_reply.abandoned_hours"
+        "public_reply.silence_window_seconds"
       ]
-    },
-    {
-      title: "Ask 提示词",
-      description: "信息不足时交给大模型生成 ask 的补充规则。",
-      paths: ["prompts.ask_extra_instructions"]
     }
   ],
   "模型与运行": [
     {
-      title: "主模型与判定模型",
-      description: "主回复、Subagent 和触发判定各自使用的模型与接入地址。",
+      title: "v2 调查与回复模型",
+      description: "统一用于调查、视觉证据、回复与发送前复核的模型。",
       paths: [
         "llm.provider",
         "llm.base_url",
         "llm.model",
         "llm.reasoning_effort",
-        "llm.subagent_model",
-        "llm.subagent_reasoning_effort",
-        "llm.enable_vision_input",
-        "trigger_decider.llm_model",
-        "trigger_decider.reasoning_effort",
-        "trigger_decider.enable_vision_input"
+        "llm.enable_vision_input"
       ]
     },
     {
@@ -179,43 +157,28 @@ const FIELD_SECTIONS = {
       ]
     },
     {
-      title: "运行护栏",
-      description: "并发、最大轮次、会话超时和上下文压缩阈值。",
+      title: "v2 调查预算",
+      description: "并发，以及 v2 调查轮次、工具调用和累计模型 token 预算。",
       paths: [
         "agent.max_concurrent_sessions",
-        "agent.guardrails.max_rounds",
-        "agent.guardrails.timeout_seconds",
-        "agent.guardrails.max_tokens_per_session",
-        "agent.guardrails.context_compaction_trigger_tokens",
-        "agent.guardrails.context_compaction_target_tokens"
+        "casework.max_investigation_rounds",
+        "casework.max_investigation_calls",
+        "casework.max_investigation_tokens"
       ]
     },
     {
       title: "重试策略",
-      description: "全局和下游服务的 retry 次数、退避与 jitter。",
+      description: "全局重试退避，以及源码/Git 的专用次数覆盖。",
       paths: [
         "retry.max_attempts",
         "retry.base_delay_seconds",
         "retry.max_delay_seconds",
         "retry.jitter",
-        "retry.llm.max_attempts",
-        "retry.zendesk.max_attempts",
-        "retry.git.max_attempts",
-        "retry.sandbox.max_attempts"
+        "retry.git.max_attempts"
       ]
-    },
-    {
-      title: "系统提示词",
-      description: "追加到 system prompt，用于规范处理工单时的 Skill 调度、语气和排查约束。",
-      paths: ["prompts.agent_extra_instructions"]
     }
   ],
   "工具与集成": [
-    {
-      title: "Skills",
-      description: "配置 agent 可启用的处理流程能力，和 MCP 一起组成排查能力面。",
-      paths: ["skills.enabled", "skills.custom"]
-    },
     {
       title: "Browser Relay",
       description: "客户可见 public reply 的浏览器中继服务。",
@@ -252,28 +215,21 @@ const FIELD_SECTIONS = {
         "docs_tool_service.mcp_url",
         "docs_tool_service.mcp_api_key",
         "docs_tool_service.request_timeout_seconds",
-        "sandbox_worker.mcp_url",
-        "sandbox_worker.mcp_api_key",
-        "sandbox_worker.request_timeout_seconds",
         "mcp_services.custom"
       ]
     },
     {
       title: "通知服务",
-      description: "飞书通知服务、fallback webhook 和日报时间。",
+      description: "飞书凭据、幂等与传输重试全部由独立 notification-service 管理。",
       paths: [
         "notification_service.mcp_url",
         "notification_service.mcp_api_key",
-        "notification_service.request_timeout_seconds",
-        "feishu.webhook_url",
-        "feishu.webhook_secret",
-        "feishu.daily_summary_time",
-        "feishu.daily_summary_timezone"
+        "notification_service.request_timeout_seconds"
       ]
     },
     {
-      title: "Legacy Inspector",
-      description: "旧 inspector 兼容入口，后续可逐步迁移到远程服务。",
+      title: "Inspector（只读）",
+      description: "现有只读生产检查入口；v2 调查器会按证据需要调用。",
       paths: [
         "inspector.binary",
         "inspector.config_file",
@@ -305,12 +261,10 @@ const FIELD_SECTIONS = {
       ]
     },
     {
-      title: "Sandbox 存储",
-      description: "隔离执行目录和成功/失败后的清理策略。",
+      title: "历史 Sandbox 取证",
+      description: "只供 CLI 查看或显式清理 pre-v2 遗留文件；v2 不在这里执行代码。",
       paths: [
-        "sandbox.base_dir",
-        "sandbox.cleanup_on_success",
-        "sandbox.cleanup_on_failure"
+        "sandbox.base_dir"
       ]
     }
   ],
@@ -350,8 +304,7 @@ const INTEGRATIONS = [
   ["source_mcp", "Source MCP", "线上源码搜索和读取"],
   ["github_mcp", "GitHub MCP", "PR、Issue、revert 和 follow-up 校验"],
   ["docs_tool_service", "Docs Service", "官方文档缓存和限域读取"],
-  ["notification_service", "Notification Service", "飞书通知和重试"],
-  ["sandbox_worker", "Sandbox Worker", "隔离文件读写、搜索和执行"]
+  ["notification_service", "Notification Service", "飞书通知和重试"]
 ];
 
 const INTEGRATION_CONFIG_PATHS = {
@@ -394,21 +347,8 @@ const INTEGRATION_CONFIG_PATHS = {
     "notification_service.mcp_url",
     "notification_service.mcp_api_key",
     "notification_service.request_timeout_seconds"
-  ],
-  sandbox_worker: [
-    "sandbox_worker.mcp_url",
-    "sandbox_worker.mcp_api_key",
-    "sandbox_worker.request_timeout_seconds"
   ]
 };
-
-const BUILT_IN_SKILLS = [
-  {
-    name: "dify_support_ticket",
-    label: "Dify Support Ticket",
-    description: "服务器 agent 默认处理 SaaS 工单的核心 Skill，始终启用。"
-  }
-];
 
 const state = {
   activeMenu: "总览",
@@ -741,7 +681,6 @@ function setPageActions() {
   if (state.activeMenu === "工具与集成") {
     actions.innerHTML = `
       <button class="btn secondary" onclick="refreshActivePage()">刷新</button>
-      <button class="btn secondary" onclick="openSkillManager()">管理 Skill</button>
       <button class="btn primary" onclick="openMcpManager()">新增 MCP</button>
     `;
     return;
@@ -1554,13 +1493,11 @@ function renderIntegrations() {
       <div class="card-header">
         <span>工具与集成</span>
         <div class="header-actions">
-          <span class="chip">${customSkills().length + BUILT_IN_SKILLS.length} 个 Skill</span>
           <span class="chip">${INTEGRATIONS.length + customMcpServices().length} 个服务</span>
           <span class="chip">检测会写入审计日志</span>
         </div>
       </div>
       <div class="card-body integration-grid">
-        ${renderSkillSummaryCard()}
         ${INTEGRATIONS.map(([name, label, description]) => renderIntegrationCard(name, label, description)).join("")}
         ${customMcpServices().map(service => renderCustomMcpCard(service)).join("")}
       </div>
@@ -1568,44 +1505,16 @@ function renderIntegrations() {
     <section class="card">
       <div class="card-header">
         <span>管理说明</span>
-        <span class="chip">Skill 与 MCP 统一管理</span>
+        <span class="chip">v2 只读能力面</span>
       </div>
       <div class="card-body integration-note-grid">
         <div>
-          <strong>Skill</strong>
-          <p>Skill 用来定义处理工单的 SOP 和工具使用约束。内置 Dify Support Ticket 始终启用，自定义 Skill 可以新增、禁用或删除。</p>
-        </div>
-        <div>
           <strong>MCP</strong>
-          <p>内置 MCP 点击卡片编辑连接配置；自定义 MCP 保存后会通过 <code>custom_mcp_call</code> 按服务名和工具名调用。</p>
+          <p>v2 生产调查只注册经过审核的只读工具。内置 MCP 点击卡片编辑连接配置；自定义 MCP 当前仅做连通性管理，不会自动加入生产工具注册表。</p>
         </div>
       </div>
     </section>
   `);
-}
-
-function renderSkillSummaryCard() {
-  const skills = customSkills();
-  const enabledCustom = skills.filter(skill => skill.enabled !== false).length;
-  return `
-    <div class="integration-card action-card skill-card" role="button" tabindex="0"
-      onclick="openSkillManager()"
-      onkeydown="if(event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')){event.preventDefault(); openSkillManager();}">
-      <div class="integration-card-head">
-        <div>
-          <strong>Skills</strong>
-          <div class="muted">处理工单 SOP、系统提示词配套能力</div>
-        </div>
-        <span class="chip enabled">内置必开</span>
-      </div>
-      <div class="integration-status success-text">
-        ${BUILT_IN_SKILLS.length} 个内置 · ${enabledCustom} 个自定义启用
-      </div>
-      <div class="integration-card-actions">
-        <button class="btn secondary" onclick="event.stopPropagation(); openSkillManager()">管理 Skill</button>
-      </div>
-    </div>
-  `;
 }
 
 function renderIntegrationCard(name, label, description) {
@@ -1739,89 +1648,12 @@ function openIntegrationConfig(name) {
   ]);
 }
 
-function openSkillManager() {
-  showModal("Skill 管理", `
-    <div class="manager-intro">
-      <strong>内置 Skill</strong>
-      ${BUILT_IN_SKILLS.map(skill => `
-        <div class="locked-skill-row">
-          <div>
-            <span>${escapeHtml(skill.label)}</span>
-            <p>${escapeHtml(skill.description)}</p>
-          </div>
-          <span class="chip enabled">始终启用</span>
-        </div>
-      `).join("")}
-    </div>
-    <div class="manager-toolbar">
-      <strong>自定义 Skill</strong>
-      <button class="btn secondary compact" onclick="addSkillManagerItem()">添加 Skill</button>
-    </div>
-    <div id="skill-manager-list" class="manager-list">
-      ${customSkills().map(renderSkillManagerItem).join("") || emptyHtml("还没有自定义 Skill")}
-    </div>
-    ${renderReasonBox("调整 Skill 配置")}
-  `, [
-    { label: "取消", className: "secondary", onClick: closeModal },
-    { label: "保存", className: "primary", onClick: saveSkillManager }
-  ]);
-}
-
-function renderSkillManagerItem(skill = {}) {
-  return `
-    <div class="manager-item" data-skill-item>
-      <div class="manager-item-head">
-        <strong>${escapeHtml(skill.name || "新 Skill")}</strong>
-        <button class="btn secondary compact" onclick="removeManagerItem(this)">删除</button>
-      </div>
-      <div class="manager-field-grid">
-        <label>名称</label>
-        <input data-skill-field="name" value="${escapeHtml(skill.name || "")}" placeholder="例如 billing_refund_sop">
-        <span class="muted">字母开头，可用数字、-、_</span>
-        <label>说明</label>
-        <input data-skill-field="description" value="${escapeHtml(skill.description || "")}" placeholder="这个 Skill 解决什么问题">
-        <span class="muted">展示给管理员和 prompt</span>
-        <label>启用</label>
-        <select data-skill-field="enabled">
-          <option value="true" ${skill.enabled !== false ? "selected" : ""}>开启</option>
-          <option value="false" ${skill.enabled === false ? "selected" : ""}>关闭</option>
-        </select>
-        <span class="muted">关闭后不会注入上下文</span>
-      </div>
-      <label class="manager-wide-label">Skill 内容</label>
-      <textarea data-skill-field="content" class="prompt-textarea" rows="8" placeholder="写入 SOP、证据要求和工具使用规则">${escapeHtml(skill.content || "")}</textarea>
-    </div>
-  `;
-}
-
-function addSkillManagerItem() {
-  addManagerItem("skill-manager-list", renderSkillManagerItem({ enabled: true }));
-}
-
-async function saveSkillManager() {
-  const error = document.getElementById("modal-save-error");
-  const skills = Array.from(document.querySelectorAll("[data-skill-item]")).map(item => ({
-    name: item.querySelector("[data-skill-field='name']").value.trim(),
-    description: item.querySelector("[data-skill-field='description']").value.trim(),
-    enabled: item.querySelector("[data-skill-field='enabled']").value === "true",
-    content: item.querySelector("[data-skill-field='content']").value.trim()
-  })).filter(skill => skill.name || skill.description || skill.content);
-  const enabled = [
-    "dify_support_ticket",
-    ...skills.filter(skill => skill.enabled).map(skill => skill.name).filter(Boolean)
-  ];
-  await applyConfigPayload({
-    "skills.custom": skills,
-    "skills.enabled": enabled.join("\n")
-  }, reasonFromModal("调整 Skill 配置"), error);
-}
-
 function openMcpManager() {
   showModal("自定义 MCP 管理", `
     <div class="manager-toolbar">
       <div>
         <strong>自定义 MCP 服务</strong>
-        <p>用于补充内置 MCP 之外的远程能力。保存后 Skill 或系统提示词可通过 service 名称引用。</p>
+        <p>用于登记内置 MCP 之外的远程服务并执行连通性检查；它不会自动加入 v2 生产工具注册表。</p>
       </div>
       <button class="btn secondary compact" onclick="addMcpManagerItem()">添加 MCP</button>
     </div>
@@ -1941,7 +1773,7 @@ function addManagerItem(listId, html) {
 }
 
 function removeManagerItem(button) {
-  const item = button.closest("[data-skill-item], [data-mcp-item]");
+  const item = button.closest("[data-mcp-item]");
   if (item) item.remove();
 }
 
@@ -1988,11 +1820,6 @@ function integrationConfigured(paths) {
 function integrationStatusText(name) {
   const result = state.integrationChecks[name];
   return result ? `${result.status} · ${result.detail || ""}` : "尚未检测";
-}
-
-function customSkills() {
-  const value = state.values["skills.custom"];
-  return Array.isArray(value) ? value : [];
 }
 
 function customMcpServices() {
@@ -2193,11 +2020,7 @@ function renderInput(field) {
     return `<textarea id="${id}" data-path="${field.path}" class="json-textarea" rows="10">${escapeHtml(formatJsonFieldValue(value))}</textarea>`;
   }
   const inputType = field.input === "number" ? "number" : "text";
-  const reasoningRefresh = [
-    "llm.model",
-    "llm.subagent_model",
-    "trigger_decider.llm_model"
-  ].includes(field.path)
+  const reasoningRefresh = field.path === "llm.model"
     ? ' oninput="refreshReasoningEffortOptions()"'
     : "";
   return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(displayValue)}"${reasoningRefresh}>`;
@@ -2226,21 +2049,13 @@ function reasoningCapabilityForModel(model) {
   return null;
 }
 
-function reasoningUnsupportedReason(modelPath, model) {
-  const rule = reasoningCapabilityForModel(model);
-  if (modelPath === "trigger_decider.llm_model" && rule?.responses_only) {
-    return "触发判定暂不支持仅限 Responses API 的模型";
-  }
+function reasoningUnsupportedReason(_modelPath, _model) {
   return "";
 }
 
 function reasoningModelValue(modelPath) {
   const input = document.getElementById(`field-${modelPath}`);
-  let model = input ? input.value : state.values[modelPath];
-  if (modelPath === "llm.subagent_model" && !String(model || "").trim()) {
-    const mainInput = document.getElementById("field-llm.model");
-    model = mainInput ? mainInput.value : state.values["llm.model"];
-  }
+  const model = input ? input.value : state.values[modelPath];
   return model || "";
 }
 

@@ -1,38 +1,35 @@
-"""Waiting Poller: 60s scan to discover new customer messages on messaging
-tickets that Zendesk's Tickets webhook misses, plus drive timeouts on
-v2 ``awaiting_customer`` state (plus legacy states during migration).
+"""Recover missed customer messages and bound v2 customer waits.
 
 Why this exists
 ---------------
 Zendesk's native_messaging follow-up customer messages don't always create a
 new ticket audit / comment, so the Tickets webhook trigger may not fire.
-Without this poller, tickets in ``waiting_for_issue`` state are stuck forever.
+Without this poller, a missed messaging webhook can leave a v2 ticket waiting
+forever even though the customer has already replied.
 
-Loop per ticket in (in_silence_window | waiting_for_issue)
------------------------------------------------------------
+Loop per ticket in (in_silence_window | awaiting_customer | waiting_for_form)
+----------------------------------------------------------------------------
 1. Re-fetch ticket + conversation_log
 2. Status / assignee guard:
    - ticket.status NOT IN {new, open}            → human/auto closed it, skip
-   - assignee_id is real human assignee         → human/owner took over, mark
-                                                   ``human_handled``-equivalent
-                                                   (we use ``abandoned`` as a
-                                                   terminal state for now to
-                                                   stop scanning)
+   - assignee_id is real human assignee         → mark ``externally_owned``
 3. Diff customer_msgs:
    - latest customer comment_id != state's       → push
                                                    ``{source: "poller_new_msg"}``
                                                    to trigger_queue → re-judge
-4. Timeouts (only if no new message):
-   - 24h since first_seen → state = abandoned + Feishu alert (one-shot)
-   - 30min since first_seen + waiting_for_issue/greeting → Feishu alert
+4. Timeout (only if no new message):
+   - bounded wait expires → state = ``out_of_scope`` with a typed reason
+
+Expiry is not an escalation and never generates a customer reply or a human
+handoff side effect.
 """
+
 from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
 
 from zd_agent.config import get_config
-from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.log import get_logger
 from zd_agent.services.assignee import is_human_assignee
 from zd_agent.services.trigger_state_machine import (
@@ -48,7 +45,6 @@ logger = get_logger(module="services.waiting_poller")
 _TARGET_STATES = (
     "in_silence_window",
     "awaiting_customer",
-    "waiting_for_issue",
     "waiting_for_form",
 )
 # 默认只关注新建状态的工单。一旦 Zendesk status 变成 open/pending/solved
@@ -62,36 +58,13 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-async def _alert_feishu(*, title: str, message: str, urgent: bool = False) -> None:
-    """Best-effort Feishu alert. Failures are swallowed (just logged)."""
-    try:
-        payload = await push_notification_card(
-            card_type="alert",
-            ticket_id="",
-            title=title,
-            content=message,
-            urgent=urgent,
-            cfg=get_config(),
-        )
-        if not payload.get("success"):
-            logger.warning(
-                "feishu_alert_failed",
-                title=title,
-                error=str(payload.get("error") or "unknown error"),
-                code=payload.get("code"),
-            )
-    except Exception as e:  # noqa: BLE001
-        logger.warning("feishu_alert_failed", title=title, error=str(e))
-
-
 async def _process_one(
     *,
     ticket_id: int,
     rec: TicketState,
     state: TicketStateTracker,
     trigger_queue: asyncio.Queue,
-    abandoned_hours: int,
-    greeting_alert_minutes: int,
+    customer_wait_timeout_hours: int,
 ) -> None:
     # Lazy import to avoid circular import (saas_app imports this module).
     from zd_agent.services.ticket_messages import _fetch_customer_messages
@@ -122,7 +95,9 @@ async def _process_one(
         if transition is not None:
             logger.info(
                 "waiting_poller_status_out_of_scope",
-                ticket_id=ticket_id, status=status, prev_state=transition.prev_state,
+                ticket_id=ticket_id,
+                status=status,
+                prev_state=transition.prev_state,
                 has_asked_tag=AGENT_ASKED_TAG in tags,
             )
         return
@@ -169,75 +144,36 @@ async def _process_one(
             logger.info(
                 "waiting_poller_new_customer_msg_fallback",
                 ticket_id=ticket_id,
-                from_cid=rec.last_customer_comment_id, to_cid=latest_cid,
+                from_cid=rec.last_customer_comment_id,
+                to_cid=latest_cid,
                 note="webhook 漏了，poller 兜底",
             )
-            await trigger_queue.put({
-                "source": "poller_new_msg",
-                "ticket_id": ticket_id,
-                "_queue_key": f"poller_new_msg:{ticket_id}:{latest_cid}",
-            })
+            await trigger_queue.put(
+                {
+                    "source": "poller_new_msg",
+                    "ticket_id": ticket_id,
+                    "_queue_key": f"poller_new_msg:{ticket_id}:{latest_cid}",
+                }
+            )
             return
 
     # Step 4: no new message — apply bounded customer-wait timeouts.
     transition = apply_waiting_poller_timeouts(
         state,
         ticket_id,
-        abandoned_hours=abandoned_hours,
-        greeting_alert_minutes=greeting_alert_minutes,
+        customer_wait_timeout_hours=customer_wait_timeout_hours,
         now=_now(),
     )
     if transition is None:
         return
 
-    if transition.kind == "abandoned":
-        if transition.should_alert:
-            wait_summary = (
-                "AI 已请求补充必要信息，但客户尚未回应。"
-                if transition.prev_state == "awaiting_customer"
-                else "客户未发送可处理的问题信息。"
-            )
-            await _alert_feishu(
-                title=f"Ticket #{ticket_id} 已 24h 无客户回应",
-                message=(
-                    f"工单 #{ticket_id} 自创建后 {abandoned_hours} 小时内"
-                    f"{wait_summary}（last_verdict={transition.last_verdict}）。"
-                    "已标记为 abandoned，agent 不再处理。需要人工 follow-up。"
-                ),
-                urgent=False,
-            )
+    if transition.kind == "out_of_scope":
         logger.info(
-            "waiting_poller_abandoned",
+            "waiting_poller_customer_wait_expired",
             ticket_id=ticket_id,
             age_hours=round(transition.age_seconds / 3600, 1),
-        )
-        # M8 metric: 首次进入 abandoned 才埋点（避免重复扫描产生噪声）
-        if transition.prev_state != "abandoned":
-            try:
-                from zd_agent.observability.metrics import emit_abandoned
-                emit_abandoned(
-                    ticket_id=ticket_id,
-                    age_hours=transition.age_seconds / 3600,
-                    last_verdict=transition.last_verdict,
-                    ask_count=transition.ask_count,
-                )
-            except Exception:
-                pass
-        return
-
-    if transition.kind == "greeting_alert":
-        await _alert_feishu(
-            title=f"Ticket #{ticket_id} 30min 仅打招呼无问题",
-            message=(
-                f"工单 #{ticket_id} 自创建后 {greeting_alert_minutes} 分钟"
-                "客户只发了寒暄消息，未陈述具体问题。可以人工去看一眼。"
-            ),
-            urgent=False,
-        )
-        logger.info(
-            "waiting_poller_greeting_alert",
-            ticket_id=ticket_id,
-            age_min=round(transition.age_seconds / 60, 1),
+            previous_state=transition.prev_state,
+            reason=transition.last_verdict,
         )
 
 
@@ -245,8 +181,7 @@ async def scan_once(
     *,
     state: TicketStateTracker,
     trigger_queue: asyncio.Queue,
-    abandoned_hours: int,
-    greeting_alert_minutes: int,
+    customer_wait_timeout_hours: int,
 ) -> int:
     """Single scan pass over target states. Returns number of tickets processed."""
     candidates: list[str] = []
@@ -264,16 +199,18 @@ async def scan_once(
             continue
         try:
             await _process_one(
-                ticket_id=tid, rec=rec, state=state,
+                ticket_id=tid,
+                rec=rec,
+                state=state,
                 trigger_queue=trigger_queue,
-                abandoned_hours=abandoned_hours,
-                greeting_alert_minutes=greeting_alert_minutes,
+                customer_wait_timeout_hours=customer_wait_timeout_hours,
             )
             processed += 1
         except Exception as e:
             logger.warning(
                 "waiting_poller_one_error",
-                ticket_id=tid, error=str(e),
+                ticket_id=tid,
+                error=str(e),
             )
     return processed
 
@@ -283,22 +220,20 @@ async def run_waiting_poller(
     state: TicketStateTracker,
     trigger_queue: asyncio.Queue,
     scan_interval_seconds: int,
-    abandoned_hours: int,
-    greeting_alert_minutes: int,
+    customer_wait_timeout_hours: int,
 ) -> None:
     """Infinite loop: scan_once → sleep → repeat. Catches per-iter exceptions."""
     logger.info(
         "waiting_poller_started",
         interval_s=scan_interval_seconds,
-        abandoned_h=abandoned_hours,
-        greeting_alert_min=greeting_alert_minutes,
+        customer_wait_timeout_h=customer_wait_timeout_hours,
     )
     while True:
         try:
             await scan_once(
-                state=state, trigger_queue=trigger_queue,
-                abandoned_hours=abandoned_hours,
-                greeting_alert_minutes=greeting_alert_minutes,
+                state=state,
+                trigger_queue=trigger_queue,
+                customer_wait_timeout_hours=customer_wait_timeout_hours,
             )
         except Exception as e:
             logger.error("waiting_poller_error", error=str(e))

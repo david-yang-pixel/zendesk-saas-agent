@@ -1,4 +1,5 @@
 """Regression tests for trigger-state ownership by AgentSession."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -20,7 +21,7 @@ def _now() -> datetime:
 
 def _cfg() -> MagicMock:
     cfg = MagicMock()
-    cfg.trigger_decider.post_agent_cooldown_seconds = 180
+    cfg.intake.post_agent_cooldown_seconds = 180
     return cfg
 
 

@@ -17,16 +17,28 @@ from zd_agent.casework.domain.models import (
 )
 
 
-_QUESTION_PATTERNS = {
-    ActionRequirement.SENSITIVE_ACCOUNT_MUTATION: re.compile(
-        r"\b(?:delete|transfer|change owner|remove account|删除|转移|更换所有者)\b",
-        re.IGNORECASE,
-    ),
-    ActionRequirement.SECURITY_OR_PRIVACY_REVIEW: re.compile(
-        r"\b(?:security|privacy|breach|exposure|安全|隐私|泄露)\b",
-        re.IGNORECASE,
-    ),
-}
+_SENSITIVE_OBJECT_RE = re.compile(
+    r"\b(?:account|workspace|organization|organisation|team|member|ownership)\b|"
+    r"账户|账号|工作空间|组织|团队|成员|所有权",
+    re.IGNORECASE,
+)
+_SENSITIVE_MUTATION_RE = re.compile(
+    r"\b(?:delete|remove|transfer|change\s+(?:the\s+)?owner|"
+    r"replace\s+(?:the\s+)?owner)\b|删除|移除|转移|更换所有者",
+    re.IGNORECASE,
+)
+_SECURITY_INCIDENT_RE = re.compile(
+    r"\b(?:security|privacy)\s+(?:incident|issue|review|investigation)\b|"
+    r"\b(?:breach|data leak|exposure|compromise|unauthorized access|"
+    r"privacy violation)\b|安全事件|隐私事件|数据泄露|未授权访问",
+    re.IGNORECASE,
+)
+_SECURITY_REVIEW_REQUEST_RE = re.compile(
+    r"\b(?:please|request|need|want|would like)\b.{0,45}\b"
+    r"(?:security|privacy)\b.{0,35}\b(?:review|investigate|assessment)\b|"
+    r"请.{0,12}(?:安全|隐私).{0,12}(?:审查|调查|评估)",
+    re.IGNORECASE,
+)
 
 _HUMAN_SUBJECT_RE = re.compile(
     r"\b(?:human|person|representative|support engineer)\b|人工|客服",
@@ -49,6 +61,11 @@ _BUSINESS_REQUEST_RE = re.compile(
 )
 _COMMITMENT_RE = re.compile(
     r"\b(?:commit|guarantee|promise|sla commitment)\b|承诺|保证",
+    re.IGNORECASE,
+)
+_NEGATED_INTENT_RE = re.compile(
+    r"\b(?:do\s+not|don't|dont|did\s+not|didn't|never|not\s+want|"
+    r"no\s+longer\s+want)\b|不想|不要|无需|不需要|没有要求",
     re.IGNORECASE,
 )
 
@@ -100,7 +117,38 @@ def _required_claim_error(
     return ""
 
 
+def _required_action_evidence_ids(
+    requirement: ActionRequirement,
+    claims: tuple[Claim, ...],
+    context: CaseContext,
+) -> tuple[str, ...]:
+    required_roles: frozenset[ClaimRole] = frozenset()
+    if requirement is ActionRequirement.CONFIRMED_PLATFORM_DEFECT:
+        required_roles = frozenset({ClaimRole.FAILING_BOUNDARY, ClaimRole.ROOT_CAUSE})
+    elif requirement is ActionRequirement.CONFIRMED_SERVICE_INCIDENT:
+        required_roles = frozenset({ClaimRole.FAILING_BOUNDARY, ClaimRole.IMPACT})
+    evidence_ids = tuple(
+        dict.fromkeys(
+            evidence_id
+            for claim in claims
+            if claim.role in required_roles
+            for evidence_id in claim.supporting_evidence_ids
+        ),
+    )
+    if requirement is ActionRequirement.BUSINESS_APPROVAL and context.billing:
+        identity_ids = set(context.identity.evidence_ids)
+        billing_ids = tuple(
+            evidence_id
+            for evidence_id in context.billing.evidence_ids
+            if evidence_id not in identity_ids
+        )
+        evidence_ids = tuple(dict.fromkeys((*evidence_ids, *billing_ids)))
+    return evidence_ids
+
+
 def _question_establishes(requirement: ActionRequirement, question: str) -> bool:
+    if _NEGATED_INTENT_RE.search(question):
+        return False
     if requirement is ActionRequirement.CUSTOMER_REQUESTED_HUMAN:
         return bool(
             _HUMAN_SUBJECT_RE.search(question) and _HUMAN_REQUEST_RE.search(question),
@@ -112,8 +160,17 @@ def _question_establishes(requirement: ActionRequirement, question: str) -> bool
         )
     if requirement is ActionRequirement.POLICY_COMMITMENT:
         return bool(_COMMITMENT_RE.search(question))
-    pattern = _QUESTION_PATTERNS.get(requirement)
-    return pattern is None or bool(pattern.search(question))
+    if requirement is ActionRequirement.SENSITIVE_ACCOUNT_MUTATION:
+        return bool(
+            _SENSITIVE_OBJECT_RE.search(question)
+            and _SENSITIVE_MUTATION_RE.search(question)
+        )
+    if requirement is ActionRequirement.SECURITY_OR_PRIVACY_REVIEW:
+        return bool(
+            _SECURITY_INCIDENT_RE.search(question)
+            or _SECURITY_REVIEW_REQUEST_RE.search(question)
+        )
+    return True
 
 
 def _question_error(requirement: ActionRequirement, question: str) -> str:
@@ -149,6 +206,13 @@ def admit_action_proposal(
         return None, error
     if not set(proposal.evidence_ids).issubset(eligible_evidence_ids):
         return None, "action proposal cites evidence that was not admitted"
+    required_evidence_ids = _required_action_evidence_ids(
+        proposal.requirement,
+        admitted_claims,
+        context,
+    )
+    if not set(required_evidence_ids).issubset(eligible_evidence_ids):
+        return None, "required action evidence was not admitted"
     owner, reason = _ACTION_MAPPING[proposal.requirement]
     return HumanActionRequest(
         ownership_action=owner,
@@ -158,5 +222,7 @@ def admit_action_proposal(
         completed_checks=proposal.completed_checks,
         unresolved_action=proposal.unresolved_action,
         acceptance_criteria=proposal.acceptance_criteria,
-        evidence_ids=proposal.evidence_ids,
+        evidence_ids=tuple(
+            dict.fromkeys((*proposal.evidence_ids, *required_evidence_ids)),
+        ),
     ), ""

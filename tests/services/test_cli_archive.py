@@ -47,7 +47,9 @@ def test_collect_archive_stats_counts_recent_meta(tmp_path):
     assert stats.cutoff == now - timedelta(days=7)
 
 
-def test_collect_archive_stats_counts_each_session_archive_without_legacy_duplication(tmp_path):
+def test_collect_archive_stats_counts_each_session_archive_without_legacy_duplication(
+    tmp_path,
+):
     from zd_agent.services.cli_archive import collect_archive_stats
 
     now = datetime(2026, 7, 17, 8, 0, tzinfo=timezone.utc)
@@ -57,32 +59,38 @@ def test_collect_archive_stats_counts_each_session_archive_without_legacy_duplic
     first.mkdir(parents=True)
     second.mkdir(parents=True)
     (first / "meta.json").write_text(
-        json.dumps({
-            "created_at": (now - timedelta(minutes=10)).isoformat(),
-            "status": "deferred",
-            "total_tokens": 219_938,
-            "rounds": 6,
-            "reply_sent": False,
-        }),
+        json.dumps(
+            {
+                "created_at": (now - timedelta(minutes=10)).isoformat(),
+                "status": "deferred",
+                "total_tokens": 219_938,
+                "rounds": 6,
+                "reply_sent": False,
+            }
+        ),
         encoding="utf-8",
     )
     (second / "meta.json").write_text(
-        json.dumps({
-            "created_at": (now - timedelta(minutes=5)).isoformat(),
-            "status": "completed",
-            "total_tokens": 195_457,
-            "rounds": 7,
-            "reply_sent": True,
-        }),
+        json.dumps(
+            {
+                "created_at": (now - timedelta(minutes=5)).isoformat(),
+                "status": "completed",
+                "total_tokens": 195_457,
+                "rounds": 7,
+                "reply_sent": True,
+            }
+        ),
         encoding="utf-8",
     )
     (ticket_dir / "meta.json").write_text(
-        json.dumps({
-            "created_at": (now - timedelta(minutes=10)).isoformat(),
-            "status": "deferred",
-            "total_tokens": 219_938,
-            "rounds": 6,
-        }),
+        json.dumps(
+            {
+                "created_at": (now - timedelta(minutes=10)).isoformat(),
+                "status": "deferred",
+                "total_tokens": 219_938,
+                "rounds": 6,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -96,7 +104,9 @@ def test_collect_archive_stats_counts_each_session_archive_without_legacy_duplic
     assert stats.reply_sent_count == 1
 
 
-def test_collect_archive_stats_keeps_distinct_legacy_run_during_layout_migration(tmp_path):
+def test_collect_archive_stats_keeps_distinct_legacy_run_during_layout_migration(
+    tmp_path,
+):
     from zd_agent.services.cli_archive import collect_archive_stats
 
     now = datetime(2026, 7, 17, 8, 0, tzinfo=timezone.utc)
@@ -104,25 +114,29 @@ def test_collect_archive_stats_keeps_distinct_legacy_run_during_layout_migration
     current = ticket_dir / "runs" / "current-session"
     current.mkdir(parents=True)
     (ticket_dir / "meta.json").write_text(
-        json.dumps({
-            "session_id": "legacy-session",
-            "created_at": (now - timedelta(minutes=20)).isoformat(),
-            "status": "failed",
-            "total_tokens": 50,
-            "rounds": 2,
-            "reply_sent": False,
-        }),
+        json.dumps(
+            {
+                "session_id": "legacy-session",
+                "created_at": (now - timedelta(minutes=20)).isoformat(),
+                "status": "failed",
+                "total_tokens": 50,
+                "rounds": 2,
+                "reply_sent": False,
+            }
+        ),
         encoding="utf-8",
     )
     (current / "meta.json").write_text(
-        json.dumps({
-            "session_id": "current-session",
-            "created_at": (now - timedelta(minutes=5)).isoformat(),
-            "status": "completed",
-            "total_tokens": 100,
-            "rounds": 3,
-            "reply_sent": True,
-        }),
+        json.dumps(
+            {
+                "session_id": "current-session",
+                "created_at": (now - timedelta(minutes=5)).isoformat(),
+                "status": "completed",
+                "total_tokens": 100,
+                "rounds": 3,
+                "reply_sent": True,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -198,7 +212,10 @@ def test_collect_sandbox_status_rows(tmp_path):
 def test_collect_sandbox_status_missing_or_empty_returns_empty(tmp_path):
     from zd_agent.services.cli_archive import collect_sandbox_status
 
-    assert collect_sandbox_status(tmp_path / "missing", archive_base=tmp_path / "archive") == []
+    assert (
+        collect_sandbox_status(tmp_path / "missing", archive_base=tmp_path / "archive")
+        == []
+    )
 
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -224,7 +241,10 @@ def test_find_sandbox_cleanup_targets_all_dirs_sorted(tmp_path):
     (sandbox_base / "100").mkdir()
     (sandbox_base / "file.txt").write_text("x", encoding="utf-8")
 
-    assert [p.name for p in find_sandbox_cleanup_targets(sandbox_base)] == ["100", "200"]
+    assert [p.name for p in find_sandbox_cleanup_targets(sandbox_base)] == [
+        "100",
+        "200",
+    ]
     assert find_sandbox_cleanup_targets(tmp_path / "missing") == []
 
 

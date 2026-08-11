@@ -1,4 +1,5 @@
 """Crash-recovery contracts for the durable trigger pipeline."""
+
 from __future__ import annotations
 
 import asyncio
@@ -31,12 +32,17 @@ async def test_startup_recovery_uses_a_queue_key_distinct_from_delivery_id(
         now_fn=lambda: now[0],
     )
     delivery_id = "zendesk:3461:customer-message-1"
-    assert await queue.put({
-        "source": "zendesk_webhook",
-        "ticket_id": 3461,
-        "delivery_attempt_id": delivery_id,
-        "_queue_key": delivery_id,
-    }) is True
+    assert (
+        await queue.put(
+            {
+                "source": "zendesk_webhook",
+                "ticket_id": 3461,
+                "delivery_attempt_id": delivery_id,
+                "_queue_key": delivery_id,
+            }
+        )
+        is True
+    )
     original_claim = await queue.get()
 
     restarted = DurableTriggerQueue(
@@ -44,14 +50,17 @@ async def test_startup_recovery_uses_a_queue_key_distinct_from_delivery_id(
         lease_seconds=1_800,
         now_fn=lambda: now[0],
     )
-    assert restarted.ensure_processing_recovery(
-        3461,
-        delivery_attempt_id=delivery_id,
-    ) is True
+    assert (
+        restarted.ensure_processing_recovery(
+            3461,
+            delivery_attempt_id=delivery_id,
+        )
+        is True
+    )
 
     recovered = await restarted.get()
     assert recovered["source"] == "startup_recovery"
-    assert recovered["_queue_key"] == "startup-recovery:3461"
+    assert recovered["_queue_key"].startswith("startup-recovery:3461:")
     assert recovered["delivery_attempt_id"] == delivery_id
     assert recovered["_queue_event_id"] != original_claim["_queue_event_id"]
 

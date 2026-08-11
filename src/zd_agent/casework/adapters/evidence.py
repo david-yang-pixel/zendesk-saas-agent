@@ -8,6 +8,7 @@ from zd_agent.casework.domain.enums import (
     EvidenceAuthority,
     EvidenceResultStatus,
     ResolutionStatus,
+    VisualObservationStatus,
 )
 from zd_agent.casework.domain.models import (
     CaseContext,
@@ -17,6 +18,7 @@ from zd_agent.casework.domain.models import (
 
 
 _TARGET_ARGUMENTS = (
+    "ticket_id",
     "tenant_id",
     "workspace_id",
     "account_id",
@@ -36,9 +38,25 @@ def evidence_contract(
     tool_name: str,
 ) -> tuple[EvidenceAuthority, tuple[ClaimRole, ...]]:
     lowered = tool_name.casefold()
+    if lowered in {"sql_query", "signoz_query"}:
+        return EvidenceAuthority.CURRENT_SUPPORTING, ()
     if lowered.startswith("ticket_record_"):
         return EvidenceAuthority.HISTORICAL_GUIDANCE, (ClaimRole.PRODUCT_FACT,)
-    if any(value in lowered for value in ("source", "github", "git_")):
+    if lowered == "zendesk_search":
+        return EvidenceAuthority.HISTORICAL_GUIDANCE, (ClaimRole.PRODUCT_FACT,)
+    if lowered == "zendesk_get_ticket":
+        return EvidenceAuthority.CURRENT_AUTHORITATIVE, (ClaimRole.CURRENT_STATE,)
+    if lowered in {"zendesk_search_articles", "zendesk_get_article"}:
+        return EvidenceAuthority.CURRENT_SUPPORTING, (
+            ClaimRole.PRODUCT_FACT,
+            ClaimRole.LIMITATION,
+        )
+    if "github" in lowered:
+        return EvidenceAuthority.CURRENT_SUPPORTING, (
+            ClaimRole.PRODUCT_FACT,
+            ClaimRole.LIMITATION,
+        )
+    if "source" in lowered or lowered.startswith("git_"):
         return EvidenceAuthority.CURRENT_SUPPORTING, (
             ClaimRole.PRODUCT_FACT,
             ClaimRole.ROOT_CAUSE,
@@ -56,7 +74,7 @@ def evidence_contract(
             ClaimRole.IMPACT,
             ClaimRole.RECOVERY,
         )
-    if lowered in {"inspector_exec", "sql_query"}:
+    if lowered == "inspector_exec":
         return EvidenceAuthority.CURRENT_AUTHORITATIVE, (
             ClaimRole.PRODUCT_FACT,
             ClaimRole.CURRENT_STATE,
@@ -70,18 +88,47 @@ def evidence_contract(
     )
 
 
+def _aligned_source_roles(
+    tool_name: str,
+    args: dict[str, Any],
+    roles: tuple[ClaimRole, ...],
+) -> tuple[ClaimRole, ...]:
+    if ClaimRole.ROOT_CAUSE not in roles or not tool_name.casefold().startswith("git_"):
+        return roles
+    ref = args.get("ref")
+    runtime_ref = ref is None or (
+        isinstance(ref, str) and ref.strip().casefold() in {"", "runtime"}
+    )
+    if tool_name.casefold() in {"git_show", "git_grep"} and runtime_ref:
+        return roles
+    return tuple(role for role in roles if role is not ClaimRole.ROOT_CAUSE)
+
+
 def evidence_targets(
     args: dict[str, Any],
     *,
-    ticket_id: int,
+    allowed_target_arguments: frozenset[str],
+    tool_name: str,
 ) -> tuple[TargetReference, ...]:
-    targets = [TargetReference(kind="ticket_id", value=str(ticket_id))]
+    targets: list[TargetReference] = []
     for name in _TARGET_ARGUMENTS:
+        if name not in allowed_target_arguments or tool_name == "sql_query":
+            continue
         value = args.get(name)
-        if isinstance(value, (str, int)) and str(value).strip():
+        if (
+            isinstance(value, (str, int))
+            and not isinstance(value, bool)
+            and str(value).strip()
+        ):
             kind = "trace_id" if name == "traceId" else name
             targets.append(TargetReference(kind=kind, value=str(value).strip()))
-    tenant = args.get("tenant")
+    tenant = (
+        args.get("tenant")
+        if "tenant" in allowed_target_arguments
+        and tool_name != "sql_query"
+        and not (tool_name == "signoz_traceback" and args.get("id"))
+        else None
+    )
     if isinstance(tenant, str) and tenant.strip():
         targets.append(TargetReference(kind="tenant_id", value=tenant.strip()))
     deduplicated = {(target.kind, target.value): target for target in targets}
@@ -93,24 +140,27 @@ def tool_evidence(
     call_id: str,
     tool_name: str,
     args: dict[str, Any],
-    ticket_id: int,
+    allowed_target_arguments: frozenset[str],
     observed_at: datetime,
     success: bool,
     output: str,
     error: str,
 ) -> EvidenceItem:
     authority, roles = evidence_contract(tool_name)
+    roles = _aligned_source_roles(tool_name, args, roles)
     return EvidenceItem(
         evidence_id=call_id,
         call_id=call_id,
         source=tool_name,
         authority=authority,
         result_status=(
-            EvidenceResultStatus.SUCCESS
-            if success
-            else EvidenceResultStatus.FAILURE
+            EvidenceResultStatus.SUCCESS if success else EvidenceResultStatus.FAILURE
         ),
-        targets=evidence_targets(args, ticket_id=ticket_id),
+        targets=evidence_targets(
+            args,
+            allowed_target_arguments=allowed_target_arguments,
+            tool_name=tool_name,
+        ),
         observed_at=observed_at,
         supports_roles=roles,
         payload=output if success else {"error": error},
@@ -124,7 +174,9 @@ def _context_targets(context: CaseContext) -> tuple[TargetReference, ...]:
     ]
     if context.identity.status is ResolutionStatus.RESOLVED:
         targets.append(
-            TargetReference(kind="tenant_id", value=context.identity.selected_tenant_id),
+            TargetReference(
+                kind="tenant_id", value=context.identity.selected_tenant_id
+            ),
         )
     return tuple(targets)
 
@@ -136,11 +188,11 @@ def build_case_context_evidence(context: CaseContext) -> tuple[EvidenceItem, ...
             evidence_id=evidence_id,
             call_id=evidence_id,
             source="case_context.identity",
-            authority=EvidenceAuthority.CURRENT_AUTHORITATIVE,
+            authority=EvidenceAuthority.TARGET_BINDING,
             result_status=EvidenceResultStatus.SUCCESS,
             targets=targets,
             observed_at=context.built_at,
-            supports_roles=(ClaimRole.CURRENT_STATE,),
+            supports_roles=(),
             payload={
                 "status": context.identity.status.value,
                 "method": context.identity.method.value,
@@ -151,7 +203,9 @@ def build_case_context_evidence(context: CaseContext) -> tuple[EvidenceItem, ...
     }
     billing = context.billing.snapshot if context.billing else None
     if billing is not None:
-        billing_only_ids = set(billing.evidence_ids) - set(context.identity.evidence_ids)
+        billing_only_ids = set(billing.evidence_ids) - set(
+            context.identity.evidence_ids
+        )
         for evidence_id in billing_only_ids:
             items[evidence_id] = EvidenceItem(
                 evidence_id=evidence_id,
@@ -176,16 +230,24 @@ def build_case_context_evidence(context: CaseContext) -> tuple[EvidenceItem, ...
         TargetReference(kind="ticket_id", value=str(context.ticket.ticket_id)),
     )
     for observation in context.visual_observations:
+        observed = observation.status is VisualObservationStatus.OBSERVED
+        result_status = {
+            VisualObservationStatus.OBSERVED: EvidenceResultStatus.SUCCESS,
+            VisualObservationStatus.OMITTED: EvidenceResultStatus.PARTIAL,
+            VisualObservationStatus.UNAVAILABLE: EvidenceResultStatus.FAILURE,
+            VisualObservationStatus.NO_MODEL_RESULT: EvidenceResultStatus.FAILURE,
+        }[observation.status]
         items[observation.evidence_id] = EvidenceItem(
             evidence_id=observation.evidence_id,
             call_id=observation.evidence_id,
             source="case_context.visual",
             authority=EvidenceAuthority.CURRENT_SUPPORTING,
-            result_status=EvidenceResultStatus.SUCCESS,
+            result_status=result_status,
             targets=ticket_target,
             observed_at=context.built_at,
-            supports_roles=(ClaimRole.PRODUCT_FACT, ClaimRole.LIMITATION),
+            supports_roles=(ClaimRole.VISUAL_OBSERVATION,) if observed else (),
             payload={
+                "status": observation.status.value,
                 "visible_text": observation.visible_text,
                 "ui_state": observation.ui_state,
                 "uncertainty": observation.uncertainty,

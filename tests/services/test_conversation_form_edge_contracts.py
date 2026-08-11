@@ -1,4 +1,5 @@
 """Regression contracts for paginated Messaging and Answer Bot form safety."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -12,10 +13,8 @@ from zd_agent.services.ticket_message_parsing import (
     extract_form_data_from_msgs,
 )
 from zd_agent.services.ticket_messages import _fetch_customer_messages
-from zd_agent.services.verdict_classification import classify_ticket_messages
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.zendesk import ZendeskGetTicket, _extract_reply_language_hint
-from zd_agent.trigger.decider import PreCheckVerdict
 
 
 _TICKET_ID = 3461
@@ -117,17 +116,20 @@ async def test_fetch_customer_messages_follows_all_conversation_log_cursors() ->
 
     assert [message["id"] for message in messages] == ["m1", "m2", "m3"]
     assert ticket is not None
-    assert [
-        event["id"] for event in ticket["_zd_agent_conversation_events"]
-    ] == ["m1", "m2", "m3"]
+    assert [event["id"] for event in ticket["_zd_agent_conversation_events"]] == [
+        "m1",
+        "m2",
+        "m3",
+    ]
     assert [name for name, _ in calls] == [
         "get_ticket",
         "get_ticket_conversation_log",
         "get_ticket_conversation_log",
     ]
-    assert [
-        arguments.get("conversation_after") for _, arguments in calls[1:]
-    ] == ["cursor-1", "cursor-2"]
+    assert [arguments.get("conversation_after") for _, arguments in calls[1:]] == [
+        "cursor-1",
+        "cursor-2",
+    ]
 
 
 @pytest.mark.asyncio
@@ -170,11 +172,13 @@ async def test_conversation_pagination_stops_when_after_cursor_repeats() -> None
 @pytest.mark.asyncio
 async def test_conversation_pagination_fails_closed_without_after_cursor() -> None:
     """``has_more`` without a usable cursor is an incomplete snapshot."""
-    call = AsyncMock(return_value=_ticket_page(
-        [_text_event("m1", "first page")],
-        has_more=True,
-        after_cursor=None,
-    ))
+    call = AsyncMock(
+        return_value=_ticket_page(
+            [_text_event("m1", "first page")],
+            has_more=True,
+            after_cursor=None,
+        )
+    )
 
     with patch(
         "zd_agent.integrations.zendesk_mcp.call_zendesk_tool",
@@ -264,11 +268,13 @@ async def test_conversation_pagination_fails_closed_when_tenth_page_is_final() -
 async def test_conversation_pagination_fails_closed_above_event_cap() -> None:
     """A response larger than the event budget cannot be silently truncated."""
     events = [_text_event(f"m{index}", f"message {index}") for index in range(1001)]
-    call = AsyncMock(return_value=_ticket_page(
-        events,
-        has_more=False,
-        after_cursor=None,
-    ))
+    call = AsyncMock(
+        return_value=_ticket_page(
+            events,
+            has_more=False,
+            after_cursor=None,
+        )
+    )
 
     with patch(
         "zd_agent.integrations.zendesk_mcp.call_zendesk_tool",
@@ -287,11 +293,13 @@ async def test_conversation_pagination_fails_closed_above_event_cap() -> None:
 async def test_conversation_pagination_fails_closed_at_exact_event_cap() -> None:
     """Reaching exactly 1,000 events uses the same conservative defer path."""
     events = [_text_event(f"m{index}", f"message {index}") for index in range(1000)]
-    call = AsyncMock(return_value=_ticket_page(
-        events,
-        has_more=False,
-        after_cursor=None,
-    ))
+    call = AsyncMock(
+        return_value=_ticket_page(
+            events,
+            has_more=False,
+            after_cursor=None,
+        )
+    )
 
     with patch(
         "zd_agent.integrations.zendesk_mcp.call_zendesk_tool",
@@ -310,11 +318,13 @@ async def test_conversation_pagination_fails_closed_at_exact_event_cap() -> None
 async def test_conversation_pagination_fails_closed_at_event_cap_with_more() -> None:
     """Exactly 1,000 events plus ``has_more`` is already known incomplete."""
     events = [_text_event(f"m{index}", f"message {index}") for index in range(1000)]
-    call = AsyncMock(return_value=_ticket_page(
-        events,
-        has_more=True,
-        after_cursor="cursor-over-cap",
-    ))
+    call = AsyncMock(
+        return_value=_ticket_page(
+            events,
+            has_more=True,
+            after_cursor="cursor-over-cap",
+        )
+    )
 
     with patch(
         "zd_agent.integrations.zendesk_mcp.call_zendesk_tool",
@@ -483,8 +493,7 @@ def test_partial_repeated_profile_forms_merge_latest_value_per_field() -> None:
     }
 
 
-@pytest.mark.asyncio
-async def test_custom_form_response_issue_field_remains_in_classification() -> None:
+def test_custom_form_response_issue_field_remains_in_issue_text() -> None:
     """Profile capture is context, but a custom issue field is customer issue text."""
     event = {
         "id": "issue-form-response",
@@ -518,27 +527,13 @@ async def test_custom_form_response_issue_field_remains_in_classification() -> N
         },
     }
     [message] = _messaging_customer_messages([event])
-    classify = AsyncMock(return_value=PreCheckVerdict(
-        verdict="substantial_issue",
-        completeness=90,
-        reason="The custom field contains an actionable problem.",
-    ))
 
-    await classify_ticket_messages(
-        ticket_id=_TICKET_ID,
-        customer_msgs=[message],
-        model="gpt-test",
-        api_key="sk-test",
-        classify_messages_fn=classify,
-    )
-
-    classified_text = "\n".join(classify.await_args.kwargs["messages"])
-    assert "workflow remains Running" in classified_text
-    assert "ellie@example.test" not in classified_text
+    issue_text = message["classification_body"]
+    assert "workflow remains Running" in issue_text
+    assert "ellie@example.test" not in issue_text
 
 
-@pytest.mark.asyncio
-async def test_all_requester_system_fields_are_excluded_from_classification() -> None:
+def test_all_requester_system_fields_are_excluded_from_issue_text() -> None:
     """Unknown requester PII fields must not become customer issue text."""
     event = {
         "id": "profile-form-response",
@@ -563,23 +558,10 @@ async def test_all_requester_system_fields_are_excluded_from_classification() ->
         },
     }
     [message] = _messaging_customer_messages([event])
-    classify = AsyncMock(return_value=PreCheckVerdict(
-        verdict="substantial_issue",
-        completeness=90,
-        reason="actionable issue",
-    ))
 
-    await classify_ticket_messages(
-        ticket_id=_TICKET_ID,
-        customer_msgs=[message],
-        model="gpt-test",
-        api_key="sk-test",
-        classify_messages_fn=classify,
-    )
-
-    classified_text = "\n".join(classify.await_args.kwargs["messages"])
-    assert "workflow never completes" in classified_text
-    assert "+86-138" not in classified_text
+    issue_text = message["classification_body"]
+    assert "workflow never completes" in issue_text
+    assert "+86-138" not in issue_text
 
 
 def test_language_hint_requires_explicit_messaging_event_type() -> None:

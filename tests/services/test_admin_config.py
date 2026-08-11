@@ -19,26 +19,27 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["llm.model"]["input"] == "text"
     assert by_path["llm.reasoning_effort"]["input"] == "reasoning_effort"
     assert by_path["llm.reasoning_effort"]["model_path"] == "llm.model"
-    assert by_path["llm.subagent_reasoning_effort"]["input"] == "reasoning_effort"
-    assert by_path["llm.subagent_reasoning_effort"]["model_path"] == "llm.subagent_model"
-    assert by_path["trigger_decider.reasoning_effort"]["input"] == "reasoning_effort"
-    assert by_path["trigger_decider.reasoning_effort"]["model_path"] == "trigger_decider.llm_model"
     assert by_path["llm.enable_vision_input"]["input"] == "boolean"
     assert by_path["llm.timeout"]["input"] == "number"
     assert by_path["openai.api_key"]["secret"] is True
     assert by_path["openai.api_key"]["editable"] is True
-    assert by_path["prompts.ask_extra_instructions"]["input"] == "textarea"
-    assert by_path["prompts.agent_extra_instructions"]["input"] == "textarea"
-    assert by_path["prompts.agent_extra_instructions"]["label"] == "系统提示词"
     assert by_path["retry.max_attempts"]["group"] == "模型与运行"
-    assert by_path["trigger_decider.llm_model"]["group"] == "模型与运行"
-    assert by_path["trigger_decider.enable_vision_input"]["group"] == "模型与运行"
-    assert by_path["trigger_decider.enable_vision_input"]["input"] == "boolean"
+    assert by_path["casework.max_investigation_rounds"]["input"] == "number"
+    assert by_path["casework.max_investigation_calls"]["input"] == "number"
+    assert by_path["casework.max_investigation_tokens"]["input"] == "number"
+    assert not any(path.startswith("agent.guardrails.") for path in by_path)
+    assert "retry.llm.max_attempts" not in by_path
+    assert "retry.zendesk.max_attempts" not in by_path
+    assert "retry.sandbox.max_attempts" not in by_path
+    assert by_path["intake.silence_minutes_default"]["group"] == "触发配置"
     assert by_path["zendesk.mention_trigger"]["label"] == "主 @mention 触发词"
     assert by_path["zendesk.mention_aliases"]["input"] == "textarea"
     assert by_path["zendesk.mention_aliases"]["group"] == "触发配置"
-    assert by_path["skills.custom"]["input"] == "json"
     assert by_path["mcp_services.custom"]["input"] == "json"
+    assert not any(path.startswith("trigger_decider.") for path in by_path)
+    assert not any(path.startswith("skills.") for path in by_path)
+    assert not any(path.startswith("prompts.") for path in by_path)
+    assert not any("subagent" in path for path in by_path)
     assert schema["reasoning_capabilities"][0]["model_prefix"] == "gpt-5.6"
 
 
@@ -52,14 +53,13 @@ def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
         "zendesk.subdomain",
         "zendesk.api_token",
         "webhook.zendesk_messaging_path",
-        "trigger_decider.post_agent_cooldown_seconds",
+        "intake.post_agent_cooldown_seconds",
         "waiting_poller.poll_new_messages",
         "public_reply.browser_relay_timeout_seconds",
         "public_reply.freshness_callback_url",
         "zendesk_mcp.request_timeout_seconds",
         "db_gateway.request_timeout_seconds",
         "signoz.request_timeout_seconds",
-        "skills.enabled",
         "logging.jsonl_enabled",
         "logging.log_dir",
         "knowledge.archive_dir",
@@ -68,16 +68,16 @@ def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
     assert by_path["zendesk.api_token"]["secret"] is True
     assert by_path["webhook.listen_port"]["restart_required"] is True
     assert by_path["logging.jsonl_enabled"]["input"] == "boolean"
-    assert by_path["trigger_decider.enable_public_nudge"]["group"] == "触发配置"
-    assert by_path["skills.enabled"]["group"] == "工具与集成"
-    assert by_path["skills.enabled"]["input"] == "textarea"
+    assert by_path["intake.post_agent_cooldown_seconds"]["group"] == "触发配置"
 
 
-def test_default_enabled_skill_is_server_support_skill() -> None:
+def test_v2_config_has_no_prompt_skill_or_trigger_classifier_surface() -> None:
     cfg = AppConfig()
 
-    assert cfg.skills.enabled == ["dify_support_ticket"]
-    assert cfg.skills.custom == []
+    assert not hasattr(cfg, "skills")
+    assert not hasattr(cfg, "prompts")
+    assert not hasattr(cfg, "trigger_decider")
+    assert not hasattr(cfg, "sandbox_worker")
     assert cfg.mcp_services.custom == []
 
 
@@ -95,9 +95,7 @@ def test_schema_groups_browser_relay_with_tool_integrations(tmp_path) -> None:
 def _active_remote_public_reply_config() -> AppConfig:
     cfg = AppConfig()
     cfg.public_reply.enabled = True
-    cfg.public_reply.browser_relay_url = (
-        "https://relay.example.test/zendesk-reply-mcp"
-    )
+    cfg.public_reply.browser_relay_url = "https://relay.example.test/zendesk-reply-mcp"
     cfg.public_reply.browser_relay_api_key = "relay-secret"
     cfg.public_reply.freshness_callback_url = (
         "https://relay.example.test/webhook/relay-pre-send-freshness"
@@ -115,7 +113,7 @@ def test_apply_rejects_remote_relay_without_https_callback(tmp_path) -> None:
             {
                 "changes": {
                     "public_reply.freshness_callback_url": "",
-                    "agent.guardrails.max_rounds": 99,
+                    "casework.max_investigation_rounds": 19,
                 },
                 "reason": "remove callback",
             },
@@ -124,7 +122,7 @@ def test_apply_rejects_remote_relay_without_https_callback(tmp_path) -> None:
         )
 
     assert cfg.public_reply.freshness_callback_url.startswith("https://")
-    assert cfg.agent.guardrails.max_rounds != 99
+    assert cfg.casework.max_investigation_rounds != 19
     assert not store.overrides_path.exists()
     assert not store.secrets_path.exists()
     assert not store.audit_path.exists()
@@ -136,7 +134,7 @@ def test_apply_write_failure_leaves_runtime_and_files_unchanged(
 ) -> None:
     cfg = _active_remote_public_reply_config()
     original_key = cfg.public_reply.browser_relay_api_key
-    original_count = cfg.public_reply.max_ask_count
+    original_window = cfg.public_reply.silence_window_seconds
     store = AdminConfigStore(tmp_path)
     real_write_yaml = store._write_yaml
     calls = 0
@@ -157,7 +155,7 @@ def test_apply_write_failure_leaves_runtime_and_files_unchanged(
             {
                 "changes": {
                     "public_reply.browser_relay_api_key": "replacement-key",
-                    "public_reply.max_ask_count": 12,
+                    "public_reply.silence_window_seconds": 12,
                 },
                 "reason": "test failed persistence",
             },
@@ -166,7 +164,7 @@ def test_apply_write_failure_leaves_runtime_and_files_unchanged(
         )
 
     assert cfg.public_reply.browser_relay_api_key == original_key
-    assert cfg.public_reply.max_ask_count == original_count
+    assert cfg.public_reply.silence_window_seconds == original_window
     assert "ZENDESK_BROWSER_RELAY_API_KEY" not in os.environ
     assert not store.overrides_path.exists()
     assert not store.secrets_path.exists()
@@ -226,7 +224,7 @@ def test_apply_allows_disabling_public_reply_and_clearing_callback(
     assert cfg.public_reply.freshness_callback_url == ""
 
 
-def test_apply_parses_enabled_skills(tmp_path) -> None:
+def test_apply_parses_custom_mcp_services(tmp_path) -> None:
     cfg = AppConfig()
     store = AdminConfigStore(tmp_path)
 
@@ -234,36 +232,6 @@ def test_apply_parses_enabled_skills(tmp_path) -> None:
         cfg,
         {
             "changes": {
-                "skills.enabled": "dify_support_ticket\n dify_support_ticket",
-            },
-            "reason": "limit active skills",
-        },
-        actor="admin",
-        ip="127.0.0.1",
-    )
-
-    assert result["ok"] is True
-    assert cfg.skills.enabled == ["dify_support_ticket"]
-    assert store.effective_config(cfg)["values"]["skills.enabled"] == ["dify_support_ticket"]
-
-
-def test_apply_parses_custom_skills_and_mcp_services(tmp_path) -> None:
-    cfg = AppConfig()
-    store = AdminConfigStore(tmp_path)
-
-    result = store.apply(
-        cfg,
-        {
-            "changes": {
-                "skills.custom": json.dumps([
-                    {
-                        "name": "billing_refund_skill",
-                        "description": "Refund handling SOP",
-                        "content": "Always verify workspace owner before refund checks.",
-                        "enabled": True,
-                    },
-                ]),
-                "skills.enabled": "dify_support_ticket\nbilling_refund_skill",
                 "mcp_services.custom": [
                     {
                         "name": "linear_mcp",
@@ -276,42 +244,20 @@ def test_apply_parses_custom_skills_and_mcp_services(tmp_path) -> None:
                     },
                 ],
             },
-            "reason": "add custom skill and mcp",
+            "reason": "add custom mcp",
         },
         actor="admin",
         ip="127.0.0.1",
     )
 
     assert result["ok"] is True
-    assert cfg.skills.enabled == ["dify_support_ticket", "billing_refund_skill"]
-    assert cfg.skills.custom[0].name == "billing_refund_skill"
-    assert cfg.skills.custom[0].content == "Always verify workspace owner before refund checks."
     assert cfg.mcp_services.custom[0].name == "linear_mcp"
     assert cfg.mcp_services.custom[0].mcp_url == "https://linear.example.test/mcp"
     assert cfg.mcp_services.custom[0].request_timeout_seconds == 3
-    assert store.effective_config(cfg)["values"]["mcp_services.custom"][0]["name"] == "linear_mcp"
-
-
-def test_apply_rejects_unknown_enabled_skill(tmp_path) -> None:
-    cfg = AppConfig()
-    store = AdminConfigStore(tmp_path)
-
-    try:
-        store.apply(
-            cfg,
-            {
-                "changes": {
-                    "skills.enabled": "missing_skill",
-                },
-                "reason": "bad skill",
-            },
-            actor="admin",
-            ip="127.0.0.1",
-        )
-    except ValueError as exc:
-        assert "unknown Skills: missing_skill" in str(exc)
-    else:
-        raise AssertionError("unknown skill should fail")
+    assert (
+        store.effective_config(cfg)["values"]["mcp_services.custom"][0]["name"]
+        == "linear_mcp"
+    )
 
 
 def test_effective_config_redacts_secrets(tmp_path, monkeypatch) -> None:
@@ -373,10 +319,7 @@ def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
                 "llm.base_url": "https://proxy.example.test/v1/",
                 "llm.model": "gpt-5.6-terra",
                 "llm.reasoning_effort": "high",
-                "llm.subagent_model": "gpt-5.4-mini",
-                "llm.subagent_reasoning_effort": "low",
-                "trigger_decider.llm_model": "gpt-5.1",
-                "trigger_decider.reasoning_effort": "medium",
+                "intake.post_agent_cooldown_seconds": 90,
                 "openai.api_key": "sk-test-secret",
                 "db_gateway.api_key": "db-test-secret",
             },
@@ -390,10 +333,7 @@ def test_apply_persists_overrides_secrets_and_audit(tmp_path) -> None:
     assert cfg.llm.base_url == "https://proxy.example.test/v1"
     assert cfg.llm.model == "gpt-5.6-terra"
     assert cfg.llm.reasoning_effort == "high"
-    assert cfg.llm.subagent_model == "gpt-5.4-mini"
-    assert cfg.llm.subagent_reasoning_effort == "low"
-    assert cfg.trigger_decider.llm_model == "gpt-5.1"
-    assert cfg.trigger_decider.reasoning_effort == "medium"
+    assert cfg.intake.post_agent_cooldown_seconds == 90
     assert cfg.db_gateway.api_key == "db-test-secret"
     assert store.overrides_path.exists()
     assert store.secrets_path.exists()
@@ -414,8 +354,6 @@ def test_apply_trims_model_ids_before_persisting(tmp_path) -> None:
             "changes": {
                 "llm.model": "  gpt-5.6-terra  ",
                 "llm.reasoning_effort": "max",
-                "llm.subagent_model": "  gpt-5.4-mini  ",
-                "trigger_decider.llm_model": "  gpt-5.1  ",
             },
             "reason": "normalize model ids",
         },
@@ -424,8 +362,6 @@ def test_apply_trims_model_ids_before_persisting(tmp_path) -> None:
     )
 
     assert cfg.llm.model == "gpt-5.6-terra"
-    assert cfg.llm.subagent_model == "gpt-5.4-mini"
-    assert cfg.trigger_decider.llm_model == "gpt-5.1"
     assert "  gpt-5.6-terra  " not in store.overrides_path.read_text()
 
 
@@ -450,48 +386,6 @@ def test_apply_rejects_reasoning_effort_not_supported_by_new_model(tmp_path) -> 
     assert cfg.llm.model == "gpt-5.6-terra"
 
 
-def test_apply_rejects_trigger_effort_not_supported_by_new_model(tmp_path) -> None:
-    cfg = AppConfig()
-    cfg.trigger_decider.llm_model = "gpt-5.6-terra"
-    cfg.trigger_decider.reasoning_effort = "max"
-    store = AdminConfigStore(tmp_path)
-
-    with pytest.raises(ValueError, match="does not support reasoning effort 'max'"):
-        store.apply(
-            cfg,
-            {
-                "changes": {"trigger_decider.llm_model": "gpt-5.4-mini"},
-                "reason": "switch trigger model",
-            },
-            actor="admin",
-            ip="127.0.0.1",
-        )
-
-    assert not store.overrides_path.exists()
-    assert cfg.trigger_decider.llm_model == "gpt-5.6-terra"
-
-
-def test_apply_rejects_responses_only_trigger_model(tmp_path) -> None:
-    cfg = AppConfig()
-    store = AdminConfigStore(tmp_path)
-
-    with pytest.raises(ValueError, match="Responses-only"):
-        store.apply(
-            cfg,
-            {
-                "changes": {
-                    "trigger_decider.llm_model": "gpt-5.5-pro",
-                    "trigger_decider.reasoning_effort": "high",
-                },
-                "reason": "unsupported trigger endpoint",
-            },
-            actor="admin",
-            ip="127.0.0.1",
-        )
-
-    assert not store.overrides_path.exists()
-
-
 def test_apply_saved_rejects_invalid_reasoning_override_without_partial_mutation(
     tmp_path,
 ) -> None:
@@ -508,6 +402,58 @@ def test_apply_saved_rejects_invalid_reasoning_override_without_partial_mutation
 
     assert cfg.llm.model == "gpt-5.6-terra"
     assert cfg.llm.reasoning_effort == "high"
+
+
+def test_apply_saved_migrates_legacy_admin_override_paths(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+    store.overrides_path.write_text(
+        "trigger_decider:\n"
+        "  silence_minutes_default: 4\n"
+        "  post_agent_cooldown_seconds: 17\n"
+        "waiting_poller:\n"
+        "  abandoned_hours: 6\n",
+    )
+
+    store.apply_saved(cfg)
+
+    assert cfg.intake.silence_minutes_default == 4
+    assert cfg.intake.post_agent_cooldown_seconds == 17
+    assert cfg.waiting_poller.customer_wait_timeout_hours == 6
+    persisted = store.overrides_path.read_text()
+    assert "trigger_decider" not in persisted
+    assert "abandoned_hours" not in persisted
+    assert "post_agent_cooldown_seconds: 17" in persisted
+    assert "silence_minutes_default: 4" in persisted
+    assert "customer_wait_timeout_hours: 6" in persisted
+    audit = json.loads(store.audit_path.read_text().splitlines()[-1])
+    assert audit["action"] == "config_override_migration"
+    assert {item["resolution"] for item in audit["diff"]} == {"migrated"}
+
+
+def test_apply_saved_preserves_canonical_override_on_legacy_conflict(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+    store.overrides_path.write_text(
+        "intake:\n"
+        "  post_agent_cooldown_seconds: 29\n"
+        "trigger_decider:\n"
+        "  post_agent_cooldown_seconds: 17\n",
+    )
+
+    store.apply_saved(cfg)
+
+    assert cfg.intake.post_agent_cooldown_seconds == 29
+    persisted = store.overrides_path.read_text()
+    assert "trigger_decider" not in persisted
+    audit = json.loads(store.audit_path.read_text().splitlines()[-1])
+    assert audit["diff"] == [
+        {
+            "from": "trigger_decider.post_agent_cooldown_seconds",
+            "resolution": "canonical_preserved",
+            "to": "intake.post_agent_cooldown_seconds",
+        },
+    ]
 
 
 def test_restart_required_overrides_wait_for_restart(tmp_path) -> None:
@@ -539,8 +485,7 @@ def test_restart_required_overrides_wait_for_restart(tmp_path) -> None:
     "path",
     [
         "agent.max_concurrent_sessions",
-        "waiting_poller.abandoned_hours",
-        "waiting_poller.greeting_alert_minutes",
+        "waiting_poller.customer_wait_timeout_hours",
     ],
 )
 def test_constructor_bound_runtime_fields_require_restart(path: str) -> None:

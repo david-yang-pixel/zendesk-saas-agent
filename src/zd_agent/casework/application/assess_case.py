@@ -67,6 +67,13 @@ def _required_targets(
     context: CaseContext,
     claim: Claim,
 ) -> tuple[TargetReference, ...]:
+    if claim.role is ClaimRole.VISUAL_OBSERVATION:
+        return (
+            TargetReference(
+                kind="ticket_id",
+                value=str(context.ticket.ticket_id),
+            ),
+        )
     if (
         context.identity.status is ResolutionStatus.RESOLVED
         and claim.role in _TENANT_BOUND_ROLES
@@ -110,7 +117,7 @@ def _customer_fields(
 
 def _attachment_resend_allowed(context: CaseContext) -> bool:
     if not context.ticket.attachments:
-        return True
+        return False
     return any(
         "could not be retrieved" in observation.uncertainty.casefold()
         for observation in context.visual_observations
@@ -135,7 +142,9 @@ def _identity_context_failure(
         attempt=min(context.automation_attempt, 3),
         max_attempts=3,
         retry_after_seconds=2,
-        evidence_id=(context.identity.evidence_ids[-1] if context.identity.evidence_ids else ""),
+        evidence_id=(
+            context.identity.evidence_ids[-1] if context.identity.evidence_ids else ""
+        ),
         detail=context.identity.detail,
     )
 
@@ -175,19 +184,15 @@ def _blocking_failure(
         return proposal.blocking_failure
     if answer_status is not AnswerStatus.INSUFFICIENT:
         return None
-    return _identity_context_failure(
-        context=context,
-    ) or _billing_context_failure(context)
+    return _identity_context_failure(context=context) or _billing_context_failure(
+        context,
+    )
 
 
 def _retry_exhausted_action(
     failure: AdapterFailure | None,
 ) -> HumanActionRequest | None:
-    if (
-        failure is None
-        or not failure.retry_exhausted()
-        or not failure.evidence_id
-    ):
+    if failure is None or not failure.retry_exhausted() or not failure.evidence_id:
         return None
     return HumanActionRequest(
         ownership_action=OwnershipAction.SUPPORT,
@@ -197,9 +202,7 @@ def _retry_exhausted_action(
             f"{failure.attempt} attempts."
         ),
         customer_impact="The customer's latest question cannot yet be answered safely.",
-        completed_checks=(
-            f"Retried {failure.operation} {failure.attempt} times.",
-        ),
+        completed_checks=(f"Retried {failure.operation} {failure.attempt} times.",),
         unresolved_action=(
             f"Complete {failure.operation} and answer the latest customer question."
         ),
@@ -215,11 +218,19 @@ def _answer_status(
     proposal: AssessmentProposal,
     admissions: tuple[ClaimAdmission, ...],
 ) -> AnswerStatus:
-    rejected_material = any(
-        not admission.accepted and claim.material
+    material = tuple(
+        admission
         for claim, admission in zip(proposal.proposed_claims, admissions)
+        if claim.material
     )
-    return AnswerStatus.INSUFFICIENT if rejected_material else proposal.answer_status
+    if all(admission.accepted for admission in material):
+        return proposal.answer_status
+    if any(admission.accepted for admission in material) and proposal.answer_status in {
+        AnswerStatus.SUPPORTED,
+        AnswerStatus.BOUNDED,
+    }:
+        return AnswerStatus.BOUNDED
+    return AnswerStatus.INSUFFICIENT
 
 
 def _action(
@@ -346,7 +357,6 @@ def build_case_assessment(
     evidence: tuple[EvidenceItem, ...],
     as_of: datetime,
 ) -> AssessmentBuild:
-    """Convert a model proposal into policy-admitted support assessment."""
     admissions, admitted_claims = _admit_claims(
         context=context,
         proposal=proposal,

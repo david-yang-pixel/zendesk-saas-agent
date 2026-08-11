@@ -61,6 +61,7 @@ class SessionManager:
         max_concurrent: int | None = None,
         *,
         on_finished: SessionFinishedCallback | None = None,
+        force_dry_run: bool = False,
     ) -> None:
         cfg = get_config()
         self._max_concurrent = max_concurrent or cfg.agent.max_concurrent_sessions
@@ -74,6 +75,7 @@ class SessionManager:
         )
         self._lock = asyncio.Lock()
         self._on_finished = on_finished
+        self._force_dry_run = force_dry_run
 
     def set_on_finished(self, callback: SessionFinishedCallback | None) -> None:
         """注册 session 完成回调（典型用于 saas_app 在 state 创建后挂钩）。"""
@@ -160,7 +162,9 @@ class SessionManager:
                 return existing_session
 
             session = AgentSession(
-                ticket_id=ticket_id, hint=hint, dry_run=dry_run,
+                ticket_id=ticket_id,
+                hint=hint,
+                dry_run=bool(dry_run or self._force_dry_run),
                 trigger_type=trigger_type,
                 delivery_attempt_id=delivery_attempt_id,
             )
@@ -246,7 +250,8 @@ class SessionManager:
                     except Exception as e:
                         logger.warning(
                             "session_on_finished_callback_failed",
-                            ticket_id=ticket_id, error=str(e),
+                            ticket_id=ticket_id,
+                            error=str(e),
                         )
 
     async def dispatch_batch(
@@ -259,17 +264,16 @@ class SessionManager:
         """批量派发工单，返回所有 session（可并发执行）"""
         sessions = []
         for tid in ticket_ids:
-            session = await self.dispatch(tid, hint=hint, dry_run=dry_run, trigger_type=trigger_type)
+            session = await self.dispatch(
+                tid, hint=hint, dry_run=dry_run, trigger_type=trigger_type
+            )
             sessions.append(session)
         return sessions
 
     async def wait_all(self) -> None:
         """等待所有活跃 session 完成"""
         async with self._lock:
-            tasks = [
-                t.task for t in self._active.values()
-                if t.task is not None
-            ]
+            tasks = [t.task for t in self._active.values() if t.task is not None]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -279,17 +283,19 @@ class SessionManager:
         result = []
         for tracked in self._active.values():
             s = tracked.session
-            result.append(SessionInfo(
-                ticket_id=s.ticket_id,
-                session_id=s.session_id,
-                status=s.status,
-                round_count=s.round_count,
-                total_tokens=s.token_usage.total_tokens,
-                start_time=tracked.start_time,
-                elapsed=now - tracked.start_time,
-                hint=s.hint,
-                dry_run=s.dry_run,
-            ))
+            result.append(
+                SessionInfo(
+                    ticket_id=s.ticket_id,
+                    session_id=s.session_id,
+                    status=s.status,
+                    round_count=s.round_count,
+                    total_tokens=s.token_usage.total_tokens,
+                    start_time=tracked.start_time,
+                    elapsed=now - tracked.start_time,
+                    hint=s.hint,
+                    dry_run=s.dry_run,
+                )
+            )
         return result
 
     def get_recent_completed(self, limit: int = 20) -> list[SessionInfo]:
@@ -297,17 +303,19 @@ class SessionManager:
         result = []
         for tracked in list(self._completed)[-limit:]:
             s = tracked.session
-            result.append(SessionInfo(
-                ticket_id=s.ticket_id,
-                session_id=s.session_id,
-                status=s.status,
-                round_count=s.round_count,
-                total_tokens=s.token_usage.total_tokens,
-                start_time=tracked.start_time,
-                elapsed=0,
-                hint=s.hint,
-                dry_run=s.dry_run,
-            ))
+            result.append(
+                SessionInfo(
+                    ticket_id=s.ticket_id,
+                    session_id=s.session_id,
+                    status=s.status,
+                    round_count=s.round_count,
+                    total_tokens=s.token_usage.total_tokens,
+                    start_time=tracked.start_time,
+                    elapsed=0,
+                    hint=s.hint,
+                    dry_run=s.dry_run,
+                )
+            )
         return result
 
     def get_all_sessions(self) -> dict[str, Any]:

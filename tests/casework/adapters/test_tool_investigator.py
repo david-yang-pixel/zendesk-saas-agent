@@ -11,6 +11,7 @@ from zd_agent.casework.adapters.tool_investigator import (
     InvestigationProtocolError,
     approved_read_tools,
 )
+from zd_agent.casework.adapters.evidence import tool_evidence
 from zd_agent.casework.adapters.model import investigation_result_from_content
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
@@ -35,12 +36,14 @@ from zd_agent.runtime.llm.types import (
     ToolCallRequest,
     ToolSchema,
 )
+from zd_agent.runtime.llm.openai_provider import _messages_to_responses_input
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolRegistry, ToolResult
 
 
 NOW = datetime(2026, 8, 11, 11, 0, tzinfo=timezone.utc)
 TENANT = "11111111-1111-4111-8111-111111111111"
+OTHER_TENANT = "22222222-2222-4222-8222-222222222222"
 
 
 class FakeClock:
@@ -61,10 +64,13 @@ class FakeTool(Tool):
         *,
         write: bool = False,
         output: str = "current tool evidence",
+        parameters: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.is_write_operation = write
         self.output = output
+        if parameters is not None:
+            self.parameters = parameters
         self.calls: list[dict[str, Any]] = []
 
     async def execute(
@@ -110,6 +116,7 @@ def _response(
     *,
     content: str | None = None,
     calls: list[ToolCallRequest] | None = None,
+    raw: Any = None,
 ) -> LLMResponse:
     return LLMResponse(
         content=content,
@@ -117,6 +124,7 @@ def _response(
         finish_reason="tool_calls" if calls else "stop",
         prompt_tokens=10,
         completion_tokens=5,
+        raw=raw,
     )
 
 
@@ -147,9 +155,22 @@ def _context() -> CaseContext:
             latest_event_at=NOW,
             questions=("Is this behavior supported?",),
             form_identity=FormIdentity(email="owner@example.test"),
+            requester_email="owner@example.test",
         ),
         built_at=NOW,
         identity=identity,
+    )
+
+
+def _unresolved_context() -> CaseContext:
+    return _context().model_copy(
+        update={
+            "identity": IdentityResolution(
+                contact_email="owner@example.test",
+                target_identity="owner@example.test",
+                status=ResolutionStatus.NO_MEMBERSHIP,
+            ),
+        },
     )
 
 
@@ -215,6 +236,8 @@ def test_approved_tool_surface_is_explicit_and_write_closed() -> None:
     registry = ToolRegistry()
     docs = FakeTool("official_docs_search")
     database = FakeTool("inspector_exec")
+    raw_sql = FakeTool("sql_query")
+    raw_signoz = FakeTool("signoz_query")
     deceptive_write = FakeTool("github_get_pr", write=True)
     public_reply = FakeTool("zendesk_public_reply", write=True)
     generic_execution = FakeTool("run_script")
@@ -222,6 +245,8 @@ def test_approved_tool_surface_is_explicit_and_write_closed() -> None:
     for tool in (
         docs,
         database,
+        raw_sql,
+        raw_signoz,
         deceptive_write,
         public_reply,
         generic_execution,
@@ -269,9 +294,7 @@ async def test_investigator_calls_tools_itself_and_returns_typed_evidence() -> N
 
     assert docs.calls == [{"query": "supported behavior"}]
     assert result.proposal.answer_status is AnswerStatus.SUPPORTED
-    assert result.proposal.proposed_claims[0].supporting_evidence_ids == (
-        "call-docs",
-    )
+    assert result.proposal.proposed_claims[0].supporting_evidence_ids == ("call-docs",)
     docs_evidence = next(
         item for item in result.evidence if item.evidence_id == "call-docs"
     )
@@ -287,6 +310,647 @@ async def test_investigator_calls_tools_itself_and_returns_typed_evidence() -> N
     assert "all customer-useful confirmed facts" in system_prompt
     assert "recovery or next step" in system_prompt
     assert "Do not stop at the first plausible explanation" in system_prompt
+
+
+async def test_investigator_preserves_responses_reasoning_across_tool_rounds() -> None:
+    registry = ToolRegistry()
+    docs = FakeTool("official_docs_search", output="Published product behavior")
+    registry.register(docs)
+    prior_output = [
+        {
+            "id": "rs_1",
+            "type": "reasoning",
+            "encrypted_content": "encrypted",
+            "summary": [],
+        },
+        {
+            "id": "fc_1",
+            "type": "function_call",
+            "call_id": "call-docs",
+            "name": "official_docs_search",
+            "arguments": '{"query":"supported behavior"}',
+            "status": "completed",
+        },
+    ]
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-docs",
+                        name="official_docs_search",
+                        arguments='{"query":"supported behavior"}',
+                    ),
+                ],
+                raw={
+                    "role": "assistant",
+                    "content": None,
+                    "_zd_responses_output": prior_output,
+                },
+            ),
+            _response(content=_final_assessment("call-docs")),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    await investigator.investigate(_context())
+
+    second_input = _messages_to_responses_input(provider.calls[1][0])
+    assert prior_output[0] in second_input
+    assert prior_output[1] in second_input
+    assert second_input[-1]["type"] == "function_call_output"
+    assert second_input[-1]["call_id"] == "call-docs"
+
+
+_STRICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "database": {"type": "string", "enum": ["prod"]},
+        "sql": {"type": "string"},
+    },
+    "required": ["database", "sql"],
+}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "error_match"),
+    [
+        (
+            {
+                "database": "prod",
+                "sql": "SELECT * FROM tenants WHERE id = 'tenant-b'",
+                "tenant_id": TENANT,
+            },
+            "unknown.*tenant_id",
+        ),
+        ({"database": "prod"}, "missing.*sql"),
+        ({"database": "prod", "sql": 42}, "sql.*string"),
+    ],
+)
+async def test_investigator_rejects_schema_invalid_arguments_before_execution(
+    arguments: dict[str, Any],
+    error_match: str,
+) -> None:
+    registry = ToolRegistry()
+    docs = FakeTool("official_docs_search", parameters=_STRICT_SCHEMA)
+    registry.register(docs)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-docs",
+                        name="official_docs_search",
+                        arguments=json.dumps(arguments),
+                    ),
+                ],
+            ),
+            _response(content=_final_assessment("call-docs")),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(InvestigationProtocolError, match=error_match):
+        await investigator.investigate(_context())
+
+    assert docs.calls == []
+
+
+def test_model_controlled_sql_columns_cannot_create_target_provenance() -> None:
+    item = tool_evidence(
+        call_id="call-sql",
+        tool_name="sql_query",
+        args={
+            "database": "prod",
+            "sql": (f"SELECT * FROM tenants WHERE tenant_id = '{OTHER_TENANT}'"),
+            "tenant_id": TENANT,
+        },
+        allowed_target_arguments=frozenset({"database", "sql"}),
+        observed_at=NOW,
+        success=True,
+        output=(f"Rows: 1 | elapsed: 1ms\n\ntenant_id,status\n{OTHER_TENANT},active"),
+        error="",
+    )
+
+    assert item.target_value("tenant_id") is None
+    assert item.supports_roles == ()
+
+
+def test_cross_join_sql_cannot_claim_one_tenant_from_where_text() -> None:
+    item = tool_evidence(
+        call_id="call-sql",
+        tool_name="sql_query",
+        args={
+            "database": "prod",
+            "sql": (
+                "SELECT target.tenant_id, data.tenant_id AS joined_tenant_id, "
+                "data.status FROM tenants target CROSS JOIN workspaces data "
+                f"WHERE target.tenant_id = '{TENANT}' "
+                f"AND data.tenant_id = '{OTHER_TENANT}'"
+            ),
+        },
+        allowed_target_arguments=frozenset({"database", "sql"}),
+        observed_at=NOW,
+        success=True,
+        output=(
+            "Rows: 1 | elapsed: 1ms\n\n"
+            "tenant_id,joined_tenant_id,status\n"
+            f"{TENANT},{OTHER_TENANT},failing"
+        ),
+        error="",
+    )
+
+    assert item.target_value("tenant_id") is None
+
+
+async def test_raw_sql_is_not_exposed_even_when_it_spoofs_tenant_column() -> None:
+    registry = ToolRegistry()
+    sql = FakeTool(
+        "sql_query",
+        parameters=_STRICT_SCHEMA,
+        output=(
+            "Rows: 1 | elapsed: 1ms\n\n"
+            f"tenant_id,email\n{TENANT},other-tenant@example.test"
+        ),
+    )
+    registry.register(sql)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-sql",
+                        name="sql_query",
+                        arguments=json.dumps(
+                            {
+                                "database": "prod",
+                                "sql": (
+                                    f"SELECT '{TENANT}' AS tenant_id, b.email "
+                                    "FROM accounts b WHERE "
+                                    f"b.tenant_id = '{OTHER_TENANT}'"
+                                ),
+                            },
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(InvestigationProtocolError, match="not approved"):
+        await investigator.investigate(_context())
+
+    assert sql.calls == []
+
+
+async def test_signoz_traceback_rejects_ignored_tenant_with_exact_id() -> None:
+    parameters = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "tenant": {"type": "string"},
+        },
+    }
+    registry = ToolRegistry()
+    traceback = FakeTool("signoz_traceback", parameters=parameters)
+    registry.register(traceback)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-traceback",
+                        name="signoz_traceback",
+                        arguments=json.dumps(
+                            {"id": "log-from-other-tenant", "tenant": TENANT},
+                        ),
+                    ),
+                ],
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(
+        InvestigationProtocolError, match="cannot combine id and tenant"
+    ):
+        await investigator.investigate(_context())
+
+    assert traceback.calls == []
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "parameters", "arguments"),
+    [
+        (
+            "inspector_exec",
+            {
+                "type": "object",
+                "properties": {"tenant_id": {"type": "string"}},
+                "required": ["tenant_id"],
+            },
+            {"tenant_id": TENANT},
+        ),
+        (
+            "signoz_errors",
+            {
+                "type": "object",
+                "properties": {"tenant": {"type": "string"}},
+            },
+            {"tenant": TENANT},
+        ),
+        (
+            "zendesk_get_ticket",
+            {
+                "type": "object",
+                "properties": {"ticket_id": {"type": "integer"}},
+                "required": ["ticket_id"],
+            },
+            {"ticket_id": 4001},
+        ),
+        (
+            "ticket_record_read",
+            {
+                "type": "object",
+                "properties": {"ticket_id": {"type": "string"}},
+                "required": ["ticket_id"],
+            },
+            {"ticket_id": "4001"},
+        ),
+    ],
+)
+async def test_unresolved_identity_blocks_every_tenant_data_capability(
+    tool_name: str,
+    parameters: dict[str, Any],
+    arguments: dict[str, Any],
+) -> None:
+    registry = ToolRegistry()
+    tool = FakeTool(tool_name, parameters=parameters)
+    registry.register(tool)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-sensitive",
+                        name=tool_name,
+                        arguments=json.dumps(arguments),
+                    ),
+                ],
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(InvestigationProtocolError, match="requires resolved identity"):
+        await investigator.investigate(_unresolved_context())
+
+    assert tool.calls == []
+
+
+async def test_resolved_identity_rejects_other_tenant_scope_before_execution() -> None:
+    parameters = {
+        "type": "object",
+        "properties": {"tenant_id": {"type": "string"}},
+        "required": ["tenant_id"],
+    }
+    registry = ToolRegistry()
+    inspector = FakeTool("inspector_exec", parameters=parameters)
+    registry.register(inspector)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-inspector",
+                        name="inspector_exec",
+                        arguments=json.dumps({"tenant_id": OTHER_TENANT}),
+                    ),
+                ],
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(InvestigationProtocolError, match="outside the resolved tenant"):
+        await investigator.investigate(_context())
+
+    assert inspector.calls == []
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "parameters", "arguments"),
+    [
+        (
+            "inspector_exec",
+            {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string"},
+                    "section": {"type": "string"},
+                },
+            },
+            {"email": "other-customer@example.test", "section": "tenants"},
+        ),
+        (
+            "inspector_exec",
+            {
+                "type": "object",
+                "properties": {"app_id": {"type": "string"}},
+            },
+            {"app_id": "app-from-another-tenant"},
+        ),
+        (
+            "signoz_get_trace_details",
+            {
+                "type": "object",
+                "properties": {"traceId": {"type": "string"}},
+                "required": ["traceId"],
+            },
+            {"traceId": "trace-from-another-tenant"},
+        ),
+        (
+            "signoz_traceback",
+            {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "tenant": {"type": "string"},
+                },
+            },
+            {"id": "log-from-another-tenant"},
+        ),
+        (
+            "zendesk_get_ticket",
+            {
+                "type": "object",
+                "properties": {"ticket_id": {"type": "integer"}},
+                "required": ["ticket_id"],
+            },
+            {"ticket_id": 4002},
+        ),
+        (
+            "zendesk_get_user",
+            {
+                "type": "object",
+                "properties": {"user_id": {"type": "integer"}},
+                "required": ["user_id"],
+            },
+            {"user_id": 999},
+        ),
+        (
+            "zendesk_search",
+            {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            {"query": "requester:other-customer@example.test"},
+        ),
+        (
+            "ticket_record_read",
+            {
+                "type": "object",
+                "properties": {"ticket_id": {"type": "string"}},
+                "required": ["ticket_id"],
+            },
+            {"ticket_id": "4002"},
+        ),
+        (
+            "ticket_record_search",
+            {
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["keywords"],
+            },
+            {"keywords": ["other customer"]},
+        ),
+    ],
+)
+async def test_capability_acl_rejects_untrusted_cross_customer_reads_before_execution(
+    tool_name: str,
+    parameters: dict[str, Any],
+    arguments: dict[str, Any],
+) -> None:
+    registry = ToolRegistry()
+    tool = FakeTool(tool_name, parameters=parameters)
+    registry.register(tool)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-sensitive",
+                        name=tool_name,
+                        arguments=json.dumps(arguments),
+                    ),
+                ],
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(InvestigationProtocolError, match="current case capability"):
+        await investigator.investigate(_context())
+
+    assert tool.calls == []
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "parameters", "arguments"),
+    [
+        (
+            "inspector_exec",
+            {
+                "type": "object",
+                "properties": {
+                    "tenant_id": {"type": "string"},
+                    "section": {"type": "string"},
+                },
+            },
+            {"tenant_id": TENANT, "section": "runs"},
+        ),
+        (
+            "inspector_exec",
+            {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string"},
+                    "section": {"type": "string"},
+                },
+            },
+            {"email": "OWNER@example.test", "section": "tenants"},
+        ),
+        (
+            "signoz_errors",
+            {
+                "type": "object",
+                "properties": {"tenant": {"type": "string"}},
+            },
+            {"tenant": TENANT},
+        ),
+        (
+            "signoz_search_logs",
+            {
+                "type": "object",
+                "properties": {
+                    "tenant": {"type": "string"},
+                    "traceId": {"type": "string"},
+                },
+            },
+            {"tenant": TENANT, "traceId": "tenant-scoped-trace"},
+        ),
+        (
+            "zendesk_get_ticket",
+            {
+                "type": "object",
+                "properties": {"ticket_id": {"type": "integer"}},
+                "required": ["ticket_id"],
+            },
+            {"ticket_id": 4001},
+        ),
+        (
+            "ticket_record_read",
+            {
+                "type": "object",
+                "properties": {"ticket_id": {"type": "string"}},
+                "required": ["ticket_id"],
+            },
+            {"ticket_id": "4001"},
+        ),
+    ],
+)
+async def test_capability_acl_executes_only_trusted_current_case_reads(
+    tool_name: str,
+    parameters: dict[str, Any],
+    arguments: dict[str, Any],
+) -> None:
+    registry = ToolRegistry()
+    tool = FakeTool(tool_name, parameters=parameters)
+    registry.register(tool)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-trusted",
+                        name=tool_name,
+                        arguments=json.dumps(arguments),
+                    ),
+                ],
+            ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    await investigator.investigate(_context())
+
+    assert tool.calls == [arguments]
+
+
+async def test_signoz_capability_injects_the_code_resolved_tenant() -> None:
+    registry = ToolRegistry()
+    aggregate = FakeTool(
+        "signoz_aggregate_logs",
+        parameters={
+            "type": "object",
+            "properties": {
+                "tenant": {"type": "string"},
+                "aggregation": {"type": "string"},
+            },
+            "required": ["aggregation"],
+        },
+    )
+    registry.register(aggregate)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-signoz",
+                        name="signoz_aggregate_logs",
+                        arguments=json.dumps({"aggregation": "count"}),
+                    ),
+                ],
+            ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    await investigator.investigate(_context())
+
+    assert aggregate.calls == [{"aggregation": "count", "tenant": TENANT}]
 
 
 async def test_investigator_fails_closed_on_unexposed_or_write_tool_call() -> None:
@@ -319,7 +983,7 @@ async def test_investigator_fails_closed_on_unexposed_or_write_tool_call() -> No
     assert public_reply.calls == []
 
 
-async def test_investigator_enforces_total_tool_call_budget_before_execution() -> None:
+async def test_investigator_converges_when_tool_call_batch_exceeds_budget() -> None:
     registry = ToolRegistry()
     docs = FakeTool("official_docs_search")
     registry.register(docs)
@@ -339,6 +1003,16 @@ async def test_investigator_enforces_total_tool_call_budget_before_execution() -
                     ),
                 ],
             ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
         ],
     )
     investigator = BoundedToolCaseInvestigator(
@@ -349,7 +1023,98 @@ async def test_investigator_enforces_total_tool_call_budget_before_execution() -
         max_calls=1,
     )
 
-    with pytest.raises(InvestigationProtocolError, match="call budget"):
-        await investigator.investigate(_context())
+    result = await investigator.investigate(_context())
 
     assert docs.calls == []
+    assert result.proposal.answer_status is AnswerStatus.INSUFFICIENT
+    assert len(provider.calls) == 2
+    terminal_messages, terminal_tools = provider.calls[-1]
+    assert terminal_tools is None
+    assert "tool-call budget is exhausted" in terminal_messages[-1]["content"]
+    assert [message["role"] for message in terminal_messages[-3:]] == [
+        "tool",
+        "tool",
+        "user",
+    ]
+
+
+async def test_investigator_converges_when_round_budget_is_exhausted() -> None:
+    registry = ToolRegistry()
+    docs = FakeTool("official_docs_search")
+    registry.register(docs)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-docs",
+                        name="official_docs_search",
+                        arguments="{}",
+                    ),
+                ],
+            ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+        max_rounds=1,
+    )
+
+    result = await investigator.investigate(_context())
+
+    assert docs.calls == [{}]
+    assert result.proposal.answer_status is AnswerStatus.INSUFFICIENT
+    terminal_messages, terminal_tools = provider.calls[-1]
+    assert terminal_tools is None
+    assert "round budget is exhausted" in terminal_messages[-1]["content"]
+
+
+async def test_investigator_enforces_cumulative_model_token_budget() -> None:
+    registry = ToolRegistry()
+    provider = FakeProvider([_response(content=_final_assessment("ev-identity"))])
+    session = AgentSession(ticket_id=4001)
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=session,
+        clock=FakeClock(),
+        max_tokens=14,
+    )
+
+    with pytest.raises(InvestigationProtocolError, match="token budget"):
+        await investigator.investigate(_context())
+
+    assert session.token_usage.total_tokens == 15
+
+
+async def test_investigator_does_not_call_model_after_vision_exhausts_budget() -> None:
+    registry = ToolRegistry()
+    provider = FakeProvider([_response(content=_final_assessment("ev-identity"))])
+    session = AgentSession(ticket_id=4001)
+    session.token_usage.prompt_tokens = 10
+    session.token_usage.completion_tokens = 5
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=session,
+        clock=FakeClock(),
+        max_tokens=15,
+    )
+
+    with pytest.raises(InvestigationProtocolError, match="token budget"):
+        await investigator.investigate(_context())
+
+    assert provider.calls == []

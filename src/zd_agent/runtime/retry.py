@@ -39,7 +39,9 @@ def get_retry_policy(name: str) -> RetryPolicy:
     )
 
 
-def compute_delay(policy: RetryPolicy, attempt: int, suggested_delay: float | None = None) -> float:
+def compute_delay(
+    policy: RetryPolicy, attempt: int, suggested_delay: float | None = None
+) -> float:
     """计算当前重试等待时间，支持外部建议值（如 Retry-After）"""
     delay = suggested_delay or (policy.base_delay_seconds * (2 ** (attempt - 1)))
     delay = min(delay, policy.max_delay_seconds)

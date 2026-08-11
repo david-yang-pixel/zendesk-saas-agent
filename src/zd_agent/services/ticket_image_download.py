@@ -26,9 +26,7 @@ _IMG_MAX_BYTES = 4 * 1024 * 1024
 _SC_ATTACHMENT_RE = re.compile(r"/sc/attachments/v2/([^/]+)/")
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _MAX_IMAGE_REDIRECTS = 5
-_ZENDESK_SUBDOMAIN_RE = re.compile(
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-)
+_ZENDESK_SUBDOMAIN_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
 
 @dataclass(frozen=True, slots=True)

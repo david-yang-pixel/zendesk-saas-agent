@@ -8,7 +8,12 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion
 
 from zd_agent.log import get_logger
-from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
+from zd_agent.runtime.llm.types import (
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+    ToolSchema,
+)
 from zd_agent.runtime.openai_reasoning import (
     model_requires_responses_api,
     normalized_model_id,
@@ -106,7 +111,9 @@ def _messages_to_responses_input(
 
         if role == "assistant":
             for tool_call in message.get("tool_calls") or []:
-                function = tool_call.get("function") if isinstance(tool_call, dict) else None
+                function = (
+                    tool_call.get("function") if isinstance(tool_call, dict) else None
+                )
                 if not isinstance(function, dict):
                     continue
                 converted.append(
@@ -162,9 +169,7 @@ def _parse_response(response: Any) -> LLMResponse:
     if status == "incomplete":
         details = getattr(response, "incomplete_details", None)
         reason = str(getattr(details, "reason", "") or "unknown")
-        raise RuntimeError(
-            f"OpenAI Responses request ended incomplete: {reason}"
-        )
+        raise RuntimeError(f"OpenAI Responses request ended incomplete: {reason}")
 
     output_items = list(getattr(response, "output", None) or [])
     completed = status == "completed"
@@ -197,10 +202,7 @@ def _parse_response(response: Any) -> LLMResponse:
             cache_hit_rate=round(cached_tokens / max(prompt_tokens, 1), 3),
         )
 
-    serialized_output = [
-        item.model_dump(exclude_none=True)
-        for item in output_items
-    ]
+    serialized_output = [item.model_dump(exclude_none=True) for item in output_items]
     raw: dict[str, Any] = {
         "role": "assistant",
         "content": content,
@@ -263,13 +265,10 @@ class OpenAIProvider(LLMProvider):
         if not normalized_model_id(self._model).startswith("gpt-5.6"):
             return False
         has_responses_history = any(
-            isinstance(message.get(_RESPONSES_OUTPUT_KEY), list)
-            for message in messages
+            isinstance(message.get(_RESPONSES_OUTPUT_KEY), list) for message in messages
         )
         return has_responses_history or bool(
-            tools
-            and self._reasoning_effort
-            and self._reasoning_effort != "none"
+            tools and self._reasoning_effort and self._reasoning_effort != "none"
         )
 
     async def _responses_chat(
@@ -286,9 +285,9 @@ class OpenAIProvider(LLMProvider):
         if self._reasoning_effort:
             request["reasoning"] = {"effort": self._reasoning_effort}
         if self._max_tokens > 0:
-            has_reasoning = bool(self._reasoning_effort) or model_requires_responses_api(
-                self._model
-            )
+            has_reasoning = bool(
+                self._reasoning_effort
+            ) or model_requires_responses_api(self._model)
             request["max_output_tokens"] = max(
                 self._max_tokens,
                 25_000 if has_reasoning else self._max_tokens,

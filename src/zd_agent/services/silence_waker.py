@@ -1,4 +1,5 @@
 """Silence-window expiry scanner."""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,18 +35,7 @@ async def scan_once(
         ):
             continue
 
-        source = (
-            "silence_waker"
-            if record.last_verdict
-            in {
-                "casework_ready",
-                "substantial_issue",
-                "agent_deferred",
-                "agent_retry",
-                "ownership_retry",
-            }
-            else "silence_expired_ask"
-        )
+        source = "silence_waker"
         message = {
             "source": source,
             "ticket_id": int(ticket_id),
@@ -53,8 +43,7 @@ async def scan_once(
             "expected_state_revision": record.state_revision,
             "expected_silence_window_end": record.silence_window_end.isoformat(),
             "_queue_key": (
-                f"silence:{ticket_id}:{source}:"
-                f"{record.silence_window_end.isoformat()}"
+                f"silence:{ticket_id}:{source}:{record.silence_window_end.isoformat()}"
             ),
         }
         recoverable_method = getattr(type(trigger_queue), "put_recoverable", None)
@@ -69,22 +58,13 @@ async def scan_once(
         # Enqueueing is not ownership. Keep the durable state in the silence
         # window until the consumer validates this generation and either binds
         # a real AgentSession owner or successfully sends the scheduled ask.
-        if source == "silence_waker":
-            logger.info(
-                "silence_expired_dispatch_queued",
-                ticket_id=ticket_id,
-                silence_end=record.silence_window_end.isoformat(),
-                verdict=record.last_verdict,
-                state_revision=record.state_revision,
-            )
-        else:
-            logger.info(
-                "silence_expired_ask_queued",
-                ticket_id=ticket_id,
-                silence_end=record.silence_window_end.isoformat(),
-                verdict=record.last_verdict,
-                state_revision=record.state_revision,
-            )
+        logger.info(
+            "silence_expired_dispatch_queued",
+            ticket_id=ticket_id,
+            silence_end=record.silence_window_end.isoformat(),
+            verdict=record.last_verdict,
+            state_revision=record.state_revision,
+        )
         advanced += 1
     return advanced
 
@@ -107,9 +87,8 @@ async def run_silence_waker(
             except Exception as e:
                 logger.error("silence_waker_error", error=str(e))
             loop_time = asyncio.get_running_loop().time()
-            if (
-                loop_time >= next_internal_note_reconcile_at
-                and (reconcile_task is None or reconcile_task.done())
+            if loop_time >= next_internal_note_reconcile_at and (
+                reconcile_task is None or reconcile_task.done()
             ):
                 next_internal_note_reconcile_at = loop_time + 60.0
                 reconcile_task = asyncio.create_task(
@@ -144,6 +123,10 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
             PostPublicHandoffStore,
             reconcile_pending_post_public_handoff_effects,
         )
+        from zd_agent.services.casework_effect_store import CaseworkEffectStore
+        from zd_agent.services.casework_ownership_effects import (
+            reconcile_casework_ownership_effects,
+        )
 
         note_store = PostPublicInternalNoteStore(
             state.path.parent / "post_public_internal_note_outbox.sqlite3"
@@ -153,6 +136,9 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
         )
         delivery_store = PublicReplyDeliveryStore(
             state.path.parent / "public_reply_outbox.sqlite3"
+        )
+        casework_store = CaseworkEffectStore(
+            state.path.parent / "casework_effects.sqlite3"
         )
         if note_store.pending(limit=1):
             await asyncio.wait_for(
@@ -171,6 +157,19 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
                 ),
                 timeout=90,
             )
+        if casework_store.pending_ownership(limit=1) or state.list_by_state(
+            "ownership_pending"
+        ):
+            await asyncio.wait_for(
+                reconcile_casework_ownership_effects(
+                    store=casework_store,
+                    state=state,
+                ),
+                timeout=90,
+            )
+        purged = casework_store.purge_completed()
+        if purged:
+            logger.info("casework_effect_retention_purged", count=purged)
     except Exception as e:  # noqa: BLE001 - reconciliation stays best effort.
         logger.warning(
             "post_public_internal_note_periodic_reconcile_failed",

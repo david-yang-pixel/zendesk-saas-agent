@@ -1,4 +1,5 @@
 """Admin console routes."""
+
 from __future__ import annotations
 
 import json
@@ -143,13 +144,6 @@ INTEGRATION_SPECS: dict[str, dict[str, str]] = {
         "timeout_path": "notification_service.request_timeout_seconds",
         "kind": "mcp",
     },
-    "sandbox_worker": {
-        "label": "Sandbox Worker",
-        "url_path": "sandbox_worker.mcp_url",
-        "key_path": "sandbox_worker.mcp_api_key",
-        "timeout_path": "sandbox_worker.request_timeout_seconds",
-        "kind": "mcp",
-    },
     "public_reply_browser_relay": {
         "label": "Public Reply Browser Relay",
         "url_path": "public_reply.browser_relay_url",
@@ -232,10 +226,11 @@ def _require_admin(
 ) -> tuple[str | None, web.Response | None]:
     username = _current_admin(request)
     if username is None:
-        return None, web.json_response({"ok": False, "error": "unauthorized"}, status=401)
-    if (
-        not allow_password_change
-        and admin_auth(request.app).requires_password_change(username)
+        return None, web.json_response(
+            {"ok": False, "error": "unauthorized"}, status=401
+        )
+    if not allow_password_change and admin_auth(request.app).requires_password_change(
+        username
     ):
         return username, web.json_response(
             {"ok": False, "error": "password_change_required"},
@@ -405,7 +400,9 @@ def _normalize_run_record_event(item: dict[str, Any]) -> dict[str, Any] | None:
         else:
             record["status"] = "completed"
 
-    input_tokens = _number_from_keys(record, ("input_tokens", "prompt_tokens", "tokens_in"))
+    input_tokens = _number_from_keys(
+        record, ("input_tokens", "prompt_tokens", "tokens_in")
+    )
     output_tokens = _number_from_keys(
         record,
         ("output_tokens", "completion_tokens", "tokens_out"),
@@ -460,7 +457,9 @@ def _is_missing(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
-def _merge_numeric_max(merged: dict[str, Any], update: dict[str, Any], key: str) -> None:
+def _merge_numeric_max(
+    merged: dict[str, Any], update: dict[str, Any], key: str
+) -> None:
     if key not in update or _is_missing(update.get(key)):
         return
     current = _number_from_keys(merged, (key,))
@@ -469,7 +468,9 @@ def _merge_numeric_max(merged: dict[str, Any], update: dict[str, Any], key: str)
         merged[key] = update[key]
 
 
-def _merge_latest_time(merged: dict[str, Any], update: dict[str, Any], key: str) -> None:
+def _merge_latest_time(
+    merged: dict[str, Any], update: dict[str, Any], key: str
+) -> None:
     if key not in update or _is_missing(update.get(key)):
         return
     current = _parse_datetime(merged.get(key))
@@ -529,7 +530,10 @@ def _merge_run_records(
             _merge_latest_time(merged, update, key)
             continue
         if key == "trigger":
-            if _is_missing(merged.get(key)) or str(merged.get(key)).lower() in RUN_RECORD_EVENTS:
+            if (
+                _is_missing(merged.get(key))
+                or str(merged.get(key)).lower() in RUN_RECORD_EVENTS
+            ):
                 merged[key] = value
             continue
         if key == "_source_file":
@@ -542,7 +546,9 @@ def _merge_run_records(
     if duration_ms:
         merged["duration_ms"] = duration_ms
     if not merged.get("total_tokens"):
-        input_tokens = _number_from_keys(merged, ("input_tokens", "prompt_tokens", "tokens_in"))
+        input_tokens = _number_from_keys(
+            merged, ("input_tokens", "prompt_tokens", "tokens_in")
+        )
         output_tokens = _number_from_keys(
             merged,
             ("output_tokens", "completion_tokens", "tokens_out"),
@@ -606,14 +612,23 @@ def _aggregate_run_records(records: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _run_record_sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
-    return (_event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc), _event_priority(item))
+    return (
+        _event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc),
+        _event_priority(item),
+    )
 
 
 def _run_record_public_key(item: dict[str, Any]) -> str:
     parts = [
         str(item.get("_source_file") or "events"),
         str(item.get("session_id") or ""),
-        str(item.get("timestamp") or item.get("ts") or item.get("time") or item.get("created_at") or ""),
+        str(
+            item.get("timestamp")
+            or item.get("ts")
+            or item.get("time")
+            or item.get("created_at")
+            or ""
+        ),
         str(item.get("event") or ""),
         str(item.get("ticket_id") or item.get("ticket") or ""),
     ]
@@ -637,8 +652,7 @@ def _read_archive_meta(
     if cache_key in cache:
         return cache[cache_key]
     if session_id and (
-        session_id in {".", ".."}
-        or not SESSION_ID_RE.fullmatch(session_id)
+        session_id in {".", ".."} or not SESSION_ID_RE.fullmatch(session_id)
     ):
         cache[cache_key] = None
         return None
@@ -711,7 +725,9 @@ def _archive_tool_to_ui_tool(call: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _archive_rounds(meta: dict[str, Any], record: dict[str, Any]) -> list[dict[str, Any]]:
+def _archive_rounds(
+    meta: dict[str, Any], record: dict[str, Any]
+) -> list[dict[str, Any]]:
     raw_tool_calls = meta.get("tool_calls")
     if not isinstance(raw_tool_calls, list):
         return []
@@ -763,19 +779,27 @@ def _trace_tool_to_ui_tool(event: dict[str, Any]) -> dict[str, Any]:
             or ""
         ),
         "duration_ms": _duration_ms_from_item(event),
-        "arguments": event.get("arguments") if isinstance(event.get("arguments"), dict) else {},
+        "arguments": event.get("arguments")
+        if isinstance(event.get("arguments"), dict)
+        else {},
     }
 
 
-def _trace_rounds(events: list[dict[str, Any]], record: dict[str, Any]) -> list[dict[str, Any]]:
+def _trace_rounds(
+    events: list[dict[str, Any]], record: dict[str, Any]
+) -> list[dict[str, Any]]:
     grouped: dict[int, dict[str, Any]] = {}
     for event in events:
         round_number = _round_number_from_item(event)
         if not round_number:
             continue
         event_name = str(event.get("event") or "").lower()
-        is_tool_event = event_name == "tool_call" or bool(event.get("tool") or event.get("tool_name"))
-        is_round_event = event_name in {"llm_round", "round_tool_calls"} or is_tool_event
+        is_tool_event = event_name == "tool_call" or bool(
+            event.get("tool") or event.get("tool_name")
+        )
+        is_round_event = (
+            event_name in {"llm_round", "round_tool_calls"} or is_tool_event
+        )
         if not is_round_event:
             continue
 
@@ -783,29 +807,41 @@ def _trace_rounds(events: list[dict[str, Any]], record: dict[str, Any]) -> list[
             round_number,
             {
                 "round": round_number,
-                "model": record.get("model") or record.get("llm_model") or event.get("model") or "-",
+                "model": record.get("model")
+                or record.get("llm_model")
+                or event.get("model")
+                or "-",
                 "type": "tool_calls",
                 "tools": [],
             },
         )
         if event.get("model") and _is_missing(round_item.get("model")):
             round_item["model"] = event["model"]
-        input_tokens = _number_from_keys(event, ("input_tokens", "prompt_tokens", "tokens_in"))
+        input_tokens = _number_from_keys(
+            event, ("input_tokens", "prompt_tokens", "tokens_in")
+        )
         output_tokens = _number_from_keys(
             event,
             ("output_tokens", "completion_tokens", "tokens_out"),
         )
-        total_tokens = _number_from_keys(event, ("total_tokens", "token_count", "tokens"))
-        duration_ms = (
-            _duration_ms_from_item(event)
-            or _duration_value_to_ms(event.get("llm_elapsed_seconds"), default_unit="seconds")
+        total_tokens = _number_from_keys(
+            event, ("total_tokens", "token_count", "tokens")
+        )
+        duration_ms = _duration_ms_from_item(event) or _duration_value_to_ms(
+            event.get("llm_elapsed_seconds"), default_unit="seconds"
         )
         if input_tokens:
-            _merge_numeric_max(round_item, {"input_tokens": input_tokens}, "input_tokens")
+            _merge_numeric_max(
+                round_item, {"input_tokens": input_tokens}, "input_tokens"
+            )
         if output_tokens:
-            _merge_numeric_max(round_item, {"output_tokens": output_tokens}, "output_tokens")
+            _merge_numeric_max(
+                round_item, {"output_tokens": output_tokens}, "output_tokens"
+            )
         if total_tokens:
-            _merge_numeric_max(round_item, {"total_tokens": total_tokens}, "total_tokens")
+            _merge_numeric_max(
+                round_item, {"total_tokens": total_tokens}, "total_tokens"
+            )
         if duration_ms:
             _merge_numeric_max(round_item, {"duration_ms": duration_ms}, "duration_ms")
         if event.get("stop_reason"):
@@ -840,14 +876,13 @@ def _enrich_with_archive_meta(
 
     for key in (
         "session_id",
-        "ticket_type",
-        "fix_status",
         "reply_sent",
         "failed_tool_count",
         "tool_call_count",
         "failed_tools",
         "customer_reply_available",
-        "reviewer_checklist_available",
+        "casework_phase",
+        "casework",
     ):
         if (
             _is_missing(enriched.get(key))
@@ -909,7 +944,9 @@ def _trace_index_keys(item: dict[str, Any]) -> set[str]:
     return keys
 
 
-def _build_trace_index(trace_events: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+def _build_trace_index(
+    trace_events: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
     index: dict[str, list[dict[str, Any]]] = {}
     for event in trace_events:
         for key in _trace_index_keys(event):
@@ -925,10 +962,11 @@ def _trace_events_for_record(
 ) -> list[dict[str, Any]]:
     if trace_index is None:
         events = record.get("events")
-        return [
-            event for event in events
-            if isinstance(event, dict)
-        ] if isinstance(events, list) else []
+        return (
+            [event for event in events if isinstance(event, dict)]
+            if isinstance(events, list)
+            else []
+        )
 
     matched: list[dict[str, Any]] = []
     seen: set[int] = set()
@@ -953,7 +991,9 @@ def _record_has_error_with_trace(
 ) -> bool:
     if _is_error_event(item):
         return True
-    return any(_is_error_event(event) for event in _trace_events_for_record(item, trace_index))
+    return any(
+        _is_error_event(event) for event in _trace_events_for_record(item, trace_index)
+    )
 
 
 def _trace_matches(record: dict[str, Any], event: dict[str, Any]) -> bool:
@@ -988,7 +1028,10 @@ def _trace_matches(record: dict[str, Any], event: dict[str, Any]) -> bool:
 
 
 def _trace_sort_key(item: dict[str, Any]) -> tuple[datetime, int]:
-    return (_event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc), _event_priority(item))
+    return (
+        _event_datetime(item) or datetime.min.replace(tzinfo=timezone.utc),
+        _event_priority(item),
+    )
 
 
 def _attach_event_trace(
@@ -1005,7 +1048,9 @@ def _attach_event_trace(
         rounds = _trace_rounds(events, enriched)
         if rounds:
             enriched["llm_rounds"] = rounds
-            round_count = max(_positive_int(round_item.get("round")) for round_item in rounds)
+            round_count = max(
+                _positive_int(round_item.get("round")) for round_item in rounds
+            )
             if _is_missing(enriched.get("rounds")):
                 enriched["rounds"] = round_count
             if _is_missing(enriched.get("round_count")):
@@ -1115,7 +1160,9 @@ def _log_dir_signature(log_dir: Path) -> str:
     return "|".join(parts) or "empty"
 
 
-def _cacheable_run_records_request(filters: dict[str, Any], include_detail: bool) -> bool:
+def _cacheable_run_records_request(
+    filters: dict[str, Any], include_detail: bool
+) -> bool:
     return (
         bool(filters.get("quick"))
         and not include_detail
@@ -1228,23 +1275,36 @@ def _matches_run_filters(
     event = filters.get("event")
     module = filters.get("module")
     level = filters.get("level")
-    trace_events = _trace_events_for_record(item, trace_index) if event or module or level else []
+    trace_events = (
+        _trace_events_for_record(item, trace_index) if event or module or level else []
+    )
     if event and not any(
         event in str(value).lower()
-        for value in [item.get("event"), *(trace.get("event") for trace in trace_events)]
+        for value in [
+            item.get("event"),
+            *(trace.get("event") for trace in trace_events),
+        ]
     ):
         return False
     if module and not any(
         module in str(value).lower()
-        for value in [item.get("module"), *(trace.get("module") for trace in trace_events)]
+        for value in [
+            item.get("module"),
+            *(trace.get("module") for trace in trace_events),
+        ]
     ):
         return False
     if level and not any(
         level in str(value).lower()
-        for value in [item.get("level"), *(trace.get("level") for trace in trace_events)]
+        for value in [
+            item.get("level"),
+            *(trace.get("level") for trace in trace_events),
+        ]
     ):
         return False
-    if filters.get("errors_only") and not _record_has_error_with_trace(item, trace_index):
+    if filters.get("errors_only") and not _record_has_error_with_trace(
+        item, trace_index
+    ):
         return False
     item_time = _event_datetime(item)
     since = filters.get("since")
@@ -1265,7 +1325,8 @@ def _run_summary(
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     today_items = [
-        item for item in all_items
+        item
+        for item in all_items
         if (event_time := _event_datetime(item)) is not None
         and event_time.date() == now.date()
     ]
@@ -1353,12 +1414,19 @@ def _read_recent_log_events(
                         break
                     continue
                 run_events.append(record)
-                if fast_list and len(run_events) >= limit and (
-                    len(run_events) == limit or len(run_events) % 20 == 0
+                if (
+                    fast_list
+                    and len(run_events) >= limit
+                    and (len(run_events) == limit or len(run_events) % 20 == 0)
                 ):
-                    if len(
-                        _aggregate_run_records(sorted(run_events, key=_run_record_sort_key)),
-                    ) >= limit:
+                    if (
+                        len(
+                            _aggregate_run_records(
+                                sorted(run_events, key=_run_record_sort_key)
+                            ),
+                        )
+                        >= limit
+                    ):
                         enough_fast_records = True
                         break
                 if fast_list and raw_events_total >= RUN_RECORD_FAST_MAX_SCAN_LINES:
@@ -1378,11 +1446,13 @@ def _read_recent_log_events(
         reverse=True,
     )
     matched_items = [
-        item for item in all_items
+        item
+        for item in all_items
         if _matches_run_filters(item, filters, trace_index=trace_index)
     ]
     matched_error_events = sum(
-        1 for item in matched_items
+        1
+        for item in matched_items
         if (
             _record_has_error_with_trace(item, trace_index)
             if trace_index is not None
@@ -1518,7 +1588,9 @@ async def handle_admin_static(request: web.Request) -> web.Response:
 
 
 async def handle_admin_login(request: web.Request) -> web.Response:
-    effective = admin_config(request.app).effective_config(app_config(request.app))["values"]
+    effective = admin_config(request.app).effective_config(app_config(request.app))[
+        "values"
+    ]
     if not _truthy(effective.get("admin_auth.password_login_enabled", True)):
         return _json_error("password_login_disabled", status=403)
     try:
@@ -1539,11 +1611,13 @@ async def handle_admin_login(request: web.Request) -> web.Response:
     if not result.ok:
         return _json_error("invalid_credentials", status=401)
     token = admin_auth(request.app).create_session(username)
-    response = web.json_response({
-        "ok": True,
-        "username": username,
-        "force_password_change": result.force_password_change,
-    })
+    response = web.json_response(
+        {
+            "ok": True,
+            "username": username,
+            "force_password_change": result.force_password_change,
+        }
+    )
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -1579,11 +1653,15 @@ async def handle_admin_me(request: web.Request) -> web.Response:
     username = _current_admin(request)
     if username is None:
         return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
-    return web.json_response({
-        "ok": True,
-        "username": username,
-        "force_password_change": admin_auth(request.app).requires_password_change(username),
-    })
+    return web.json_response(
+        {
+            "ok": True,
+            "username": username,
+            "force_password_change": admin_auth(request.app).requires_password_change(
+                username
+            ),
+        }
+    )
 
 
 async def handle_admin_password(request: web.Request) -> web.Response:
@@ -1632,7 +1710,9 @@ async def handle_admin_config_effective(request: web.Request) -> web.Response:
     _username, unauthorized = _require_admin(request)
     if unauthorized is not None:
         return unauthorized
-    return web.json_response(admin_config(request.app).effective_config(app_config(request.app)))
+    return web.json_response(
+        admin_config(request.app).effective_config(app_config(request.app))
+    )
 
 
 async def handle_admin_config_preview(request: web.Request) -> web.Response:
@@ -1718,20 +1798,22 @@ async def handle_admin_integration_check(request: web.Request) -> web.Response:
         ip=_remote_ip(request),
         action="integration_check",
         reason=integration,
-        diff=[{
-            "path": integration,
-            "label": result.get("label", integration),
-            "group": "工具与集成",
-            "old": "",
-            "new": {
-                "configured": result.get("configured"),
-                "reachable": result.get("reachable"),
-                "status": result.get("status"),
-                "detail": result.get("detail"),
-            },
-            "secret": False,
-            "restart_required": False,
-        }],
+        diff=[
+            {
+                "path": integration,
+                "label": result.get("label", integration),
+                "group": "工具与集成",
+                "old": "",
+                "new": {
+                    "configured": result.get("configured"),
+                    "reachable": result.get("reachable"),
+                    "status": result.get("status"),
+                    "detail": result.get("detail"),
+                },
+                "secret": False,
+                "restart_required": False,
+            }
+        ],
     )
     return web.json_response(result)
 
@@ -1744,45 +1826,53 @@ async def handle_admin_deploy_status(request: web.Request) -> web.Response:
     effective = admin_config(request.app).effective_config(cfg)["values"]
     google_secret = effective.get("admin_auth.google_client_secret") or {}
     feishu_secret = effective.get("admin_auth.feishu_app_secret") or {}
-    return web.json_response({
-        "ok": True,
-        "agent": {"status": "running"},
-        "image": {
-            "name": os.environ.get("ZD_AGENT_IMAGE", "zd-agent"),
-            "tag": (
-                os.environ.get("ZD_AGENT_IMAGE_TAG")
-                or os.environ.get("DEPLOY_TAG")
-                or "latest"
-            ),
-            "commit_sha": (
-                os.environ.get("ZD_AGENT_COMMIT_SHA")
-                or os.environ.get("GITHUB_SHA")
-                or ""
-            ),
-        },
-        "pending_restart": admin_config(request.app).pending_restart(cfg),
-        "admin_auth": {
-            "password_login": {
-                "enabled": bool(effective.get("admin_auth.password_login_enabled", True)),
-                "default_username": "admin",
+    return web.json_response(
+        {
+            "ok": True,
+            "agent": {"status": "running"},
+            "image": {
+                "name": os.environ.get("ZD_AGENT_IMAGE", "zd-agent"),
+                "tag": (
+                    os.environ.get("ZD_AGENT_IMAGE_TAG")
+                    or os.environ.get("DEPLOY_TAG")
+                    or "latest"
+                ),
+                "commit_sha": (
+                    os.environ.get("ZD_AGENT_COMMIT_SHA")
+                    or os.environ.get("GITHUB_SHA")
+                    or ""
+                ),
             },
-            "google_sso": {
-                "enabled": bool(effective.get("admin_auth.google_sso_enabled", False)),
-                "configured": bool(effective.get("admin_auth.google_client_id"))
-                and bool(google_secret.get("configured")),
+            "pending_restart": admin_config(request.app).pending_restart(cfg),
+            "admin_auth": {
+                "password_login": {
+                    "enabled": bool(
+                        effective.get("admin_auth.password_login_enabled", True)
+                    ),
+                    "default_username": "admin",
+                },
+                "google_sso": {
+                    "enabled": bool(
+                        effective.get("admin_auth.google_sso_enabled", False)
+                    ),
+                    "configured": bool(effective.get("admin_auth.google_client_id"))
+                    and bool(google_secret.get("configured")),
+                },
+                "feishu_sso": {
+                    "enabled": bool(
+                        effective.get("admin_auth.feishu_sso_enabled", False)
+                    ),
+                    "configured": bool(effective.get("admin_auth.feishu_app_id"))
+                    and bool(feishu_secret.get("configured")),
+                },
             },
-            "feishu_sso": {
-                "enabled": bool(effective.get("admin_auth.feishu_sso_enabled", False)),
-                "configured": bool(effective.get("admin_auth.feishu_app_id"))
-                and bool(feishu_secret.get("configured")),
+            "storage": {
+                "base_dir": cfg.resources.base_dir,
+                "state_dir": cfg.resources.state_dir,
+                "log_dir": cfg.logging.log_dir,
             },
-        },
-        "storage": {
-            "base_dir": cfg.resources.base_dir,
-            "state_dir": cfg.resources.state_dir,
-            "log_dir": cfg.logging.log_dir,
-        },
-    })
+        }
+    )
 
 
 def register_admin_routes(

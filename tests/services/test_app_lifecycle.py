@@ -1,4 +1,5 @@
 """Tests for SaaS app lifecycle wiring."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from zd_agent.services.app_lifecycle import (
     register_background_lifecycle,
     wire_session_finished_callback,
 )
+from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -49,14 +51,15 @@ def _cfg() -> AppConfig:
     cfg = AppConfig()
     cfg.silence_waker.scan_interval_seconds = 11
     cfg.waiting_poller.scan_interval_seconds = 22
-    cfg.waiting_poller.abandoned_hours = 33
-    cfg.waiting_poller.greeting_alert_minutes = 44
+    cfg.waiting_poller.customer_wait_timeout_hours = 33
     cfg.zendesk.mention_poll_interval_seconds = 55
     return cfg
 
 
 @pytest.mark.asyncio
-async def test_wire_session_finished_callback_marks_reply_session_processed(tmp_path) -> None:
+async def test_wire_session_finished_callback_marks_reply_session_processed(
+    tmp_path,
+) -> None:
     session = AgentSession(ticket_id=2808, trigger_type="webhook-mention")
     state = TicketStateTracker(tmp_path / "tickets.json")
     state.set(
@@ -78,6 +81,102 @@ async def test_wire_session_finished_callback_marks_reply_session_processed(tmp_
 
     assert state.get("2808").state == "processed"
     assert state.get("2808").last_agent_finish_ts is not None
+
+
+@pytest.mark.asyncio
+async def test_finished_callback_retries_a_transient_state_commit_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    session = AgentSession(ticket_id=2809, trigger_type="webhook")
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        2809,
+        TicketState(
+            state="processing",
+            first_seen=datetime.now(timezone.utc),
+            active_session_id=session.session_id,
+        ),
+    )
+    original_save = state._save
+    attempts = 0
+
+    def flaky_save(serialized) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary state write failure")
+        original_save(serialized)
+
+    monkeypatch.setattr(state, "_save", flaky_save)
+    manager = MagicMock()
+    wire_session_finished_callback(manager=manager, state=state)
+    callback = manager.set_on_finished.call_args.args[0]
+    session.status = SessionStatus.COMPLETED
+    session.reply_sent = True
+
+    await callback(session)
+
+    record = state.get(2809)
+    assert record is not None
+    assert record.state == "processed"
+    assert record.active_session_id == ""
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_finished_callback_queues_new_generation_after_persistent_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    queue = DurableTriggerQueue(
+        tmp_path / "trigger_queue.sqlite3",
+        max_attempts=1,
+        retry_base_seconds=0,
+    )
+    assert queue.ensure_processing_recovery(
+        2810,
+        delivery_attempt_id="old-delivery",
+    )
+    old = await queue.get()
+    assert await queue.retry(old, "old recovery exhausted") is False
+    dead_letter = (await queue.list_dead_letters())[0]
+    assert await queue.resolve_dead_letter(dead_letter) is True
+
+    session = AgentSession(ticket_id=2810, trigger_type="webhook")
+    session.delivery_attempt_id = "new-delivery"
+    session.status = SessionStatus.COMPLETED
+    session.reply_sent = True
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        2810,
+        TicketState(
+            state="processing",
+            first_seen=datetime.now(timezone.utc),
+            active_session_id=session.session_id,
+            delivery_attempt_id=session.delivery_attempt_id,
+        ),
+    )
+
+    def fail_save(_serialized) -> None:
+        raise OSError("state volume unavailable")
+
+    monkeypatch.setattr(state, "_save", fail_save)
+    manager = MagicMock()
+    wire_session_finished_callback(
+        manager=manager,
+        state=state,
+        trigger_queue=queue,
+    )
+    callback = manager.set_on_finished.call_args.args[0]
+
+    with pytest.raises(RuntimeError, match="could not be committed"):
+        await callback(session)
+
+    recovery = await queue.get()
+    assert recovery["delivery_attempt_id"] == "new-delivery"
+    assert recovery["_queue_key"] != old["_queue_key"]
+    await queue.ack(recovery)
 
 
 @pytest.mark.asyncio
@@ -188,8 +287,7 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
         "state": state,
         "trigger_queue": trigger_queue,
         "scan_interval_seconds": 22,
-        "abandoned_hours": 33,
-        "greeting_alert_minutes": 44,
+        "customer_wait_timeout_hours": 33,
     }
     assert mention_kwargs["trigger_queue"] is trigger_queue
     assert mention_kwargs["poll_interval_seconds"] == 55

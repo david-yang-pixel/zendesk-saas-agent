@@ -76,7 +76,9 @@ def test_billing_snapshot_must_match_resolved_tenant() -> None:
         )
 
 
-def test_material_evidence_keeps_structured_payload_without_any_preview_contract() -> None:
+def test_material_evidence_keeps_structured_payload_without_any_preview_contract() -> (
+    None
+):
     item = EvidenceItem(
         evidence_id="ev-billing",
         call_id="call-1",

@@ -9,8 +9,6 @@ from pathlib import Path
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
 from zd_agent.runtime.archive_meta import build_archive_meta
-from zd_agent.runtime.guardrails import Guardrails
-from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 from zd_agent.session.agent_session import AgentSession
 
 logger = get_logger(module="runner.archive")
@@ -21,9 +19,8 @@ _SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 def _archive_session_dir(session: AgentSession) -> Path:
     cfg = get_config()
     raw_session_id = str(session.session_id or "").strip()
-    if (
-        raw_session_id not in {"", ".", ".."}
-        and _SAFE_SESSION_ID_RE.fullmatch(raw_session_id)
+    if raw_session_id not in {"", ".", ".."} and _SAFE_SESSION_ID_RE.fullmatch(
+        raw_session_id
     ):
         session_dir_name = raw_session_id
     else:
@@ -37,7 +34,11 @@ def _archive_session_dir(session: AgentSession) -> Path:
     )
 
 
-def ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
+def ensure_archive(
+    session: AgentSession,
+    *,
+    elapsed_seconds: float,
+) -> None:
     archive_dir: Path | None = None
     try:
         archive_dir = _archive_session_dir(session)
@@ -50,7 +51,7 @@ def ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
         meta = build_archive_meta(
             session=session,
             archived_at=datetime.now(timezone.utc).isoformat(),
-            elapsed_seconds=guardrails.elapsed_seconds,
+            elapsed_seconds=elapsed_seconds,
         )
         meta_path.write_text(
             json.dumps(meta, indent=2, ensure_ascii=False),
@@ -58,12 +59,12 @@ def ensure_archive(session: AgentSession, guardrails: Guardrails) -> None:
         )
         if session.analysis:
             (archive_dir / "analysis.md").write_text(
-                guard_against_stale_no_image_claim(session.analysis, session),
+                session.analysis,
                 encoding="utf-8",
             )
         if session.reply_draft:
             (archive_dir / "reply.md").write_text(
-                guard_against_stale_no_image_claim(session.reply_draft, session),
+                session.reply_draft,
                 encoding="utf-8",
             )
         logger.info(

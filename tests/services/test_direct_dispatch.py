@@ -1,6 +1,8 @@
 """Tests for direct trigger dispatch sources."""
+
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import ANY, AsyncMock, MagicMock
@@ -26,7 +28,7 @@ def _now() -> datetime:
 
 def _cfg(*, cooldown_seconds: int = 180) -> MagicMock:
     cfg = MagicMock()
-    cfg.trigger_decider.post_agent_cooldown_seconds = cooldown_seconds
+    cfg.intake.post_agent_cooldown_seconds = cooldown_seconds
     cfg.resources.base_dir = "/tmp/zd-agent-test"
     cfg.resources.state_dir = "state"
     return cfg
@@ -155,7 +157,9 @@ async def test_silence_retry_binds_the_durable_attempt_to_v2_session(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_direct_source_cooldown_skips_dispatch_and_logs_decision(tmp_path) -> None:
+async def test_direct_source_cooldown_skips_dispatch_and_logs_decision(
+    tmp_path,
+) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     state.set(
         12345,
@@ -279,7 +283,8 @@ async def test_repeated_waker_dispatch_failures_have_durable_terminal_budget(
             "expected_state_revision": current.state_revision,
             "expected_silence_window_end": (
                 current.silence_window_end.isoformat()
-                if current.silence_window_end else ""
+                if current.silence_window_end
+                else ""
             ),
         }
         if attempt < 3:
@@ -298,8 +303,12 @@ async def test_repeated_waker_dispatch_failures_have_durable_terminal_budget(
             assert retry is not None
             assert retry.state == "in_silence_window"
             assert retry.consecutive_agent_failures == attempt
-            retry.silence_window_end = _now() + timedelta(minutes=attempt) - timedelta(
-                seconds=1,
+            retry.silence_window_end = (
+                _now()
+                + timedelta(minutes=attempt)
+                - timedelta(
+                    seconds=1,
+                )
             )
             TicketStateTracker(state_path).set(3436, retry)
         else:
@@ -323,3 +332,182 @@ async def test_repeated_waker_dispatch_failures_have_durable_terminal_budget(
     assert terminal.ownership_effect_reference == "casework-effect:dispatch"
     assert terminal.delivery_attempt_id == "delivery-stable"
     own_failure.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_terminal_dispatch_failure_cannot_overwrite_new_customer_generation(
+    tmp_path,
+) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        3436,
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now() - timedelta(minutes=20),
+            silence_window_end=_now() - timedelta(seconds=1),
+            last_customer_comment_id="m1",
+            delivery_attempt_id="D1",
+            consecutive_agent_failures=2,
+        ),
+    )
+    initial = state.get(3436)
+    assert initial is not None
+
+    class Manager:
+        async def dispatch(self, ticket_id: int, **kwargs):
+            session = AgentSession(ticket_id=ticket_id)
+            kwargs["on_session_created"](session)
+            raise RuntimeError("no worker")
+
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+
+    async def own_failure(**_kwargs) -> RuntimeFailureOwnershipReceipt:
+        entered.set()
+        await resume.wait()
+        return RuntimeFailureOwnershipReceipt(
+            reference="casework-effect:dispatch-old",
+            ownership_action=OwnershipAction.SUPPORT,
+            reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+            ownership_state=OwnershipState.CONFIRMED,
+        )
+
+    task = asyncio.create_task(
+        handle_direct_dispatch_source(
+            ticket_id=3436,
+            msg={
+                "source": "silence_waker",
+                "delivery_attempt_id": "D1",
+                "expected_state_revision": initial.state_revision,
+                "expected_silence_window_end": initial.silence_window_end.isoformat(),
+            },
+            manager=Manager(),
+            state=state,
+            log_path=tmp_path / "trigger.jsonl",
+            cfg=_cfg(cooldown_seconds=0),
+            now=_now(),
+            runtime_failure_ownership_fn=own_failure,
+        )
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    newer = state.get(3436)
+    assert newer is not None and newer.state == "ownership_pending"
+    newer.state = "awaiting_customer"
+    newer.active_session_id = ""
+    newer.last_customer_comment_id = "m2"
+    newer.delivery_attempt_id = "D2"
+    state.set(3436, newer)
+    resume.set()
+
+    result = await task
+    persisted = state.get(3436)
+    assert result.action == "stale_dispatch_failure_ownership"
+    assert persisted is not None
+    assert persisted.state == "awaiting_customer"
+    assert persisted.last_customer_comment_id == "m2"
+    assert persisted.delivery_attempt_id == "D2"
+
+
+@pytest.mark.asyncio
+async def test_pending_dispatch_ownership_persists_reconciliation_authority(
+    tmp_path,
+) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        3437,
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now() - timedelta(minutes=20),
+            silence_window_end=_now() - timedelta(seconds=1),
+            last_customer_comment_id="m1",
+            delivery_attempt_id="D1",
+            consecutive_agent_failures=2,
+        ),
+    )
+    initial = state.get(3437)
+    assert initial is not None
+
+    class Manager:
+        async def dispatch(self, ticket_id: int, **kwargs):
+            session = AgentSession(ticket_id=ticket_id)
+            kwargs["on_session_created"](session)
+            raise RuntimeError("no worker")
+
+    from zd_agent.services.casework_effect_store import casework_effect_reference
+
+    reference = casework_effect_reference(3437, "D1:runtime-failure")
+    own_failure = AsyncMock(
+        return_value=RuntimeFailureOwnershipReceipt(
+            reference=reference,
+            ownership_action=OwnershipAction.SUPPORT,
+            reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+            ownership_state=OwnershipState.PENDING,
+        ),
+    )
+
+    result = await handle_direct_dispatch_source(
+        ticket_id=3437,
+        msg={
+            "source": "silence_waker",
+            "delivery_attempt_id": "D1",
+            "expected_state_revision": initial.state_revision,
+            "expected_silence_window_end": initial.silence_window_end.isoformat(),
+        },
+        manager=Manager(),
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(cooldown_seconds=0),
+        now=_now(),
+        runtime_failure_ownership_fn=own_failure,
+    )
+
+    pending = state.get(3437)
+    assert result.action == "ownership_pending_dispatch_retry_exhausted"
+    assert pending is not None and pending.state == "ownership_pending"
+    assert pending.ownership_action == "support"
+    assert pending.ownership_reason == "automation_retry_exhausted"
+    assert pending.ownership_effect_reference == reference
+
+
+@pytest.mark.asyncio
+async def test_silence_replay_resumes_crash_after_ownership_claim(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        3436,
+        TicketState(
+            state="ownership_pending",
+            first_seen=_now() - timedelta(minutes=20),
+            active_session_id="dispatch-failure:D1:3",
+            last_customer_comment_id="m1",
+            delivery_attempt_id="D1",
+            consecutive_agent_failures=3,
+            last_verdict="automation_retry_exhausted_pending",
+        ),
+    )
+    manager = MagicMock()
+    own_failure = AsyncMock(
+        return_value=RuntimeFailureOwnershipReceipt(
+            reference="casework-effect:dispatch-resumed",
+            ownership_action=OwnershipAction.SUPPORT,
+            reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+            ownership_state=OwnershipState.CONFIRMED,
+        )
+    )
+
+    result = await handle_direct_dispatch_source(
+        ticket_id=3436,
+        msg={"source": "silence_waker", "delivery_attempt_id": "D1"},
+        manager=manager,
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(cooldown_seconds=0),
+        now=_now(),
+        runtime_failure_ownership_fn=own_failure,
+    )
+
+    persisted = state.get(3436)
+    assert result.action == "owned_dispatch_retry_exhausted"
+    assert persisted is not None and persisted.state == "owned"
+    assert persisted.ownership_effect_reference == "casework-effect:dispatch-resumed"
+    own_failure.assert_awaited_once()
+    manager.dispatch.assert_not_called()

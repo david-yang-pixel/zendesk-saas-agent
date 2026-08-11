@@ -1,4 +1,5 @@
 """Test SaaS app factory creates app with expected routes."""
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,7 +30,11 @@ def test_create_saas_app_has_expected_routes(tmp_path):
 
 def test_create_saas_app_wires_queues_and_state(tmp_path):
     from zd_agent.services.saas_app import create_saas_app
-    from zd_agent.services.app_context import session_manager, ticket_state, trigger_queue
+    from zd_agent.services.app_context import (
+        session_manager,
+        ticket_state,
+        trigger_queue,
+    )
 
     with patch("zd_agent.services.saas_app.get_config") as mock_cfg:
         cfg = MagicMock()
@@ -71,14 +76,17 @@ async def test_completed_reply_session_marks_owned_processing_ticket_processed(
 
     state = ticket_state(app)
     session = AgentSession(ticket_id=2808, trigger_type="webhook-mention")
-    state.set("2808", TicketState(
-        state="processing",
-        first_seen=__import__("datetime").datetime.now(
-            __import__("datetime").timezone.utc,
+    state.set(
+        "2808",
+        TicketState(
+            state="processing",
+            first_seen=__import__("datetime").datetime.now(
+                __import__("datetime").timezone.utc,
+            ),
+            last_verdict="insufficient_info",
+            active_session_id=session.session_id,
         ),
-        last_verdict="insufficient_info",
-        active_session_id=session.session_id,
-    ))
+    )
     callback = manager.set_on_finished.call_args.args[0]
     session.status = SessionStatus.COMPLETED
     session.reply_sent = True
@@ -288,7 +296,9 @@ async def test_collect_recent_image_data_urls_downloads_and_filters_failures():
 
     with patch.object(ticket_messages, "_download_image_data_url", side_effect=fake_dl):
         out = await ticket_messages._collect_recent_image_data_urls(
-            customer_msgs, lookback=2, budget=5,
+            customer_msgs,
+            lookback=2,
+            budget=5,
         )
     # old/skip.png 在 lookback 之外不应取
     assert all("should_skip" not in u for u in out)

@@ -42,9 +42,7 @@ def _snapshot_session(
 ) -> None:
     session.customer_msgs_snapshot_count = len(customer_messages)
     session.customer_msgs_snapshot_last_id = (
-        str(customer_messages[-1].get("id") or "")
-        if customer_messages
-        else ""
+        str(customer_messages[-1].get("id") or "") if customer_messages else ""
     )
     session.customer_msgs_snapshot_captured = True
 
@@ -67,7 +65,12 @@ async def execute_casework_v2(
         ticket=raw_ticket,
     )
     visual_analyzer: VisualAnalyzer = (
-        LlmVisualAnalyzer(provider=provider, image_loader=ZendeskImageLoader())
+        LlmVisualAnalyzer(
+            provider=provider,
+            image_loader=ZendeskImageLoader(),
+            session=session,
+            max_tokens=cfg.casework.max_investigation_tokens,
+        )
         if cfg.llm.enable_vision_input
         else NoVisualAnalyzer()
     )
@@ -85,6 +88,7 @@ async def execute_casework_v2(
         clock=clock,
         max_rounds=cfg.casework.max_investigation_rounds,
         max_calls=cfg.casework.max_investigation_calls,
+        max_tokens=cfg.casework.max_investigation_tokens,
     )
     orchestrator = CaseworkOrchestrator(
         context_builder=context_builder,
@@ -102,6 +106,7 @@ async def execute_casework_v2(
             state_dir=state_dir,
             snapshot_customer_message_count=session.customer_msgs_snapshot_count,
             snapshot_customer_last_message_id=session.customer_msgs_snapshot_last_id,
+            public_reply_enabled=cfg.public_reply.enabled,
         ),
     )
     mode = cfg.casework.mode
@@ -109,10 +114,7 @@ async def execute_casework_v2(
         raise ValueError(f"v2 execution cannot run in {mode.value} mode")
     return await executor.execute(
         ticket=ticket,
-        billing_required=billing_context_required(
-            ticket,
-            ticket_type=session.ticket_type,
-        ),
+        billing_required=billing_context_required(ticket),
         automation_attempt=session.casework_attempt,
         visual_observations=observations,
         execution_mode=mode,
@@ -127,10 +129,10 @@ def apply_casework_execution_to_session(
 ) -> None:
     run = execution.run
     receipt = execution.effect_receipt
-    session.analysis = render_casework_audit(run)
+    session.analysis = receipt.authoritative_audit or render_casework_audit(run)
     session.reply_draft = run.reply_draft.body if run.reply_draft else ""
-    session.customer_reply_draft = session.reply_draft
     session.casework_disposition = run.decision.disposition.value
+    session.casework_reply_kind = run.decision.reply_kind.value
     session.casework_ownership_action = run.decision.ownership_action.value
     session.casework_reason_code = run.decision.reason_code.value
     session.casework_delivery_state = receipt.delivery_state.value
@@ -148,6 +150,10 @@ def apply_casework_execution_to_session(
         return
     if receipt.delivery_state is DeliveryState.DRAFTED:
         session.status = SessionStatus.COMPLETED
+        return
+    if receipt.delivery_state is DeliveryState.PAUSED:
+        session.status = SessionStatus.COMPLETED
+        session.error_message = receipt.detail or "v2 public delivery paused"
         return
     if (
         receipt.delivery_state is DeliveryState.NOT_REQUIRED

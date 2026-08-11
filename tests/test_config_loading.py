@@ -1,11 +1,12 @@
 """Test that config loads all new SaaS-related fields."""
+
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from zd_agent.config import LLMConfig, TriggerDeciderConfig, load_config
+from zd_agent.config import IntakeConfig, LLMConfig, load_config
 
 
 SAAS_CONFIG_YAML = """
@@ -15,8 +16,6 @@ llm:
   provider: openai
   model: gpt-5.4
   reasoning_effort: high
-  subagent_model: gpt-5.4-mini
-  subagent_reasoning_effort: low
   enable_vision_input: true
 resources:
   base_dir: /opt/zd-agent/resources
@@ -29,13 +28,9 @@ zendesk:
   mention_trigger: "@saas-bot"
   mention_aliases:
     - "@yonggang"
-trigger_decider:
-  llm_model: gpt-5.4-mini
-  reasoning_effort: medium
-  enable_vision_input: true
+intake:
   silence_minutes_default: 0
-  silence_extend_to_minutes: 1
-  rapid_burst_window_seconds: 30
+  post_agent_cooldown_seconds: 180
 db_gateway:
   request_timeout_seconds: 35
 signoz:
@@ -56,11 +51,6 @@ zendesk_mcp:
 notification_service:
   mcp_url: https://ops.example.com/notification-service
   request_timeout_seconds: 35
-sandbox_worker:
-  mcp_url: https://ops.example.com/sandbox-worker
-  request_timeout_seconds: 65
-feishu:
-  daily_summary_time: "09:00"
 repos:
   base_dir: ""
   repositories:
@@ -109,9 +99,6 @@ def saas_env(monkeypatch):
         "NOTIFICATION_SERVICE_URL": "https://ops.example.com/notification-service/",
         "NOTIFICATION_SERVICE_API_KEY": "notification_mcp_xxx",
         "NOTIFICATION_SERVICE_TIMEOUT_SECONDS": "45",
-        "SANDBOX_WORKER_URL": "https://ops.example.com/sandbox-worker/",
-        "SANDBOX_WORKER_API_KEY": "sandbox_worker_xxx",
-        "SANDBOX_WORKER_TIMEOUT_SECONDS": "75",
         "GITHUB_TOKEN": "gh_xxx",
         "DB_GATEWAY_URL": "https://db-gateway.example.com/",
         "DB_GATEWAY_API_KEY": "dbgw_xxx",
@@ -143,81 +130,75 @@ def test_config_loads_resources_section(saas_env, saas_config_file):
     assert cfg.resources.state_dir == ".state"
 
 
-def test_config_loads_trigger_decider_section(saas_env, saas_config_file):
+def test_config_loads_v2_intake_and_model_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.llm.enable_vision_input is True
     assert cfg.llm.reasoning_effort == "high"
-    assert cfg.llm.subagent_model == "gpt-5.4-mini"
-    assert cfg.llm.subagent_reasoning_effort == "low"
-    assert cfg.trigger_decider.llm_model == "gpt-5.4-mini"
-    assert cfg.trigger_decider.reasoning_effort == "medium"
-    assert cfg.trigger_decider.enable_vision_input is True
-    assert cfg.trigger_decider.silence_minutes_default == 0
-    assert cfg.trigger_decider.silence_extend_to_minutes == 1
-    assert cfg.trigger_decider.rapid_burst_window_seconds == 30
+    assert cfg.intake.silence_minutes_default == 0
+    assert cfg.intake.post_agent_cooldown_seconds == 180
 
 
 def test_llm_config_defaults_to_provider_managed_reasoning() -> None:
     cfg = LLMConfig()
 
     assert cfg.reasoning_effort == ""
-    assert cfg.subagent_reasoning_effort == ""
     assert cfg.enable_vision_input is True
-    assert TriggerDeciderConfig().enable_vision_input is True
+    assert IntakeConfig().post_agent_cooldown_seconds == 180
 
 
-def test_repository_config_keeps_both_vision_paths_enabled() -> None:
+def test_repository_config_enables_v2_visual_evidence() -> None:
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     assert raw["llm"]["enable_vision_input"] is True
-    assert raw["trigger_decider"]["enable_vision_input"] is True
+    assert "trigger_decider" not in raw
+    assert raw["intake"]["post_agent_cooldown_seconds"] == 180
 
 
 def test_repository_config_persists_agent_archives_under_resources_mount() -> None:
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    assert raw["knowledge"]["archive_dir"] == (
-        "/opt/zd-agent/resources/agent-runs"
-    )
+    assert raw["knowledge"]["archive_dir"] == ("/opt/zd-agent/resources/agent-runs")
 
 
 def test_llm_config_rejects_reasoning_effort_unsupported_by_model() -> None:
-    with pytest.raises(ValidationError, match="does not support reasoning effort 'max'"):
+    with pytest.raises(
+        ValidationError, match="does not support reasoning effort 'max'"
+    ):
         LLMConfig(model="gpt-5.4-mini", reasoning_effort="max")
-
-
-def test_llm_config_validates_subagent_effort_against_subagent_model() -> None:
-    with pytest.raises(ValidationError, match="does not support reasoning effort 'max'"):
-        LLMConfig(
-            model="gpt-5.6-terra",
-            reasoning_effort="max",
-            subagent_model="gpt-5.4-mini",
-            subagent_reasoning_effort="max",
-        )
-
-
-def test_trigger_decider_config_validates_effort_against_its_model() -> None:
-    with pytest.raises(ValidationError, match="does not support reasoning effort 'max'"):
-        TriggerDeciderConfig(llm_model="gpt-5.4-mini", reasoning_effort="max")
 
 
 def test_model_ids_are_trimmed_before_reasoning_validation() -> None:
     llm = LLMConfig(
         model="  gpt-5.6-terra  ",
         reasoning_effort="max",
-        subagent_model="  gpt-5.4-mini  ",
-        subagent_reasoning_effort="low",
-    )
-    trigger = TriggerDeciderConfig(
-        llm_model="  gpt-5.1  ",
-        reasoning_effort="high",
     )
 
     assert llm.model == "gpt-5.6-terra"
-    assert llm.subagent_model == "gpt-5.4-mini"
-    assert trigger.llm_model == "gpt-5.1"
+
+
+def test_legacy_trigger_decider_yaml_only_migrates_v2_intake_timings(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ZD_MODEL", raising=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "trigger_decider:\n"
+        "  llm_model: ignored-legacy-model\n"
+        "  enable_public_nudge: true\n"
+        "  silence_minutes_default: 2\n"
+        "  post_agent_cooldown_seconds: 45\n"
+    )
+
+    cfg = load_config(str(config_path))
+
+    assert cfg.intake == IntakeConfig(
+        silence_minutes_default=2,
+        post_agent_cooldown_seconds=45,
+    )
+    assert not hasattr(cfg, "trigger_decider")
 
 
 def test_zd_model_env_override_is_trimmed(
@@ -237,13 +218,7 @@ def test_zd_model_env_override_revalidates_reasoning_combination(
     monkeypatch,
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "llm:\n"
-        "  model: gpt-5.6-terra\n"
-        "  reasoning_effort: max\n"
-        "  subagent_model: ''\n"
-        "  subagent_reasoning_effort: max\n"
-    )
+    config_path.write_text("llm:\n  model: gpt-5.6-terra\n  reasoning_effort: max\n")
     monkeypatch.setenv("ZD_MODEL", "gpt-5.4-mini")
 
     with pytest.raises(ValueError, match="does not support reasoning effort 'max'"):
@@ -272,12 +247,12 @@ def test_config_loads_next_batch_mcp_sections(saas_env, saas_config_file):
     assert cfg.docs_tool_service.mcp_url == "https://ops.example.com/docs-tool-service"
     assert cfg.docs_tool_service.mcp_api_key == "docs_mcp_xxx"
     assert cfg.docs_tool_service.request_timeout_seconds == 45
-    assert cfg.notification_service.mcp_url == "https://ops.example.com/notification-service"
+    assert (
+        cfg.notification_service.mcp_url
+        == "https://ops.example.com/notification-service"
+    )
     assert cfg.notification_service.mcp_api_key == "notification_mcp_xxx"
     assert cfg.notification_service.request_timeout_seconds == 45
-    assert cfg.sandbox_worker.mcp_url == "https://ops.example.com/sandbox-worker"
-    assert cfg.sandbox_worker.mcp_api_key == "sandbox_worker_xxx"
-    assert cfg.sandbox_worker.request_timeout_seconds == 75
 
 
 def test_config_loads_zendesk_mcp_section(saas_env, saas_config_file):
@@ -296,19 +271,15 @@ def test_config_loads_db_gateway_env(saas_env, saas_config_file):
 
 def test_config_loads_zendesk_browser_relay_env(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
-    assert cfg.public_reply.browser_relay_url == "https://zendesk.smlershou.top/zendesk-reply-mcp"
+    assert (
+        cfg.public_reply.browser_relay_url
+        == "https://zendesk.smlershou.top/zendesk-reply-mcp"
+    )
     assert cfg.public_reply.browser_relay_api_key == "relay_xxx"
     assert cfg.public_reply.browser_relay_timeout_seconds == 55
     assert cfg.public_reply.freshness_callback_url == (
         "https://agent.example.com/webhook/relay-pre-send-freshness"
     )
-
-
-def test_config_loads_feishu_section(saas_env, saas_config_file):
-    cfg = load_config(saas_config_file)
-    assert cfg.feishu.daily_summary_time == "09:00"
-    assert cfg.feishu.webhook_url == ""
-    assert cfg.feishu.webhook_secret == ""
 
 
 def test_config_loads_repos_aliases(saas_env, saas_config_file):

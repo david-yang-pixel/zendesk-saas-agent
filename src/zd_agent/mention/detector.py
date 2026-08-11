@@ -92,6 +92,7 @@ def get_self_user_id() -> int | None:
     """获取 agent 自身的 Zendesk user_id（来自配置，首次调用时缓存）。"""
     try:
         from zd_agent.config import get_config
+
         configured_id = int(get_config().zendesk.agent_user_id or 0)
         self_user_id = configured_id or None
         if self_user_id is None:

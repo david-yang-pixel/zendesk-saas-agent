@@ -1,4 +1,5 @@
 """Tests for trigger consumer entry gates."""
+
 from __future__ import annotations
 
 import json
@@ -121,6 +122,32 @@ def test_mention_trigger_bypasses_escalated_state(tmp_path) -> None:
 
     assert result.handled is False
     assert result.action == "continue"
+
+
+def test_manual_reconciliation_blocks_every_trigger_including_mentions(
+    tmp_path,
+) -> None:
+    state = _state(tmp_path)
+    state.set(
+        9999,
+        TicketState(
+            state="manual_reconciliation",
+            first_seen=_now(),
+            delivery_attempt_id="ambiguous-delivery",
+        ),
+    )
+
+    result = handle_trigger_entry_gate(
+        ticket_id=9999,
+        source="mention",
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        is_paused_fn=MagicMock(return_value=False),
+    )
+
+    assert result.handled is True
+    assert result.action == "manual_reconciliation_required"
 
 
 def test_gate_allows_when_no_skip_condition_matches(tmp_path) -> None:

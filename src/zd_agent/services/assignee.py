@@ -1,4 +1,5 @@
 """Shared helpers for deciding whether Zendesk already has ticket ownership."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

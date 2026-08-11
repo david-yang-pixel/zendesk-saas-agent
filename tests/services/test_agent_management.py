@@ -18,8 +18,6 @@ def test_build_agent_config_manifest_redacts_secrets() -> None:
     cfg = AppConfig()
     cfg.llm.model = "gpt-5.5"
     cfg.llm.reasoning_effort = "high"
-    cfg.llm.subagent_model = "gpt-5.4-mini"
-    cfg.llm.subagent_reasoning_effort = "low"
     cfg.llm.base_url = "https://llm.example.test/v1"
     cfg.zendesk.subdomain = "langgenius"
     cfg.zendesk.email = "agent@example.test"
@@ -34,9 +32,7 @@ def test_build_agent_config_manifest_redacts_secrets() -> None:
 
     assert manifest["llm"]["model"] == "gpt-5.5"
     assert manifest["llm"]["reasoning_effort"] == "high"
-    assert manifest["subagent"]["model"] == "gpt-5.4-mini"
-    assert manifest["subagent"]["reasoning_effort"] == "low"
-    assert manifest["subagent"]["effective_reasoning_effort"] == "low"
+    assert "subagent" not in manifest
     assert manifest["llm"]["base_url"] == "https://llm.example.test/v1"
     assert manifest["llm"]["api_key_configured"] is False
     assert manifest["zendesk"]["subdomain"] == "langgenius"
@@ -64,27 +60,21 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
                 "temperature": 0.3,
                 "api_key": "must-not-be-applied",
             },
-            "subagent": {
-                "model": "gpt-5.4-mini",
-                "reasoning_effort": "low",
-            },
+            "subagent": {"model": "ignored-legacy-field"},
             "agent": {
                 "max_concurrent_sessions": 3,
-                "guardrails": {
-                    "max_rounds": 18,
-                    "timeout_seconds": 480,
-                    "max_context_tokens": 800000,
-                    "compaction_threshold": 0.4,
-                    "context_compaction_trigger_tokens": 42000,
-                    "context_compaction_target_tokens": 28000,
-                },
+            },
+            "casework": {
+                "max_investigation_rounds": 18,
+                "max_investigation_calls": 32,
+                "max_investigation_tokens": 800000,
             },
             "features": {
                 "auto_public_reply": {"enabled": True},
-                "customer_reply_loop": {
+                "customer_event_recovery": {
                     "enabled": True,
                     "debounce_seconds": 45,
-                    "max_auto_replies": 8,
+                    "customer_wait_timeout_hours": 36,
                 },
             },
             "zendesk": {
@@ -98,24 +88,19 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
 
     assert cfg.llm.model == "gpt-5.4"
     assert cfg.llm.reasoning_effort == "high"
-    assert cfg.llm.subagent_model == "gpt-5.4-mini"
-    assert cfg.llm.subagent_reasoning_effort == "low"
     assert cfg.llm.temperature == 0.3
     assert cfg.agent.max_concurrent_sessions == 3
-    assert cfg.agent.guardrails.max_rounds == 18
-    assert cfg.agent.guardrails.timeout_seconds == 480
-    assert cfg.agent.guardrails.max_tokens_per_session == 800000
-    assert cfg.agent.guardrails.compaction_threshold == 0.4
-    assert cfg.agent.guardrails.context_compaction_trigger_tokens == 42000
-    assert cfg.agent.guardrails.context_compaction_target_tokens == 28000
+    assert cfg.casework.max_investigation_rounds == 18
+    assert cfg.casework.max_investigation_calls == 32
+    assert cfg.casework.max_investigation_tokens == 800000
     assert cfg.public_reply.enabled is True
     assert cfg.public_reply.silence_window_seconds == 45
-    assert cfg.public_reply.max_ask_count == 8
+    assert cfg.waiting_poller.customer_wait_timeout_hours == 36
+    assert "subagent" not in manifest
     assert cfg.zendesk.poll_interval_seconds == 180
     assert cfg.zendesk.mention_trigger == "@saas-agent"
     assert cfg.zendesk.api_token == ""
-    assert manifest["agent"]["guardrails"]["max_context_tokens"] == 800000
-    assert manifest["agent"]["guardrails"]["context_compaction_target_tokens"] == 28000
+    assert manifest["casework"]["max_investigation_tokens"] == 800000
 
 
 def test_update_agent_config_rejects_invalid_public_reply_atomically() -> None:
@@ -154,12 +139,12 @@ def test_update_agent_config_trims_model_ids() -> None:
                 "model": "  gpt-5.6-terra  ",
                 "reasoning_effort": "max",
             },
-            "subagent": {"model": "  gpt-5.4-mini  "},
+            "subagent": {"model": "  ignored-legacy-field  "},
         },
     )
 
     assert cfg.llm.model == "gpt-5.6-terra"
-    assert cfg.llm.subagent_model == "gpt-5.4-mini"
+    assert "subagent" not in build_agent_config_manifest(cfg)
 
 
 def test_build_agent_tools_manifest_includes_metadata() -> None:
@@ -196,11 +181,11 @@ def test_build_agent_tools_manifest_includes_metadata() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_agent_models_includes_default_candidates_without_provider_fetch() -> None:
+async def test_list_agent_models_includes_default_candidates_without_provider_fetch() -> (
+    None
+):
     cfg = AppConfig()
     cfg.llm.model = "gpt-5.5"
-    cfg.llm.subagent_model = "gpt-5.5-mini"
-
     manifest = await list_agent_models(cfg)
 
     model_ids = [model["id"] for model in manifest["models"]]
@@ -209,6 +194,7 @@ async def test_list_agent_models_includes_default_candidates_without_provider_fe
     assert "gpt-5.4-mini" in model_ids
     assert manifest["count"] == len(model_ids)
     assert manifest["count"] > 1
+    assert manifest["target"] == "agent"
     by_id = {model["id"]: model for model in manifest["models"]}
     assert by_id["gpt-5.5"]["reasoning_efforts"] == [
         "none",
@@ -245,7 +231,9 @@ async def test_list_agent_models_merges_provider_models_with_defaults() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_model_fetch_disables_environment_proxy_trust(monkeypatch) -> None:
+async def test_provider_model_fetch_disables_environment_proxy_trust(
+    monkeypatch,
+) -> None:
     observed: dict[str, object] = {}
 
     class FakeResponse:

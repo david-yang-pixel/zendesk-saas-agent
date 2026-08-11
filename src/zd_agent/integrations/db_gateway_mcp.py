@@ -1,4 +1,5 @@
 """MCP client wrapper for DB Gateway."""
+
 from __future__ import annotations
 
 import json

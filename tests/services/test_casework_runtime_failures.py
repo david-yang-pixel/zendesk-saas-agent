@@ -47,3 +47,34 @@ async def test_runtime_failure_ownership_is_typed_and_replayable(
     assert persisted is not None
     assert persisted.delivery_required is False
     assert persisted.complete is True
+
+
+async def test_pre_snapshot_runtime_failure_uses_a_durable_synthetic_cursor(
+    tmp_path: Path,
+) -> None:
+    async def succeed(**_kwargs) -> bool:
+        return True
+
+    receipt = await persist_runtime_failure_ownership(
+        state_dir=tmp_path,
+        ticket_id=4002,
+        delivery_attempt_id="delivery-before-snapshot",
+        generation=0,
+        source_event_id="",
+        snapshot_customer_message_count=None,
+        snapshot_customer_last_message_id="",
+        automation_attempt=3,
+        failure_type="TicketLoadError",
+        notification_sender=succeed,
+        tag_sender=succeed,
+    )
+
+    persisted = CaseworkEffectStore(
+        tmp_path / "casework_effects.sqlite3",
+    ).get(receipt.reference)
+    assert persisted is not None
+    assert persisted.source_event_id == ("runtime-failure:delivery-before-snapshot")
+    assert persisted.snapshot_customer_last_message_id == (
+        "runtime-failure:delivery-before-snapshot"
+    )
+    assert persisted.complete is True

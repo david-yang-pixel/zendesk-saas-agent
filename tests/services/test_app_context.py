@@ -1,4 +1,5 @@
 """Tests for typed aiohttp application context keys."""
+
 from __future__ import annotations
 
 import asyncio

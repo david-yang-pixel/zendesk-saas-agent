@@ -13,6 +13,7 @@ class DeliveryState(str, Enum):
     NOT_REQUIRED = "not_required"
     DRAFTED = "drafted"
     CONFIRMED = "confirmed"
+    PAUSED = "paused"
     DEFERRED = "deferred"
     AMBIGUOUS = "ambiguous"
     FAILED = "failed"
@@ -110,6 +111,7 @@ class BillingBindingStatus(str, Enum):
 
 
 class EvidenceAuthority(str, Enum):
+    TARGET_BINDING = "target_binding"
     CURRENT_AUTHORITATIVE = "current_authoritative"
     CURRENT_SUPPORTING = "current_supporting"
     CONTROL_OR_BASELINE = "control_or_baseline"
@@ -122,8 +124,16 @@ class EvidenceResultStatus(str, Enum):
     FAILURE = "failure"
 
 
+class VisualObservationStatus(str, Enum):
+    OBSERVED = "observed"
+    UNAVAILABLE = "unavailable"
+    OMITTED = "omitted"
+    NO_MODEL_RESULT = "no_model_result"
+
+
 class ClaimRole(str, Enum):
     PRODUCT_FACT = "product_fact"
+    VISUAL_OBSERVATION = "visual_observation"
     CURRENT_STATE = "current_state"
     FAILING_BOUNDARY = "failing_boundary"
     ROOT_CAUSE = "root_cause"

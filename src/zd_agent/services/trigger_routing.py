@@ -1,4 +1,5 @@
 """Pure routing helpers for the trigger consumer."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -54,9 +55,7 @@ def direct_trigger_cooldown(
     if existing is None or existing.last_agent_finish_ts is None:
         return CooldownDecision(should_skip=False)
 
-    cooldown_seconds = (
-        30 if (source == "mention" and hint) else full_cooldown_seconds
-    )
+    cooldown_seconds = 30 if (source == "mention" and hint) else full_cooldown_seconds
     elapsed_seconds = (now - _aware(existing.last_agent_finish_ts)).total_seconds()
     return CooldownDecision(
         should_skip=elapsed_seconds < cooldown_seconds,

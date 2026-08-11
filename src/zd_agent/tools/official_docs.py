@@ -25,7 +25,9 @@ ALLOWED_HOSTS = {
 MAX_READ_CHARS = 18000
 
 
-def _coerce_limit(value: Any, *, default: int = 5, maximum: int = 10) -> int | ToolResult:
+def _coerce_limit(
+    value: Any, *, default: int = 5, maximum: int = 10
+) -> int | ToolResult:
     try:
         limit = int(default if value is None else value)
     except (TypeError, ValueError):
@@ -47,7 +49,9 @@ def parse_llms_index(content: str, *, source: str) -> list[OfficialDocEntry]:
     """解析 llms.txt 索引，抽取标题、URL 与简介。"""
 
     entries: list[OfficialDocEntry] = []
-    pattern = re.compile(r"^- \[(?P<title>.+?)\]\((?P<url>https?://[^)]+)\)(?:: (?P<desc>.*))?$")
+    pattern = re.compile(
+        r"^- \[(?P<title>.+?)\]\((?P<url>https?://[^)]+)\)(?:: (?P<desc>.*))?$"
+    )
 
     for raw_line in content.splitlines():
         line = raw_line.strip()
@@ -69,7 +73,10 @@ def parse_llms_index(content: str, *, source: str) -> list[OfficialDocEntry]:
 
 
 def search_doc_entries(
-    entries: list[OfficialDocEntry], *, query: str, limit: int = 5,
+    entries: list[OfficialDocEntry],
+    *,
+    query: str,
+    limit: int = 5,
 ) -> list[OfficialDocEntry]:
     """在 llms.txt 条目中做轻量检索排序。"""
 
@@ -144,7 +151,9 @@ def _entries_from_payload(payload: dict[str, Any]) -> list[OfficialDocEntry]:
             OfficialDocEntry(
                 title=title,
                 url=url,
-                description=str(raw.get("description") or raw.get("summary") or "").strip(),
+                description=str(
+                    raw.get("description") or raw.get("summary") or ""
+                ).strip(),
                 source=str(raw.get("source") or "").strip(),
             )
         )
@@ -156,7 +165,9 @@ def _read_text_from_payload(payload: dict[str, Any], *, url: str) -> str:
     if isinstance(data, str):
         text = data
     elif isinstance(data, dict):
-        text = str(data.get("content") or data.get("text") or data.get("markdown") or "")
+        text = str(
+            data.get("content") or data.get("text") or data.get("markdown") or ""
+        )
         url = str(data.get("url") or url)
     else:
         text = ""
@@ -222,9 +233,7 @@ class OfficialDocsSearch(Tool):
             return ToolResult(output=output)
         entries = _entries_from_payload(payload)
         if not entries:
-            return ToolResult(
-                output=f"未在官方文档索引中找到与「{query}」相关的内容"
-            )
+            return ToolResult(output=f"未在官方文档索引中找到与「{query}」相关的内容")
         return ToolResult(output=_format_search_results(query, entries[:limit]))
 
 

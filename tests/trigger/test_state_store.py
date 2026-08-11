@@ -1,4 +1,5 @@
 """Test TicketStateTracker persistence + state semantics."""
+
 from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -19,11 +20,14 @@ def _now():
 
 def test_set_and_get(tmp_path):
     store = TicketStateTracker(tmp_path / "tickets.json")
-    store.set("12345", TicketState(
-        state="waiting_for_issue",
-        first_seen=_now(),
-        last_customer_comment_id=67890,
-    ))
+    store.set(
+        "12345",
+        TicketState(
+            state="waiting_for_issue",
+            first_seen=_now(),
+            last_customer_comment_id=67890,
+        ),
+    )
     rec = store.get("12345")
     assert rec is not None
     assert rec.state == "waiting_for_issue"
@@ -73,6 +77,35 @@ def test_update_if_revision_stale_attempt_does_not_touch_memory_or_disk(
     assert commit is None
     assert store.get("1").state == "processed"
     assert path.read_text(encoding="utf-8") == serialized_before
+
+
+def test_update_if_revision_is_atomic_across_tracker_instances(tmp_path) -> None:
+    """Two processes cannot both commit from the same persisted revision."""
+    path = tmp_path / "tickets.json"
+    seed = TicketStateTracker(path)
+    seed.set("1", TicketState(state="in_silence_window", first_seen=_now()))
+    first = TicketStateTracker(path)
+    second = TicketStateTracker(path)
+    revision = first.get("1").state_revision
+
+    first_commit = first.update_if_revision(
+        "1",
+        expected_revision=revision,
+        expected_state="in_silence_window",
+        mutate=lambda current: replace(current, last_verdict="first"),
+    )
+    stale_commit = second.update_if_revision(
+        "1",
+        expected_revision=revision,
+        expected_state="in_silence_window",
+        mutate=lambda current: replace(current, last_verdict="second"),
+    )
+
+    assert first_commit is not None
+    assert stale_commit is None
+    persisted = TicketStateTracker(path).get("1")
+    assert persisted is not None
+    assert persisted.last_verdict == "first"
 
 
 def test_update_if_revision_checks_owner_without_running_mutation(tmp_path) -> None:
@@ -193,24 +226,62 @@ def test_datetime_roundtrip(tmp_path):
     path = tmp_path / "tickets.json"
     store = TicketStateTracker(path)
     now = _now()
-    store.set("1", TicketState(
-        state="in_silence_window",
-        first_seen=now,
-        last_comment_ts=now,
-        silence_window_end=now,
-    ))
+    store.set(
+        "1",
+        TicketState(
+            state="in_silence_window",
+            first_seen=now,
+            last_comment_ts=now,
+            silence_window_end=now,
+        ),
+    )
     store2 = TicketStateTracker(path)
     rec = store2.get("1")
     assert rec.first_seen.isoformat() == now.isoformat()
     assert rec.last_comment_ts.isoformat() == now.isoformat()
 
 
+def test_form_wait_started_at_roundtrips(tmp_path):
+    path = tmp_path / "tickets.json"
+    started_at = _now()
+    store = TicketStateTracker(path)
+    store.set(
+        "1",
+        TicketState(
+            state="waiting_for_form",
+            first_seen=started_at,
+            form_wait_started_at=started_at,
+        ),
+    )
+
+    rec = TicketStateTracker(path).get("1")
+
+    assert rec is not None
+    assert rec.form_wait_started_at == started_at
+
+
+def test_old_state_without_form_wait_started_at_loads(tmp_path):
+    path = tmp_path / "tickets.json"
+    path.write_text(
+        '{"1":{"state":"waiting_for_form","first_seen":"2026-08-01T00:00:00+00:00"}}',
+        encoding="utf-8",
+    )
+
+    rec = TicketStateTracker(path).get("1")
+
+    assert rec is not None
+    assert rec.form_wait_started_at is None
+
+
 def test_corrupted_json_is_quarantined_and_reported(tmp_path):
     path = tmp_path / "tickets.json"
     path.write_text("not json at all", encoding="utf-8")
 
-    with patch("zd_agent.trigger.state_store.logger.error") as log_error, pytest.raises(
-        TicketStateCorruptedError,
+    with (
+        patch("zd_agent.trigger.state_store.logger.error") as log_error,
+        pytest.raises(
+            TicketStateCorruptedError,
+        ),
     ):
         TicketStateTracker(path)
 
@@ -244,11 +315,14 @@ def test_last_agent_finish_ts_persists(tmp_path):
     path = tmp_path / "tickets.json"
     finish_ts = _now()
     store1 = TicketStateTracker(path)
-    store1.set("1", TicketState(
-        state="processed",
-        first_seen=_now(),
-        last_agent_finish_ts=finish_ts,
-    ))
+    store1.set(
+        "1",
+        TicketState(
+            state="processed",
+            first_seen=_now(),
+            last_agent_finish_ts=finish_ts,
+        ),
+    )
     store2 = TicketStateTracker(path)
     rec = store2.get("1")
     assert rec is not None
@@ -268,6 +342,7 @@ def test_last_agent_finish_ts_default_none(tmp_path):
 # M3 (2026-05-13) auto-public-reply 新增字段测试
 # ============================================================================
 
+
 class TestEscalatedToHumanState:
     """转人工后 agent 完全退出此工单。"""
 
@@ -279,12 +354,15 @@ class TestEscalatedToHumanState:
         path = tmp_path / "tickets.json"
         ts = _now()
         store1 = TicketStateTracker(path)
-        store1.set("999", TicketState(
-            state="escalated_to_human",
-            first_seen=ts,
-            escalated_at=ts,
-            escalated_reason="customer_requested",
-        ))
+        store1.set(
+            "999",
+            TicketState(
+                state="escalated_to_human",
+                first_seen=ts,
+                escalated_at=ts,
+                escalated_reason="customer_requested",
+            ),
+        )
         store2 = TicketStateTracker(path)
         rec = store2.get("999")
         assert rec.state == "escalated_to_human"
@@ -295,11 +373,16 @@ class TestEscalatedToHumanState:
     def test_invalid_state_still_rejected(self, tmp_path):
         """新 valid state 加了但其它无效字符串仍报错。"""
         import pytest
+
         store = TicketStateTracker(tmp_path / "tickets.json")
         with pytest.raises(ValueError):
-            store.set("1", TicketState(
-                state="some_invalid_state_xyz", first_seen=_now(),
-            ))
+            store.set(
+                "1",
+                TicketState(
+                    state="some_invalid_state_xyz",
+                    first_seen=_now(),
+                ),
+            )
 
 
 class TestAskCount:
@@ -307,9 +390,13 @@ class TestAskCount:
 
     def test_default_zero(self, tmp_path):
         store = TicketStateTracker(tmp_path / "tickets.json")
-        store.set("1", TicketState(
-            state="waiting_for_issue", first_seen=_now(),
-        ))
+        store.set(
+            "1",
+            TicketState(
+                state="waiting_for_issue",
+                first_seen=_now(),
+            ),
+        )
         rec = store.get("1")
         assert rec.ask_count == 0
 
@@ -317,23 +404,29 @@ class TestAskCount:
         """模拟 trigger_consumer 每次 ask 客户累加 +1。"""
         path = tmp_path / "tickets.json"
         store1 = TicketStateTracker(path)
-        store1.set("1", TicketState(
-            state="waiting_for_issue",
-            first_seen=_now(),
-            ask_count=3,  # 已经问了 3 次
-        ))
+        store1.set(
+            "1",
+            TicketState(
+                state="waiting_for_issue",
+                first_seen=_now(),
+                ask_count=3,  # 已经问了 3 次
+            ),
+        )
         store2 = TicketStateTracker(path)
         assert store2.get("1").ask_count == 3
 
     def test_high_count_supported(self, tmp_path):
         """超过 max_ask_count（10）的值也能存——M4 是逻辑层处理上限。"""
         store = TicketStateTracker(tmp_path / "tickets.json")
-        store.set("1", TicketState(
-            state="escalated_to_human",
-            first_seen=_now(),
-            ask_count=15,
-            escalated_reason="max_asks_reached",
-        ))
+        store.set(
+            "1",
+            TicketState(
+                state="escalated_to_human",
+                first_seen=_now(),
+                ask_count=15,
+                escalated_reason="max_asks_reached",
+            ),
+        )
         assert store.get("1").ask_count == 15
 
 
@@ -342,9 +435,13 @@ class TestEscalatedReasonField:
 
     def test_default_empty_string(self, tmp_path):
         store = TicketStateTracker(tmp_path / "tickets.json")
-        store.set("1", TicketState(
-            state="waiting_for_issue", first_seen=_now(),
-        ))
+        store.set(
+            "1",
+            TicketState(
+                state="waiting_for_issue",
+                first_seen=_now(),
+            ),
+        )
         assert store.get("1").escalated_reason == ""
 
     def test_supports_known_reasons(self, tmp_path):
@@ -358,12 +455,15 @@ class TestEscalatedReasonField:
             "manual",
         ):
             store = TicketStateTracker(tmp_path / f"{reason}.json")
-            store.set("1", TicketState(
-                state="escalated_to_human",
-                first_seen=_now(),
-                escalated_at=_now(),
-                escalated_reason=reason,
-            ))
+            store.set(
+                "1",
+                TicketState(
+                    state="escalated_to_human",
+                    first_seen=_now(),
+                    escalated_at=_now(),
+                    escalated_reason=reason,
+                ),
+            )
             assert store.get("1").escalated_reason == reason
 
 
@@ -372,6 +472,7 @@ class TestBackwardCompat:
 
     def test_old_state_without_new_fields_loads(self, tmp_path):
         import json as _json
+
         path = tmp_path / "tickets.json"
         # 模拟旧版 state.json（没有 ask_count / escalated_at / escalated_reason）
         old_data = {

@@ -1,12 +1,16 @@
 """TicketStateTracker: JSON-backed state machine for ticket lifecycle."""
+
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from time import time_ns
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from zd_agent.log import get_logger
 from zd_agent.services.atomic_write import atomic_write_text
@@ -16,18 +20,22 @@ logger = get_logger(module="trigger.state_store")
 
 
 VALID_STATES = {
-    "waiting_for_issue",    # LLM judged greeting/insufficient, waiting for customer
-    "waiting_for_form",     # Answer Bot blocking form is not submitted yet
-    "awaiting_customer",    # v2 sent a confirmed ask and awaits new evidence
-    "in_silence_window",    # LLM judged substantial issue, within silence period
-    "processing",           # AgentSession running
-    "processed",            # done (first pass or followup)
-    "waiting_for_auth",     # Teleport down, suspended
-    "abandoned",            # customer gone too long
-    "escalated_to_human",   # 已转人工：agent 完全退出此工单，4 个 entry 入口 skip
-    "owned",                # v2 typed owner command is durable; agent exits
-    "externally_owned",     # a real human owns the ticket; automation exits
-    "out_of_scope",         # Zendesk lifecycle/status is no longer automatable
+    # Historical values remain loadable until all persisted state has passed
+    # through v2_state_migration.  V2 production code never writes them.
+    "waiting_for_issue",  # legacy: generic classifier wait
+    "waiting_for_form",  # Answer Bot blocking form is not submitted yet
+    "awaiting_customer",  # v2 sent a confirmed ask and awaits new evidence
+    "in_silence_window",  # LLM judged substantial issue, within silence period
+    "processing",  # AgentSession running
+    "ownership_pending",  # typed v2 owner command is being durably completed
+    "processed",  # done (first pass or followup)
+    "waiting_for_auth",  # Teleport down, suspended
+    "abandoned",  # legacy: customer timeout + implicit escalation
+    "escalated_to_human",  # legacy: untyped human handoff
+    "owned",  # v2 typed owner command is durable; agent exits
+    "externally_owned",  # a real human owns the ticket; automation exits
+    "out_of_scope",  # Zendesk lifecycle/status is no longer automatable
+    "manual_reconciliation",  # ambiguous external effect requires an operator
 }
 
 
@@ -42,14 +50,16 @@ class TicketState:
     last_customer_comment_id: Optional[str] = None
     last_comment_ts: Optional[datetime] = None
     last_eval_at: Optional[datetime] = None
+    # Start of the current Answer Bot blocking-form wait.  ``first_seen`` is
+    # ticket-lifetime metadata and may predate this wait by days or weeks.
+    form_wait_started_at: Optional[datetime] = None
     silence_window_end: Optional[datetime] = None
     processed_count: int = 0
     last_verdict: str = ""
-    # 主动 public ask 时间，避免重复 nudge；客户新消息到达时由调用方重置为 None
+    # Legacy classifier/notification markers retained only for state-file
+    # deserialization. V2 does not create nudges or escalation alerts.
     nudge_sent_at: Optional[datetime] = None
-    # 30min greeting 飞书告警发送时间，去重
     alert_sent_at: Optional[datetime] = None
-    # 24h abandoned 飞书告警发送时间，去重
     abandoned_alert_sent_at: Optional[datetime] = None
     # 上次 AgentSession 完成时刻；客户新消息到达时若距此 < cooldown，则跳过 dispatch
     # （防止客户连发两条触发 agent 跑两次同语义任务）。由 SessionManager / runner finally
@@ -73,21 +83,10 @@ class TicketState:
     # transition, preventing stale asks or dispatches from taking effect.
     state_revision: int = 0
 
-    # ───── M3 (2026-05-13) auto-public-reply 新增字段 ─────
-    # 同工单内 agent 累计自动 ask 客户的次数（每次发 public ask 模板 A/B/C/D 累加）。
-    # 用于 M4 实施 max_ask_count（默认 10）上限：超过后强制转人工。
-    # 客户 verdict 终于变 substantial 后保留计数不重置（说明 agent 花了几轮才拿到信息，
-    # 用于事后复盘 + 调 prompt）。
+    # Historical ask/escalation audit fields remain readable; v2 writes typed
+    # reply dispositions and ownership effects instead.
     ask_count: int = 0
-    # 转人工时刻（仅 state=escalated_to_human 时填）。供飞书卡片显示 + 事后审计。
     escalated_at: Optional[datetime] = None
-    # 转人工原因。已支持的值：
-    #   - customer_requested      客户主动说 "human" / 触发 fast-path
-    #   - max_asks_reached        累计 ask >= max_ask_count 上限
-    #   - high_risk_category      工单被判定为 refund / emotional / incident
-    #   - low_confidence          agent 自评 confidence=low
-    #   - agent_error             agent 自身出错（异常 / 工具失败 / token 超额等）
-    #   - manual                  人工通过 mention 主动接手（兼容旧路径）
     escalated_reason: str = ""
     # v2 ownership is independent from customer reply wording.  These fields
     # are populated only after a typed durable command exists.
@@ -106,9 +105,16 @@ class TicketState:
     def from_dict(cls, d: dict) -> "TicketState":
         data = dict(d)
         for k in (
-            "first_seen", "last_comment_ts", "last_eval_at", "silence_window_end",
-            "nudge_sent_at", "alert_sent_at", "abandoned_alert_sent_at",
-            "last_agent_finish_ts", "escalated_at",
+            "first_seen",
+            "last_comment_ts",
+            "last_eval_at",
+            "form_wait_started_at",
+            "silence_window_end",
+            "nudge_sent_at",
+            "alert_sent_at",
+            "abandoned_alert_sent_at",
+            "last_agent_finish_ts",
+            "escalated_at",
         ):
             if data.get(k):
                 data[k] = datetime.fromisoformat(data[k])
@@ -136,11 +142,18 @@ class TicketStateTracker:
 
     def __init__(self, path: Path | str):
         self.path = Path(path)
+        self._lock_path = self.path.with_name(f"{self.path.name}.lock")
         self._data: dict[str, TicketState] = {}
         self._serialized: dict[str, dict] = {}
         self._load()
 
     def _load(self) -> None:
+        with self._file_lock():
+            self._load_unlocked()
+
+    def _load_unlocked(self) -> None:
+        self._data = {}
+        self._serialized = {}
         if not self.path.exists():
             return
         try:
@@ -172,6 +185,20 @@ class TicketStateTracker:
         self._data = loaded
         self._serialized = serialized
 
+    @contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        """Serialize read-modify-write cycles across agent processes."""
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path.parent.chmod(0o700)
+        descriptor = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            os.chmod(self._lock_path, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
     def _quarantine(self, reason: str) -> None:
         quarantine_path = self.path.with_name(
             f"{self.path.name}.corrupt-{time_ns()}",
@@ -194,30 +221,34 @@ class TicketStateTracker:
         )
 
     def get(self, ticket_id: str | int) -> Optional[TicketState]:
-        return self._data.get(str(ticket_id))
+        with self._file_lock():
+            self._load_unlocked()
+            return self._data.get(str(ticket_id))
 
     def set(self, ticket_id: str | int, state: TicketState) -> None:
         if state.state not in VALID_STATES:
             raise ValueError(f"invalid state: {state.state}")
-        key = str(ticket_id)
-        previous = self._serialized.get(key)
-        previous_revision = int((previous or {}).get("state_revision") or 0)
-        candidate = state.to_dict()
-        # Callers often mutate the tracker-owned dataclass before set().  Use
-        # the last serialized snapshot as the source of truth for comparison
-        # and generation assignment instead of trusting the mutable object.
-        candidate["state_revision"] = previous_revision
-        if previous == candidate:
-            state.state_revision = previous_revision
+        with self._file_lock():
+            self._load_unlocked()
+            key = str(ticket_id)
+            previous = self._serialized.get(key)
+            previous_revision = int((previous or {}).get("state_revision") or 0)
+            candidate = state.to_dict()
+            # Callers often mutate the tracker-owned dataclass before set().  Use
+            # the last serialized snapshot as the source of truth for comparison
+            # and generation assignment instead of trusting the mutable object.
+            candidate["state_revision"] = previous_revision
+            if previous == candidate:
+                state.state_revision = previous_revision
+                self._data[key] = state
+                return
+            state.state_revision = previous_revision + 1
+            serialized = state.to_dict()
+            next_serialized = dict(self._serialized)
+            next_serialized[key] = serialized
+            self._save(next_serialized)
             self._data[key] = state
-            return
-        state.state_revision = previous_revision + 1
-        serialized = state.to_dict()
-        next_serialized = dict(self._serialized)
-        next_serialized[key] = serialized
-        self._save(next_serialized)
-        self._data[key] = state
-        self._serialized = next_serialized
+            self._serialized = next_serialized
 
     def update_if_revision(
         self,
@@ -241,71 +272,75 @@ class TicketStateTracker:
         changing memory/disk.  Every successful update creates exactly one new
         revision, including a logically identical mutation used as a claim.
         """
-        key = str(ticket_id)
-        serialized_before = self._serialized.get(key)
-        if serialized_before is None:
-            if expected_revision is not None:
+        with self._file_lock():
+            self._load_unlocked()
+            key = str(ticket_id)
+            serialized_before = self._serialized.get(key)
+            if serialized_before is None:
+                if expected_revision is not None:
+                    return None
+                current_revision: int | None = None
+                current_state: TicketState | None = None
+            else:
+                current_revision = int(serialized_before.get("state_revision") or 0)
+                if current_revision != expected_revision:
+                    return None
+                current_state = TicketState.from_dict(dict(serialized_before))
+
+            if expected_state is not None and (
+                current_state is None or current_state.state != expected_state
+            ):
                 return None
-            current_revision: int | None = None
-            current_state: TicketState | None = None
-        else:
-            current_revision = int(serialized_before.get("state_revision") or 0)
-            if current_revision != expected_revision:
+            if expected_active_session_id is not None and (
+                current_state is None
+                or current_state.active_session_id != expected_active_session_id
+            ):
                 return None
-            current_state = TicketState.from_dict(dict(serialized_before))
 
-        if expected_state is not None and (
-            current_state is None or current_state.state != expected_state
-        ):
-            return None
-        if expected_active_session_id is not None and (
-            current_state is None
-            or current_state.active_session_id != expected_active_session_id
-        ):
-            return None
+            before = (
+                TicketState.from_dict(dict(serialized_before))
+                if serialized_before is not None
+                else None
+            )
+            mutation_input = (
+                TicketState.from_dict(dict(serialized_before))
+                if serialized_before is not None
+                else None
+            )
+            candidate = mutate(mutation_input)
+            if not isinstance(candidate, TicketState):
+                raise TypeError("ticket state mutation must return TicketState")
+            if candidate.state not in VALID_STATES:
+                raise ValueError(f"invalid state: {candidate.state}")
 
-        before = (
-            TicketState.from_dict(dict(serialized_before))
-            if serialized_before is not None
-            else None
-        )
-        mutation_input = (
-            TicketState.from_dict(dict(serialized_before))
-            if serialized_before is not None
-            else None
-        )
-        candidate = mutate(mutation_input)
-        if not isinstance(candidate, TicketState):
-            raise TypeError("ticket state mutation must return TicketState")
-        if candidate.state not in VALID_STATES:
-            raise ValueError(f"invalid state: {candidate.state}")
+            next_revision = (current_revision or 0) + 1
+            candidate.state_revision = next_revision
+            serialized_after = candidate.to_dict()
+            next_serialized = dict(self._serialized)
+            next_serialized[key] = serialized_after
+            self._save(next_serialized)
 
-        next_revision = (current_revision or 0) + 1
-        candidate.state_revision = next_revision
-        serialized_after = candidate.to_dict()
-        next_serialized = dict(self._serialized)
-        next_serialized[key] = serialized_after
-        self._save(next_serialized)
-
-        stored_state = TicketState.from_dict(dict(serialized_after))
-        self._data[key] = stored_state
-        self._serialized = next_serialized
-        return TicketStateCommit(
-            before=before,
-            after=TicketState.from_dict(dict(serialized_after)),
-            previous_revision=current_revision,
-            state_revision=next_revision,
-        )
+            stored_state = TicketState.from_dict(dict(serialized_after))
+            self._data[key] = stored_state
+            self._serialized = next_serialized
+            return TicketStateCommit(
+                before=before,
+                after=TicketState.from_dict(dict(serialized_after)),
+                previous_revision=current_revision,
+                state_revision=next_revision,
+            )
 
     def delete(self, ticket_id: str | int) -> None:
-        key = str(ticket_id)
-        if key not in self._data:
-            return
-        next_serialized = dict(self._serialized)
-        next_serialized.pop(key, None)
-        self._save(next_serialized)
-        self._data.pop(key)
-        self._serialized = next_serialized
+        with self._file_lock():
+            self._load_unlocked()
+            key = str(ticket_id)
+            if key not in self._data:
+                return
+            next_serialized = dict(self._serialized)
+            next_serialized.pop(key, None)
+            self._save(next_serialized)
+            self._data.pop(key)
+            self._serialized = next_serialized
 
     def delete_if_revision(
         self,
@@ -316,32 +351,40 @@ class TicketStateTracker:
         expected_active_session_id: str | None = None,
     ) -> bool:
         """Delete only the generation still owned by the caller."""
-        key = str(ticket_id)
-        serialized = self._serialized.get(key)
-        if serialized is None:
-            return False
-        current = TicketState.from_dict(dict(serialized))
-        if current.state_revision != expected_revision:
-            return False
-        if expected_state is not None and current.state != expected_state:
-            return False
-        if (
-            expected_active_session_id is not None
-            and current.active_session_id != expected_active_session_id
-        ):
-            return False
-        next_serialized = dict(self._serialized)
-        next_serialized.pop(key)
-        self._save(next_serialized)
-        self._data.pop(key, None)
-        self._serialized = next_serialized
-        return True
+        with self._file_lock():
+            self._load_unlocked()
+            key = str(ticket_id)
+            serialized = self._serialized.get(key)
+            if serialized is None:
+                return False
+            current = TicketState.from_dict(dict(serialized))
+            if current.state_revision != expected_revision:
+                return False
+            if expected_state is not None and current.state != expected_state:
+                return False
+            if (
+                expected_active_session_id is not None
+                and current.active_session_id != expected_active_session_id
+            ):
+                return False
+            next_serialized = dict(self._serialized)
+            next_serialized.pop(key)
+            self._save(next_serialized)
+            self._data.pop(key, None)
+            self._serialized = next_serialized
+            return True
 
     def list_by_state(self, state: str) -> list[str]:
-        return [k for k, v in self._data.items() if v.state == state]
+        with self._file_lock():
+            self._load_unlocked()
+            return [k for k, v in self._data.items() if v.state == state]
 
     def all(self) -> dict[str, TicketState]:
-        return dict(self._data)
+        with self._file_lock():
+            self._load_unlocked()
+            return dict(self._data)
 
     def __len__(self) -> int:
-        return len(self._data)
+        with self._file_lock():
+            self._load_unlocked()
+            return len(self._data)

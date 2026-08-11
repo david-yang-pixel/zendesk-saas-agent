@@ -236,7 +236,10 @@ class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
 
     @patch("zd_agent.tools.github_pr.call_github_tool", new_callable=AsyncMock)
     async def test_code_search_repo_scope(self, mock_call: AsyncMock) -> None:
-        mock_call.return_value = {"success": True, "data": {"total_count": 0, "items": []}}
+        mock_call.return_value = {
+            "success": True,
+            "data": {"total_count": 0, "items": []},
+        }
         await GithubCodeSearch().execute(
             {"query": "foo", "scope": "langgenius/dify-plugins"},
             AgentSession(ticket_id=1),
@@ -246,8 +249,13 @@ class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("org:", full_query)
 
     @patch("zd_agent.tools.github_pr.call_github_tool", new_callable=AsyncMock)
-    async def test_code_search_with_language_and_path(self, mock_call: AsyncMock) -> None:
-        mock_call.return_value = {"success": True, "data": {"total_count": 0, "items": []}}
+    async def test_code_search_with_language_and_path(
+        self, mock_call: AsyncMock
+    ) -> None:
+        mock_call.return_value = {
+            "success": True,
+            "data": {"total_count": 0, "items": []},
+        }
         await GithubCodeSearch().execute(
             {
                 "query": "foo",
@@ -264,7 +272,10 @@ class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
 
     @patch("zd_agent.tools.github_pr.call_github_tool", new_callable=AsyncMock)
     async def test_code_search_no_results(self, mock_call: AsyncMock) -> None:
-        mock_call.return_value = {"success": True, "data": {"total_count": 0, "items": []}}
+        mock_call.return_value = {
+            "success": True,
+            "data": {"total_count": 0, "items": []},
+        }
         result = await GithubCodeSearch().execute(
             {"query": "this-thing-does-not-exist"},
             AgentSession(ticket_id=1),
@@ -273,7 +284,9 @@ class TestGithubCodeSearch(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未找到", result.output)
 
     async def test_code_search_empty_query_rejected(self) -> None:
-        result = await GithubCodeSearch().execute({"query": "  "}, AgentSession(ticket_id=1))
+        result = await GithubCodeSearch().execute(
+            {"query": "  "}, AgentSession(ticket_id=1)
+        )
         self.assertFalse(result.success)
         self.assertIn("不能为空", result.error)
 

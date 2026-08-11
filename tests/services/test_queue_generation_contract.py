@@ -1,4 +1,5 @@
 """Contracts for stale silence events and ownerless processing prevention."""
+
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from zd_agent.config import AppConfig, TriggerDeciderConfig, ZendeskConfig
+from zd_agent.config import AppConfig, IntakeConfig, ZendeskConfig
 from zd_agent.services.silence_waker import scan_once
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
@@ -27,8 +28,7 @@ def _cfg() -> AppConfig:
         min_ticket_id=0,
         agent_user_id=45433304089364,
     )
-    cfg.trigger_decider = TriggerDeciderConfig(
-        llm_model="gpt-test",
+    cfg.intake = IntakeConfig(
         silence_minutes_default=0,
         post_agent_cooldown_seconds=180,
     )
@@ -124,16 +124,18 @@ async def test_waker_with_no_customer_message_never_leaves_ownerless_processing(
         state=tracker,
         cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=(
-            [],
-            {
-                "id": TICKET_ID,
-                "status": "new",
-                "assignee_id": None,
-                "via": {"channel": "native_messaging"},
-                "_zd_agent_conversation_events": [],
-            },
-        )),
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [],
+                {
+                    "id": TICKET_ID,
+                    "status": "new",
+                    "assignee_id": None,
+                    "via": {"channel": "native_messaging"},
+                    "_zd_agent_conversation_events": [],
+                },
+            )
+        ),
         human_takeover_fn=AsyncMock(),
     )
 
@@ -153,29 +155,31 @@ async def test_legacy_silence_ask_row_dispatches_v2_without_old_nudge(
     tracker = _expired_state(tmp_path, verdict="insufficient_info")
     pending = tracker.get(TICKET_ID)
     assert pending is not None
-    fetch_latest = AsyncMock(return_value=(
-        [
+    fetch_latest = AsyncMock(
+        return_value=(
+            [
+                {
+                    "id": "m1",
+                    "body": "The original report was incomplete.",
+                    "created_at": "2026-07-16T07:55:00Z",
+                    "content_type": "text",
+                },
+                {
+                    "id": "m2",
+                    "body": "Here is the missing workflow run ID: run-123.",
+                    "created_at": "2026-07-16T07:59:30Z",
+                    "content_type": "text",
+                },
+            ],
             {
-                "id": "m1",
-                "body": "The original report was incomplete.",
-                "created_at": "2026-07-16T07:55:00Z",
-                "content_type": "text",
+                "id": TICKET_ID,
+                "status": "open",
+                "assignee_id": None,
+                "via": {"channel": "native_messaging"},
+                "_zd_agent_conversation_events": [],
             },
-            {
-                "id": "m2",
-                "body": "Here is the missing workflow run ID: run-123.",
-                "created_at": "2026-07-16T07:59:30Z",
-                "content_type": "text",
-            },
-        ],
-        {
-            "id": TICKET_ID,
-            "status": "open",
-            "assignee_id": None,
-            "via": {"channel": "native_messaging"},
-            "_zd_agent_conversation_events": [],
-        },
-    ))
+        )
+    )
     manager = MagicMock(dispatch=AsyncMock())
     result = await handle_trigger_message(
         msg={
@@ -184,7 +188,8 @@ async def test_legacy_silence_ask_row_dispatches_v2_without_old_nudge(
             "expected_state_revision": pending.state_revision,
             "expected_silence_window_end": (
                 pending.silence_window_end.isoformat()
-                if pending.silence_window_end else ""
+                if pending.silence_window_end
+                else ""
             ),
             "delivery_attempt_id": pending.delivery_attempt_id,
         },
@@ -217,26 +222,29 @@ async def test_silence_event_stops_when_generation_changes_during_ticket_refresh
         superseding.state = "processed"
         superseding.last_customer_comment_id = "m2"
         tracker.set(TICKET_ID, superseding)
-        return ([
+        return (
+            [
+                {
+                    "id": "m1",
+                    "body": "The original report was incomplete.",
+                    "created_at": "2026-07-16T07:55:00Z",
+                    "content_type": "text",
+                },
+                {
+                    "id": "m2",
+                    "body": "Here is the missing workflow run ID: run-123.",
+                    "created_at": "2026-07-16T07:59:30Z",
+                    "content_type": "text",
+                },
+            ],
             {
-                "id": "m1",
-                "body": "The original report was incomplete.",
-                "created_at": "2026-07-16T07:55:00Z",
-                "content_type": "text",
+                "id": TICKET_ID,
+                "status": "open",
+                "assignee_id": None,
+                "via": {"channel": "native_messaging"},
+                "_zd_agent_conversation_events": [],
             },
-            {
-                "id": "m2",
-                "body": "Here is the missing workflow run ID: run-123.",
-                "created_at": "2026-07-16T07:59:30Z",
-                "content_type": "text",
-            },
-        ], {
-            "id": TICKET_ID,
-            "status": "open",
-            "assignee_id": None,
-            "via": {"channel": "native_messaging"},
-            "_zd_agent_conversation_events": [],
-        })
+        )
 
     result = await handle_trigger_message(
         msg={
@@ -245,7 +253,8 @@ async def test_silence_event_stops_when_generation_changes_during_ticket_refresh
             "expected_state_revision": pending.state_revision,
             "expected_silence_window_end": (
                 pending.silence_window_end.isoformat()
-                if pending.silence_window_end else ""
+                if pending.silence_window_end
+                else ""
             ),
             "delivery_attempt_id": pending.delivery_attempt_id,
         },
@@ -278,30 +287,33 @@ async def test_silence_expired_ask_honors_human_takeover_before_nudge(
             "expected_state_revision": pending.state_revision,
             "expected_silence_window_end": (
                 pending.silence_window_end.isoformat()
-                if pending.silence_window_end else ""
+                if pending.silence_window_end
+                else ""
             ),
         },
         manager=MagicMock(dispatch=AsyncMock()),
         state=tracker,
         cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=(
-            [
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "m1",
+                        "body": "Please ask a teammate to take this case.",
+                        "created_at": "2026-07-16T07:55:00Z",
+                        "content_type": "text",
+                    },
+                ],
                 {
-                    "id": "m1",
-                    "body": "Please ask a teammate to take this case.",
-                    "created_at": "2026-07-16T07:55:00Z",
-                    "content_type": "text",
+                    "id": TICKET_ID,
+                    "status": "open",
+                    "assignee_id": 987654,
+                    "via": {"channel": "native_messaging"},
+                    "_zd_agent_conversation_events": [],
                 },
-            ],
-            {
-                "id": TICKET_ID,
-                "status": "open",
-                "assignee_id": 987654,
-                "via": {"channel": "native_messaging"},
-                "_zd_agent_conversation_events": [],
-            },
-        )),
+            )
+        ),
         human_takeover_fn=human_takeover,
         detect_human_takeover_fn=AsyncMock(
             return_value=(True, "ticket assigned to a human agent"),
@@ -328,48 +340,51 @@ async def test_silence_expired_ask_waits_for_pending_form_before_nudge(
             "expected_state_revision": pending.state_revision,
             "expected_silence_window_end": (
                 pending.silence_window_end.isoformat()
-                if pending.silence_window_end else ""
+                if pending.silence_window_end
+                else ""
             ),
         },
         manager=MagicMock(dispatch=AsyncMock()),
         state=tracker,
         cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=(
-            [
-                {
-                    "id": "m1",
-                    "body": "I need help with my workspace.",
-                    "created_at": "2026-07-16T07:55:00Z",
-                    "content_type": "text",
-                },
-            ],
-            {
-                "id": TICKET_ID,
-                "status": "new",
-                "assignee_id": None,
-                "via": {"channel": "native_messaging"},
-                "_zd_agent_conversation_events": [
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
                     {
-                        "id": "answer-bot-form-1",
-                        "created_at": "2026-07-16T07:59:00Z",
-                        "author": {"type": "business"},
-                        "content": {
-                            "type": "form",
-                            "block_chat_input": True,
-                            "submitted": False,
-                            "fields": [
-                                {
-                                    "type": "TEXT",
-                                    "name": "dataCapture.systemField.requester.email",
-                                    "label": "Email",
-                                },
-                            ],
-                        },
+                        "id": "m1",
+                        "body": "I need help with my workspace.",
+                        "created_at": "2026-07-16T07:55:00Z",
+                        "content_type": "text",
                     },
                 ],
-            },
-        )),
+                {
+                    "id": TICKET_ID,
+                    "status": "new",
+                    "assignee_id": None,
+                    "via": {"channel": "native_messaging"},
+                    "_zd_agent_conversation_events": [
+                        {
+                            "id": "answer-bot-form-1",
+                            "created_at": "2026-07-16T07:59:00Z",
+                            "author": {"type": "business"},
+                            "content": {
+                                "type": "form",
+                                "block_chat_input": True,
+                                "submitted": False,
+                                "fields": [
+                                    {
+                                        "type": "TEXT",
+                                        "name": "dataCapture.systemField.requester.email",
+                                        "label": "Email",
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            )
+        ),
         human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
@@ -404,20 +419,25 @@ async def test_legacy_silence_ask_never_creates_a_new_legacy_intent(
         state=tracker,
         cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=([
-            {
-                "id": "m1",
-                "body": "The original report was incomplete.",
-                "created_at": "2026-07-16T07:55:00Z",
-                "content_type": "text",
-            },
-        ], {
-            "id": TICKET_ID,
-            "status": "new",
-            "assignee_id": None,
-            "via": {"channel": "native_messaging"},
-            "_zd_agent_conversation_events": [],
-        })),
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "m1",
+                        "body": "The original report was incomplete.",
+                        "created_at": "2026-07-16T07:55:00Z",
+                        "content_type": "text",
+                    },
+                ],
+                {
+                    "id": TICKET_ID,
+                    "status": "new",
+                    "assignee_id": None,
+                    "via": {"channel": "native_messaging"},
+                    "_zd_agent_conversation_events": [],
+                },
+            )
+        ),
         human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
@@ -453,13 +473,18 @@ async def test_startup_recovery_empty_messages_clear_dead_session_owner(
         state=tracker,
         cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=([], {
-            "id": TICKET_ID,
-            "status": "new",
-            "assignee_id": None,
-            "via": {"channel": "native_messaging"},
-            "_zd_agent_conversation_events": [],
-        })),
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [],
+                {
+                    "id": TICKET_ID,
+                    "status": "new",
+                    "assignee_id": None,
+                    "via": {"channel": "native_messaging"},
+                    "_zd_agent_conversation_events": [],
+                },
+            )
+        ),
         human_takeover_fn=AsyncMock(),
     )
 
@@ -509,25 +534,28 @@ async def test_silence_waker_revalidates_generation_after_live_fetch(
     manager.dispatch = AsyncMock(
         return_value=SimpleNamespace(session_id="stale-dispatch"),
     )
-    task = asyncio.create_task(handle_trigger_message(
-        msg={
-            "ticket_id": TICKET_ID,
-            "source": "silence_waker",
-            "expected_state_revision": pending.state_revision,
-            "expected_silence_window_end": (
-                pending.silence_window_end.isoformat()
-                if pending.silence_window_end else ""
-            ),
-            "delivery_attempt_id": pending.delivery_attempt_id,
-        },
-        manager=manager,
-        state=tracker,
-        cfg=_cfg(),
-        log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=fetch_latest,
-        human_takeover_fn=AsyncMock(),
-        detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
-    ))
+    task = asyncio.create_task(
+        handle_trigger_message(
+            msg={
+                "ticket_id": TICKET_ID,
+                "source": "silence_waker",
+                "expected_state_revision": pending.state_revision,
+                "expected_silence_window_end": (
+                    pending.silence_window_end.isoformat()
+                    if pending.silence_window_end
+                    else ""
+                ),
+                "delivery_attempt_id": pending.delivery_attempt_id,
+            },
+            manager=manager,
+            state=tracker,
+            cfg=_cfg(),
+            log_path=tmp_path / "trigger.jsonl",
+            fetch_customer_messages_fn=fetch_latest,
+            human_takeover_fn=AsyncMock(),
+            detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+        )
+    )
 
     await asyncio.wait_for(fetch_started.wait(), timeout=1)
     latest = tracker.get(TICKET_ID)

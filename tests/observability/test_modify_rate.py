@@ -1,4 +1,5 @@
 """Tests for observability.modify_rate."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -18,16 +19,20 @@ from zd_agent.observability.modify_rate import (
 # Unit: similarity classification + suggested-reply extraction
 # ---------------------------------------------------------------------------
 
+
 class TestClassifySimilarity:
-    @pytest.mark.parametrize("sim,expected", [
-        (1.0, "as_is"),
-        (0.9, "as_is"),
-        (0.85, "as_is"),
-        (0.8, "minor"),
-        (0.5, "minor"),
-        (0.49, "major"),
-        (0.0, "major"),
-    ])
+    @pytest.mark.parametrize(
+        "sim,expected",
+        [
+            (1.0, "as_is"),
+            (0.9, "as_is"),
+            (0.85, "as_is"),
+            (0.8, "minor"),
+            (0.5, "minor"),
+            (0.49, "major"),
+            (0.0, "major"),
+        ],
+    )
     def test_thresholds(self, sim: float, expected: str) -> None:
         assert _classify_similarity(sim) == expected
 
@@ -44,20 +49,12 @@ class TestExtractSuggestedReply:
         assert out == "Hi Alice, here's the fix."
 
     def test_chinese_header(self) -> None:
-        body = (
-            "## 客户回复建议\n\n"
-            "您好，已为您处理。\n\n"
-            "## 内部分析\n\n详细分析\n"
-        )
+        body = "## 客户回复建议\n\n您好，已为您处理。\n\n## 内部分析\n\n详细分析\n"
         out = _extract_suggested_reply(body)
         assert out == "您好，已为您处理。"
 
     def test_emoji_prefix_in_header(self) -> None:
-        body = (
-            "## 💬 Suggested Reply\n\n"
-            "Body here\n\n"
-            "## 🔍 Internal Analysis\n\nx\n"
-        )
+        body = "## 💬 Suggested Reply\n\nBody here\n\n## 🔍 Internal Analysis\n\nx\n"
         out = _extract_suggested_reply(body)
         assert out == "Body here"
 
@@ -93,9 +90,11 @@ def _mock_mcp_call(comments: list[dict] | None = None, *, fail: bool = False):
 class TestMeasureTicketModifyRate:
     @pytest.mark.asyncio
     async def test_no_draft(self) -> None:
-        mcp_call = _mock_mcp_call([
-            {"id": 1, "author_id": AGENT_UID, "public": False, "body": "no marker"},
-        ])
+        mcp_call = _mock_mcp_call(
+            [
+                {"id": 1, "author_id": AGENT_UID, "public": False, "body": "no marker"},
+            ]
+        )
         with patch(
             "zd_agent.observability.modify_rate.call_zendesk_tool",
             side_effect=mcp_call,
@@ -105,10 +104,16 @@ class TestMeasureTicketModifyRate:
 
     @pytest.mark.asyncio
     async def test_no_reply_after_draft(self) -> None:
-        mcp_call = _mock_mcp_call([
-            {"id": 1, "author_id": AGENT_UID, "public": False,
-             "body": _draft_body()},
-        ])
+        mcp_call = _mock_mcp_call(
+            [
+                {
+                    "id": 1,
+                    "author_id": AGENT_UID,
+                    "public": False,
+                    "body": _draft_body(),
+                },
+            ]
+        )
         with patch(
             "zd_agent.observability.modify_rate.call_zendesk_tool",
             side_effect=mcp_call,
@@ -121,11 +126,17 @@ class TestMeasureTicketModifyRate:
     async def test_as_is_forward(self) -> None:
         """SE 原文 forward draft → similarity = 1.0 → as_is"""
         reply = "Hi, the answer is X."
-        mcp_call = _mock_mcp_call([
-            {"id": 1, "author_id": AGENT_UID, "public": False,
-             "body": _draft_body(reply)},
-            {"id": 2, "author_id": AGENT_UID, "public": True, "body": reply},
-        ])
+        mcp_call = _mock_mcp_call(
+            [
+                {
+                    "id": 1,
+                    "author_id": AGENT_UID,
+                    "public": False,
+                    "body": _draft_body(reply),
+                },
+                {"id": 2, "author_id": AGENT_UID, "public": True, "body": reply},
+            ]
+        )
         with patch(
             "zd_agent.observability.modify_rate.call_zendesk_tool",
             side_effect=mcp_call,
@@ -149,11 +160,17 @@ class TestMeasureTicketModifyRate:
             "to another provider in the workspace settings. Let me know if "
             "you keep seeing this and we can look further."
         )
-        mcp_call = _mock_mcp_call([
-            {"id": 1, "author_id": AGENT_UID, "public": False,
-             "body": _draft_body(draft_reply)},
-            {"id": 2, "author_id": AGENT_UID, "public": True, "body": se_reply},
-        ])
+        mcp_call = _mock_mcp_call(
+            [
+                {
+                    "id": 1,
+                    "author_id": AGENT_UID,
+                    "public": False,
+                    "body": _draft_body(draft_reply),
+                },
+                {"id": 2, "author_id": AGENT_UID, "public": True, "body": se_reply},
+            ]
+        )
         with patch(
             "zd_agent.observability.modify_rate.call_zendesk_tool",
             side_effect=mcp_call,
@@ -171,11 +188,17 @@ class TestMeasureTicketModifyRate:
             "Hi Alice, audit logs can be exported via Settings → Audit Logs → "
             "Export CSV. Conversation logs need API access via /conversations."
         )
-        mcp_call = _mock_mcp_call([
-            {"id": 1, "author_id": AGENT_UID, "public": False,
-             "body": _draft_body(draft_reply)},
-            {"id": 2, "author_id": AGENT_UID, "public": True, "body": se_reply},
-        ])
+        mcp_call = _mock_mcp_call(
+            [
+                {
+                    "id": 1,
+                    "author_id": AGENT_UID,
+                    "public": False,
+                    "body": _draft_body(draft_reply),
+                },
+                {"id": 2, "author_id": AGENT_UID, "public": True, "body": se_reply},
+            ]
+        )
         with patch(
             "zd_agent.observability.modify_rate.call_zendesk_tool",
             side_effect=mcp_call,
@@ -197,6 +220,7 @@ class TestMeasureTicketModifyRate:
 # ---------------------------------------------------------------------------
 # Aggregation
 # ---------------------------------------------------------------------------
+
 
 class TestSummarize:
     def test_empty(self) -> None:

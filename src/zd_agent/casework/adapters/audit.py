@@ -1,9 +1,31 @@
 from __future__ import annotations
 
 import json
+import re
 
 from zd_agent.casework.domain.enums import OwnershipAction
 from zd_agent.casework.domain.models import CaseworkRun, HumanActionRequest
+
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _inert_text(value: str) -> str:
+    """Render model-authored packet fields without Feishu markup semantics."""
+    flattened = _WHITESPACE_RE.sub(" ", value).strip()
+    return flattened.translate(
+        str.maketrans(
+            {
+                "<": "＜",
+                ">": "＞",
+                "[": "［",
+                "]": "］",
+                "(": "（",
+                ")": "）",
+                "`": "ˋ",
+            },
+        ),
+    )
 
 
 def render_ownership_packet(action: HumanActionRequest | None) -> str:
@@ -12,14 +34,15 @@ def render_ownership_packet(action: HumanActionRequest | None) -> str:
     lines = [
         f"Target: {action.ownership_action.value}",
         f"Reason: {action.reason_code.value}",
-        f"Summary: {action.summary}",
-        f"Customer impact: {action.customer_impact}",
+        f"Summary: {_inert_text(action.summary)}",
+        f"Customer impact: {_inert_text(action.customer_impact)}",
         "Completed checks:",
-        *(f"- {value}" for value in action.completed_checks),
-        f"Unresolved action: {action.unresolved_action}",
+        *(f"- {_inert_text(value)}" for value in action.completed_checks),
+        f"Unresolved action: {_inert_text(action.unresolved_action)}",
         "Acceptance criteria:",
-        *(f"- {value}" for value in action.acceptance_criteria),
-        "Evidence references: " + ", ".join(action.evidence_ids),
+        *(f"- {_inert_text(value)}" for value in action.acceptance_criteria),
+        "Evidence references: "
+        + ", ".join(_inert_text(value) for value in action.evidence_ids),
     ]
     return "\n".join(lines)
 

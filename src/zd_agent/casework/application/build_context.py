@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
-from zd_agent.casework.domain.enums import AdapterErrorCode, LookupStatus, ResolutionStatus
+from zd_agent.casework.domain.enums import (
+    AdapterErrorCode,
+    LookupStatus,
+    ResolutionStatus,
+)
 from zd_agent.casework.domain.models import (
     BillingBinding,
     BillingLookup,

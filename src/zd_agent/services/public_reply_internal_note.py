@@ -73,9 +73,7 @@ class PostPublicInternalNoteStore:
                 "public_delivery_confirmed" not in columns
             )
             migrations = {
-                "internal_analysis": (
-                    "TEXT NOT NULL DEFAULT ''"
-                ),
+                "internal_analysis": ("TEXT NOT NULL DEFAULT ''"),
                 "delivery_attempt_id": "TEXT NOT NULL DEFAULT ''",
                 "public_delivery_confirmed": "INTEGER NOT NULL DEFAULT 0",
                 "accept_legacy_reference": "INTEGER NOT NULL DEFAULT 0",
@@ -185,6 +183,13 @@ class PostPublicInternalNoteStore:
             ).fetchall()
         return [_pending_note_from_row(row) for row in rows]
 
+    def pending_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM post_public_internal_notes",
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def claim(self, reference: str) -> str | None:
         now = time.time()
         claim_token = secrets.token_hex(16)
@@ -243,7 +248,9 @@ class PostPublicInternalNoteStore:
         return cursor.rowcount == 1
 
     def clear_write_attempted_if_definitely_unsent(
-        self, reference: str, claim_token: str,
+        self,
+        reference: str,
+        claim_token: str,
     ) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
@@ -287,6 +294,7 @@ async def _renew_note_claim(
         await asyncio.sleep(interval)
         if not store.renew(reference, claim_token):
             return
+
 
 _DEFAULT_ANALYSIS = {
     "ask": (
@@ -378,8 +386,13 @@ def _definitely_unsent_note_result(result: dict[str, Any]) -> bool:
     """Only explicit validation/auth rejections prove Zendesk did not write."""
     code = str(result.get("code") or "").upper()
     return code in {
-        "VALIDATION_ERROR", "INVALID_ARGUMENT", "BAD_REQUEST", "UNAUTHORIZED",
-        "FORBIDDEN", "NOT_FOUND", "DRY_RUN", "ZENDESK_MCP_REQUEST_FAILED",
+        "VALIDATION_ERROR",
+        "INVALID_ARGUMENT",
+        "BAD_REQUEST",
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "DRY_RUN",
     }
 
 
@@ -549,7 +562,8 @@ async def ensure_post_public_internal_note(
             and _definitely_unsent_note_result(result)
         ):
             note_store.clear_write_attempted_if_definitely_unsent(
-                reference, claim_token,
+                reference,
+                claim_token,
             )
 
         try:

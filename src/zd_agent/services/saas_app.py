@@ -1,4 +1,5 @@
 """SaaS unified aiohttp app factory + background tasks."""
+
 from __future__ import annotations
 
 from typing import Any

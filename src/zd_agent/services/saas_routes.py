@@ -1,12 +1,16 @@
 """Route registration for the SaaS aiohttp app."""
+
 from __future__ import annotations
 
+import asyncio
 import hmac
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from aiohttp import web
 
+from zd_agent import __version__
 from zd_agent.config import EnvSettings
 from zd_agent.log import get_logger
 from zd_agent.services.agent_management import (
@@ -15,7 +19,13 @@ from zd_agent.services.agent_management import (
     list_agent_models,
     update_agent_config,
 )
-from zd_agent.services.app_context import app_config
+from zd_agent.services.app_context import (
+    BACKGROUND_TASK_KEYS,
+    BACKGROUND_TASK_NAMES,
+    app_config,
+    session_manager,
+    trigger_queue,
+)
 from zd_agent.services.zendesk_messaging_webhook import (
     handle_zendesk_messaging_webhook,
 )
@@ -27,7 +37,74 @@ PUBLIC_PRE_SEND_FRESHNESS_PATH = "/webhook/relay-pre-send-freshness"
 
 
 async def handle_healthz(request: web.Request) -> web.Response:
-    return web.Response(status=200, text="ok")
+    """Expose v2 readiness and durable work, without ticket/customer data."""
+    cfg = app_config(request.app)
+    queue = trigger_queue(request.app)
+    tasks = {
+        BACKGROUND_TASK_NAMES[key]: _task_status(request.app.get(key))
+        for key in BACKGROUND_TASK_KEYS
+    }
+    queue_status = {
+        "pending": await queue.pending_count(),
+        "dead_letter": await queue.dead_letter_count(),
+    }
+    outbox_status = _outbox_health(Path(queue.path).parent)
+    ready = all(value == "running" for value in tasks.values())
+    payload = {
+        "ok": ready,
+        "ready": ready,
+        "service": "zd-agent",
+        "version": __version__,
+        "casework_mode": cfg.casework.mode.value,
+        "background_tasks": tasks,
+        "queue": queue_status,
+        "outbox": outbox_status,
+        "active_sessions": int(
+            getattr(session_manager(request.app), "active_count", 0)
+        ),
+    }
+    return web.json_response(payload, status=200 if ready else 503)
+
+
+def _task_status(task: Any | None) -> str:
+    if task is None:
+        return "not_started"
+    if task.cancelled():
+        return "cancelled"
+    if not task.done():
+        return "running"
+    try:
+        return "failed" if task.exception() is not None else "stopped"
+    except (asyncio.CancelledError, Exception):
+        return "failed"
+
+
+def _outbox_health(state_dir: Path) -> dict[str, int]:
+    from zd_agent.services.casework_effect_store import CaseworkEffectStore
+    from zd_agent.services.public_reply_delivery_store import PublicReplyDeliveryStore
+    from zd_agent.services.public_reply_handoff_effects import PostPublicHandoffStore
+    from zd_agent.services.public_reply_internal_note import PostPublicInternalNoteStore
+    from zd_agent.trigger.state_store import TicketStateTracker
+
+    return {
+        "casework_ownership_pending": CaseworkEffectStore(
+            state_dir / "casework_effects.sqlite3",
+        ).pending_ownership_count(),
+        "internal_note_pending": PostPublicInternalNoteStore(
+            state_dir / "post_public_internal_note_outbox.sqlite3",
+        ).pending_count(),
+        "public_reply_ambiguous": PublicReplyDeliveryStore(
+            state_dir / "public_reply_outbox.sqlite3",
+        ).ambiguous_count(),
+        "historical_handoff_pending": PostPublicHandoffStore(
+            state_dir / "post_public_handoff_outbox.sqlite3",
+        ).pending_count(),
+        "manual_reconciliation_tickets": len(
+            TicketStateTracker(state_dir / "tickets.json").list_by_state(
+                "manual_reconciliation",
+            ),
+        ),
+    }
 
 
 def _bearer_token(request: web.Request) -> str:
@@ -129,11 +206,7 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
         raw_ticket_id = payload.get("ticket_id")
         ticket_id = int(raw_ticket_id)
         raw_snapshot_count = payload.get("snapshot_customer_message_count")
-        snapshot_count = (
-            None
-            if raw_snapshot_count is None
-            else int(raw_snapshot_count)
-        )
+        snapshot_count = None if raw_snapshot_count is None else int(raw_snapshot_count)
         raw_snapshot_last_id = payload.get("snapshot_customer_last_message_id")
         if (
             ticket_id <= 0
@@ -171,13 +244,15 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
     # forces the owning path to fetch it itself and durably advance its cursor.
     # This is intentionally stricter than the initial local freshness gate.
     if check.continue_send and check.new_messages_count > 0:
-        return web.json_response({
-            "ok": True,
-            "status": "stale_context",
-            "continue_send": False,
-            "reason": "new_customer_message_at_relay",
-            "new_messages_count": check.new_messages_count,
-        })
+        return web.json_response(
+            {
+                "ok": True,
+                "status": "stale_context",
+                "continue_send": False,
+                "reason": "new_customer_message_at_relay",
+                "new_messages_count": check.new_messages_count,
+            }
+        )
     status = "fresh" if check.continue_send else "stale_context"
     logger.info(
         "pre_send_freshness_checked",
@@ -186,13 +261,15 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
         reason=check.reason,
         new_messages_count=check.new_messages_count,
     )
-    return web.json_response({
-        "ok": True,
-        "status": status,
-        "continue_send": check.continue_send,
-        "reason": check.reason,
-        "new_messages_count": check.new_messages_count,
-    })
+    return web.json_response(
+        {
+            "ok": True,
+            "status": status,
+            "continue_send": check.continue_send,
+            "reason": check.reason,
+            "new_messages_count": check.new_messages_count,
+        }
+    )
 
 
 def register_saas_routes(*, app: web.Application, cfg: Any) -> None:

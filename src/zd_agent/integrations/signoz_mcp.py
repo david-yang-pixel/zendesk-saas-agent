@@ -1,4 +1,5 @@
 """Remote MCP client wrapper for SigNoz structured and sz tools."""
+
 from __future__ import annotations
 
 from typing import Any

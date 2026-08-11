@@ -1,4 +1,5 @@
 """Admin-console authentication state."""
+
 from __future__ import annotations
 
 import json
@@ -72,9 +73,7 @@ class AdminAuthStore:
             not self._initial_password or self._initial_password == "admin123"
         )
         bootstrap_password = (
-            secrets.token_urlsafe(24)
-            if expose_bootstrap
-            else self._initial_password
+            secrets.token_urlsafe(24) if expose_bootstrap else self._initial_password
         )
         data = {
             "users": {

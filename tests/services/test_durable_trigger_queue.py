@@ -3,11 +3,108 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import stat
+import threading
 from pathlib import Path
 
 import pytest
 
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
+
+
+@pytest.mark.asyncio
+async def test_cancelled_get_releases_claim_committed_by_worker_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation cannot strand a row after SQLite committed its lease."""
+    queue = DurableTriggerQueue(
+        tmp_path / "trigger_queue.sqlite3",
+        lease_seconds=30 * 60,
+    )
+    await queue.put({"ticket_id": 1001, "source": "zendesk_webhook"})
+    claim_committed = threading.Event()
+    allow_claim_return = threading.Event()
+    original_claim_ready = queue._store.claim_ready
+
+    def claim_then_pause() -> tuple[dict | None, float | None]:
+        result = original_claim_ready()
+        if result[0] is not None:
+            claim_committed.set()
+            assert allow_claim_return.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(queue._store, "claim_ready", claim_then_pause)
+    get_task = asyncio.create_task(queue.get())
+    assert await asyncio.to_thread(claim_committed.wait, 1)
+
+    get_task.cancel()
+    allow_claim_return.set()
+    with pytest.raises(asyncio.CancelledError):
+        await get_task
+
+    monkeypatch.setattr(queue._store, "claim_ready", original_claim_ready)
+    recovered = await asyncio.wait_for(queue.get(), timeout=1)
+    assert recovered["ticket_id"] == 1001
+    assert recovered["_queue_attempts"] == 0
+    await queue.ack(recovered)
+
+
+@pytest.mark.asyncio
+async def test_double_cancelled_get_releases_claim_committed_by_worker_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated lifecycle cancellation cannot interrupt claim cleanup."""
+    queue = DurableTriggerQueue(
+        tmp_path / "trigger_queue.sqlite3",
+        lease_seconds=30 * 60,
+    )
+    await queue.put({"ticket_id": 1003, "source": "zendesk_webhook"})
+    claim_committed = threading.Event()
+    allow_claim_return = threading.Event()
+    original_claim_ready = queue._store.claim_ready
+
+    def claim_then_pause() -> tuple[dict | None, float | None]:
+        result = original_claim_ready()
+        if result[0] is not None:
+            claim_committed.set()
+            assert allow_claim_return.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(queue._store, "claim_ready", claim_then_pause)
+    get_task = asyncio.create_task(queue.get())
+    assert await asyncio.to_thread(claim_committed.wait, 1)
+
+    get_task.cancel()
+    await asyncio.sleep(0)
+    get_task.cancel()
+    allow_claim_return.set()
+    with pytest.raises(asyncio.CancelledError):
+        await get_task
+
+    monkeypatch.setattr(queue._store, "claim_ready", original_claim_ready)
+    recovered = await asyncio.wait_for(queue.get(), timeout=1)
+    assert recovered["ticket_id"] == 1003
+    assert recovered["_queue_attempts"] == 0
+    await queue.ack(recovered)
+
+
+@pytest.mark.asyncio
+async def test_waiting_queue_observes_insert_from_second_instance(
+    tmp_path: Path,
+) -> None:
+    """The process-local wake event cannot be the only cross-worker signal."""
+    path = tmp_path / "trigger_queue.sqlite3"
+    waiting_queue = DurableTriggerQueue(path, poll_interval_seconds=0.05)
+    producer_queue = DurableTriggerQueue(path, poll_interval_seconds=0.05)
+
+    waiting = asyncio.create_task(waiting_queue.get())
+    await asyncio.sleep(0.05)
+    await producer_queue.put({"ticket_id": 1002, "source": "zendesk_webhook"})
+
+    message = await asyncio.wait_for(waiting, timeout=0.5)
+    assert message["ticket_id"] == 1002
+    await waiting_queue.ack(message)
 
 
 @pytest.mark.asyncio
@@ -27,11 +124,13 @@ async def test_pending_event_survives_queue_recreation(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_ready_event_is_not_blocked_by_delayed_event(tmp_path: Path) -> None:
     queue = DurableTriggerQueue(tmp_path / "trigger_queue.sqlite3")
-    await queue.put({
-        "ticket_id": 1001,
-        "source": "zendesk_webhook",
-        "available_at": 9_999_999_999.0,
-    })
+    await queue.put(
+        {
+            "ticket_id": 1001,
+            "source": "zendesk_webhook",
+            "available_at": 9_999_999_999.0,
+        }
+    )
     await queue.put({"ticket_id": 1002, "source": "mention"})
 
     message = await queue.get()
@@ -132,6 +231,43 @@ async def test_processing_recovery_revives_dead_letter(tmp_path: Path) -> None:
 
     assert recovered["_queue_attempts"] == 0
     await queue.ack(recovered)
+
+
+@pytest.mark.asyncio
+async def test_processing_recovery_is_generation_bound_and_revives_reconciled(
+    tmp_path: Path,
+) -> None:
+    queue = DurableTriggerQueue(
+        tmp_path / "trigger_queue.sqlite3",
+        max_attempts=1,
+        retry_base_seconds=0,
+    )
+    assert queue.ensure_processing_recovery(
+        1001,
+        delivery_attempt_id="delivery-generation-1",
+    )
+    first = await queue.get()
+    assert await queue.retry(first, "old recovery exhausted") is False
+    dead_letter = (await queue.list_dead_letters())[0]
+    assert await queue.resolve_dead_letter(dead_letter) is True
+
+    assert queue.ensure_processing_recovery(
+        1001,
+        delivery_attempt_id="delivery-generation-2",
+    )
+    second = await queue.get()
+    assert second["delivery_attempt_id"] == "delivery-generation-2"
+    assert second["_queue_key"] != first["_queue_key"]
+    await queue.ack(second)
+
+    assert queue.ensure_processing_recovery(
+        1001,
+        delivery_attempt_id="delivery-generation-1",
+    )
+    revived = await queue.get()
+    assert revived["_queue_key"] == first["_queue_key"]
+    assert revived["_queue_attempts"] == 0
+    await queue.ack(revived)
 
 
 @pytest.mark.asyncio
@@ -276,7 +412,9 @@ def test_queue_database_and_sidecars_use_owner_only_permissions(tmp_path: Path) 
         ]
         queue._store.restrict_file_permissions()
         assert len(existing_paths) == 3
-        assert all(stat.S_IMODE(item.stat().st_mode) == 0o600 for item in existing_paths)
+        assert all(
+            stat.S_IMODE(item.stat().st_mode) == 0o600 for item in existing_paths
+        )
     finally:
         connection.rollback()
         connection.close()

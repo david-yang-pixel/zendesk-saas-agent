@@ -22,6 +22,7 @@ from zd_agent.casework.domain.models import (
     CaseworkEffectReceipt,
     CaseworkRun,
     DispositionDecision,
+    EffectAuthorityProjection,
     FormIdentity,
     IdentityResolution,
     InvestigationResult,
@@ -189,6 +190,65 @@ async def test_dry_run_invokes_effect_port_without_marking_delivery_attempted() 
     assert effects.calls[0][1:] == ("attempt-dry-run", True)
     assert result.run.delivery_attempted is False
     assert result.effect_receipt.delivery_state is DeliveryState.DRAFTED
+
+
+async def test_executor_projects_frozen_effect_run_before_execution_validation() -> (
+    None
+):
+    regenerated = _run(
+        mode=ExecutionMode.CASEWORK,
+        decision=_ask_decision(),
+        reply=_ask_reply(),
+    )
+    frozen_decision = DispositionDecision(
+        disposition=Disposition.RESOLVED,
+        reply_kind=ReplyKind.ANSWER,
+        ownership_action=OwnershipAction.NONE,
+        reason_code=ReasonCode.RESOLVED_WITH_EVIDENCE,
+    )
+    frozen_reply = ReplyDraft(
+        body="The already-sent frozen answer.",
+        reply_kind=ReplyKind.ANSWER,
+        disposition=Disposition.RESOLVED,
+        ownership_action=OwnershipAction.NONE,
+        reason_code=ReasonCode.RESOLVED_WITH_EVIDENCE,
+        reviewed=True,
+    )
+    frozen = _run(
+        mode=ExecutionMode.CASEWORK,
+        decision=frozen_decision,
+        reply=frozen_reply,
+    )
+    authority = EffectAuthorityProjection.from_run(
+        frozen,
+        snapshot_customer_message_count=3,
+        snapshot_customer_last_message_id="event-3",
+    )
+    effects = FakeEffects(
+        CaseworkEffectReceipt(
+            delivery_state=DeliveryState.CONFIRMED,
+            ownership_state=OwnershipState.NOT_REQUIRED,
+            delivery_reference="frozen-delivery",
+            authority_projection=authority,
+        )
+    )
+    executor = CaseworkExecutor(
+        orchestrator=FakeOrchestrator(regenerated),
+        effects=effects,
+    )
+
+    result = await executor.execute(
+        ticket=regenerated.context.ticket,
+        billing_required=False,
+        execution_mode=ExecutionMode.CASEWORK,
+        delivery_attempt_id="stable-attempt",
+        dry_run=False,
+    )
+
+    assert result.run.decision == frozen_decision
+    assert result.run.reply_draft == frozen_reply
+    assert result.run.delivery_attempted is True
+    assert result.effect_receipt.authority_projection is None
 
 
 async def test_internal_retry_does_not_invoke_delivery_or_ownership() -> None:

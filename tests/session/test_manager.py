@@ -66,26 +66,35 @@ async def test_customer_webhook_marks_only_the_owned_active_session_dirty() -> N
         manager = SessionManager(max_concurrent=1)
         session = await manager.dispatch(3485)
 
-        assert manager.mark_customer_context_dirty(
-            3485,
-            expected_session_id="stale-session",
-            source="messaging_webhook",
-            event_id="evt-stale",
-        ) is False
+        assert (
+            manager.mark_customer_context_dirty(
+                3485,
+                expected_session_id="stale-session",
+                source="messaging_webhook",
+                event_id="evt-stale",
+            )
+            is False
+        )
         assert session.customer_context_dirty is False
 
-        assert manager.mark_customer_context_dirty(
-            3485,
-            expected_session_id=session.session_id,
-            source="messaging_webhook",
-            event_id="evt-1",
-        ) is True
-        assert manager.mark_customer_context_dirty(
-            3485,
-            expected_session_id=session.session_id,
-            source="messaging_webhook",
-            event_id="evt-2",
-        ) is True
+        assert (
+            manager.mark_customer_context_dirty(
+                3485,
+                expected_session_id=session.session_id,
+                source="messaging_webhook",
+                event_id="evt-1",
+            )
+            is True
+        )
+        assert (
+            manager.mark_customer_context_dirty(
+                3485,
+                expected_session_id=session.session_id,
+                source="messaging_webhook",
+                event_id="evt-2",
+            )
+            is True
+        )
         assert session.customer_context_dirty is True
         assert session.customer_context_generation == 2
         assert session.customer_context_source == "messaging_webhook"
@@ -120,6 +129,27 @@ async def test_created_hook_runs_before_fast_session_completion() -> None:
 
     assert events == ["owner-bound", "run-started", "finished"]
     assert manager.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_force_dry_run_overrides_webhook_dispatch_flag() -> None:
+    observed: list[bool] = []
+
+    async def complete_session(session) -> None:
+        observed.append(session.dry_run)
+        session.status = SessionStatus.COMPLETED
+
+    cfg = SimpleNamespace(agent=SimpleNamespace(max_concurrent_sessions=1))
+    with (
+        patch("zd_agent.session.manager.get_config", return_value=cfg),
+        patch("zd_agent.session.manager.run_agent", side_effect=complete_session),
+    ):
+        manager = SessionManager(max_concurrent=1, force_dry_run=True)
+        session = await manager.dispatch(3462, dry_run=False)
+        await manager.wait_all()
+
+    assert session.dry_run is True
+    assert observed == [True]
 
 
 @pytest.mark.asyncio

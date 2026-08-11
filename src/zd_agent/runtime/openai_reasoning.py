@@ -154,8 +154,7 @@ def validate_reasoning_effort(model: str, effort: str | None) -> str:
         return ""
     if normalized_effort not in supported_reasoning_efforts(model):
         raise ValueError(
-            f"model {model!r} does not support reasoning effort "
-            f"{normalized_effort!r}"
+            f"model {model!r} does not support reasoning effort {normalized_effort!r}"
         )
     return normalized_effort
 

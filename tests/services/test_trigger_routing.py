@@ -1,4 +1,5 @@
 """Tests for trigger consumer routing helpers."""
+
 from datetime import datetime, timedelta, timezone
 
 from zd_agent.services.trigger_routing import (
@@ -154,8 +155,11 @@ def test_customer_reopen_metric_skips_non_processed_state() -> None:
     existing = _state()
     existing.state = "waiting_for_issue"
 
-    assert customer_reopen_metric(
-        existing=existing,
-        source="zendesk_webhook",
-        now=_now(),
-    ) is None
+    assert (
+        customer_reopen_metric(
+            existing=existing,
+            source="zendesk_webhook",
+            now=_now(),
+        )
+        is None
+    )

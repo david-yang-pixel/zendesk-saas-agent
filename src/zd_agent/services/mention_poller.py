@@ -15,6 +15,7 @@ So we need a separate poller that:
   4. Pushes ``{source: "mention", ticket_id, comment_id, hint}`` to the queue
      so ``run_saas_trigger_consumer`` dispatches the AgentSession directly.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -110,7 +111,8 @@ async def scan_once(
         except Exception as e:
             logger.warning(
                 "mention_poller_comments_failed",
-                ticket_id=tid, error=str(e),
+                ticket_id=tid,
+                error=str(e),
             )
             continue
 
@@ -127,17 +129,20 @@ async def scan_once(
 
             body = (comment.get("body") or "")[:500]
             hint = f"[来自 @mention 的请求]\n{body}"
-            await trigger_queue.put({
-                "source": "mention",
-                "ticket_id": int(tid),
-                "comment_id": comment_id,
-                "hint": hint,
-                "_queue_key": f"mention:{comment_id}",
-            })
+            await trigger_queue.put(
+                {
+                    "source": "mention",
+                    "ticket_id": int(tid),
+                    "comment_id": comment_id,
+                    "hint": hint,
+                    "_queue_key": f"mention:{comment_id}",
+                }
+            )
             tracker.mark_processed(comment_id)
             logger.info(
                 "mention_poller_dispatched",
-                ticket_id=tid, comment_id=comment_id,
+                ticket_id=tid,
+                comment_id=comment_id,
                 trigger=matched_trigger,
             )
             dispatched += 1

@@ -1,11 +1,25 @@
-"""归档元数据构建工具。"""
+"""Build auditable metadata for one v2 casework run."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from zd_agent.runtime.investigation import current_investigation_phase
-from zd_agent.session.agent_session import AgentSession
+from zd_agent.session.agent_session import AgentSession, SessionStatus
+
+
+def _current_casework_phase(session: AgentSession) -> str:
+    """Infer the archived v2 phase from typed session facts."""
+    if session.status is SessionStatus.COMPLETED:
+        return "complete"
+    if session.status is SessionStatus.DEFERRED:
+        return "deferred"
+    if session.status in {SessionStatus.FAILED, SessionStatus.TIMEOUT}:
+        return "failed"
+    if session.casework_disposition:
+        return "effects"
+    if session.tool_call_log or session.round_count:
+        return "investigate"
+    return "intake"
 
 
 def build_archive_meta(
@@ -15,8 +29,7 @@ def build_archive_meta(
     elapsed_seconds: float | None = None,
     solution_summary: str | None = None,
 ) -> dict[str, Any]:
-    """基于会话状态生成统一的 meta.json 内容。"""
-
+    """Serialize the current v2 run without legacy classifier/prompt state."""
     tool_calls = [_serialize_tool_call(item) for item in session.tool_call_log]
     failed_tools = [
         {
@@ -33,12 +46,17 @@ def build_archive_meta(
         "ticket_id": session.ticket_id,
         "session_id": session.session_id,
         "status": session.status.value,
-        "ticket_type": session.ticket_type or None,
-        "investigation_policy_enabled": session.investigation_policy_enabled,
-        "investigation_phase": current_investigation_phase(session),
-        "investigation_route": session.investigation_route or None,
-        "investigation_plan": dict(session.investigation_plan),
-        "evidence_ledger": dict(session.evidence_ledger),
+        "casework_phase": _current_casework_phase(session),
+        "casework": {
+            "disposition": session.casework_disposition or None,
+            "reply_kind": session.casework_reply_kind or None,
+            "ownership_action": session.casework_ownership_action or None,
+            "reason_code": session.casework_reason_code or None,
+            "delivery_state": session.casework_delivery_state or None,
+            "ownership_state": session.casework_ownership_state or None,
+            "effect_reference": session.casework_effect_reference or None,
+            "attempt": session.casework_attempt,
+        },
         "created_at": archived_at,
         "archived_at": archived_at,
         "rounds": session.round_count,
@@ -53,33 +71,24 @@ def build_archive_meta(
         "failed_tool_count": len(failed_tools),
         "failed_tools": failed_tools,
         "error": session.error_message or None,
-        "fix_status": session.fix_status or None,
-        "customer_reply_available": bool(
-            session.customer_reply_draft or "## Suggested Reply" in session.reply_draft
-        ),
-        "reviewer_checklist_available": bool(
-            session.reviewer_checklist or "## Review Guide" in session.reply_draft
-        ),
+        "customer_reply_available": bool(session.reply_draft),
         "reply_sent": session.reply_sent,
     }
 
     if elapsed_seconds is not None:
         meta["elapsed_seconds"] = round(elapsed_seconds, 1)
-
     if solution_summary is not None:
         meta["solution_summary"] = solution_summary
-
     return meta
 
 
 def _serialize_tool_call(item: dict[str, Any]) -> dict[str, Any]:
-    """整理单个工具调用的归档结构。"""
-
+    """Serialize one direct v2 evidence-tool call."""
     args = {
         key: (str(value)[:100] if len(str(value)) > 100 else value)
         for key, value in item.get("args", {}).items()
     }
-    serialized = {
+    serialized: dict[str, Any] = {
         "call_id": str(item.get("call_id") or ""),
         "round": item.get("round"),
         "tool": item.get("tool", "unknown"),
@@ -89,14 +98,6 @@ def _serialize_tool_call(item: dict[str, Any]) -> dict[str, Any]:
         "result_preview": item.get("result_preview", ""),
     }
     metadata = item.get("metadata")
-    if isinstance(metadata, dict):
-        nested_calls = metadata.get("evidence_tool_calls")
-        if isinstance(nested_calls, list):
-            serialized["metadata"] = {
-                "evidence_tool_calls": [
-                    _serialize_tool_call(call)
-                    for call in nested_calls
-                    if isinstance(call, dict)
-                ]
-            }
+    if isinstance(metadata, dict) and metadata:
+        serialized["metadata"] = dict(metadata)
     return serialized

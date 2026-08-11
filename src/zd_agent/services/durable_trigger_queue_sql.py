@@ -42,12 +42,12 @@ SELECT_NEXT_SQL = (
     "WHERE status IN ('pending','processing')"
 )
 MARK_FAILED_SQL = (
-    "UPDATE trigger_events SET status = ?, attempts = ?, available_at = ?, "
+    "UPDATE trigger_events SET payload = ?, status = ?, attempts = ?, available_at = ?, "
     "last_error = ?, claim_token = '', lease_until = 0, updated_at = ? "
     "WHERE id = ? AND status = 'processing' AND claim_token = ?"
 )
 RELEASE_SQL = (
-    "UPDATE trigger_events SET status = 'pending', available_at = ?, "
+    "UPDATE trigger_events SET payload = ?, status = 'pending', available_at = ?, "
     "last_error = ?, claim_token = '', lease_until = 0, updated_at = ? "
     "WHERE id = ? AND status = 'processing' AND claim_token = ?"
 )
@@ -57,9 +57,19 @@ REVIVE_DEAD_LETTER_SQL = (
     "lease_until = 0, updated_at = ? "
     "WHERE event_key = ? AND status = 'dead_letter'"
 )
+REVIVE_RECOVERY_SQL = (
+    "UPDATE trigger_events SET payload = ?, status = 'pending', available_at = ?, "
+    "attempts = 0, deferrals = 0, last_error = '', claim_token = '', "
+    "lease_until = 0, updated_at = ? "
+    "WHERE event_key = ? AND status IN ('dead_letter','reconciled')"
+)
 SELECT_DEAD_LETTERS_SQL = (
     "SELECT id,event_key,payload,attempts,deferrals,last_error FROM trigger_events "
     "WHERE status = 'dead_letter' ORDER BY updated_at DESC LIMIT ?"
+)
+MARK_DEAD_LETTER_RECONCILED_SQL = (
+    "UPDATE trigger_events SET status = 'reconciled', updated_at = ? "
+    "WHERE id = ? AND status = 'dead_letter'"
 )
 DELETE_CLAIM_SQL = (
     "DELETE FROM trigger_events "

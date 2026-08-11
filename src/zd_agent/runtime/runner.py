@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
-from zd_agent.config import AppConfig, get_config
+from zd_agent.casework.policies.rollout import casework_controls_ticket
+from zd_agent.config import AppConfig, EnvSettings, get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.casework_v2 import (
     apply_casework_execution_to_session,
     execute_casework_v2,
 )
-from zd_agent.runtime.guardrails import Guardrails
-from zd_agent.runtime.llm_client import LLMClient
+from zd_agent.runtime.llm.factory import create_llm_provider
 from zd_agent.runtime.runner_archive import ensure_archive
 from zd_agent.services.casework_runtime_failures import (
     persist_runtime_failure_ownership,
 )
 from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
+from zd_agent.services.instance_fence import verify_active_instance
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 
 logger = get_logger(module="runner")
@@ -78,9 +80,7 @@ async def _handle_casework_runtime_failure(
                 if session.customer_msgs_snapshot_captured
                 else None
             ),
-            snapshot_customer_last_message_id=(
-                session.customer_msgs_snapshot_last_id
-            ),
+            snapshot_customer_last_message_id=(session.customer_msgs_snapshot_last_id),
             automation_attempt=session.casework_attempt,
             failure_type=type(error).__name__,
         )
@@ -109,7 +109,29 @@ async def _handle_casework_runtime_failure(
 
 async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
     """Run the only production decision and effect path."""
-    guardrails = Guardrails(config=cfg.agent.guardrails)
+    started_at = time.monotonic()
+    verify_active_instance(Path(cfg.resources.base_dir) / cfg.resources.state_dir)
+    if not casework_controls_ticket(
+        mode=cfg.casework.mode,
+        canary_ticket_ids=cfg.casework.canary_ticket_ids,
+        ticket_id=session.ticket_id,
+    ):
+        session.status = SessionStatus.DEFERRED
+        session.error_message = "ticket is outside the v2 canary allowlist"
+        session.analysis = (
+            "v2 rollout gate deferred this ticket before any customer-visible "
+            "or ownership effect."
+        )
+        ensure_archive(
+            session,
+            elapsed_seconds=time.monotonic() - started_at,
+        )
+        logger.info(
+            "casework_v2_canary_deferred",
+            ticket_id=session.ticket_id,
+            session_id=session.session_id,
+        )
+        return
     if not session.dry_run and session.casework_attempt == 1:
         await _send_ack_note(session.ticket_id)
     logger.info(
@@ -123,11 +145,11 @@ async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
         if not session.dry_run and session.casework_attempt > 3:
             raise RuntimeError("typed v2 ownership persistence retry")
         registry = create_casework_tool_registry()
-        llm = LLMClient()
+        provider = create_llm_provider(cfg.llm, EnvSettings())
         execution = await execute_casework_v2(
             session=session,
             cfg=cfg,
-            provider=llm._provider,
+            provider=provider,
             registry=registry,
         )
         apply_casework_execution_to_session(session, execution)
@@ -147,7 +169,10 @@ async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
         and session.casework_ownership_action in {"", "none"}
     ):
         await notify_ticket_done_best_effort(session)
-    ensure_archive(session, guardrails)
+    ensure_archive(
+        session,
+        elapsed_seconds=time.monotonic() - started_at,
+    )
     logger.info(
         "casework_v2_done",
         ticket_id=session.ticket_id,
@@ -165,5 +190,4 @@ async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
 async def run_agent(session: AgentSession) -> None:
     """Run one ticket through v2 intake, investigation, decision, and effects."""
     cfg = get_config()
-    session.investigation_policy_enabled = True
     await _run_casework_agent(session, cfg)

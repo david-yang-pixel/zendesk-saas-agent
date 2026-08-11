@@ -262,6 +262,7 @@ async def test_image_download_enforces_total_wall_clock_deadline(monkeypatch) ->
 
     warning = MagicMock()
     monkeypatch.setattr(ticket_image_download.logger, "warning", warning)
+
     async def validate_immediately(_url: str) -> None:
         return None
 
@@ -288,7 +289,8 @@ async def test_image_download_enforces_total_wall_clock_deadline(monkeypatch) ->
     assert elapsed < 0.2
     assert response.closed is True
     timeout_log = next(
-        call for call in warning.call_args_list
+        call
+        for call in warning.call_args_list
         if call.args and call.args[0] == "vision_image_download_failed"
     )
     assert timeout_log.kwargs["stage"] == "response_body"

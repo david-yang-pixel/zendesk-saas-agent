@@ -11,6 +11,7 @@ from zd_agent.services.casework_effect_store import (
     CaseworkEffectStore,
     PendingCaseworkEffect,
 )
+from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
 logger = get_logger(module="services.casework_ownership_effects")
@@ -56,8 +57,7 @@ async def ensure_casework_ownership_effects(
             or casework_notifications.send_casework_ownership_notification_best_effort
         )
         tag_sender = (
-            tag_sender
-            or casework_notifications.add_casework_ownership_tags_best_effort
+            tag_sender or casework_notifications.add_casework_ownership_tags_best_effort
         )
     heartbeat = asyncio.create_task(_renew_claim(store, current.reference, token))
     notification_sent = current.notification_sent
@@ -81,8 +81,7 @@ async def ensure_casework_ownership_effects(
                     ownership_packet=current.ownership_packet,
                     customer_reply=current.body,
                     source=(
-                        f"casework_v2:{current.ownership_action}:"
-                        f"{current.reason_code}"
+                        f"casework_v2:{current.ownership_action}:{current.reason_code}"
                     ),
                     idempotency_reference=current.reference,
                 )
@@ -133,9 +132,10 @@ async def reconcile_casework_ownership_effects(
     store: CaseworkEffectStore,
     notification_sender: EffectSender | None = None,
     tag_sender: EffectSender | None = None,
+    state: TicketStateTracker | None = None,
     limit: int = 100,
 ) -> int:
-    reconciled = 0
+    reconciled_references: set[str] = set()
     for effect in store.pending_ownership(limit=limit):
         if await ensure_casework_ownership_effects(
             effect=effect,
@@ -143,5 +143,78 @@ async def reconcile_casework_ownership_effects(
             notification_sender=notification_sender,
             tag_sender=tag_sender,
         ):
-            reconciled += 1
-    return reconciled
+            reconciled_references.add(effect.reference)
+    if state is not None:
+        reconciled_references.update(
+            _promote_completed_ownership(
+                store=store,
+                state=state,
+                limit=limit,
+            )
+        )
+    return len(reconciled_references)
+
+
+def _promote_completed_ownership(
+    *,
+    store: CaseworkEffectStore,
+    state: TicketStateTracker,
+    limit: int,
+) -> set[str]:
+    """CAS any exact completed typed owner command from pending to owned."""
+    promoted: set[str] = set()
+    for ticket_key in state.list_by_state("ownership_pending")[: max(1, limit)]:
+        pending = state.get(ticket_key)
+        if pending is None or pending.state != "ownership_pending":
+            continue
+        reference = pending.ownership_effect_reference
+        owner_token = pending.active_session_id
+        if not reference or not owner_token:
+            continue
+        try:
+            ticket_id = int(ticket_key)
+        except ValueError:
+            continue
+        effect = store.get(reference)
+        if (
+            effect is None
+            or effect.ticket_id != ticket_id
+            or not effect.ownership_required
+            or not effect.complete
+            or pending.ownership_action != effect.ownership_action
+            or pending.ownership_reason != effect.reason_code
+        ):
+            continue
+        effect_action = effect.ownership_action
+        effect_reason = effect.reason_code
+
+        def _mark_owned(current: TicketState | None) -> TicketState:
+            if current is None:
+                raise RuntimeError("runtime ownership state disappeared")
+            if (
+                current.ownership_effect_reference != reference
+                or current.ownership_action != effect_action
+                or current.ownership_reason != effect_reason
+            ):
+                raise RuntimeError("runtime ownership authority changed")
+            current.state = "owned"
+            current.active_session_id = ""
+            current.silence_window_end = None
+            current.last_verdict = effect_reason
+            return current
+
+        commit = state.update_if_revision(
+            ticket_id,
+            expected_revision=pending.state_revision,
+            expected_state="ownership_pending",
+            expected_active_session_id=owner_token,
+            mutate=_mark_owned,
+        )
+        if commit is not None:
+            promoted.add(reference)
+            logger.info(
+                "casework_ownership_state_reconciled",
+                ticket_id=ticket_id,
+                reference=reference,
+            )
+    return promoted

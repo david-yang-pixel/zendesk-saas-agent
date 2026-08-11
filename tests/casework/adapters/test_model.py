@@ -1,20 +1,17 @@
-import json
 from datetime import datetime, timezone
-from typing import Any
+import json
 
-from zd_agent.casework.adapters.legacy_evidence import LegacyCaseMaterial
+from zd_agent.casework.adapters.evidence import build_case_context_evidence
 from zd_agent.casework.adapters.model import (
-    LlmCaseInvestigator,
     NoOpReplyReviewer,
     PolicyReplyWriter,
+    investigation_result_from_content,
 )
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
     ClaimRole,
     ClaimStatus,
     Disposition,
-    EvidenceAuthority,
-    EvidenceResultStatus,
     OwnershipAction,
     ReasonCode,
     ReplyKind,
@@ -26,61 +23,19 @@ from zd_agent.casework.domain.models import (
     CaseContext,
     Claim,
     DispositionDecision,
-    EvidenceItem,
     FormIdentity,
     IdentityResolution,
     TargetReference,
     TicketSnapshot,
     WorkspaceCandidate,
 )
-from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolSchema
 
 
 NOW = datetime(2026, 8, 11, 10, 0, tzinfo=timezone.utc)
 TENANT = "11111111-1111-4111-8111-111111111111"
-TARGET = TargetReference(kind="tenant_id", value=TENANT)
 
 
-class FakeProvider(LLMProvider):
-    def __init__(self, contents: list[str]) -> None:
-        self.contents = contents
-        self.calls: list[list[dict[str, Any]]] = []
-
-    async def chat(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[ToolSchema] | None = None,
-        temperature: float = 0.2,
-    ) -> LLMResponse:
-        self.calls.append(messages)
-        return LLMResponse(
-            content=self.contents.pop(0),
-            tool_calls=[],
-            finish_reason="stop",
-            prompt_tokens=10,
-            completion_tokens=10,
-        )
-
-    def format_tool_result(
-        self,
-        tool_call_id: str,
-        name: str,
-        content: str,
-    ) -> dict[str, Any]:
-        return {"role": "tool", "tool_call_id": tool_call_id, "content": content}
-
-
-def _context() -> CaseContext:
-    identity = IdentityResolution(
-        contact_email="owner@example.test",
-        target_identity="owner@example.test",
-        status=ResolutionStatus.RESOLVED,
-        method=ResolutionMethod.UNIQUE_EMAIL_MEMBERSHIP,
-        candidates=(WorkspaceCandidate(tenant_id=TENANT, workspace_name="Workspace"),),
-        selected_tenant_id=TENANT,
-        selected_workspace_name="Workspace",
-        evidence_ids=("ev-identity",),
-    )
+def _resolved_context() -> CaseContext:
     return CaseContext(
         ticket=TicketSnapshot(
             ticket_id=4001,
@@ -88,100 +43,129 @@ def _context() -> CaseContext:
             status="open",
             latest_event_id="event-1",
             latest_event_at=NOW,
-            questions=("Why is the API request failing?",),
+            questions=("Why is this workspace failing?",),
             form_identity=FormIdentity(email="owner@example.test"),
         ),
         built_at=NOW,
-        identity=identity,
+        identity=IdentityResolution(
+            contact_email="owner@example.test",
+            target_identity="owner@example.test",
+            status=ResolutionStatus.RESOLVED,
+            method=ResolutionMethod.UNIQUE_EMAIL_MEMBERSHIP,
+            candidates=(
+                WorkspaceCandidate(tenant_id=TENANT, workspace_name="Workspace"),
+            ),
+            selected_tenant_id=TENANT,
+            selected_workspace_name="Workspace",
+            evidence_ids=("ev-identity",),
+        ),
     )
 
 
-def _evidence() -> EvidenceItem:
-    return EvidenceItem(
-        evidence_id="ev-runtime",
-        call_id="call-runtime",
-        source="signoz_search_logs",
-        authority=EvidenceAuthority.CURRENT_AUTHORITATIVE,
-        result_status=EvidenceResultStatus.SUCCESS,
-        targets=(TARGET,),
-        observed_at=NOW,
-        supports_roles=(ClaimRole.CURRENT_STATE, ClaimRole.FAILING_BOUNDARY),
-        payload={"status": 429, "error": "quota exhausted"},
-    )
-
-
-def _model_result() -> str:
-    return json.dumps(
+def test_model_identity_evidence_is_only_a_target_binding() -> None:
+    context = _resolved_context()
+    evidence = build_case_context_evidence(context)
+    content = json.dumps(
         {
             "answer_status": "supported",
             "proposed_claims": [
                 {
-                    "statement": "The current API request is being rejected because its quota is exhausted.",
+                    "statement": "The workspace is currently failing.",
                     "role": "current_state",
                     "status": "confirmed",
-                    "material": True,
-                    "supporting_evidence_ids": ["ev-runtime"],
-                    "targets": [{"kind": "tenant_id", "value": TENANT}],
+                    "supporting_evidence_ids": ["ev-identity"],
+                    "targets": [],
                 },
             ],
-            "proposed_customer_fields": [],
-            "action_proposal": None,
         },
     )
 
-
-async def test_investigator_returns_typed_claims_over_the_frozen_evidence_set() -> None:
-    provider = FakeProvider([_model_result()])
-    evidence = (_evidence(),)
-    investigator = LlmCaseInvestigator(
-        provider=provider,
-        material=LegacyCaseMaterial(
-            evidence=evidence,
-            legacy_reply_type="handoff",
-            legacy_reply_body="A human will review this.",
-            legacy_analysis="Legacy analysis is navigation only.",
-        ),
+    result = investigation_result_from_content(
+        context=context,
+        evidence=evidence,
+        content=content,
     )
 
-    result = await investigator.investigate(_context())
-
-    assert result.evidence == evidence
-    assert result.proposal.question == "Why is the API request failing?"
-    assert result.proposal.answer_status is AnswerStatus.SUPPORTED
-    assert result.proposal.proposed_claims[0].public_allowed is True
-    assert result.proposal.evidence_ids == ("ev-runtime", "ev-identity")
-    prompt = str(provider.calls[0][-1]["content"])
-    assert "navigation only" in prompt
-    assert "cannot prove a claim" in prompt
+    [claim] = result.proposal.proposed_claims
+    [identity_evidence] = result.evidence
+    assert claim.targets == (TargetReference(kind="tenant_id", value=TENANT),)
+    assert claim.supporting_evidence_ids == ("ev-identity",)
+    assert identity_evidence.authority.value == "target_binding"
+    assert identity_evidence.supports_roles == ()
 
 
-async def test_investigator_retries_one_malformed_model_response() -> None:
-    provider = FakeProvider(["not-json", _model_result()])
-    investigator = LlmCaseInvestigator(
-        provider=provider,
-        material=LegacyCaseMaterial(evidence=(_evidence(),)),
+def test_model_binds_visual_observation_to_current_ticket() -> None:
+    context = _resolved_context()
+    content = json.dumps(
+        {
+            "answer_status": "supported",
+            "proposed_claims": [
+                {
+                    "statement": "The screenshot displays a quota error.",
+                    "role": "visual_observation",
+                    "status": "evidence_supported",
+                    "supporting_evidence_ids": ["visual:attachment-1"],
+                    "targets": [],
+                },
+            ],
+        },
     )
 
-    result = await investigator.investigate(_context())
-
-    assert result.proposal.answer_status is AnswerStatus.SUPPORTED
-    assert len(provider.calls) == 2
-
-
-async def test_investigator_marks_internal_claim_wording_as_not_public() -> None:
-    raw = json.loads(_model_result())
-    raw["proposed_claims"][0]["statement"] = (
-        "inspector_exec found tenant_id in an internal database table."
-    )
-    provider = FakeProvider([json.dumps(raw)])
-    investigator = LlmCaseInvestigator(
-        provider=provider,
-        material=LegacyCaseMaterial(evidence=(_evidence(),)),
+    result = investigation_result_from_content(
+        context=context,
+        evidence=(),
+        content=content,
     )
 
-    result = await investigator.investigate(_context())
+    [claim] = result.proposal.proposed_claims
+    assert claim.targets == (TargetReference(kind="ticket_id", value="4001"),)
+    assert claim.supporting_evidence_ids == ("visual:attachment-1",)
 
-    assert result.proposal.proposed_claims[0].public_allowed is False
+
+def test_model_cannot_choose_case_targets() -> None:
+    context = _resolved_context()
+    content = json.dumps(
+        {
+            "answer_status": "supported",
+            "proposed_claims": [
+                {
+                    "statement": "The current request is rejected.",
+                    "role": "current_state",
+                    "status": "confirmed",
+                    "supporting_evidence_ids": ["ev-runtime"],
+                    "targets": [
+                        {
+                            "kind": "tenant_id",
+                            "value": "22222222-2222-4222-8222-222222222222",
+                        },
+                        {"kind": "trace_id", "value": "model-chosen-trace"},
+                    ],
+                },
+                {
+                    "statement": "The published limit is 5,000 requests.",
+                    "role": "product_fact",
+                    "status": "evidence_supported",
+                    "supporting_evidence_ids": ["ev-docs"],
+                    "targets": [
+                        {
+                            "kind": "tenant_id",
+                            "value": "22222222-2222-4222-8222-222222222222",
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+
+    result = investigation_result_from_content(
+        context=context,
+        evidence=(),
+        content=content,
+    )
+
+    current_state, product_fact = result.proposal.proposed_claims
+    assert current_state.targets == (TargetReference(kind="tenant_id", value=TENANT),)
+    assert product_fact.targets == ()
 
 
 async def test_policy_reply_writer_cannot_add_facts_or_unapproved_questions() -> None:
@@ -191,7 +175,7 @@ async def test_policy_reply_writer_cannot_add_facts_or_unapproved_questions() ->
         role=ClaimRole.CURRENT_STATE,
         status=ClaimStatus.CONFIRMED,
         supporting_evidence_ids=("ev-runtime",),
-        targets=(TARGET,),
+        targets=(TargetReference(kind="tenant_id", value=TENANT),),
         public_allowed=True,
     )
     assessment = CaseAssessment(

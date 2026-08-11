@@ -6,6 +6,7 @@
 - ticket_id > N → 处理
 - min_ticket_id = 0 → 不过滤（默认行为）
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +23,9 @@ def _make_cfg(min_ticket_id: int = 2624) -> AppConfig:
     cfg = AppConfig()
     cfg.public_reply = PublicReplyConfig(enabled=False)
     cfg.zendesk = ZendeskConfig(
-        subdomain="x", email="x@y.com", api_token="t",
+        subdomain="x",
+        email="x@y.com",
+        api_token="t",
         min_ticket_id=min_ticket_id,
     )
     return cfg
@@ -56,7 +59,10 @@ class TestMinTicketIdFilter:
         await queue.put({"ticket_id": 2500, "source": "zendesk_webhook"})
 
         await _run_consumer_once(
-            state, queue, manager, _make_cfg(min_ticket_id=2624),
+            state,
+            queue,
+            manager,
+            _make_cfg(min_ticket_id=2624),
         )
 
         # 不该 dispatch，不该 fetch（因为顶部就 skip 了）
@@ -71,12 +77,19 @@ class TestMinTicketIdFilter:
         manager.dispatch = AsyncMock()
 
         # mention 走直 dispatch（最简单的路径，能立刻验证未被顶部过滤掉）
-        await queue.put({
-            "ticket_id": 2624, "source": "mention", "hint": "test",
-        })
+        await queue.put(
+            {
+                "ticket_id": 2624,
+                "source": "mention",
+                "hint": "test",
+            }
+        )
 
         await _run_consumer_once(
-            state, queue, manager, _make_cfg(min_ticket_id=2624),
+            state,
+            queue,
+            manager,
+            _make_cfg(min_ticket_id=2624),
         )
 
         # 2624 == 2624 不该被过滤 → mention 走 dispatch
@@ -89,12 +102,19 @@ class TestMinTicketIdFilter:
         manager = MagicMock()
         manager.dispatch = AsyncMock()
 
-        await queue.put({
-            "ticket_id": 2999, "source": "mention", "hint": "test",
-        })
+        await queue.put(
+            {
+                "ticket_id": 2999,
+                "source": "mention",
+                "hint": "test",
+            }
+        )
 
         await _run_consumer_once(
-            state, queue, manager, _make_cfg(min_ticket_id=2624),
+            state,
+            queue,
+            manager,
+            _make_cfg(min_ticket_id=2624),
         )
 
         manager.dispatch.assert_called_once()
@@ -107,12 +127,19 @@ class TestMinTicketIdFilter:
         manager = MagicMock()
         manager.dispatch = AsyncMock()
 
-        await queue.put({
-            "ticket_id": 100, "source": "mention", "hint": "test",
-        })
+        await queue.put(
+            {
+                "ticket_id": 100,
+                "source": "mention",
+                "hint": "test",
+            }
+        )
 
         await _run_consumer_once(
-            state, queue, manager, _make_cfg(min_ticket_id=0),
+            state,
+            queue,
+            manager,
+            _make_cfg(min_ticket_id=0),
         )
 
         # min=0 → 100 该被处理

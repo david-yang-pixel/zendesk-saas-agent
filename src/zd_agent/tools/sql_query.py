@@ -1,4 +1,5 @@
 """SqlQuery tool: execute read-only SQL on SaaS production DB."""
+
 from __future__ import annotations
 
 import re
@@ -14,10 +15,26 @@ if TYPE_CHECKING:
 
 _DATABASE_KEYS = {"prod", "billing", "plugin"}
 _FORBIDDEN_KEYWORDS = [
-    "INSERT", "UPDATE", "DELETE", "MERGE", "UPSERT",
-    "DROP", "TRUNCATE", "ALTER", "CREATE",
-    "GRANT", "REVOKE", "COPY", "EXECUTE", "CALL",
-    "VACUUM", "ANALYZE", "REINDEX", "SET", "LOCK", "SHOW",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "MERGE",
+    "UPSERT",
+    "DROP",
+    "TRUNCATE",
+    "ALTER",
+    "CREATE",
+    "GRANT",
+    "REVOKE",
+    "COPY",
+    "EXECUTE",
+    "CALL",
+    "VACUUM",
+    "ANALYZE",
+    "REINDEX",
+    "SET",
+    "LOCK",
+    "SHOW",
 ]
 _DOLLAR_QUOTE_START = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
 _MAX_ERROR_SQL_CHARS = 800
@@ -158,7 +175,9 @@ class SqlQuery(Tool):
     # agent 要详细数据可以 LIMIT / WHERE narrow 再查。
     max_output_tokens = 8000
 
-    async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
+    async def execute(
+        self, args: dict[str, Any], session: "AgentSession"
+    ) -> ToolResult:
         db_key = args.get("database")
         if not isinstance(db_key, str):
             return ToolResult(success=False, error="database must be a string")
@@ -176,7 +195,9 @@ class SqlQuery(Tool):
 
         safety_error = _validate_read_only_sql(sql)
         if safety_error:
-            return ToolResult(success=False, error=f"SQL safety check failed: {safety_error}")
+            return ToolResult(
+                success=False, error=f"SQL safety check failed: {safety_error}"
+            )
 
         cfg = get_config()
         ticket_id = str(session.ticket_id)
@@ -214,7 +235,9 @@ class SqlQuery(Tool):
                 ticket_id=ticket_id,
             )
         except Exception as e:
-            return ToolResult(success=False, error=f"DB gateway MCP request failed: {e}")
+            return ToolResult(
+                success=False, error=f"DB gateway MCP request failed: {e}"
+            )
         return self._gateway_result_to_tool_result(
             result=result,
             session=session,
@@ -232,10 +255,12 @@ class SqlQuery(Tool):
     ) -> ToolResult:
         if not result.success:
             if result.code == "TELEPORT_EXPIRED":
-                session.mark_waiting_for_auth()
                 return ToolResult(
                     success=False,
-                    error="DB Gateway Teleport 认证过期或端口转发中断；本工单挂起，认证恢复后自动重试",
+                    error=(
+                        "DB Gateway Teleport authentication expired or its tunnel is down; "
+                        "retry after the DB gateway service is restored"
+                    ),
                 )
             return ToolResult(
                 success=False,

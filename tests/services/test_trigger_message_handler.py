@@ -1,4 +1,5 @@
 """Tests for single trigger message handling orchestration."""
+
 from __future__ import annotations
 
 import json
@@ -7,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
+from zd_agent.config import AppConfig, IntakeConfig, PublicReplyConfig, ZendeskConfig
 from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.services.trigger_errors import TriggerDeferredError
 from zd_agent.services.trigger_message_handler import handle_trigger_message
@@ -25,8 +26,7 @@ def _cfg() -> AppConfig:
         min_ticket_id=0,
         agent_user_id=45433304089364,
     )
-    cfg.trigger_decider = TriggerDeciderConfig(
-        llm_model="gpt-test",
+    cfg.intake = IntakeConfig(
         post_agent_cooldown_seconds=180,
     )
     return cfg
@@ -116,10 +116,18 @@ async def test_customer_message_during_cooldown_is_deferred_without_consuming_it
             state=state,
             cfg=_cfg(),
             log_path=tmp_path / "trigger.jsonl",
-            fetch_customer_messages_fn=AsyncMock(return_value=(
-                [{"id": "cid-2", "body": "new issue", "created_at": now.isoformat()}],
-                {"id": 12345},
-            )),
+            fetch_customer_messages_fn=AsyncMock(
+                return_value=(
+                    [
+                        {
+                            "id": "cid-2",
+                            "body": "new issue",
+                            "created_at": now.isoformat(),
+                        }
+                    ],
+                    {"id": 12345},
+                )
+            ),
             human_takeover_fn=AsyncMock(),
             detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
         )
@@ -130,7 +138,9 @@ async def test_customer_message_during_cooldown_is_deferred_without_consuming_it
 
 
 @pytest.mark.asyncio
-async def test_customer_message_enters_v2_without_legacy_classification(tmp_path) -> None:
+async def test_customer_message_enters_v2_without_legacy_classification(
+    tmp_path,
+) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     manager = MagicMock()
 
@@ -140,10 +150,18 @@ async def test_customer_message_enters_v2_without_legacy_classification(tmp_path
         state=state,
         cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=(
-            [{"id": "cid-1", "body": "it fails", "created_at": "2026-06-05T06:00:00Z"}],
-            {"id": 12345},
-        )),
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "cid-1",
+                        "body": "it fails",
+                        "created_at": "2026-06-05T06:00:00Z",
+                    }
+                ],
+                {"id": 12345},
+            )
+        ),
         human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
@@ -169,10 +187,18 @@ async def test_casework_mode_queues_v2_without_legacy_verdict_or_public_template
         state=state,
         cfg=cfg,
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=(
-            [{"id": "cid-1", "body": "hello", "created_at": "2026-06-05T06:00:00Z"}],
-            {"id": 12345},
-        )),
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "cid-1",
+                        "body": "hello",
+                        "created_at": "2026-06-05T06:00:00Z",
+                    }
+                ],
+                {"id": 12345},
+            )
+        ),
         human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
@@ -199,10 +225,18 @@ async def test_canary_selected_ticket_queues_v2_without_legacy_fallback(
         state=state,
         cfg=cfg,
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=(
-            [{"id": "cid-1", "body": "hello", "created_at": "2026-06-05T06:00:00Z"}],
-            {"id": 12345},
-        )),
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "cid-1",
+                        "body": "hello",
+                        "created_at": "2026-06-05T06:00:00Z",
+                    }
+                ],
+                {"id": 12345},
+            )
+        ),
         human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
@@ -292,10 +326,18 @@ async def test_startup_recovery_reenters_takeover_and_v2_intake_gates(
     tmp_path,
 ) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
-    fetch_messages = AsyncMock(return_value=(
-        [{"id": "cid-1", "body": "issue detail", "created_at": "2026-06-05T06:00:00Z"}],
-        {"id": 12345},
-    ))
+    fetch_messages = AsyncMock(
+        return_value=(
+            [
+                {
+                    "id": "cid-1",
+                    "body": "issue detail",
+                    "created_at": "2026-06-05T06:00:00Z",
+                }
+            ],
+            {"id": 12345},
+        )
+    )
     detect_takeover = AsyncMock(return_value=(False, ""))
 
     result = await handle_trigger_message(
@@ -363,13 +405,19 @@ async def test_replayed_webhook_does_not_create_a_second_casework_generation(
     state = TicketStateTracker(tmp_path / "tickets.json")
 
     async def fetch(_ticket_id: int):
-        return ([{"id": "m1", "body": "it fails", "created_at": "2026-06-05T06:00:00Z"}], {"id": 12345})
+        return (
+            [{"id": "m1", "body": "it fails", "created_at": "2026-06-05T06:00:00Z"}],
+            {"id": 12345},
+        )
 
     kwargs = dict(
         msg={"ticket_id": 12345, "source": "zendesk_webhook", "_queue_key": "event-a"},
-        manager=MagicMock(), state=state, cfg=_cfg(),
+        manager=MagicMock(),
+        state=state,
+        cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=fetch, human_takeover_fn=AsyncMock(),
+        fetch_customer_messages_fn=fetch,
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
     first = await handle_trigger_message(**kwargs)
@@ -388,11 +436,16 @@ async def test_v2_intake_does_not_require_legacy_classifier(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
 
     async def fetch(_ticket_id: int):
-        return ([{"id": "m1", "body": "it fails", "created_at": "2026-06-05T06:00:00Z"}], {"id": 12345})
+        return (
+            [{"id": "m1", "body": "it fails", "created_at": "2026-06-05T06:00:00Z"}],
+            {"id": 12345},
+        )
 
     result = await handle_trigger_message(
         msg={"ticket_id": 12345, "source": "zendesk_webhook", "_queue_key": "event-a"},
-        manager=MagicMock(), state=state, cfg=_cfg(),
+        manager=MagicMock(),
+        state=state,
+        cfg=_cfg(),
         log_path=tmp_path / "trigger.jsonl",
         fetch_customer_messages_fn=fetch,
         human_takeover_fn=AsyncMock(),

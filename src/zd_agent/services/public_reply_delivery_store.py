@@ -37,6 +37,18 @@ class PublicReplyDeliveryAttempt:
     ambiguous: bool
 
 
+@dataclass(frozen=True, slots=True)
+class PublicReplyDeliveryAttemptState:
+    """Read-only send fence used by lifecycle migrations and recovery gates."""
+
+    exists: bool
+    reply_type: str = ""
+    created_at: float = 0.0
+    delivered: bool = False
+    ambiguous: bool = False
+    active: bool = False
+
+
 class PublicReplyDeliveryStateError(RuntimeError):
     pass
 
@@ -115,9 +127,17 @@ class PublicReplyDeliveryStore:
                 )
             if "ambiguous_at" not in columns:
                 connection.execute(
-                    "ALTER TABLE public_reply_deliveries "
-                    "ADD COLUMN ambiguous_at REAL"
+                    "ALTER TABLE public_reply_deliveries ADD COLUMN ambiguous_at REAL"
                 )
+            # Older successful sends retained the pre-send ambiguity fence.
+            # ``delivered_at`` is terminal evidence, so normalize that stale
+            # combination before any retry decides whether remote lookup is
+            # still required.
+            connection.execute(
+                "UPDATE public_reply_deliveries SET ambiguous_at = NULL, "
+                "claim_token = '', lease_until = 0 "
+                "WHERE delivered_at IS NOT NULL AND ambiguous_at IS NOT NULL"
+            )
         self.path.chmod(0o600)
 
     def _connect(self) -> sqlite3.Connection:
@@ -212,8 +232,7 @@ class PublicReplyDeliveryStore:
                     )
                     selected_key = str(selected["delivery_key"])
                     frozen_reply_type = (
-                        str(selected["reply_type"] or "")
-                        or legacy_keys[selected_key]
+                        str(selected["reply_type"] or "") or legacy_keys[selected_key]
                     )
                     connection.execute(
                         "UPDATE public_reply_deliveries "
@@ -293,16 +312,76 @@ class PublicReplyDeliveryStore:
         delivery_attempt_id: str,
         ticket_id: int,
     ) -> PublicReplyDeliveryAttempt | None:
+        """Return v2 state, lazily adopting only a confirmed legacy row.
+
+        Cold-start reconcilers call this method without first preparing a new
+        public delivery.  A delivered v1 row is therefore safe to adopt as
+        immutable historical evidence.  Unconfirmed v1 rows remain
+        quarantined under their original key, while mixed or multiple rows
+        fail closed instead of guessing which payload owns the attempt.
+        """
         delivery_key = _delivery_key_v2(delivery_attempt_id, ticket_id)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT reply_type,body,internal_analysis,"
+                "SELECT delivery_key,reply_type,body,internal_analysis,"
                 "snapshot_customer_message_count,"
                 "snapshot_customer_last_message_id,migrated_from_v1,"
                 "created_at,delivered_at,ambiguous_at "
                 "FROM public_reply_deliveries WHERE delivery_key = ?",
                 (delivery_key,),
             ).fetchone()
+            legacy_keys = {
+                _delivery_key_v1(
+                    delivery_attempt_id,
+                    ticket_id,
+                    legacy_reply_type,
+                ): legacy_reply_type
+                for legacy_reply_type in self._LEGACY_REPLY_TYPES
+            }
+            placeholders = ",".join("?" for _ in legacy_keys)
+            legacy_rows = connection.execute(
+                "SELECT delivery_key,reply_type,body,internal_analysis,"
+                "snapshot_customer_message_count,"
+                "snapshot_customer_last_message_id,migrated_from_v1,"
+                "created_at,delivered_at,ambiguous_at "
+                "FROM public_reply_deliveries "
+                f"WHERE delivery_key IN ({placeholders})",
+                tuple(legacy_keys),
+            ).fetchall()
+            if row is not None and legacy_rows:
+                raise PublicReplyDeliveryStateError(
+                    "mixed v1/v2 public reply delivery rows require "
+                    "manual reconciliation"
+                )
+            if row is None:
+                if len(legacy_rows) > 1:
+                    raise PublicReplyDeliveryStateError(
+                        "multiple legacy public reply delivery rows require "
+                        "manual reconciliation"
+                    )
+                if not legacy_rows or legacy_rows[0]["delivered_at"] is None:
+                    return None
+                legacy_row = legacy_rows[0]
+                legacy_key = str(legacy_row["delivery_key"])
+                frozen_reply_type = (
+                    str(legacy_row["reply_type"] or "") or legacy_keys[legacy_key]
+                )
+                connection.execute(
+                    "UPDATE public_reply_deliveries "
+                    "SET delivery_key = ?, reply_type = ?, "
+                    "migrated_from_v1 = 1 WHERE delivery_key = ?",
+                    (delivery_key, frozen_reply_type, legacy_key),
+                )
+                row = connection.execute(
+                    "SELECT delivery_key,reply_type,body,internal_analysis,"
+                    "snapshot_customer_message_count,"
+                    "snapshot_customer_last_message_id,migrated_from_v1,"
+                    "created_at,delivered_at,ambiguous_at "
+                    "FROM public_reply_deliveries WHERE delivery_key = ?",
+                    (delivery_key,),
+                ).fetchone()
+        self.path.chmod(0o600)
         if row is None:
             return None
         return PublicReplyDeliveryAttempt(
@@ -323,6 +402,128 @@ class PublicReplyDeliveryStore:
             delivered=row["delivered_at"] is not None,
             ambiguous=row["ambiguous_at"] is not None,
         )
+
+    def inspect_logical_attempt(
+        self,
+        *,
+        delivery_attempt_id: str,
+        ticket_id: int,
+    ) -> PublicReplyDeliveryAttemptState:
+        """Inspect v1/v2 send state without adopting or mutating historical rows."""
+        delivery_key = _delivery_key_v2(delivery_attempt_id, ticket_id)
+        legacy_keys = {
+            _delivery_key_v1(delivery_attempt_id, ticket_id, reply_type): reply_type
+            for reply_type in self._LEGACY_REPLY_TYPES
+        }
+        keys = (delivery_key, *legacy_keys)
+        placeholders = ",".join("?" for _ in keys)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT delivery_key,reply_type,created_at,delivered_at,"
+                "ambiguous_at,claim_token,lease_until "
+                "FROM public_reply_deliveries "
+                f"WHERE delivery_key IN ({placeholders})",
+                keys,
+            ).fetchall()
+        if not rows:
+            return PublicReplyDeliveryAttemptState(exists=False)
+        if len(rows) != 1:
+            raise PublicReplyDeliveryStateError(
+                "multiple or mixed public reply delivery rows require "
+                "manual reconciliation",
+            )
+        row = rows[0]
+        stored_key = str(row["delivery_key"])
+        reply_type = str(row["reply_type"] or "") or legacy_keys.get(stored_key, "")
+        delivered = row["delivered_at"] is not None
+        return PublicReplyDeliveryAttemptState(
+            exists=True,
+            reply_type=reply_type,
+            created_at=float(row["created_at"]),
+            delivered=delivered,
+            ambiguous=(not delivered and row["ambiguous_at"] is not None),
+            active=(
+                not delivered
+                and bool(str(row["claim_token"] or ""))
+                and float(row["lease_until"] or 0) > self._now()
+            ),
+        )
+
+    def resolve_manually(
+        self,
+        *,
+        delivery_attempt_id: str,
+        ticket_id: int,
+        outcome: str,
+    ) -> PublicReplyDeliveryAttemptState:
+        """Apply an operator-proven delivered/unsent outcome under one DB lock."""
+        if outcome not in {"delivered", "unsent"}:
+            raise ValueError("manual delivery outcome must be delivered or unsent")
+        delivery_key = _delivery_key_v2(delivery_attempt_id, ticket_id)
+        legacy_keys = {
+            _delivery_key_v1(delivery_attempt_id, ticket_id, reply_type): reply_type
+            for reply_type in self._LEGACY_REPLY_TYPES
+        }
+        keys = (delivery_key, *legacy_keys)
+        placeholders = ",".join("?" for _ in keys)
+        now = self._now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT delivery_key,reply_type,created_at,delivered_at "
+                "FROM public_reply_deliveries "
+                f"WHERE delivery_key IN ({placeholders})",
+                keys,
+            ).fetchall()
+            if len(rows) > 1:
+                raise PublicReplyDeliveryStateError(
+                    "multiple or mixed delivery rows require database reconciliation",
+                )
+            if not rows:
+                if outcome == "unsent":
+                    return PublicReplyDeliveryAttemptState(exists=False)
+                raise PublicReplyDeliveryStateError(
+                    "cannot confirm a missing delivery attempt as delivered",
+                )
+            row = rows[0]
+            stored_key = str(row["delivery_key"])
+            reply_type = str(row["reply_type"] or "") or legacy_keys.get(
+                stored_key,
+                "",
+            )
+            delivered = row["delivered_at"] is not None
+            if outcome == "unsent":
+                if delivered:
+                    raise PublicReplyDeliveryStateError(
+                        "a confirmed delivery cannot be resolved as unsent",
+                    )
+                connection.execute(
+                    "DELETE FROM public_reply_deliveries WHERE delivery_key = ?",
+                    (stored_key,),
+                )
+                return PublicReplyDeliveryAttemptState(exists=False)
+            if not delivered:
+                connection.execute(
+                    "UPDATE public_reply_deliveries SET delivered_at = ?, "
+                    "ambiguous_at = NULL, claim_token = '', lease_until = 0 "
+                    "WHERE delivery_key = ?",
+                    (now, stored_key),
+                )
+            return PublicReplyDeliveryAttemptState(
+                exists=True,
+                reply_type=reply_type,
+                created_at=float(row["created_at"]),
+                delivered=True,
+            )
+
+    def ambiguous_count(self) -> int:
+        """Return sends that require deterministic remote reconciliation."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM public_reply_deliveries "
+                "WHERE delivered_at IS NULL AND ambiguous_at IS NOT NULL",
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def claim(self, delivery_key: str) -> str | None:
         now = self._now()
@@ -435,7 +636,8 @@ class PublicReplyDeliveryStore:
         with self._connect() as connection:
             cursor = connection.execute(
                 "UPDATE public_reply_deliveries "
-                "SET delivered_at = ?, claim_token = '', lease_until = 0 "
+                "SET delivered_at = ?, ambiguous_at = NULL, "
+                "claim_token = '', lease_until = 0 "
                 "WHERE delivery_key = ? AND delivered_at IS NULL "
                 "AND claim_token = ?",
                 (self._now(), delivery_key, claim_token),

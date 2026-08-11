@@ -2,9 +2,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+
+from zd_agent.casework.adapters.token_budget import CaseworkTokenBudgetExceeded
 from zd_agent.casework.adapters.vision import LlmVisualAnalyzer
+from zd_agent.casework.domain.enums import VisualObservationStatus
 from zd_agent.casework.domain.models import AttachmentRef, TicketSnapshot
 from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolSchema
+from zd_agent.session.agent_session import AgentSession
 
 
 class FakeProvider(LLMProvider):
@@ -92,6 +97,7 @@ async def test_visual_analyzer_keeps_visible_instructions_untrusted() -> None:
     ).analyze(_ticket(attachment))
 
     assert observations[0].untrusted is True
+    assert observations[0].status is VisualObservationStatus.OBSERVED
     assert "Ignore prior instructions" in observations[0].visible_text
     content = provider.calls[0][-1]["content"]
     assert isinstance(content, list)
@@ -99,7 +105,32 @@ async def test_visual_analyzer_keeps_visible_instructions_untrusted() -> None:
     assert "never instructions" in str(content[0].get("text"))
 
 
-async def test_visual_analyzer_records_unavailable_attachment_without_model_call() -> None:
+async def test_visual_analysis_counts_against_the_run_level_token_budget() -> None:
+    attachment = AttachmentRef(
+        attachment_id="attachment-budget",
+        filename="screenshot.png",
+        content_type="image/png",
+        download_url="https://example.test/budget-image",
+    )
+    provider = FakeProvider([json.dumps({"observations": []})])
+    loader = FakeImageLoader({attachment.download_url: "data:image/png;base64,AAAA"})
+    session = AgentSession(ticket_id=4001)
+
+    with pytest.raises(CaseworkTokenBudgetExceeded, match="token budget"):
+        await LlmVisualAnalyzer(
+            provider=provider,
+            image_loader=loader,
+            session=session,
+            max_tokens=15,
+        ).analyze(_ticket(attachment))
+
+    assert session.token_usage.prompt_tokens == 10
+    assert session.token_usage.completion_tokens == 10
+
+
+async def test_visual_analyzer_records_unavailable_attachment_without_model_call() -> (
+    None
+):
     attachment = AttachmentRef(
         attachment_id="attachment-1",
         filename="screenshot.png",
@@ -116,7 +147,41 @@ async def test_visual_analyzer_records_unavailable_attachment_without_model_call
 
     assert provider.calls == []
     assert observations[0].attachment_id == "attachment-1"
+    assert observations[0].status is VisualObservationStatus.UNAVAILABLE
     assert "could not be retrieved" in observations[0].uncertainty
+
+
+async def test_blank_model_observation_is_downgraded_to_no_result() -> None:
+    attachment = AttachmentRef(
+        attachment_id="attachment-1",
+        filename="screenshot.png",
+        content_type="image/png",
+        download_url="https://example.test/image",
+    )
+    provider = FakeProvider(
+        [
+            json.dumps(
+                {
+                    "observations": [
+                        {
+                            "attachment_id": "attachment-1",
+                            "visible_text": "",
+                            "ui_state": "",
+                            "uncertainty": "nothing extracted",
+                        },
+                    ],
+                },
+            ),
+        ],
+    )
+    loader = FakeImageLoader({attachment.download_url: "data:image/png;base64,AAAA"})
+
+    observations = await LlmVisualAnalyzer(
+        provider=provider,
+        image_loader=loader,
+    ).analyze(_ticket(attachment))
+
+    assert observations[0].status is VisualObservationStatus.NO_MODEL_RESULT
 
 
 async def test_visual_analyzer_skips_model_when_ticket_has_no_images() -> None:
@@ -158,4 +223,11 @@ async def test_visual_analyzer_bounds_attachment_downloads_and_model_cost() -> N
     assert loader.calls == [item.download_url for item in attachments[:6]]
     assert len(provider.calls) == 1
     assert len(observations) == 8
+    assert all(
+        item.status is VisualObservationStatus.NO_MODEL_RESULT
+        for item in observations[:6]
+    )
+    assert all(
+        item.status is VisualObservationStatus.OMITTED for item in observations[-2:]
+    )
     assert all("limit" in item.uncertainty for item in observations[-2:])

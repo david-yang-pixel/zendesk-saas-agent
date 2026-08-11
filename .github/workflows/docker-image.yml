@@ -46,7 +46,7 @@ jobs:
         run: uv run ruff check src
 
       - name: Check strict casework types
-        run: uv run pyright src/zd_agent/casework tests/casework
+        run: uv run pyright -p pyproject.toml
 
       - name: Run test suite
         run: uv run pytest -q

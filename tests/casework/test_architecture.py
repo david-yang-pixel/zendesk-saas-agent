@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
 import sys
+import tomllib
 
 
 CASEWORK = Path(__file__).parents[2] / "src" / "zd_agent" / "casework"
@@ -10,6 +12,26 @@ SOURCE_ROOT = Path(__file__).parents[2] / "src"
 CORE_LAYERS = ("domain", "policies", "ports", "application")
 MAX_MODULE_LINES = 400
 MAX_FUNCTION_LINES = 50
+
+
+def test_ci_uses_the_single_strict_pyright_configuration() -> None:
+    project_root = Path(__file__).parents[2]
+    assert not (project_root / "pyrightconfig.json").exists()
+    pyproject = tomllib.loads((project_root / "pyproject.toml").read_text())
+    config = pyproject["tool"]["pyright"]
+    assert config["include"] == ["src/zd_agent/casework", "tests/casework"]
+    assert config["strict"] == ["src/zd_agent/casework"]
+    workflow = (project_root / ".github/workflows/docker-image.yml").read_text()
+    assert "uv run pyright -p pyproject.toml" in workflow
+
+
+def test_every_entry_module_imports_from_a_clean_process_state() -> None:
+    entry_dir = SOURCE_ROOT / "zd_agent" / "entry"
+    for path in sorted(entry_dir.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        importlib.import_module(f"zd_agent.entry.{path.stem}")
+
 
 _ALLOWED_PROJECT_PREFIXES = {
     "domain": ("pydantic", "zd_agent.casework.domain"),
@@ -24,11 +46,14 @@ _ALLOWED_PROJECT_PREFIXES = {
 }
 
 _PRODUCTION_ROOTS = {
+    "zd_agent.entry.cli",
+    "zd_agent.runtime.casework_v2",
     "zd_agent.runtime.runner",
     "zd_agent.services.agent_management",
     "zd_agent.services.app_bootstrap",
     "zd_agent.services.external_ownership",
     "zd_agent.services.saas_app",
+    "zd_agent.services.saas_routes",
     "zd_agent.services.silence_waker",
     "zd_agent.services.trigger_consumer",
     "zd_agent.services.trigger_message_handler",
@@ -36,18 +61,49 @@ _PRODUCTION_ROOTS = {
 }
 
 _FORBIDDEN_V2_DEPENDENCIES = {
+    "zd_agent.casework.adapters.legacy_evidence",
     "zd_agent.casework.adapters.shadow",
     "zd_agent.casework.domain.shadow",
     "zd_agent.runtime.casework_shadow",
+    "zd_agent.runtime.agent_loop",
+    "zd_agent.runtime.billing_plan_gate",
+    "zd_agent.runtime.compaction",
+    "zd_agent.runtime.customer_profile",
+    "zd_agent.runtime.events",
+    "zd_agent.runtime.investigation",
+    "zd_agent.runtime.log_reporter",
+    "zd_agent.runtime.messages",
+    "zd_agent.runtime.prompt.builder",
+    "zd_agent.runtime.prompt.defaults",
+    "zd_agent.runtime.prompt.section",
+    "zd_agent.runtime.prompt_loader",
+    "zd_agent.runtime.refund_gate",
+    "zd_agent.runtime.reply_evidence",
+    "zd_agent.runtime.runner_reporting",
+    "zd_agent.runtime.result_budget",
     "zd_agent.runtime.subagent",
     "zd_agent.runtime.tool_loop",
+    "zd_agent.runtime.tool_context",
+    "zd_agent.integrations.feishu.cards",
+    "zd_agent.integrations.feishu.client",
     "zd_agent.services.ask_notifications",
     "zd_agent.services.escalation",
+    "zd_agent.services.escalation_notifications",
     "zd_agent.services.silence_expiry",
+    "zd_agent.services.silence_notifications",
     "zd_agent.services.trigger_actions",
     "zd_agent.services.verdict_classification",
     "zd_agent.services.verdict_dispatch",
+    "zd_agent.services.webhook_server",
+    "zd_agent.tools.classify",
+    "zd_agent.tools.custom_mcp",
+    "zd_agent.tools.feishu_tools",
+    "zd_agent.tools.investigation",
     "zd_agent.tools.registry",
+    "zd_agent.tools.script_runner",
+    "zd_agent.tools.subagent",
+    "zd_agent.tools.subagent_parallel",
+    "zd_agent.tools.zendesk_public_reply",
 }
 
 _CASEWORK_EFFECT_ROOTS = {"zd_agent.casework.adapters.effects"}
@@ -150,7 +206,9 @@ def test_core_modules_and_functions_stay_focused() -> None:
         for path in _source_files(layer):
             source = path.read_text(encoding="utf-8")
             if len(source.splitlines()) > MAX_MODULE_LINES:
-                violations.append(f"{path.relative_to(CASEWORK)} exceeds {MAX_MODULE_LINES} lines")
+                violations.append(
+                    f"{path.relative_to(CASEWORK)} exceeds {MAX_MODULE_LINES} lines"
+                )
             tree = ast.parse(source, filename=str(path))
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -169,8 +227,17 @@ def test_v2_production_roots_cannot_reach_legacy_decision_runtime() -> None:
     assert sorted(reachable & _FORBIDDEN_V2_DEPENDENCIES) == []
 
 
+def test_legacy_decision_and_tool_modules_are_physically_absent() -> None:
+    assert (
+        sorted(
+            module
+            for module in _FORBIDDEN_V2_DEPENDENCIES
+            if _project_module_path(module) is not None
+        )
+        == []
+    )
+
+
 def test_casework_effects_cannot_reach_legacy_public_delivery() -> None:
     reachable = _reachable_project_modules(_CASEWORK_EFFECT_ROOTS)
-    assert sorted(
-        reachable & _FORBIDDEN_CASEWORK_PUBLIC_DELIVERY_DEPENDENCIES
-    ) == []
+    assert sorted(reachable & _FORBIDDEN_CASEWORK_PUBLIC_DELIVERY_DEPENDENCIES) == []

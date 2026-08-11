@@ -13,11 +13,13 @@ from zd_agent.services.durable_trigger_queue_sql import (
     DELETE_CLAIM_SQL,
     INSERT_SQL,
     MARK_CORRUPT_SQL,
+    MARK_DEAD_LETTER_RECONCILED_SQL,
     MARK_FAILED_SQL,
     MARK_PROCESSING_SQL,
     RECOVER_PROCESSING_SQL,
     RELEASE_SQL,
     REVIVE_DEAD_LETTER_SQL,
+    REVIVE_RECOVERY_SQL,
     SELECT_DEAD_LETTERS_SQL,
     SELECT_NEXT_SQL,
     SELECT_READY_SQL,
@@ -106,6 +108,26 @@ class DurableTriggerStore:
             )
             return cursor.rowcount == 1
 
+    def revive_recovery(
+        self,
+        event_key: str,
+        payload: dict[str, Any],
+        available_at: float,
+    ) -> bool:
+        """Revive an audited recovery row for the same deterministic generation."""
+        now = self._now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                REVIVE_RECOVERY_SQL,
+                (
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                    available_at,
+                    now,
+                    event_key,
+                ),
+            )
+            return cursor.rowcount == 1
+
     def insert(
         self,
         event_key: str,
@@ -174,17 +196,24 @@ class DurableTriggerStore:
         reason: str,
         *,
         increment_deferrals: bool = False,
+        payload: dict[str, Any] | None = None,
     ) -> bool:
         now = self._now()
+        serialized_payload = json.dumps(
+            _persisted_payload(payload or {}),
+            ensure_ascii=False,
+            default=str,
+        )
         with self.connect() as connection:
             if increment_deferrals:
                 cursor = connection.execute(
-                    "UPDATE trigger_events SET status = 'pending', "
+                    "UPDATE trigger_events SET payload = ?, status = 'pending', "
                     "available_at = ?, deferrals = deferrals + 1, "
                     "last_error = ?, claim_token = '', lease_until = 0, "
                     "updated_at = ? WHERE id = ? AND status = 'processing' "
                     "AND claim_token = ?",
                     (
+                        serialized_payload,
                         now + delay_seconds,
                         reason[:500],
                         now,
@@ -195,7 +224,14 @@ class DurableTriggerStore:
             else:
                 cursor = connection.execute(
                     RELEASE_SQL,
-                    (now + delay_seconds, reason[:500], now, event_id, claim_token),
+                    (
+                        serialized_payload,
+                        now + delay_seconds,
+                        reason[:500],
+                        now,
+                        event_id,
+                        claim_token,
+                    ),
                 )
             return cursor.rowcount == 1
 
@@ -215,12 +251,18 @@ class DurableTriggerStore:
         pending: bool,
         delay: float,
         error: str,
+        payload: dict[str, Any] | None = None,
     ) -> bool:
         now = self._now()
         with self.connect() as connection:
             cursor = connection.execute(
                 MARK_FAILED_SQL,
                 (
+                    json.dumps(
+                        _persisted_payload(payload or {}),
+                        ensure_ascii=False,
+                        default=str,
+                    ),
                     "pending" if pending else "dead_letter",
                     attempts,
                     now + delay,
@@ -262,3 +304,27 @@ class DurableTriggerStore:
             payload["_queue_error"] = row["last_error"]
             result.append(payload)
         return result
+
+    def resolve_dead_letter(self, event_id: int) -> bool:
+        """Retain the audit row while removing it from reconciliation scans."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                MARK_DEAD_LETTER_RECONCILED_SQL,
+                (self._now(), event_id),
+            )
+            return cursor.rowcount == 1
+
+
+def _persisted_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key
+        not in {
+            "_queue_event_id",
+            "_queue_claim_token",
+            "_queue_attempts",
+            "_queue_deferrals",
+            "_queue_error",
+        }
+    }

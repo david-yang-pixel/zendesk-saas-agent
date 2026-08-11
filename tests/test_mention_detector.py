@@ -30,11 +30,17 @@ class TestIsMention(unittest.TestCase):
             clear_cache()
 
     def test_detects_mention_in_internal_note(self) -> None:
-        comment = {"is_public": False, "body": "Hey @support-agent can you look at this?"}
+        comment = {
+            "is_public": False,
+            "body": "Hey @support-agent can you look at this?",
+        }
         self.assertTrue(is_mention(comment, "@support-agent"))
 
     def test_ignores_public_comment(self) -> None:
-        comment = {"is_public": True, "body": "Hey @support-agent can you look at this?"}
+        comment = {
+            "is_public": True,
+            "body": "Hey @support-agent can you look at this?",
+        }
         self.assertFalse(is_mention(comment, "@support-agent"))
 
     def test_case_insensitive(self) -> None:
@@ -82,7 +88,8 @@ class TestIsMention(unittest.TestCase):
             "via": {"channel": "web"},
         }
         with patch(
-            "zd_agent.mention.detector.get_self_user_id", return_value=12345,
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=12345,
         ):
             self.assertTrue(is_mention(comment, "@saas-agent"))
 
@@ -96,7 +103,8 @@ class TestIsMention(unittest.TestCase):
             "via": {"channel": "api"},
         }
         with patch(
-            "zd_agent.mention.detector.get_self_user_id", return_value=12345,
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=12345,
         ):
             self.assertFalse(is_mention(comment, "@saas-agent"))
 
@@ -109,14 +117,14 @@ class TestIsMention(unittest.TestCase):
         comment = {
             "public": False,
             "body": (
-                "⚠️ AI Agent encountered an error. "
-                "Retry by mentioning @saas-agent."
+                "⚠️ AI Agent encountered an error. Retry by mentioning @saas-agent."
             ),
             "author_id": 12345,
             "via": {"channel": "api"},
         }
         with patch(
-            "zd_agent.mention.detector.get_self_user_id", return_value=None,
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=None,
         ):
             self.assertFalse(is_mention(comment, "@saas-agent"))
 
@@ -129,7 +137,8 @@ class TestIsMention(unittest.TestCase):
             "via": {"channel": 5},
         }
         with patch(
-            "zd_agent.mention.detector.get_self_user_id", return_value=None,
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=None,
         ):
             self.assertFalse(is_mention(comment, "@David Yang"))
 
@@ -156,7 +165,8 @@ class TestIsMention(unittest.TestCase):
             "via": {"channel": "api"},
         }
         with patch(
-            "zd_agent.mention.detector.get_self_user_id", return_value=12345,
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=12345,
         ):
             self.assertTrue(is_mention(comment, "@saas-agent"))
 
@@ -169,7 +179,8 @@ class TestIsMention(unittest.TestCase):
             "author_id": 12345,
         }
         with patch(
-            "zd_agent.mention.detector.get_self_user_id", return_value=12345,
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=12345,
         ):
             self.assertFalse(is_mention(comment, "@saas-agent"))
 
@@ -207,7 +218,8 @@ class TestIsMention(unittest.TestCase):
             "via": {"channel": "messaging"},
         }
         with patch(
-            "zd_agent.mention.detector.get_self_user_id", return_value=12345,
+            "zd_agent.mention.detector.get_self_user_id",
+            return_value=12345,
         ):
             self.assertTrue(is_mention(comment, "@saas-agent"))
 

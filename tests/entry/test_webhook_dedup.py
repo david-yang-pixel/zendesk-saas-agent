@@ -35,7 +35,7 @@ def test_add_same_key_twice_refreshes_lru(tmp_path):
     d = WebhookDedup(tmp_path / "d.json", max_size=2)
     d.add("a")
     d.add("b")
-    d.add("a")   # refreshes 'a'
+    d.add("a")  # refreshes 'a'
     d.add("c")
     # 'a' refreshed so 'b' should be evicted, 'a' retained
     assert d.seen("b") is False

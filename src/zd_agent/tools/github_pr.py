@@ -45,7 +45,9 @@ def _coerce_required_string_arg(args: dict[str, Any], name: str) -> str | ToolRe
     return raw.strip()
 
 
-def _mcp_failure(payload: dict[str, Any], *, service_name: str = "GitHub MCP") -> ToolResult:
+def _mcp_failure(
+    payload: dict[str, Any], *, service_name: str = "GitHub MCP"
+) -> ToolResult:
     code = payload.get("code") or "UNKNOWN"
     error = payload.get("error") or "unknown error"
     return ToolResult(success=False, error=f"{service_name} failed [{code}]: {error}")
@@ -133,7 +135,9 @@ def _format_issue_search_output(
 ) -> ToolResult:
     items = data.get("items", [])
     if not items:
-        return ToolResult(output=f"未找到与「{query}」相关的 GitHub Issue（repo: {repo}）")
+        return ToolResult(
+            output=f"未找到与「{query}」相关的 GitHub Issue（repo: {repo}）"
+        )
 
     lines = ["# GitHub Issue 搜索结果", f"Repo: {repo}", f"Query: {query}", ""]
     for item in items[:limit]:

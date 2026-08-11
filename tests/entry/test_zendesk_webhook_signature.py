@@ -21,28 +21,51 @@ def test_verify_valid_signature():
     body = b'{"event":"test"}'
     sig = _sign(secret, ts, body)
     with patch("zd_agent.services.zendesk_webhook.time.time", return_value=1700000000):
-        assert verify_zendesk_signature(
-            secret=secret, timestamp=ts, body=body, signature=sig,
-        ) is True
+        assert (
+            verify_zendesk_signature(
+                secret=secret,
+                timestamp=ts,
+                body=body,
+                signature=sig,
+            )
+            is True
+        )
 
 
 def test_verify_invalid_signature():
-    assert verify_zendesk_signature(
-        secret="topsecret", timestamp="1700000000",
-        body=b"{}", signature="notasig",
-    ) is False
+    assert (
+        verify_zendesk_signature(
+            secret="topsecret",
+            timestamp="1700000000",
+            body=b"{}",
+            signature="notasig",
+        )
+        is False
+    )
 
 
 def test_verify_rejects_empty_secret():
-    assert verify_zendesk_signature(
-        secret="", timestamp="x", body=b"{}", signature="y",
-    ) is False
+    assert (
+        verify_zendesk_signature(
+            secret="",
+            timestamp="x",
+            body=b"{}",
+            signature="y",
+        )
+        is False
+    )
 
 
 def test_verify_rejects_empty_timestamp():
-    assert verify_zendesk_signature(
-        secret="s", timestamp="", body=b"{}", signature="y",
-    ) is False
+    assert (
+        verify_zendesk_signature(
+            secret="s",
+            timestamp="",
+            body=b"{}",
+            signature="y",
+        )
+        is False
+    )
 
 
 def test_verify_different_body_different_signature():
@@ -50,9 +73,15 @@ def test_verify_different_body_different_signature():
     ts = "1"
     sig_for_a = _sign(secret, ts, b"A")
     # Same secret/ts but body 'B' should fail verification with sig_for_a
-    assert verify_zendesk_signature(
-        secret=secret, timestamp=ts, body=b"B", signature=sig_for_a,
-    ) is False
+    assert (
+        verify_zendesk_signature(
+            secret=secret,
+            timestamp=ts,
+            body=b"B",
+            signature=sig_for_a,
+        )
+        is False
+    )
 
 
 def test_verify_rejects_signature_older_than_five_minutes():
@@ -94,9 +123,12 @@ def test_verify_rejects_signed_invalid_timestamp():
     ts = "not-a-timestamp"
     body = b"{}"
 
-    assert verify_zendesk_signature(
-        secret=secret,
-        timestamp=ts,
-        body=body,
-        signature=_sign(secret, ts, body),
-    ) is False
+    assert (
+        verify_zendesk_signature(
+            secret=secret,
+            timestamp=ts,
+            body=body,
+            signature=_sign(secret, ts, body),
+        )
+        is False
+    )

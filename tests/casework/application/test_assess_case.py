@@ -3,6 +3,10 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
+from zd_agent.casework.adapters.evidence import (
+    build_case_context_evidence,
+    tool_evidence,
+)
 from zd_agent.casework.application.assess_case import build_case_assessment
 from zd_agent.casework.domain.enums import (
     ActionRequirement,
@@ -19,6 +23,7 @@ from zd_agent.casework.domain.enums import (
     ReasonCode,
     ResolutionMethod,
     ResolutionStatus,
+    VisualObservationStatus,
 )
 from zd_agent.casework.domain.models import (
     ActionProposal,
@@ -124,6 +129,91 @@ def test_assessment_contains_only_claims_that_pass_evidence_admission() -> None:
     assert result.admissions[0].accepted is True
 
 
+def test_identity_membership_only_cannot_admit_unrelated_current_state() -> None:
+    context = _context(_resolved_identity())
+    [identity_evidence] = build_case_context_evidence(context)
+    claim = _claim("ev-identity").model_copy(
+        update={"statement": "The workspace retrieval is currently failing."},
+    )
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="Why is retrieval failing?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(claim,),
+        ),
+        evidence=(identity_evidence,),
+        as_of=NOW,
+    )
+
+    assert result.assessment.answer_status is AnswerStatus.INSUFFICIENT
+    assert result.assessment.admitted_claims == ()
+    assert result.admissions[0].rejection_code is ClaimRejectionCode.ROLE_MISMATCH
+
+
+def _inspector_evidence(query_tenant_id: str) -> EvidenceItem:
+    return tool_evidence(
+        call_id="ev-inspector",
+        tool_name="inspector_exec",
+        args={
+            "tenant_id": query_tenant_id,
+            "section": "quota",
+        },
+        allowed_target_arguments=frozenset({"tenant_id", "section"}),
+        observed_at=NOW,
+        success=True,
+        output="Workspace quota is active.",
+        error="",
+    )
+
+
+def test_target_scoped_inspector_can_admit_honest_tenant_current_state() -> None:
+    context = _context(_resolved_identity())
+    [identity_evidence] = build_case_context_evidence(context)
+    inspector_evidence = _inspector_evidence(TENANT_1)
+    claim = _claim("ev-inspector").model_copy(
+        update={"supporting_evidence_ids": ("ev-inspector", "ev-identity")},
+    )
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="Is the workspace active?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(claim,),
+        ),
+        evidence=(identity_evidence, inspector_evidence),
+        as_of=NOW,
+    )
+
+    assert inspector_evidence.target_value("tenant_id") == TENANT_1
+    assert result.admissions[0].accepted is True
+
+
+def test_inspector_for_other_tenant_cannot_support_resolved_tenant() -> None:
+    context = _context(_resolved_identity())
+    [identity_evidence] = build_case_context_evidence(context)
+    inspector_evidence = _inspector_evidence(TENANT_2)
+    claim = _claim("ev-inspector").model_copy(
+        update={"supporting_evidence_ids": ("ev-inspector", "ev-identity")},
+    )
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="Is the workspace active?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(claim,),
+        ),
+        evidence=(identity_evidence, inspector_evidence),
+        as_of=NOW,
+    )
+
+    assert inspector_evidence.target_value("tenant_id") == TENANT_2
+    assert result.admissions[0].rejection_code is ClaimRejectionCode.ROLE_MISMATCH
+
+
 def test_rejected_material_claim_downgrades_answer_to_insufficient() -> None:
     result = build_case_assessment(
         context=_context(_resolved_identity()),
@@ -140,15 +230,41 @@ def test_rejected_material_claim_downgrades_answer_to_insufficient() -> None:
     assert result.assessment.admitted_claims == ()
     assert result.admissions[0].accepted is False
     assert result.assessment.blocking_failure is not None
+    assert result.assessment.blocking_failure.operation == "assessment.claim_admission"
     assert (
-        result.assessment.blocking_failure.operation
-        == "assessment.claim_admission"
+        result.assessment.blocking_failure.code is AdapterErrorCode.MALFORMED_RESPONSE
     )
     assert (
-        result.assessment.blocking_failure.code
-        is AdapterErrorCode.MALFORMED_RESPONSE
+        decide_disposition(result.assessment).disposition is Disposition.RETRY_PENDING
     )
-    assert decide_disposition(result.assessment).disposition is Disposition.RETRY_PENDING
+
+
+def test_rejected_extra_claim_keeps_an_evidence_bounded_answer() -> None:
+    admitted = _claim()
+    rejected = _claim("missing-evidence").model_copy(
+        update={
+            "claim_id": "claim-extra",
+            "statement": "The managed provider path has fully recovered.",
+        },
+    )
+
+    result = build_case_assessment(
+        context=_context(_resolved_identity()),
+        proposal=AssessmentProposal(
+            question="Is the workspace active?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(admitted, rejected),
+        ),
+        evidence=(_evidence(),),
+        as_of=NOW,
+    )
+
+    assert result.assessment.answer_status is AnswerStatus.BOUNDED
+    assert result.assessment.admitted_claims == (admitted,)
+    assert result.admissions[0].accepted is True
+    assert result.admissions[1].accepted is False
+    assert result.assessment.blocking_failure is None
+    assert decide_disposition(result.assessment).disposition is Disposition.RESOLVED
 
 
 def test_claim_for_another_tenant_is_rejected_even_when_evidence_matches_it() -> None:
@@ -193,7 +309,12 @@ def test_billing_claim_requires_identity_and_billing_evidence() -> None:
         ),
     )
     identity_evidence = _evidence().model_copy(
-        update={"evidence_id": "ev-identity", "call_id": "ev-identity"},
+        update={
+            "evidence_id": "ev-identity",
+            "call_id": "ev-identity",
+            "authority": EvidenceAuthority.TARGET_BINDING,
+            "supports_roles": (),
+        },
     )
     billing_evidence = _evidence().model_copy(
         update={"evidence_id": "ev-billing", "call_id": "ev-billing"},
@@ -224,7 +345,10 @@ def test_billing_claim_requires_identity_and_billing_evidence() -> None:
         as_of=NOW,
     )
 
-    assert missing_identity.admissions[0].rejection_code is ClaimRejectionCode.MISSING_EVIDENCE
+    assert (
+        missing_identity.admissions[0].rejection_code
+        is ClaimRejectionCode.MISSING_EVIDENCE
+    )
     assert complete.admissions[0].accepted is True
 
 
@@ -297,6 +421,135 @@ def test_available_attachment_cannot_be_requested_again() -> None:
     assert result.rejected_customer_fields == ("attachment_resend",)
 
 
+@pytest.mark.parametrize(
+    ("status", "result_status", "supports_observation"),
+    [
+        (
+            VisualObservationStatus.OBSERVED,
+            EvidenceResultStatus.SUCCESS,
+            True,
+        ),
+        (
+            VisualObservationStatus.UNAVAILABLE,
+            EvidenceResultStatus.FAILURE,
+            False,
+        ),
+        (
+            VisualObservationStatus.OMITTED,
+            EvidenceResultStatus.PARTIAL,
+            False,
+        ),
+        (
+            VisualObservationStatus.NO_MODEL_RESULT,
+            EvidenceResultStatus.FAILURE,
+            False,
+        ),
+    ],
+)
+def test_only_observed_visuals_can_support_factual_claims(
+    status: VisualObservationStatus,
+    result_status: EvidenceResultStatus,
+    supports_observation: bool,
+) -> None:
+    attachment = AttachmentRef(
+        attachment_id="attachment-1",
+        filename="error.png",
+        content_type="image/png",
+        download_url="https://example.test/error.png",
+    )
+    context = _context(_resolved_identity()).model_copy(
+        update={
+            "ticket": _ticket().model_copy(update={"attachments": (attachment,)}),
+            "visual_observations": (
+                VisualObservation(
+                    attachment_id="attachment-1",
+                    evidence_id="visual:attachment-1",
+                    status=status,
+                    visible_text=("Quota exceeded" if supports_observation else ""),
+                    untrusted=True,
+                ),
+            ),
+        },
+    )
+
+    evidence = build_case_context_evidence(context)
+    visual = next(item for item in evidence if item.source == "case_context.visual")
+
+    assert visual.result_status is result_status
+    assert visual.supports_roles == (
+        (ClaimRole.VISUAL_OBSERVATION,) if supports_observation else ()
+    )
+
+
+def test_visual_evidence_supports_only_a_narrow_visual_observation() -> None:
+    attachment = AttachmentRef(
+        attachment_id="attachment-1",
+        filename="error.png",
+        content_type="image/png",
+        download_url="https://example.test/error.png",
+    )
+    context = _context(_resolved_identity()).model_copy(
+        update={
+            "ticket": _ticket().model_copy(update={"attachments": (attachment,)}),
+            "visual_observations": (
+                VisualObservation(
+                    attachment_id="attachment-1",
+                    evidence_id="visual:attachment-1",
+                    visible_text="Quota exceeded",
+                ),
+            ),
+        },
+    )
+    evidence = build_case_context_evidence(context)
+    ticket_target = TargetReference(kind="ticket_id", value="4001")
+    product_fact = Claim(
+        claim_id="claim-product",
+        statement="The product quota is exhausted.",
+        role=ClaimRole.PRODUCT_FACT,
+        status=ClaimStatus.EVIDENCE_SUPPORTED,
+        supporting_evidence_ids=("visual:attachment-1",),
+        targets=(ticket_target,),
+        public_allowed=True,
+    )
+    visual_observation = product_fact.model_copy(
+        update={
+            "claim_id": "claim-visual",
+            "statement": "The screenshot displays the text 'Quota exceeded'.",
+            "role": ClaimRole.VISUAL_OBSERVATION,
+        },
+    )
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="What does the screenshot show?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(product_fact, visual_observation),
+        ),
+        evidence=evidence,
+        as_of=NOW,
+    )
+
+    assert result.admissions[0].rejection_code is ClaimRejectionCode.ROLE_MISMATCH
+    assert result.admissions[1].accepted is True
+
+
+def test_missing_attachment_cannot_be_requested_as_a_resend() -> None:
+    result = build_case_assessment(
+        context=_context(_resolved_identity()),
+        proposal=AssessmentProposal(
+            question="Can you resend the screenshot?",
+            answer_status=AnswerStatus.INSUFFICIENT,
+            proposed_customer_fields=("attachment_resend",),
+        ),
+        evidence=(),
+        as_of=NOW,
+    )
+
+    assert result.assessment.customer_only_fields == ()
+    assert result.rejected_customer_fields == ("attachment_resend",)
+
+
 def test_failed_identity_lookup_becomes_internal_retry_not_customer_ask() -> None:
     identity = IdentityResolution(
         contact_email="owner@example.com",
@@ -352,7 +605,10 @@ def test_exhausted_identity_retry_creates_typed_support_ownership_packet() -> No
     assert result.assessment.customer_only_fields == ()
     assert result.assessment.human_action is not None
     assert result.assessment.human_action.ownership_action is OwnershipAction.SUPPORT
-    assert result.assessment.human_action.reason_code is ReasonCode.AUTOMATION_RETRY_EXHAUSTED
+    assert (
+        result.assessment.human_action.reason_code
+        is ReasonCode.AUTOMATION_RETRY_EXHAUSTED
+    )
     assert decision.ownership_action is OwnershipAction.SUPPORT
     assert decision.reason_code is ReasonCode.AUTOMATION_RETRY_EXHAUSTED
 
@@ -385,7 +641,9 @@ def test_true_identity_ambiguity_allows_only_minimum_workspace_choice() -> None:
     assert decision.required_customer_fields == ("target_workspace_choice",)
 
 
-def test_pending_identity_lookup_uses_retry_even_without_model_requested_field() -> None:
+def test_pending_identity_lookup_uses_retry_even_without_model_requested_field() -> (
+    None
+):
     identity = IdentityResolution(
         contact_email="owner@example.com",
         target_identity="owner@example.com",
@@ -403,7 +661,10 @@ def test_pending_identity_lookup_uses_retry_even_without_model_requested_field()
     )
 
     assert result.assessment.blocking_failure is not None
-    assert result.assessment.blocking_failure.code is AdapterErrorCode.TRANSPORT_UNAVAILABLE
+    assert (
+        result.assessment.blocking_failure.code
+        is AdapterErrorCode.TRANSPORT_UNAVAILABLE
+    )
 
 
 def test_failed_billing_lookup_becomes_internal_retry() -> None:
@@ -477,15 +738,22 @@ def test_unproven_defect_action_is_rejected_instead_of_transferring_ownership() 
             question="Why did this fail?",
             answer_status=AnswerStatus.SUPPORTED,
             proposed_claims=(_claim(),),
-            action_proposal=_action_proposal(ActionRequirement.CONFIRMED_PLATFORM_DEFECT),
+            action_proposal=_action_proposal(
+                ActionRequirement.CONFIRMED_PLATFORM_DEFECT
+            ),
         ),
         evidence=(_evidence(),),
         as_of=NOW,
     )
 
     assert result.assessment.human_action is None
-    assert result.rejected_action_reason == "confirmed defect requires admitted boundary and root-cause claims"
-    assert decide_disposition(result.assessment).ownership_action is OwnershipAction.NONE
+    assert (
+        result.rejected_action_reason
+        == "confirmed defect requires admitted boundary and root-cause claims"
+    )
+    assert (
+        decide_disposition(result.assessment).ownership_action is OwnershipAction.NONE
+    )
 
 
 def test_confirmed_defect_action_maps_to_engineering_in_code() -> None:
@@ -508,27 +776,25 @@ def test_confirmed_defect_action_maps_to_engineering_in_code() -> None:
         public_allowed=True,
     )
     evidence = (
-        EvidenceItem(
-            evidence_id="ev-boundary",
-            call_id="call-boundary",
-            source="runtime",
-            authority=EvidenceAuthority.CURRENT_AUTHORITATIVE,
-            result_status=EvidenceResultStatus.SUCCESS,
-            targets=(TARGET,),
+        tool_evidence(
+            call_id="ev-boundary",
+            tool_name="signoz_search_logs",
+            args={"tenant": TENANT_1, "searchText": "collection missing"},
+            allowed_target_arguments=frozenset({"tenant", "searchText"}),
             observed_at=NOW,
-            supports_roles=(ClaimRole.FAILING_BOUNDARY,),
-            payload={"failed": True},
+            success=True,
+            output="The current tenant request fails at collection lookup.",
+            error="",
         ),
-        EvidenceItem(
-            evidence_id="ev-cause",
-            call_id="call-cause",
-            source="source",
-            authority=EvidenceAuthority.CURRENT_SUPPORTING,
-            result_status=EvidenceResultStatus.SUCCESS,
-            targets=(TARGET,),
+        tool_evidence(
+            call_id="ev-cause",
+            tool_name="git_show",
+            args={"repo": "api", "filepath": "retrieval.py", "ref": "runtime"},
+            allowed_target_arguments=frozenset({"repo", "filepath", "ref"}),
             observed_at=NOW,
-            supports_roles=(ClaimRole.ROOT_CAUSE,),
-            payload={"mechanism": "missing collection binding"},
+            success=True,
+            output="Aligned source maps the configured collection before lookup.",
+            error="",
         ),
     )
     action = _action_proposal(ActionRequirement.CONFIRMED_PLATFORM_DEFECT).model_copy(
@@ -548,6 +814,8 @@ def test_confirmed_defect_action_maps_to_engineering_in_code() -> None:
     )
     decision = decide_disposition(result.assessment)
 
+    assert evidence[0].targets == (TARGET,)
+    assert evidence[1].targets == ()
     assert result.rejected_action_reason == ""
     assert result.assessment.human_action is not None
     assert decision.ownership_action is OwnershipAction.ENGINEERING
@@ -670,3 +938,89 @@ def test_refund_status_question_does_not_imply_new_billing_approval() -> None:
 
     assert action is None
     assert "does not establish" in reason
+
+
+@pytest.mark.parametrize(
+    ("requirement", "question"),
+    (
+        (
+            ActionRequirement.CUSTOMER_REQUESTED_HUMAN,
+            "I do not want to talk to a human; please answer here.",
+        ),
+        (
+            ActionRequirement.BUSINESS_APPROVAL,
+            "I do not want a refund; just explain the invoice.",
+        ),
+        (
+            ActionRequirement.SECURITY_OR_PRIVACY_REVIEW,
+            "Where is your security documentation?",
+        ),
+        (
+            ActionRequirement.SENSITIVE_ACCOUNT_MUTATION,
+            "How do I delete a workflow node?",
+        ),
+    ),
+)
+def test_action_policy_rejects_negated_or_wrong_object_intent(
+    requirement: ActionRequirement,
+    question: str,
+) -> None:
+    context = _context(_resolved_identity()).model_copy(
+        update={"ticket": _ticket().model_copy(update={"questions": (question,)})},
+    )
+
+    action, reason = admit_action_proposal(
+        context=context,
+        proposal=_action_proposal(requirement),
+        admitted_claims=(),
+        eligible_evidence_ids=frozenset({"ev-current"}),
+    )
+
+    assert action is None
+    assert "does not establish" in reason
+
+
+def test_action_packet_includes_all_required_defect_evidence() -> None:
+    context = _context(_resolved_identity()).model_copy(
+        update={
+            "ticket": _ticket().model_copy(
+                update={"questions": ("Why is the current request failing?",)},
+            ),
+        },
+    )
+    claims = (
+        Claim(
+            claim_id="claim-boundary",
+            statement="The current request fails at the retrieval boundary.",
+            role=ClaimRole.FAILING_BOUNDARY,
+            status=ClaimStatus.CONFIRMED,
+            supporting_evidence_ids=("ev-boundary",),
+            targets=(TARGET,),
+            public_allowed=True,
+        ),
+        Claim(
+            claim_id="claim-cause",
+            statement="The aligned runtime source confirms the mechanism.",
+            role=ClaimRole.ROOT_CAUSE,
+            status=ClaimStatus.CONFIRMED,
+            supporting_evidence_ids=("ev-boundary", "ev-source"),
+            targets=(TARGET,),
+            public_allowed=True,
+        ),
+    )
+    proposal = _action_proposal(
+        ActionRequirement.CONFIRMED_PLATFORM_DEFECT,
+    ).model_copy(update={"evidence_ids": ("ev-current",)})
+
+    action, reason = admit_action_proposal(
+        context=context,
+        proposal=proposal,
+        admitted_claims=claims,
+        eligible_evidence_ids=frozenset(
+            {"ev-current", "ev-boundary", "ev-source"},
+        ),
+    )
+
+    assert reason == ""
+    assert action is not None
+    assert set(action.evidence_ids) == {"ev-current", "ev-boundary", "ev-source"}

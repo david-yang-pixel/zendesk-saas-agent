@@ -1,4 +1,5 @@
 """Centralized trigger-state transitions shared by entry points."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -6,20 +7,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from zd_agent.log import get_logger
+from zd_agent.casework.domain.enums import (
+    DeliveryState,
+    OwnershipAction,
+    OwnershipState,
+    ReasonCode,
+)
 from zd_agent.session.agent_session import SessionStatus
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 logger = get_logger(module="services.trigger_state_machine")
 
 _MAX_CONSECUTIVE_AGENT_FAILURES = 3
-
-
-@dataclass(frozen=True)
-class SilenceExpiryTransition:
-    ticket_id: int
-    queue_source: str
-    verdict: str
-    silence_end: datetime
 
 
 @dataclass(frozen=True)
@@ -30,11 +29,10 @@ class WaitingPollerTransition:
     age_seconds: float = 0.0
     last_verdict: str = ""
     ask_count: int = 0
-    should_alert: bool = False
 
 
 @dataclass(frozen=True)
-class VerdictStateTransition:
+class CaseworkIntakeTransition:
     ticket_id: int
     kind: str
     prev_state: str | None
@@ -42,16 +40,6 @@ class VerdictStateTransition:
     ask_count_after: int
     silence_min: int = 0
     silence_window_end: datetime | None = None
-
-
-@dataclass(frozen=True)
-class EscalationTransition:
-    ticket_id: int
-    kind: str
-    prev_state: str | None
-    reason: str
-    ask_count: int
-    escalated_at: datetime
 
 
 def apply_human_takeover(
@@ -80,9 +68,7 @@ def apply_human_takeover(
             abandoned_alert_sent_at=(
                 existing.abandoned_alert_sent_at if existing else None
             ),
-            last_agent_finish_ts=(
-                existing.last_agent_finish_ts if existing else None
-            ),
+            last_agent_finish_ts=(existing.last_agent_finish_ts if existing else None),
             delivery_attempt_id=(existing.delivery_attempt_id if existing else ""),
             consecutive_agent_failures=(
                 existing.consecutive_agent_failures if existing else 0
@@ -104,75 +90,35 @@ def apply_waiting_for_form(
     delivery_attempt_id: str = "",
 ) -> None:
     """Persist an Answer Bot readiness wait without customer-ask semantics."""
-    state.set(ticket_id, TicketState(
-        state="waiting_for_form",
-        first_seen=existing.first_seen if existing else now,
-        last_customer_comment_id=latest_cid,
-        last_comment_ts=latest_ts,
-        last_eval_at=now,
-        last_verdict="waiting_for_form",
-        ask_count=existing.ask_count if existing else 0,
-        last_agent_finish_ts=(
-            existing.last_agent_finish_ts if existing else None
+    existing_form_wait_started_at = None
+    if existing is not None and existing.state == "waiting_for_form":
+        existing_form_wait_started_at = (
+            existing.form_wait_started_at or existing.last_eval_at
+        )
+    state.set(
+        ticket_id,
+        TicketState(
+            state="waiting_for_form",
+            first_seen=existing.first_seen if existing else now,
+            last_customer_comment_id=latest_cid,
+            last_comment_ts=latest_ts,
+            last_eval_at=now,
+            form_wait_started_at=existing_form_wait_started_at or now,
+            last_verdict="waiting_for_form",
+            ask_count=existing.ask_count if existing else 0,
+            last_agent_finish_ts=(existing.last_agent_finish_ts if existing else None),
+            delivery_attempt_id=(
+                delivery_attempt_id
+                or (existing.delivery_attempt_id if existing else "")
+            ),
+            consecutive_agent_failures=(
+                existing.consecutive_agent_failures if existing else 0
+            ),
         ),
-        delivery_attempt_id=(
-            delivery_attempt_id
-            or (existing.delivery_attempt_id if existing else "")
-        ),
-        consecutive_agent_failures=(
-            existing.consecutive_agent_failures if existing else 0
-        ),
-    ))
-
-
-def apply_escalated_to_human(
-    state: TicketStateTracker,
-    ticket_id: str | int,
-    *,
-    existing: TicketState | None,
-    latest_cid: str | None,
-    latest_ts: datetime | None,
-    now: datetime,
-    verdict_str: str,
-    reason: str,
-) -> EscalationTransition:
-    """Persist state for a human handoff before best-effort side effects."""
-    ask_count = existing.ask_count if existing else 0
-    state.set(ticket_id, TicketState(
-        state="escalated_to_human",
-        first_seen=existing.first_seen if existing else now,
-        last_customer_comment_id=latest_cid,
-        last_comment_ts=latest_ts,
-        last_eval_at=now,
-        last_verdict=verdict_str,
-        ask_count=ask_count,
-        escalated_at=now,
-        escalated_reason=reason,
-        # Keep retry/alert timestamps for audit after agent exits the ticket.
-        nudge_sent_at=existing.nudge_sent_at if existing else None,
-        alert_sent_at=existing.alert_sent_at if existing else None,
-        abandoned_alert_sent_at=(
-            existing.abandoned_alert_sent_at if existing else None
-        ),
-        last_agent_finish_ts=(
-            existing.last_agent_finish_ts if existing else None
-        ),
-        delivery_attempt_id=(existing.delivery_attempt_id if existing else ""),
-        consecutive_agent_failures=(
-            existing.consecutive_agent_failures if existing else 0
-        ),
-    ))
-    return EscalationTransition(
-        ticket_id=int(ticket_id),
-        kind="escalated_to_human",
-        prev_state=existing.state if existing else None,
-        reason=reason,
-        ask_count=ask_count,
-        escalated_at=now,
     )
 
 
-def apply_verdict_processed(
+def enter_casework_silence(
     state: TicketStateTracker,
     ticket_id: str | int,
     *,
@@ -180,80 +126,40 @@ def apply_verdict_processed(
     latest_cid: str | None,
     latest_ts: datetime | None,
     now: datetime,
-    verdict_str: str,
-    ask_count_now: int,
-) -> VerdictStateTransition:
-    """Persist the post-verdict terminal processed state."""
-    state.set(ticket_id, TicketState(
-        state="processed",
-        first_seen=existing.first_seen if existing else now,
-        last_customer_comment_id=latest_cid,
-        last_comment_ts=latest_ts,
-        last_eval_at=now,
-        last_verdict=verdict_str,
-        ask_count=ask_count_now,
-        nudge_sent_at=existing.nudge_sent_at if existing else None,
-        abandoned_alert_sent_at=(
-            existing.abandoned_alert_sent_at if existing else None
-        ),
-        last_agent_finish_ts=(
-            existing.last_agent_finish_ts if existing else None
-        ),
-        delivery_attempt_id=(existing.delivery_attempt_id if existing else ""),
-        consecutive_agent_failures=(
-            existing.consecutive_agent_failures if existing else 0
-        ),
-    ))
-    return VerdictStateTransition(
-        ticket_id=int(ticket_id),
-        kind="processed",
-        prev_state=existing.state if existing else None,
-        ask_count_before=ask_count_now,
-        ask_count_after=ask_count_now,
-    )
-
-
-def apply_verdict_enter_silence(
-    state: TicketStateTracker,
-    ticket_id: str | int,
-    *,
-    existing: TicketState | None,
-    latest_cid: str | None,
-    latest_ts: datetime | None,
-    now: datetime,
-    verdict_str: str,
+    intake_reason: str,
     ask_count_now: int,
     silence_minutes: int,
     delivery_attempt_id: str = "",
-) -> VerdictStateTransition:
-    """Persist an in-silence-window state for a substantial verdict."""
+) -> CaseworkIntakeTransition:
+    """Persist a debounced v2 intake that is ready for casework."""
     window_end = now + timedelta(minutes=silence_minutes)
-    state.set(ticket_id, TicketState(
-        state="in_silence_window",
-        first_seen=existing.first_seen if existing else now,
-        last_customer_comment_id=latest_cid,
-        last_comment_ts=latest_ts,
-        last_eval_at=now,
-        silence_window_end=window_end,
-        last_verdict=verdict_str,
-        ask_count=ask_count_now,
-        nudge_sent_at=None,
-        alert_sent_at=None,
-        abandoned_alert_sent_at=(
-            existing.abandoned_alert_sent_at if existing else None
+    state.set(
+        ticket_id,
+        TicketState(
+            state="in_silence_window",
+            first_seen=existing.first_seen if existing else now,
+            last_customer_comment_id=latest_cid,
+            last_comment_ts=latest_ts,
+            last_eval_at=now,
+            silence_window_end=window_end,
+            last_verdict=intake_reason,
+            ask_count=ask_count_now,
+            nudge_sent_at=None,
+            alert_sent_at=None,
+            abandoned_alert_sent_at=(
+                existing.abandoned_alert_sent_at if existing else None
+            ),
+            last_agent_finish_ts=(existing.last_agent_finish_ts if existing else None),
+            delivery_attempt_id=(
+                delivery_attempt_id
+                or (existing.delivery_attempt_id if existing else "")
+            ),
+            consecutive_agent_failures=(
+                existing.consecutive_agent_failures if existing else 0
+            ),
         ),
-        last_agent_finish_ts=(
-            existing.last_agent_finish_ts if existing else None
-        ),
-        delivery_attempt_id=(
-            delivery_attempt_id
-            or (existing.delivery_attempt_id if existing else "")
-        ),
-        consecutive_agent_failures=(
-            existing.consecutive_agent_failures if existing else 0
-        ),
-    ))
-    return VerdictStateTransition(
+    )
+    return CaseworkIntakeTransition(
         ticket_id=int(ticket_id),
         kind="in_silence_window",
         prev_state=existing.state if existing else None,
@@ -264,60 +170,12 @@ def apply_verdict_enter_silence(
     )
 
 
-def apply_verdict_waiting_for_issue(
-    state: TicketStateTracker,
-    ticket_id: str | int,
-    *,
-    existing: TicketState | None,
-    latest_cid: str | None,
-    latest_ts: datetime | None,
-    now: datetime,
-    verdict_str: str,
-    ask_count_now: int,
-    sent: bool,
-    delivery_attempt_id: str = "",
-) -> VerdictStateTransition:
-    """Persist waiting-for-issue state after the public ask attempt."""
-    new_ask_count = ask_count_now + 1 if sent else ask_count_now
-    state.set(ticket_id, TicketState(
-        state="waiting_for_issue",
-        first_seen=existing.first_seen if existing else now,
-        last_customer_comment_id=latest_cid,
-        last_comment_ts=latest_ts,
-        last_eval_at=now,
-        last_verdict=verdict_str,
-        ask_count=new_ask_count,
-        # A new customer message resets one-shot ask/alert markers.
-        nudge_sent_at=None,
-        alert_sent_at=None,
-        abandoned_alert_sent_at=(
-            existing.abandoned_alert_sent_at if existing else None
-        ),
-        last_agent_finish_ts=(
-            existing.last_agent_finish_ts if existing else None
-        ),
-        delivery_attempt_id=(
-            delivery_attempt_id
-            or (existing.delivery_attempt_id if existing else "")
-        ),
-        consecutive_agent_failures=(
-            existing.consecutive_agent_failures if existing else 0
-        ),
-    ))
-    return VerdictStateTransition(
-        ticket_id=int(ticket_id),
-        kind="waiting_for_issue",
-        prev_state=existing.state if existing else None,
-        ask_count_before=ask_count_now,
-        ask_count_after=new_ask_count,
-    )
-
-
 def apply_session_finished(
     state: TicketStateTracker,
     session: Any,
     *,
     now: datetime | None = None,
+    casework_effect_store: Any | None = None,
 ) -> bool:
     """Apply the state transition for a finished AgentSession.
 
@@ -351,14 +209,92 @@ def apply_session_finished(
 
     finished_at = now or datetime.now(timezone.utc)
     reply_sent = bool(getattr(session, "reply_sent", False))
-    casework_owner = str(
-        getattr(session, "casework_ownership_action", "") or "",
+    casework_owner = str(getattr(session, "casework_ownership_action", "") or "")
+    raw_ownership_state = str(
+        getattr(session, "casework_ownership_state", "") or "",
     )
+    raw_delivery_state = str(
+        getattr(session, "casework_delivery_state", "") or "",
+    )
+    raw_reason = str(getattr(session, "casework_reason_code", "") or "")
     casework_effect_reference = str(
         getattr(session, "casework_effect_reference", "") or "",
     )
+    typed_values = (
+        casework_owner,
+        raw_ownership_state,
+        raw_delivery_state,
+        raw_reason,
+    )
+    if not any(typed_values):
+        typed_owner = OwnershipAction.NONE
+        typed_ownership_state = OwnershipState.NOT_REQUIRED
+        typed_delivery_state = DeliveryState.DEFERRED
+        typed_reason = ReasonCode.INTERNAL_RETRY_PENDING
+    else:
+        if not all(typed_values):
+            raise RuntimeError("partial typed casework receipt cannot update state")
+        try:
+            typed_owner = OwnershipAction(casework_owner)
+            typed_ownership_state = OwnershipState(raw_ownership_state)
+            typed_delivery_state = DeliveryState(raw_delivery_state)
+            typed_reason = ReasonCode(raw_reason)
+        except ValueError as error:
+            raise RuntimeError(
+                "invalid typed casework receipt cannot update state",
+            ) from error
+    verified_effect = None
+    if (
+        typed_owner is not OwnershipAction.NONE
+        and typed_ownership_state in {OwnershipState.PENDING, OwnershipState.CONFIRMED}
+        and casework_effect_reference
+        and (
+            reply_sent
+            or typed_delivery_state
+            in {DeliveryState.NOT_REQUIRED, DeliveryState.PAUSED}
+        )
+    ):
+        if casework_effect_store is None:
+            raise RuntimeError(
+                "typed ownership completion requires the durable effect store",
+            )
+        verified_effect = casework_effect_store.get(casework_effect_reference)
+        expected_delivery_attempt = ticket_state.delivery_attempt_id
+        actual_root_attempt = str(
+            getattr(verified_effect, "root_delivery_attempt_id", "") or "",
+        )
+        root_matches = bool(
+            not expected_delivery_attempt
+            or actual_root_attempt == expected_delivery_attempt
+            or actual_root_attempt == f"{expected_delivery_attempt}:runtime-failure"
+        )
+        snapshot_matches = bool(
+            not getattr(session, "customer_msgs_snapshot_captured", False)
+            or getattr(verified_effect, "snapshot_customer_last_message_id", "")
+            == getattr(session, "customer_msgs_snapshot_last_id", "")
+        )
+        if not all(
+            (
+                verified_effect is not None,
+                getattr(verified_effect, "reference", "") == casework_effect_reference,
+                getattr(verified_effect, "ticket_id", None) == session.ticket_id,
+                getattr(verified_effect, "ownership_action", "") == typed_owner.value,
+                getattr(verified_effect, "reason_code", "") == typed_reason.value,
+                bool(getattr(verified_effect, "ownership_required", False)),
+                bool(getattr(verified_effect, "ownership_ready", False)),
+                root_matches,
+                snapshot_matches,
+            ),
+        ):
+            raise RuntimeError(
+                "typed ownership receipt does not match its durable effect",
+            )
     has_durable_casework_ownership = bool(
-        casework_owner not in {"", "none"} and casework_effect_reference
+        typed_owner is not OwnershipAction.NONE
+        and typed_ownership_state is OwnershipState.CONFIRMED
+        and casework_effect_reference
+        and verified_effect is not None
+        and bool(getattr(verified_effect, "complete", False))
     )
     casework_disposition = str(
         getattr(session, "casework_disposition", "") or "",
@@ -375,18 +311,99 @@ def apply_session_finished(
         )
         return True
 
-    if has_durable_casework_ownership and not reply_sent:
+    if bool(getattr(session, "dry_run", False)) and not reply_sent:
+        ticket_state.state = "processed"
+        ticket_state.active_session_id = ""
+        ticket_state.last_agent_finish_ts = finished_at
+        ticket_state.silence_window_end = None
+        ticket_state.consecutive_agent_failures = 0
+        ticket_state.ownership_action = ""
+        ticket_state.ownership_reason = ""
+        ticket_state.ownership_effect_reference = ""
+        ticket_state.last_verdict = "dry_run_drafted"
+        if bool(getattr(session, "customer_msgs_snapshot_captured", False)) and getattr(
+            session,
+            "customer_msgs_snapshot_last_id",
+            "",
+        ):
+            ticket_state.last_customer_comment_id = str(
+                session.customer_msgs_snapshot_last_id,
+            )
+            ticket_state.last_eval_at = finished_at
+        state.set(session.ticket_id, ticket_state)
+        return True
+
+    no_reply_ownership_pending = bool(
+        typed_owner is not OwnershipAction.NONE
+        and typed_ownership_state is OwnershipState.PENDING
+        and casework_effect_reference
+        and verified_effect is not None
+        and not bool(getattr(verified_effect, "complete", False))
+        and not reply_sent
+        and typed_delivery_state in {DeliveryState.NOT_REQUIRED, DeliveryState.PAUSED}
+    )
+    if no_reply_ownership_pending:
+        ticket_state.state = "ownership_pending"
+        ticket_state.active_session_id = session_id
+        ticket_state.last_agent_finish_ts = finished_at
+        ticket_state.silence_window_end = None
+        ticket_state.consecutive_agent_failures = 0
+        ticket_state.ownership_action = typed_owner.value
+        ticket_state.ownership_reason = typed_reason.value
+        ticket_state.ownership_effect_reference = casework_effect_reference
+        ticket_state.last_verdict = "ownership_effect_pending"
+        if bool(getattr(session, "customer_msgs_snapshot_captured", False)) and getattr(
+            session,
+            "customer_msgs_snapshot_last_id",
+            "",
+        ):
+            ticket_state.last_customer_comment_id = str(
+                session.customer_msgs_snapshot_last_id,
+            )
+            ticket_state.last_eval_at = finished_at
+        state.set(session.ticket_id, ticket_state)
+        return True
+
+    no_reply_ownership_confirmed = bool(
+        has_durable_casework_ownership
+        and not reply_sent
+        and typed_delivery_state in {DeliveryState.NOT_REQUIRED, DeliveryState.PAUSED}
+    )
+    if no_reply_ownership_confirmed:
         ticket_state.state = "owned"
         ticket_state.active_session_id = ""
         ticket_state.last_agent_finish_ts = finished_at
         ticket_state.silence_window_end = None
         ticket_state.consecutive_agent_failures = 0
         ticket_state.ownership_action = casework_owner
-        ticket_state.ownership_reason = str(
-            getattr(session, "casework_reason_code", "") or "",
-        )
+        ticket_state.ownership_reason = typed_reason.value
         ticket_state.ownership_effect_reference = casework_effect_reference
         ticket_state.last_verdict = ticket_state.ownership_reason
+        state.set(session.ticket_id, ticket_state)
+        return True
+
+    if typed_delivery_state is DeliveryState.PAUSED and not reply_sent:
+        # The operator kill switch is an intentional no-write outcome, not an
+        # automation failure. Archive the draft and mark this customer cursor
+        # evaluated without consuming retry budget or synthesizing ownership.
+        ticket_state.state = "processed"
+        ticket_state.active_session_id = ""
+        ticket_state.last_agent_finish_ts = finished_at
+        ticket_state.silence_window_end = None
+        ticket_state.consecutive_agent_failures = 0
+        ticket_state.ownership_action = ""
+        ticket_state.ownership_reason = ""
+        ticket_state.ownership_effect_reference = ""
+        ticket_state.last_verdict = "public_reply_paused"
+        if bool(getattr(session, "customer_msgs_snapshot_captured", False)) and getattr(
+            session,
+            "customer_msgs_snapshot_last_id",
+            "",
+        ):
+            ticket_state.last_customer_comment_id = str(
+                session.customer_msgs_snapshot_last_id,
+            )
+            ticket_state.last_eval_at = finished_at
         state.set(session.ticket_id, ticket_state)
         return True
 
@@ -401,6 +418,36 @@ def apply_session_finished(
             session_status=session.status.value,
         )
         has_casework_ownership = has_durable_casework_ownership
+        ownership_is_pending = bool(
+            typed_owner is not OwnershipAction.NONE
+            and typed_ownership_state is OwnershipState.PENDING
+            and casework_effect_reference
+            and verified_effect is not None
+            and not bool(getattr(verified_effect, "complete", False))
+        )
+        if ownership_is_pending:
+            # The customer-visible ownership promise is already delivered, but
+            # its notification/tag command still needs durable completion.
+            # Keep this generation fenced until the effect reconciler promotes
+            # the exact reference to ``owned``.
+            ticket_state.state = "ownership_pending"
+            ticket_state.active_session_id = session_id
+            ticket_state.last_agent_finish_ts = finished_at
+            ticket_state.silence_window_end = None
+            ticket_state.consecutive_agent_failures = 0
+            ticket_state.ownership_action = typed_owner.value
+            ticket_state.ownership_reason = typed_reason.value
+            ticket_state.ownership_effect_reference = casework_effect_reference
+            ticket_state.last_verdict = "ownership_effect_pending"
+            if bool(
+                getattr(session, "customer_msgs_snapshot_captured", False)
+            ) and getattr(session, "customer_msgs_snapshot_last_id", ""):
+                ticket_state.last_customer_comment_id = str(
+                    session.customer_msgs_snapshot_last_id,
+                )
+                ticket_state.last_eval_at = finished_at
+            state.set(session.ticket_id, ticket_state)
+            return True
         ticket_state.state = (
             "owned"
             if has_casework_ownership
@@ -414,9 +461,8 @@ def apply_session_finished(
         ticket_state.last_agent_finish_ts = finished_at
         ticket_state.silence_window_end = None
         ticket_state.consecutive_agent_failures = 0
-        if (
-            bool(getattr(session, "customer_msgs_snapshot_captured", False))
-            and getattr(session, "customer_msgs_snapshot_last_id", "")
+        if bool(getattr(session, "customer_msgs_snapshot_captured", False)) and getattr(
+            session, "customer_msgs_snapshot_last_id", ""
         ):
             ticket_state.last_customer_comment_id = str(
                 session.customer_msgs_snapshot_last_id,
@@ -449,8 +495,7 @@ def apply_session_finished(
         and session.status in (SessionStatus.FAILED, SessionStatus.TIMEOUT)
     )
     deferred_from_processing = (
-        ticket_state.state == "processing"
-        and session.status == SessionStatus.DEFERRED
+        ticket_state.state == "processing" and session.status == SessionStatus.DEFERRED
     )
     if (
         completed_without_reply_from_processing
@@ -463,8 +508,7 @@ def apply_session_finished(
         ticket_state.consecutive_agent_failures += 1
 
         ownership_persistence_retry = (
-            ticket_state.consecutive_agent_failures
-            >= _MAX_CONSECUTIVE_AGENT_FAILURES
+            ticket_state.consecutive_agent_failures >= _MAX_CONSECUTIVE_AGENT_FAILURES
         )
         new_state = "in_silence_window"
         logger.info(
@@ -503,70 +547,6 @@ def apply_session_finished(
     return True
 
 
-def apply_silence_window_expired(
-    state: TicketStateTracker,
-    ticket_id: str | int,
-    *,
-    now: datetime | None = None,
-) -> SilenceExpiryTransition | None:
-    """Advance an expired silence-window ticket and describe the queue action."""
-    rec = state.get(ticket_id)
-    if rec is None:
-        return None
-    end = rec.silence_window_end
-    if end is None:
-        return None
-
-    current_time = now or datetime.now(timezone.utc)
-    if end > current_time:
-        return None
-
-    verdict = rec.last_verdict or ""
-    if verdict in {
-        "casework_ready",
-        "substantial_issue",
-        "agent_deferred",
-        "agent_retry",
-        "ownership_retry",
-    }:
-        rec.state = "processing"
-        queue_source = "silence_waker"
-    else:
-        rec.state = "waiting_for_issue"
-        queue_source = "silence_expired_ask"
-
-    state.set(ticket_id, rec)
-    return SilenceExpiryTransition(
-        ticket_id=int(ticket_id),
-        queue_source=queue_source,
-        verdict=verdict,
-        silence_end=end,
-    )
-
-
-def apply_waiting_poller_abandoned(
-    state: TicketStateTracker,
-    ticket_id: str | int,
-    *,
-    reason: str,
-) -> WaitingPollerTransition | None:
-    """Mark a waiting-poller candidate terminal when Zendesk is out of scope."""
-    rec = state.get(ticket_id)
-    if rec is None or rec.state == "abandoned":
-        return None
-
-    prev_state = rec.state
-    rec.state = "abandoned"
-    state.set(ticket_id, rec)
-    return WaitingPollerTransition(
-        ticket_id=int(ticket_id),
-        kind="abandoned",
-        prev_state=prev_state,
-        last_verdict=reason,
-        ask_count=rec.ask_count,
-    )
-
-
 def apply_waiting_poller_out_of_scope(
     state: TicketStateTracker,
     ticket_id: str | int,
@@ -596,63 +576,46 @@ def apply_waiting_poller_timeouts(
     state: TicketStateTracker,
     ticket_id: str | int,
     *,
-    abandoned_hours: int,
-    greeting_alert_minutes: int,
+    customer_wait_timeout_hours: int,
     now: datetime | None = None,
 ) -> WaitingPollerTransition | None:
-    """Apply bounded waiting timeouts and one-shot alert markers."""
+    """Stop v2 customer waits after their bounded response window.
+
+    The timeout is a lifecycle boundary, not a human escalation.
+    """
     rec = state.get(ticket_id)
     if rec is None or rec.state not in {
         "awaiting_customer",
-        "waiting_for_issue",
         "waiting_for_form",
     }:
         return None
 
     current_time = now or datetime.now(timezone.utc)
-    first_seen = (
-        rec.last_agent_finish_ts
-        if rec.state == "awaiting_customer" and rec.last_agent_finish_ts is not None
-        else rec.first_seen
-    )
-    if first_seen.tzinfo is None:
-        first_seen = first_seen.replace(tzinfo=timezone.utc)
-    age_seconds = (current_time - first_seen).total_seconds()
+    if rec.state == "awaiting_customer":
+        wait_started_at = rec.last_agent_finish_ts or rec.first_seen
+    else:
+        wait_started_at = rec.form_wait_started_at or rec.last_eval_at or rec.first_seen
+    if wait_started_at.tzinfo is None:
+        wait_started_at = wait_started_at.replace(tzinfo=timezone.utc)
+    age_seconds = (current_time - wait_started_at).total_seconds()
 
-    if age_seconds >= abandoned_hours * 3600:
+    if age_seconds >= customer_wait_timeout_hours * 3600:
         prev_state = rec.state
-        should_alert = rec.abandoned_alert_sent_at is None
-        if should_alert:
-            rec.abandoned_alert_sent_at = current_time
-        rec.state = "abandoned"
-        state.set(ticket_id, rec)
-        return WaitingPollerTransition(
-            ticket_id=int(ticket_id),
-            kind="abandoned",
-            prev_state=prev_state,
-            age_seconds=age_seconds,
-            last_verdict=rec.last_verdict or "",
-            ask_count=rec.ask_count,
-            should_alert=should_alert,
+        rec.state = "out_of_scope"
+        rec.last_verdict = (
+            "customer_response_timeout"
+            if prev_state == "awaiting_customer"
+            else "form_submission_timeout"
         )
-
-    if (
-        rec.state == "waiting_for_issue"
-        and rec.last_verdict == "greeting"
-        and age_seconds >= greeting_alert_minutes * 60
-        and rec.alert_sent_at is None
-    ):
-        prev_state = rec.state
-        rec.alert_sent_at = current_time
+        rec.silence_window_end = None
         state.set(ticket_id, rec)
         return WaitingPollerTransition(
             ticket_id=int(ticket_id),
-            kind="greeting_alert",
+            kind="out_of_scope",
             prev_state=prev_state,
             age_seconds=age_seconds,
-            last_verdict=rec.last_verdict or "",
+            last_verdict=rec.last_verdict,
             ask_count=rec.ask_count,
-            should_alert=True,
         )
 
     return None

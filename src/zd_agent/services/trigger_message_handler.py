@@ -1,4 +1,5 @@
 """Single-message orchestration for the trigger consumer."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -74,7 +75,7 @@ async def handle_trigger_message(
                 observed.active_session_id,
             )
 
-    if source in {"silence_waker", "silence_expired_ask"}:
+    if source == "silence_waker":
         if not _silence_event_is_current(state=state, ticket_id=ticket_id, msg=msg):
             current = state.get(ticket_id)
             logger.info(
@@ -172,10 +173,7 @@ async def handle_trigger_message(
             cfg=cfg,
         )
         if direct_dispatch.handled:
-            if (
-                direct_dispatch.action == "skip_post_agent_cooldown"
-                and msg.get("hint")
-            ):
+            if direct_dispatch.action == "skip_post_agent_cooldown" and msg.get("hint"):
                 remaining_seconds = max(
                     1.0,
                     direct_dispatch.cooldown_seconds
@@ -202,7 +200,7 @@ async def handle_trigger_message(
             delay_seconds=30.0,
         )
 
-    if source in {"silence_waker", "silence_expired_ask"} and not (
+    if source == "silence_waker" and not (
         _silence_event_is_current(state=state, ticket_id=ticket_id, msg=msg)
     ):
         return TriggerMessageResult(True, "stale_queue_event", ticket_id, source)
@@ -213,6 +211,7 @@ async def handle_trigger_message(
 
             if startup_recovery is not None:
                 expected_revision, expected_owner = startup_recovery
+
                 # The process-local AgentSession is gone.  Do not replace it
                 # with a synthetic owner: release the ticket to a durable,
                 # generation-bound silence retry.  The startup event can ACK;
@@ -251,9 +250,7 @@ async def handle_trigger_message(
         return TriggerMessageResult(True, "no_customer_message", ticket_id, source)
 
     if human_takeover_fn is None:
-        raise RuntimeError(
-            "human_takeover_fn is required for trigger message handling"
-        )
+        raise RuntimeError("human_takeover_fn is required for trigger message handling")
     takeover_dispatch = await handle_human_takeover_dispatch(
         ticket_id=ticket_id,
         ticket_info=ticket_info,
@@ -268,7 +265,7 @@ async def handle_trigger_message(
     if takeover_dispatch.handled:
         return TriggerMessageResult(True, "human_takeover", ticket_id, source)
 
-    if source in {"silence_waker", "silence_expired_ask"} and not (
+    if source == "silence_waker" and not (
         _silence_event_is_current(state=state, ticket_id=ticket_id, msg=msg)
     ):
         return TriggerMessageResult(True, "stale_queue_event", ticket_id, source)
@@ -333,7 +330,7 @@ async def handle_trigger_message(
         state=state,
         log_path=log_path,
         source=source,
-        cooldown_seconds=cfg.trigger_decider.post_agent_cooldown_seconds,
+        cooldown_seconds=cfg.intake.post_agent_cooldown_seconds,
     )
     if customer_activity.handled:
         if customer_activity.action == "post_agent_cooldown":
@@ -348,21 +345,19 @@ async def handle_trigger_message(
         or msg.get("_queue_key")
         or f"{source}:{ticket_id}:{customer_activity.latest_cid or customer_activity.latest_ts}"
     )
-    from zd_agent.services.trigger_state_machine import apply_verdict_enter_silence
+    from zd_agent.services.trigger_state_machine import enter_casework_silence
 
-    silence_minutes = cfg.trigger_decider.silence_minutes_default
-    transition = apply_verdict_enter_silence(
+    silence_minutes = cfg.intake.silence_minutes_default
+    transition = enter_casework_silence(
         state,
         ticket_id,
         existing=customer_activity.existing,
         latest_cid=str(customer_activity.latest_cid or "") or None,
         latest_ts=customer_activity.latest_ts,
         now=customer_activity.now,
-        verdict_str="casework_ready",
+        intake_reason="casework_ready",
         ask_count_now=(
-            customer_activity.existing.ask_count
-            if customer_activity.existing
-            else 0
+            customer_activity.existing.ask_count if customer_activity.existing else 0
         ),
         silence_minutes=silence_minutes,
         delivery_attempt_id=delivery_attempt_id,
@@ -398,6 +393,13 @@ def _silence_event_is_current(*, state: Any, ticket_id: int, msg: dict) -> bool:
         if current is not None and current.silence_window_end is not None
         else ""
     )
+    if (
+        current is not None
+        and current.state == "ownership_pending"
+        and current.active_session_id.startswith("dispatch-failure:")
+        and current.delivery_attempt_id == str(msg.get("delivery_attempt_id") or "")
+    ):
+        return True
     return bool(
         current is not None
         and current.state == "in_silence_window"

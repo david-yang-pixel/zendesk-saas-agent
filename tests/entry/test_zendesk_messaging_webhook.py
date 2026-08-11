@@ -81,7 +81,9 @@ async def test_messaging_webhook_enqueues_end_user_actor(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_messaging_webhook_immediately_marks_active_session_context_dirty(tmp_path):
+async def test_messaging_webhook_immediately_marks_active_session_context_dirty(
+    tmp_path,
+):
     payload = {
         "id": "evt-context-1",
         "app": {"id": "app-1"},
@@ -129,7 +131,9 @@ async def test_messaging_webhook_uses_customer_message_merge_window(tmp_path):
     }
     request = FakeRequest(payload, tmp_path / "dedup.json", timestamp="1000")
 
-    with patch("zd_agent.services.zendesk_messaging_webhook.time.time", return_value=1000.0):
+    with patch(
+        "zd_agent.services.zendesk_messaging_webhook.time.time", return_value=1000.0
+    ):
         response = await handle_zendesk_messaging_webhook(request)
 
     assert response.status == 200
@@ -223,12 +227,15 @@ async def test_messaging_bad_json_log_does_not_include_customer_body(tmp_path):
     ).decode("utf-8")
     warning = MagicMock()
 
-    with patch(
-        "zd_agent.services.zendesk_messaging_webhook.time.time",
-        return_value=1780460000.0,
-    ), patch(
-        "zd_agent.services.zendesk_messaging_webhook.logger.warning",
-        warning,
+    with (
+        patch(
+            "zd_agent.services.zendesk_messaging_webhook.time.time",
+            return_value=1780460000.0,
+        ),
+        patch(
+            "zd_agent.services.zendesk_messaging_webhook.logger.warning",
+            warning,
+        ),
     ):
         response = await handle_zendesk_messaging_webhook(request)
 

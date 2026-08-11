@@ -36,6 +36,7 @@ def test_jsonl_sink_swallows_write_error(tmp_path):
     out = sink(None, "info", {"event": "x", "ticket_id": 1})
     assert out == {"event": "x", "ticket_id": 1}
 
+
 def test_setup_logging_with_jsonl_writes_file(tmp_path):
     setup_logging(json_output=False, log_level="INFO", jsonl_dir=str(tmp_path))
     log = get_logger(module="test")

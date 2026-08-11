@@ -89,7 +89,10 @@ async def _run_git_async(
 ) -> tuple[int, str, str]:
     """异步执行 git 命令"""
     proc = await asyncio.create_subprocess_exec(
-        "git", "-C", repo_dir, *args,
+        "git",
+        "-C",
+        repo_dir,
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -99,15 +102,23 @@ async def _run_git_async(
         proc.kill()
         await proc.communicate()
         return 1, "", f"命令超时（{timeout}s）"
-    return proc.returncode or 0, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+    return (
+        proc.returncode or 0,
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace"),
+    )
 
 
-def _run_git_sync(repo_dir: str, *args: str, timeout: int = 300) -> tuple[int, str, str]:
+def _run_git_sync(
+    repo_dir: str, *args: str, timeout: int = 300
+) -> tuple[int, str, str]:
     """同步执行 git 命令（CLI 用）"""
     try:
         result = subprocess.run(
             ["git", "-C", repo_dir, *args],
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         return result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
@@ -126,7 +137,9 @@ def clone_repo(entry: RepoEntry) -> tuple[bool, str]:
 
     if is_git_repo(repo_path):
         _update_remote_url(repo_path, clone_url)
-        code, _, err = _run_git_sync(str(repo_path), "fetch", "--all", "--prune", "--tags", "--force")
+        code, _, err = _run_git_sync(
+            str(repo_path), "fetch", "--all", "--prune", "--tags", "--force"
+        )
         if code != 0:
             return False, f"fetch 失败: {err.strip()}"
         return True, "已存在，fetch 完成"
@@ -135,7 +148,9 @@ def clone_repo(entry: RepoEntry) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["git", "clone", "--bare", clone_url, str(repo_path)],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True,
+            text=True,
+            timeout=600,
         )
         if result.returncode != 0:
             return False, f"clone 失败: {result.stderr.strip()}"
@@ -147,7 +162,10 @@ def clone_repo(entry: RepoEntry) -> tuple[bool, str]:
 def _update_remote_url(repo_path: Path, url: str) -> None:
     """更新已有仓库的 remote URL（GITHUB_TOKEN 变更时自动同步）"""
     code, current_url, _ = _run_git_sync(
-        str(repo_path), "remote", "get-url", "origin",
+        str(repo_path),
+        "remote",
+        "get-url",
+        "origin",
     )
     if code == 0 and current_url.strip() != url:
         _run_git_sync(str(repo_path), "remote", "set-url", "origin", url)
@@ -167,7 +185,9 @@ def fetch_repo(entry: RepoEntry) -> tuple[bool, str]:
         return clone_repo(entry)
 
     _update_remote_url(repo_path, _resolve_clone_url(entry.url))
-    code, _, err = _run_git_sync(str(repo_path), "fetch", "--all", "--prune", "--tags", "--force")
+    code, _, err = _run_git_sync(
+        str(repo_path), "fetch", "--all", "--prune", "--tags", "--force"
+    )
     if code != 0:
         return False, f"fetch 失败: {err.strip()}"
     return True, "fetch 完成"
@@ -179,20 +199,34 @@ def get_repo_status(entry: RepoEntry) -> RepoStatus:
 
     if not is_git_repo(repo_path):
         return RepoStatus(
-            name=entry.name, url=entry.url,
-            cloned=False, is_bare=False,
-            tag_count=0, branch_count=0, last_fetch=None,
+            name=entry.name,
+            url=entry.url,
+            cloned=False,
+            is_bare=False,
+            tag_count=0,
+            branch_count=0,
+            last_fetch=None,
         )
 
     is_bare = (repo_path / "HEAD").is_file() and not (repo_path / ".git").exists()
 
     # tag 数量
     code, out, _ = _run_git_sync(str(repo_path), "tag", "-l")
-    tag_count = len([t for t in out.strip().split("\n") if t]) if code == 0 and out.strip() else 0
+    tag_count = (
+        len([t for t in out.strip().split("\n") if t])
+        if code == 0 and out.strip()
+        else 0
+    )
 
     # 远程分支数量
-    code, out, _ = _run_git_sync(str(repo_path), "branch", "-r" if not is_bare else "-a")
-    branch_count = len([b for b in out.strip().split("\n") if b.strip()]) if code == 0 and out.strip() else 0
+    code, out, _ = _run_git_sync(
+        str(repo_path), "branch", "-r" if not is_bare else "-a"
+    )
+    branch_count = (
+        len([b for b in out.strip().split("\n") if b.strip()])
+        if code == 0 and out.strip()
+        else 0
+    )
 
     # 最后 fetch 时间（通过 FETCH_HEAD 文件的修改时间）
     last_fetch = None
@@ -204,9 +238,12 @@ def get_repo_status(entry: RepoEntry) -> RepoStatus:
         last_fetch = datetime.fromtimestamp(mtime, tz=timezone.utc)
 
     return RepoStatus(
-        name=entry.name, url=entry.url,
-        cloned=True, is_bare=is_bare,
-        tag_count=tag_count, branch_count=branch_count,
+        name=entry.name,
+        url=entry.url,
+        cloned=True,
+        is_bare=is_bare,
+        tag_count=tag_count,
+        branch_count=branch_count,
         last_fetch=last_fetch,
     )
 
@@ -217,7 +254,10 @@ def list_tags(repo_name: str) -> list[str]:
     if not is_git_repo(repo_path):
         return []
     code, out, _ = _run_git_sync(
-        str(repo_path), "tag", "-l", "--sort=-version:refname",
+        str(repo_path),
+        "tag",
+        "-l",
+        "--sort=-version:refname",
     )
     if code != 0 or not out.strip():
         return []

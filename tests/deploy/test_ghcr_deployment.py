@@ -57,7 +57,7 @@ def test_github_action_gates_image_build_on_quality_checks() -> None:
     )
     assert quality_job["permissions"] == {"contents": "read"}
     assert "astral-sh/setup-uv@v6" in text
-    assert "version: \"0.10.7\"" in text
+    assert 'version: "0.10.7"' in text
     assert "uv sync --frozen --dev" in text
     assert "uv run ruff check src" in text
     assert "uv run pytest -q" in text
@@ -80,17 +80,16 @@ def test_ghcr_deploy_script_keeps_secret_out_of_source_and_retags_latest() -> No
 
     assert os.access(DEPLOY_SCRIPT, os.X_OK)
     assert (
-        'IMAGE="${ZD_AGENT_IMAGE:-ghcr.io/david-yang-pixel/zendesk-saas-agent}"'
-        in text
+        'IMAGE="${ZD_AGENT_IMAGE:-ghcr.io/david-yang-pixel/zendesk-saas-agent}"' in text
     )
     assert "GHCR_PAT" in text
     assert "read:packages" in text
     assert "docker login ghcr.io" in text
-    assert "docker pull \"$REMOTE_IMAGE\"" in text
-    assert "docker tag \"$REMOTE_IMAGE\" \"$LOCAL_IMAGE\"" in text
+    assert 'docker pull "$REMOTE_IMAGE"' in text
+    assert 'docker tag "$REMOTE_IMAGE" "$LOCAL_IMAGE"' in text
     assert 'LOCAL_IMAGE="${ZD_AGENT_LOCAL_IMAGE:-zd-agent:latest}"' in text
-    assert "systemctl restart \"$SERVICE\"" in text
-    assert "curl -fsS \"$HEALTH_URL\"" in text
+    assert 'systemctl restart "$SERVICE"' in text
+    assert 'curl -fsS "$HEALTH_URL"' in text
     assert "ZD_AGENT_FRESHNESS_ROUTE_URL" in text
     assert "/webhook/relay-pre-send-freshness" in text
     assert '[[ "$freshness_status" != "401" ]]' in text
@@ -106,15 +105,16 @@ def test_docker_runtime_starts_prebuilt_agent_without_dependency_sync() -> None:
 def test_systemd_unit_mounts_current_code_config_not_legacy_release() -> None:
     text = SYSTEMD_UNIT.read_text()
     config_mounts = [
-        line.strip()
-        for line in text.splitlines()
-        if ":/app/config.yaml" in line
+        line.strip() for line in text.splitlines() if ":/app/config.yaml" in line
     ]
 
     assert config_mounts == [
         "-v /opt/zd-agent/code/config.yaml:/app/config.yaml:ro \\",
     ]
     assert "/opt/zd-agent/releases/main/config.yaml" not in text
+    assert "/etc/machine-id:/etc/host-machine-id:ro" in text
+    assert "ZD_AGENT_ENFORCE_INSTANCE_FENCE=1" in text
+    assert "verify-instance-fence.sh" in text
 
 
 def test_github_action_deploys_main_image_over_ssh_after_build() -> None:
@@ -123,7 +123,10 @@ def test_github_action_deploys_main_image_over_ssh_after_build() -> None:
     deploy_job = workflow["jobs"]["deploy"]
 
     assert deploy_job["needs"] == "build"
-    assert deploy_job["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    assert (
+        deploy_job["if"]
+        == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    )
     assert deploy_job["permissions"] == {"contents": "read", "packages": "read"}
     assert deploy_job["environment"] == "production"
     assert "${{ secrets.ZD_AGENT_DEPLOY_HOST }}" in text
@@ -138,7 +141,7 @@ def test_github_action_deploys_main_image_over_ssh_after_build() -> None:
     assert "ssh-keyscan" not in text
     assert 'git merge --ff-only "$EXPECTED_SHA"' in text
     assert "git pull --ff-only origin main" not in text
-    assert 'if ! git diff --quiet -- || ! git diff --cached --quiet --' in text
+    assert "if ! git diff --quiet -- || ! git diff --cached --quiet --" in text
     assert 'DEPLOY_TAG="sha-${GITHUB_SHA}"' in text
     assert './deploy/deploy-ghcr.sh "$DEPLOY_TAG"' in text
     assert "docker build" not in deploy_job["steps"][0]["run"]
@@ -188,7 +191,7 @@ def test_workflow_holds_one_lock_across_checkout_update_and_deploy() -> None:
     assert lock_open < lock_acquire < inherited_flag < fetch < merge < deploy
     script = DEPLOY_SCRIPT.read_text()
     assert '[[ "${ZD_AGENT_DEPLOY_LOCK_HELD:-0}" == "1" ]]' in script
-    assert 'readlink /proc/$$/fd/9' in script
+    assert "readlink /proc/$$/fd/9" in script
     assert '[[ "$inherited_lock_path" != "$DEPLOY_LOCK_FILE" ]]' in script
     assert "flock -n 9" in script
 

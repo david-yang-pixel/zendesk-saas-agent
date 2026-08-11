@@ -1,6 +1,6 @@
 """Tool Service boundary manifest tests."""
 
-from zd_agent.tools.registry import create_tool_registry
+from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 from zd_agent.tools.service_boundary import (
     TOOL_SERVICE_BOUNDARIES,
     get_tool_service_boundary,
@@ -9,30 +9,18 @@ from zd_agent.tools.service_boundary import (
 
 
 def test_every_registered_tool_declares_service_boundary() -> None:
-    registry = create_tool_registry()
+    registry = create_casework_tool_registry()
     registered = {tool.name for tool in registry.list_tools()}
 
     assert registered == set(TOOL_SERVICE_BOUNDARIES)
 
 
 def test_existing_split_services_are_marked_service_backed() -> None:
-    sql_query = get_tool_service_boundary("sql_query")
-    assert sql_query.execution_boundary == "remote_mcp"
-    assert sql_query.service == "db-gateway"
-    assert sql_query.service_backed is True
-    assert sql_query.fully_isolated is True
-
-    signoz_query = get_tool_service_boundary("signoz_query")
-    assert signoz_query.execution_boundary == "remote_mcp"
-    assert signoz_query.service == "signoz-mcp"
-    assert signoz_query.service_backed is True
-    assert signoz_query.fully_isolated is True
-
-    public_reply = get_tool_service_boundary("zendesk_public_reply")
-    assert public_reply.execution_boundary == "remote_mcp"
-    assert public_reply.service == "zendesk-browser-relay"
-    assert public_reply.service_backed is True
-    assert public_reply.fully_isolated is True
+    signoz_search = get_tool_service_boundary("signoz_search_logs")
+    assert signoz_search.execution_boundary == "remote_mcp"
+    assert signoz_search.service == "signoz-mcp"
+    assert signoz_search.service_backed is True
+    assert signoz_search.fully_isolated is True
 
     zendesk_ticket = get_tool_service_boundary("zendesk_get_ticket")
     assert zendesk_ticket.execution_boundary == "remote_mcp"
@@ -40,21 +28,10 @@ def test_existing_split_services_are_marked_service_backed() -> None:
     assert zendesk_ticket.service_backed is True
     assert zendesk_ticket.fully_isolated is True
 
-    internal_reply = get_tool_service_boundary("zendesk_internal_reply")
-    assert internal_reply.execution_boundary == "remote_mcp"
-    assert internal_reply.service == "zendesk-mcp"
-    assert internal_reply.fully_isolated is True
 
-    follow_ticket = get_tool_service_boundary("zendesk_follow_ticket")
-    assert follow_ticket.execution_boundary == "remote_mcp"
-    assert follow_ticket.service == "zendesk-mcp"
-    assert follow_ticket.fully_isolated is True
-
-    attachments = get_tool_service_boundary("zendesk_get_attachments")
-    assert attachments.execution_boundary == "remote_mcp"
-    assert attachments.service == "zendesk-mcp"
-    assert attachments.service_backed is True
-    assert attachments.fully_isolated is True
+def test_removed_global_data_capabilities_have_no_casework_boundary() -> None:
+    for name in ("sql_query", "signoz_query", "zendesk_search", "zendesk_get_user"):
+        assert name not in TOOL_SERVICE_BOUNDARIES
 
 
 def test_source_tools_are_partial_until_local_fallback_is_removed() -> None:
@@ -106,27 +83,9 @@ def test_next_batch_tools_are_fully_isolated_mcp_services() -> None:
     assert official_docs.service_backed is True
     assert official_docs.fully_isolated is True
 
-    feishu = get_tool_service_boundary("feishu_push")
-    assert feishu.execution_boundary == "remote_mcp"
-    assert feishu.service == "notification-service"
-    assert feishu.service_backed is True
-    assert feishu.fully_isolated is True
-
-    sandbox = get_tool_service_boundary("sandbox_exec")
-    assert sandbox.execution_boundary == "remote_mcp"
-    assert sandbox.service == "sandbox-worker"
-    assert sandbox.service_backed is True
-    assert sandbox.fully_isolated is True
-
-    custom_mcp = get_tool_service_boundary("custom_mcp_call")
-    assert custom_mcp.execution_boundary == "remote_mcp"
-    assert custom_mcp.service == "admin-configured-mcp"
-    assert custom_mcp.service_backed is True
-    assert custom_mcp.fully_isolated is True
-
 
 def test_boundary_summary_exposes_rollup_counts() -> None:
-    registry = create_tool_registry()
+    registry = create_casework_tool_registry()
     summary = summarize_tool_service_boundaries(registry.list_tools())
 
     assert summary["total_tools"] == len(registry)

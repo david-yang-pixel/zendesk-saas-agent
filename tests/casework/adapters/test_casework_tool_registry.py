@@ -7,13 +7,14 @@ def test_casework_registry_exposes_only_approved_read_capabilities() -> None:
 
     assert {
         "inspector_exec",
-        "sql_query",
         "official_docs_search",
         "github_get_pr",
-        "signoz_query",
+        "signoz_search_logs",
         "zendesk_get_ticket",
     } <= names
     assert {
+        "sql_query",
+        "signoz_query",
         "zendesk_public_reply",
         "zendesk_internal_reply",
         "zendesk_add_tags",
@@ -24,6 +25,17 @@ def test_casework_registry_exposes_only_approved_read_capabilities() -> None:
         "run_subagents_parallel",
         "saas_branch_switch",
         "custom_mcp_call",
+        "zendesk_get_attachments",
+        "zendesk_get_user",
+        "zendesk_search",
+        "ticket_record_search",
+        "signoz_services",
+        "signoz_list_services",
+        "signoz_get_trace_details",
+        "signoz_list_metrics",
+        "signoz_get_field_keys",
+        "signoz_get_field_values",
+        "signoz_query_metrics",
     }.isdisjoint(names)
     assert all(not tool.is_write_operation for tool in registry.list_tools())
     assert all(not tool.requires_sandbox for tool in registry.list_tools())

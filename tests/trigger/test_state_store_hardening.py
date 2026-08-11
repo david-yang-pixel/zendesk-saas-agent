@@ -19,8 +19,11 @@ def test_invalid_state_json_shape_is_quarantined_and_reported(tmp_path) -> None:
     path = tmp_path / "tickets.json"
     path.write_text("[]", encoding="utf-8")
 
-    with patch("zd_agent.trigger.state_store.logger.error") as log_error, pytest.raises(
-        TicketStateCorruptedError,
+    with (
+        patch("zd_agent.trigger.state_store.logger.error") as log_error,
+        pytest.raises(
+            TicketStateCorruptedError,
+        ),
     ):
         TicketStateTracker(path)
 
@@ -32,17 +35,22 @@ def test_invalid_state_json_shape_is_quarantined_and_reported(tmp_path) -> None:
 def test_invalid_persisted_state_is_quarantined_and_reported(tmp_path) -> None:
     path = tmp_path / "tickets.json"
     path.write_text(
-        json.dumps({
-            "1": {
-                "state": "unknown",
-                "first_seen": _now().isoformat(),
-            },
-        }),
+        json.dumps(
+            {
+                "1": {
+                    "state": "unknown",
+                    "first_seen": _now().isoformat(),
+                },
+            }
+        ),
         encoding="utf-8",
     )
 
-    with patch("zd_agent.trigger.state_store.logger.error") as log_error, pytest.raises(
-        TicketStateCorruptedError,
+    with (
+        patch("zd_agent.trigger.state_store.logger.error") as log_error,
+        pytest.raises(
+            TicketStateCorruptedError,
+        ),
     ):
         TicketStateTracker(path)
 

@@ -1,4 +1,5 @@
 """Zendesk webhook: signature verification + aiohttp handler."""
+
 from __future__ import annotations
 
 import base64
@@ -69,7 +70,9 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     sig = request.headers.get("X-Zendesk-Webhook-Signature", "")
     ts = request.headers.get("X-Zendesk-Webhook-Signature-Timestamp", "")
 
-    if not verify_zendesk_signature(secret=secret, timestamp=ts, body=body, signature=sig):
+    if not verify_zendesk_signature(
+        secret=secret, timestamp=ts, body=body, signature=sig
+    ):
         logger.warning("zendesk_webhook_bad_signature")
         return web.Response(status=401, text="bad signature")
 

@@ -16,11 +16,13 @@ from httpcore._backends.anyio import AnyIOBackend
 from httpcore._backends.base import SOCKET_OPTION
 
 _STRICT_ZENDESK_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-_KNOWN_METADATA_HOSTS = frozenset({
-    "instance-data.ec2.internal",
-    "metadata.google.internal",
-    "metadata.google",
-})
+_KNOWN_METADATA_HOSTS = frozenset(
+    {
+        "instance-data.ec2.internal",
+        "metadata.google.internal",
+        "metadata.google",
+    }
+)
 _DNS_RESOLVER_LIMITER = CapacityLimiter(8)
 
 
@@ -192,10 +194,7 @@ def is_zendesk_tenant_url(url: str, subdomain: str) -> bool:
         hostname = _normalized_hostname(parsed)
     except ImageUrlRejected:
         return False
-    return (
-        parsed.scheme.lower() == "https"
-        and hostname == f"{candidate}.zendesk.com"
-    )
+    return parsed.scheme.lower() == "https" and hostname == f"{candidate}.zendesk.com"
 
 
 def image_url_log_ref(url: str) -> str:

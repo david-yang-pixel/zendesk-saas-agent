@@ -5,28 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from zd_agent.casework.domain.enums import ExecutionMode
-from zd_agent.runtime.openai_reasoning import (
-    validate_reasoning_effort,
-    validate_trigger_model,
-)
-
-
-class GuardrailsConfig(BaseModel):
-    max_rounds: int = 30
-    timeout_seconds: int = 600
-    max_tokens_per_session: int = 200_000
-    compaction_threshold: float = 0.75
-    context_compaction_trigger_tokens: int = 45_000
-    context_compaction_target_tokens: int = 30_000
+from zd_agent.runtime.openai_reasoning import validate_reasoning_effort
 
 
 class AgentConfig(BaseModel):
     max_concurrent_sessions: int = 5
-    guardrails: GuardrailsConfig = Field(default_factory=GuardrailsConfig)
 
 
 class LLMConfig(BaseModel):
@@ -35,19 +22,12 @@ class LLMConfig(BaseModel):
     # 空字符串 = 由模型使用默认档位。后台会按具体模型限制可选值。
     reasoning_effort: str = ""
     enable_vision_input: bool = True
-    # subagent_model：subagent 用的模型（默认空 = 用主 model 字段，向后兼容）。
-    # 设成 mini 类模型可大幅省 token 成本：subagent 干"go fetch this"机械活，
-    # mini 完全够用；主 agent 决策、整合、写 reply 才需要强推理模型。
-    # 例：model=gpt-5.5 + subagent_model=gpt-5.5-mini → 单 ticket 成本 -70%。
-    subagent_model: str = ""
-    # 独立配置 Subagent；空字符串 = 由 Subagent 模型使用默认档位。
-    subagent_reasoning_effort: str = ""
     temperature: float = 0.2
     base_url: str | None = None  # 自定义 OpenAI API 地址（代理 / Azure）
     timeout: int = 120  # API 请求超时（秒）
     max_tokens: int = 8192  # Anthropic 必传，OpenAI 可选（0 表示不设）
 
-    @field_validator("model", "subagent_model", mode="before")
+    @field_validator("model", mode="before")
     @classmethod
     def _trim_model_id(cls, value: object) -> str:
         return str(value or "").strip()
@@ -56,12 +36,6 @@ class LLMConfig(BaseModel):
     @classmethod
     def _validate_main_reasoning_effort(cls, value: str, info) -> str:
         return validate_reasoning_effort(str(info.data.get("model") or ""), value)
-
-    @field_validator("subagent_reasoning_effort")
-    @classmethod
-    def _validate_subagent_reasoning_effort(cls, value: str, info) -> str:
-        model = str(info.data.get("subagent_model") or info.data.get("model") or "")
-        return validate_reasoning_effort(model, value)
 
 
 class RetryPolicyOverrideConfig(BaseModel):
@@ -79,10 +53,7 @@ class RetryConfig(BaseModel):
     base_delay_seconds: float = 2.0
     max_delay_seconds: float = 20.0
     jitter: bool = True
-    llm: RetryPolicyOverrideConfig = Field(default_factory=RetryPolicyOverrideConfig)
-    zendesk: RetryPolicyOverrideConfig = Field(default_factory=RetryPolicyOverrideConfig)
     git: RetryPolicyOverrideConfig = Field(default_factory=RetryPolicyOverrideConfig)
-    sandbox: RetryPolicyOverrideConfig = Field(default_factory=RetryPolicyOverrideConfig)
 
 
 class ZendeskConfig(BaseModel):
@@ -106,7 +77,9 @@ class ZendeskConfig(BaseModel):
 
 
 class WebhookConfig(BaseModel):
-    signing_secret: str | None = None  # 经典 Tickets webhook（conditional_ticket_events）
+    signing_secret: str | None = (
+        None  # 经典 Tickets webhook（conditional_ticket_events）
+    )
     # 新增 messaging webhook（messaging_ticket.message_added）独立 secret。
     # 两个 webhook 走两个 endpoint、两套 signing secret，避免一个泄露牵连另一个。
     messaging_signing_secret: str | None = None
@@ -114,7 +87,6 @@ class WebhookConfig(BaseModel):
     listen_port: int = 8080
     zendesk_path: str = "/webhook/zendesk"
     zendesk_messaging_path: str = "/webhook/zendesk-messaging"
-    feishu_path: str = "/webhook/feishu"
 
 
 class RepoEntry(BaseModel):
@@ -141,12 +113,9 @@ class ReposConfig(BaseModel):
 
 
 class SandboxConfig(BaseModel):
-    # type 字段保留向后兼容（旧配置可能写了 "docker"）；当前一律按 LocalSandbox
-    # 处理，DockerSandbox 实现已移除（见 session/sandbox.py 顶部注释）。
-    type: str = "local"
+    """Read-only location for inspecting or cleaning pre-v2 forensic files."""
+
     base_dir: str = "/tmp/zd-agent"
-    cleanup_on_success: bool = True
-    cleanup_on_failure: bool = False
 
 
 class KnowledgeConfig(BaseModel):
@@ -163,20 +132,6 @@ class ResourcesConfig(BaseModel):
     state_dir: str = ".state"
 
 
-class CustomSkillConfig(BaseModel):
-    name: str = ""
-    description: str = ""
-    content: str = ""
-    enabled: bool = True
-
-
-class SkillsConfig(BaseModel):
-    enabled: list[str] = Field(
-        default_factory=lambda: ["dify_support_ticket"],
-    )
-    custom: list[CustomSkillConfig] = Field(default_factory=list)
-
-
 class CustomMcpServiceConfig(BaseModel):
     name: str = ""
     label: str = ""
@@ -191,37 +146,15 @@ class McpServicesConfig(BaseModel):
     custom: list[CustomMcpServiceConfig] = Field(default_factory=list)
 
 
-class TriggerDeciderConfig(BaseModel):
-    llm_model: str = "gpt-5.4-mini"
-    # 独立配置触发判定及其辅助生成调用；空字符串 = 模型默认档位。
-    reasoning_effort: str = ""
-    enable_vision_input: bool = True
+class IntakeConfig(BaseModel):
+    """V2 intake debounce and post-run cooldown settings.
+
+    The old trigger classifier no longer exists.  These two timing controls
+    remain because they protect the durable queue from bursty customer events.
+    """
+
     silence_minutes_default: int = 0
-    silence_extend_to_minutes: int = 1
-    rapid_burst_window_seconds: int = 30
-    rapid_burst_threshold: int = 2
-    insufficient_timeout_minutes: int = 20
-    abandoned_hours: int = 24
-    greeting_only_alert_minutes: int = 30
-    # 主动公开询问开关：messaging 工单回复路径未验证前默认关闭，
-    # 关闭时 silence 到期 + verdict 非 substantial 会推飞书内部告警代替直接 ask 客户。
-    enable_public_nudge: bool = False
-    # agent 跑完后多少秒内的客户新消息视为"补充上一条问题"，跳过新一轮 dispatch。
-    # 防止客户连发两条（如日文+英文翻译）触发 agent 跑两次同语义任务。
-    # 180s（3 min）经验值：实测 60s 漏过率高（客户经常 1-2 min 才发翻译版/补图），
-    # 提到 180s 后 ticket 2320 类"3 条相邻 mention 各跑一次"场景命中率明显下降。
-    # 真正的"新问题"通常会等 SE 回复后再发，3 min 等待对客户体验无感。
     post_agent_cooldown_seconds: int = 180
-
-    @field_validator("llm_model", mode="before")
-    @classmethod
-    def _trim_model_id(cls, value: object) -> str:
-        return validate_trigger_model(str(value or "").strip())
-
-    @field_validator("reasoning_effort")
-    @classmethod
-    def _validate_reasoning_effort(cls, value: str, info) -> str:
-        return validate_reasoning_effort(str(info.data.get("llm_model") or ""), value)
 
 
 class SilenceWakerConfig(BaseModel):
@@ -229,7 +162,7 @@ class SilenceWakerConfig(BaseModel):
 
 
 class WaitingPollerConfig(BaseModel):
-    """Waiting poller 主要职责：推动超时分支（24h abandoned / 30min greeting alert）。
+    """Recover missed messaging events and bound customer-owned waits.
 
     2026-05 后客户新消息检测**主要走 messaging webhook**，poller 退化为低频兜底：
     - scan_interval_seconds 默认从 60s 拉长到 300s
@@ -238,10 +171,15 @@ class WaitingPollerConfig(BaseModel):
 
     # 60s → 300s：messaging webhook 接管后，poller 不再是消息检测主力
     scan_interval_seconds: int = 300
-    # 24h 上限，超时标记 abandoned 并停扫
-    abandoned_hours: int = 24
-    # 30min greeting 告警
-    greeting_alert_minutes: int = 30
+    # The old YAML key remains an input alias for rolling upgrades. V2 stores
+    # ``out_of_scope`` with a typed timeout reason and creates no handoff.
+    customer_wait_timeout_hours: int = Field(
+        default=24,
+        validation_alias=AliasChoices(
+            "customer_wait_timeout_hours",
+            "abandoned_hours",
+        ),
+    )
     # webhook 兜底开关：True=poller 也 diff 客户消息（防 webhook 漏发）
     # False=纯靠 webhook（更省 API 配额，但 webhook 故障时会漏消息）
     poll_new_messages: bool = True
@@ -315,30 +253,13 @@ class ZendeskMcpConfig(BaseModel):
 class NotificationServiceConfig(BaseModel):
     """Remote notification-service MCP client config.
 
-    Feishu webhook credentials and retry policy should live in the sibling
-    notification-service. The legacy ``feishu`` block remains as a local
-    compatibility fallback until the service is deployed everywhere.
+    Feishu webhook credentials and retry policy live only in the sibling
+    notification-service; the Agent keeps only this authenticated MCP client.
     """
 
     mcp_url: str = ""
     mcp_api_key: str = ""
     request_timeout_seconds: int = 35
-
-
-class SandboxWorkerConfig(BaseModel):
-    """Remote sandbox-worker MCP client config."""
-
-    mcp_url: str = ""
-    mcp_api_key: str = ""
-    request_timeout_seconds: int = 65
-
-
-class FeishuConfig(BaseModel):
-    # Custom bot (incoming webhook) mode
-    webhook_url: str = ""       # from env FEISHU_WEBHOOK_URL
-    webhook_secret: str = ""    # from env FEISHU_WEBHOOK_SECRET (可选加签)
-    daily_summary_time: str = "09:00"
-    daily_summary_timezone: str = "Asia/Shanghai"
 
 
 class InspectorConfig(BaseModel):
@@ -348,6 +269,7 @@ class InspectorConfig(BaseModel):
     支持跨库聚合（如 quota / workflow_run / account drill-down），手写 SQL
     很容易漏字段（例如 `is_universal=false` / TiDB 知识库存储统计）。
     """
+
     binary: str = "/usr/local/bin/inspector"
     config_file: str = "/opt/zd-agent/inspector-config/prod.yaml"
     # 单次最多 45s，失败后只重试一次。两次尝试总预算 90s，给 agent_loop 的
@@ -357,35 +279,17 @@ class InspectorConfig(BaseModel):
 
 
 class PublicReplyConfig(BaseModel):
-    """Public Reply 功能配置（agent 自动公开回复客户）。
+    """Crash-safe v2 public-delivery transport and intake windows."""
 
-    设计文档：2026-05-13 跟用户的设计讨论。
-
-    Public reply 是高风险动作（不可撤回 + 邮件投递给客户）。本 config 提供：
-    - ``enabled``: 总开关 / kill switch，出问题一秒下线
-    - ``max_ask_count``: 同工单内自动 ask 客户的上限次数；超过自动转人工
-    - 各类 timing 窗口（observation / silence / abandoned）
-    """
-    # 总开关。false 时所有 ZendeskPublicReply 工具调用直接返回失败，
-    # agent 退回写 Internal Note。
+    # Customer-write kill switch.  False keeps the v2 analysis/draft path but
+    # prevents Browser Relay delivery; it does not invoke a legacy fallback.
     enabled: bool = False
-
-    # 同工单内最多自动 ask 几次客户（每次 trigger_decider 评 verdict 不 substantial
-    # 计一次）。超过此上限直接转人工 + 飞书告警，不再 ask。
-    # 10 次：messaging 场景下给客户充分机会描述问题，但不无限循环。
-    max_ask_count: int = 10
 
     # 工单刚创建后 agent 启动前的观察期。等客户首批 burst 消息到达。
     silent_initial_wait_seconds: int = 60
 
     # 客户每次回复后 agent 启动前的合并窗。避免 agent 在客户连发 burst 时被打断。
     silence_window_seconds: int = 30
-
-    # ask 客户后多久没回 → 推飞书"客户失联"告警（不立刻 abandon）
-    ask_followup_alert_minutes: int = 30
-
-    # 24h 客户彻底无回复 → 标 abandoned + 飞书最终告警
-    abandoned_hours: int = 24
 
     # SaaS native messaging 工单的客户可见回复不再走 Conversations API。
     # browser relay 使用已登录的 Zendesk Agent 前台会话提交消息，确保客户 widget 可见。
@@ -397,15 +301,11 @@ class PublicReplyConfig(BaseModel):
     freshness_callback_url: str = ""
 
 
-class PromptOverridesConfig(BaseModel):
-    ask_extra_instructions: str = ""
-    agent_extra_instructions: str = ""
-
-
 class LoggingConfig(BaseModel):
     """日志配置。stdout 始终走带色 ConsoleRenderer（不可配）；
     jsonl_enabled 控制是否额外写 JSON 行到 log_dir/events-<date>.jsonl 供排查。
     """
+
     jsonl_enabled: bool = True
     log_dir: str = "/opt/zd-agent/logs"
 
@@ -430,6 +330,11 @@ class CaseworkConfig(BaseModel):
     canary_ticket_ids: tuple[int, ...] = ()
     max_investigation_rounds: int = Field(default=10, ge=1, le=20)
     max_investigation_calls: int = Field(default=16, ge=1, le=40)
+    max_investigation_tokens: int = Field(
+        default=1_500_000,
+        ge=1_000,
+        le=10_000_000,
+    )
 
     @field_validator("mode", mode="before")
     @classmethod
@@ -449,25 +354,26 @@ class AppConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
-    skills: SkillsConfig = Field(default_factory=SkillsConfig)
-    trigger_decider: TriggerDeciderConfig = Field(default_factory=TriggerDeciderConfig)
+    intake: IntakeConfig = Field(
+        default_factory=IntakeConfig,
+        validation_alias=AliasChoices("intake", "trigger_decider"),
+    )
     silence_waker: SilenceWakerConfig = Field(default_factory=SilenceWakerConfig)
     waiting_poller: WaitingPollerConfig = Field(default_factory=WaitingPollerConfig)
     db_gateway: DbGatewayConfig = Field(default_factory=DbGatewayConfig)
     signoz: SignozConfig = Field(default_factory=SignozConfig)
     source_mcp: SourceMcpConfig = Field(default_factory=SourceMcpConfig)
     github_mcp: GithubMcpConfig = Field(default_factory=GithubMcpConfig)
-    docs_tool_service: DocsToolServiceConfig = Field(default_factory=DocsToolServiceConfig)
+    docs_tool_service: DocsToolServiceConfig = Field(
+        default_factory=DocsToolServiceConfig
+    )
     zendesk_mcp: ZendeskMcpConfig = Field(default_factory=ZendeskMcpConfig)
     notification_service: NotificationServiceConfig = Field(
         default_factory=NotificationServiceConfig,
     )
-    sandbox_worker: SandboxWorkerConfig = Field(default_factory=SandboxWorkerConfig)
     mcp_services: McpServicesConfig = Field(default_factory=McpServicesConfig)
-    feishu: FeishuConfig = Field(default_factory=FeishuConfig)
     inspector: InspectorConfig = Field(default_factory=InspectorConfig)
     public_reply: PublicReplyConfig = Field(default_factory=PublicReplyConfig)
-    prompts: PromptOverridesConfig = Field(default_factory=PromptOverridesConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     casework: CaseworkConfig = Field(default_factory=CaseworkConfig)
 
@@ -525,11 +431,6 @@ class EnvSettings(BaseSettings):
     notification_service_url: str = ""
     notification_service_api_key: str = ""
     notification_service_timeout_seconds: int | None = None
-    sandbox_worker_url: str = ""
-    sandbox_worker_api_key: str = ""
-    sandbox_worker_timeout_seconds: int | None = None
-    feishu_webhook_url: str = ""
-    feishu_webhook_secret: str = ""
     zendesk_webhook_secret: str = ""
     zendesk_messaging_webhook_secret: str = ""
 
@@ -607,10 +508,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
                 model_override,
                 cfg.llm.reasoning_effort,
             )
-            validate_reasoning_effort(
-                cfg.llm.subagent_model or model_override,
-                cfg.llm.subagent_reasoning_effort,
-            )
             cfg.llm.model = model_override
     if env.openai_base_url is not None:
         cfg.llm.base_url = env.openai_base_url
@@ -665,18 +562,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.notification_service.request_timeout_seconds = (
             env.notification_service_timeout_seconds
         )
-    # Sandbox worker
-    if env.sandbox_worker_url:
-        cfg.sandbox_worker.mcp_url = env.sandbox_worker_url.rstrip("/")
-    if env.sandbox_worker_api_key:
-        cfg.sandbox_worker.mcp_api_key = env.sandbox_worker_api_key
-    if env.sandbox_worker_timeout_seconds is not None:
-        cfg.sandbox_worker.request_timeout_seconds = env.sandbox_worker_timeout_seconds
-    # Feishu
-    if env.feishu_webhook_url:
-        cfg.feishu.webhook_url = env.feishu_webhook_url
-    if env.feishu_webhook_secret:
-        cfg.feishu.webhook_secret = env.feishu_webhook_secret
     # Zendesk webhook secret (ZENDESK_WEBHOOK_SECRET is primary; ZD_WEBHOOK_SIGNING_SECRET
     # kept as legacy fallback for pre-SaaS deployments)
     if env.zendesk_webhook_secret:

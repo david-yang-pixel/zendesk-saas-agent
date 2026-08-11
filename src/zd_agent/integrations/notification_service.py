@@ -9,6 +9,20 @@ from zd_agent.integrations.tool_service_mcp import call_mcp_tool, mcp_endpoint
 
 SERVICE = "notification-service"
 
+_DEFINITELY_UNSENT_CODES = frozenset(
+    {
+        "NOTIFICATION_SERVICE_URL_MISSING",
+        "NOTIFICATION_SERVICE_UNAUTHORIZED",
+        "VALIDATION_ERROR",
+        "INVALID_ARGUMENT",
+        "BAD_REQUEST",
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "DRY_RUN",
+    }
+)
+
 
 def notification_service_enabled(cfg: Any | None = None) -> bool:
     cfg = cfg or get_config()
@@ -23,6 +37,7 @@ async def push_notification_card(
     title: str = "Alert",
     zendesk_url: str = "",
     urgent: bool = False,
+    idempotency_reference: str = "",
     cfg: Any | None = None,
 ) -> dict[str, Any]:
     """Push a card through notification-service MCP only."""
@@ -35,6 +50,8 @@ async def push_notification_card(
         "zendesk_url": zendesk_url,
         "urgent": urgent,
     }
+    if idempotency_reference:
+        arguments["idempotency_reference"] = idempotency_reference
 
     service_cfg = cfg.notification_service
     return await call_mcp_tool(
@@ -46,3 +63,9 @@ async def push_notification_card(
         arguments=arguments,
         missing_code="NOTIFICATION_SERVICE_URL_MISSING",
     )
+
+
+def notification_result_is_definitely_unsent(payload: dict[str, Any]) -> bool:
+    """Return true only when the notification request could not have executed."""
+    code = str(payload.get("code") or "").upper()
+    return code in _DEFINITELY_UNSENT_CODES

@@ -1,4 +1,5 @@
 """Tests for SigNoz remote MCP transport."""
+
 from __future__ import annotations
 
 import json

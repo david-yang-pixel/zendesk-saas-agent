@@ -1,4 +1,5 @@
 """Test decision log JSONL append."""
+
 import json
 
 from zd_agent.trigger.decision_log import log_decision
@@ -7,9 +8,12 @@ from zd_agent.trigger.decision_log import log_decision
 def test_log_decision_writes_jsonl(tmp_path):
     p = tmp_path / "trigger_log.jsonl"
     log_decision(
-        log_path=p, ticket_id="12345",
-        verdict="substantial_issue", completeness=85,
-        silence_min=3, action="enter_silence",
+        log_path=p,
+        ticket_id="12345",
+        verdict="substantial_issue",
+        completeness=85,
+        silence_min=3,
+        action="enter_silence",
     )
     lines = p.read_text().splitlines()
     assert len(lines) == 1
@@ -38,7 +42,9 @@ def test_log_decision_creates_parent_dir(tmp_path):
 def test_log_decision_includes_extra_fields(tmp_path):
     p = tmp_path / "log.jsonl"
     log_decision(
-        log_path=p, ticket_id="1", verdict="substantial_issue",
+        log_path=p,
+        ticket_id="1",
+        verdict="substantial_issue",
         action="enter_silence",
         extra={"rhythm": "slow", "burst_count": 2},
     )

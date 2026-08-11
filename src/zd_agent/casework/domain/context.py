@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import cast
 
 from pydantic import Field, field_validator, model_validator
 
@@ -11,6 +12,7 @@ from zd_agent.casework.domain.enums import (
     LookupStatus,
     ResolutionMethod,
     ResolutionStatus,
+    VisualObservationStatus,
 )
 
 
@@ -29,10 +31,34 @@ class AttachmentRef(FrozenModel):
 class VisualObservation(FrozenModel):
     attachment_id: str = Field(min_length=1)
     evidence_id: str = Field(min_length=1)
+    status: VisualObservationStatus = VisualObservationStatus.OBSERVED
     visible_text: str = ""
     ui_state: str = ""
     uncertainty: str = ""
     untrusted: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _downgrade_empty_observation(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        values = cast(dict[str, object], data)
+        status = values.get("status", VisualObservationStatus.OBSERVED)
+        visible_text = values.get("visible_text", "")
+        ui_state = values.get("ui_state", "")
+        observed = status in {
+            VisualObservationStatus.OBSERVED,
+            VisualObservationStatus.OBSERVED.value,
+        }
+        has_observation = any(
+            isinstance(value, str) and value.strip()
+            for value in (visible_text, ui_state)
+        )
+        if observed and not has_observation:
+            downgraded: dict[str, object] = dict(values)
+            downgraded["status"] = VisualObservationStatus.NO_MODEL_RESULT
+            return downgraded
+        return values
 
     @model_validator(mode="after")
     def _require_untrusted_boundary(self) -> VisualObservation:
@@ -130,7 +156,9 @@ class IdentityResolution(FrozenModel):
                 raise ValueError("resolved identity requires a selected tenant")
             candidate_ids = {candidate.tenant_id for candidate in self.candidates}
             if self.selected_tenant_id not in candidate_ids:
-                raise ValueError("selected tenant must be one of the resolved candidates")
+                raise ValueError(
+                    "selected tenant must be one of the resolved candidates"
+                )
             if self.method is ResolutionMethod.NONE:
                 raise ValueError("resolved identity requires a resolution method")
             if not self.evidence_ids:
@@ -139,7 +167,10 @@ class IdentityResolution(FrozenModel):
             raise ValueError("unresolved identity cannot select a tenant")
         if self.status is ResolutionStatus.LOOKUP_FAILED and self.error_code is None:
             raise ValueError("failed identity lookup requires an error code")
-        if self.status is not ResolutionStatus.LOOKUP_FAILED and self.error_code is not None:
+        if (
+            self.status is not ResolutionStatus.LOOKUP_FAILED
+            and self.error_code is not None
+        ):
             raise ValueError("identity error code is only valid for a failed lookup")
         return self
 
@@ -204,7 +235,9 @@ class BillingLookup(FrozenModel):
                 self.renewal_status,
             )
             if any(facts):
-                raise ValueError("failed billing lookup cannot carry subscription facts")
+                raise ValueError(
+                    "failed billing lookup cannot carry subscription facts"
+                )
         elif self.error_code is not None:
             raise ValueError("pending billing lookup cannot carry an error")
         return self
@@ -226,7 +259,10 @@ class BillingBinding(FrozenModel):
                 raise ValueError("resolved billing binding cannot carry an error")
         elif self.snapshot is not None:
             raise ValueError("unresolved billing binding cannot carry a snapshot")
-        if self.status is BillingBindingStatus.LOOKUP_FAILED and self.error_code is None:
+        if (
+            self.status is BillingBindingStatus.LOOKUP_FAILED
+            and self.error_code is None
+        ):
             raise ValueError("failed billing binding requires an error code")
         return self
 

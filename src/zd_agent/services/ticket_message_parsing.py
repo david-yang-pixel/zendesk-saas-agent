@@ -87,8 +87,7 @@ def _form_field_value(field: dict[str, Any]) -> str:
         return ", ".join(
             str(item.get("label") or item.get("value") or "").strip()
             for item in selected
-            if isinstance(item, dict)
-            and (item.get("label") or item.get("value"))
+            if isinstance(item, dict) and (item.get("label") or item.get("value"))
         )
     return ""
 
@@ -100,10 +99,7 @@ def _profile_form_key(field: dict[str, Any]) -> str:
         return "name"
     if label == "email" or name.endswith("requester.email"):
         return "email"
-    if (
-        label in {"workspace id", "wid"}
-        or name.endswith("ticketfield.41021162892948")
-    ):
+    if label in {"workspace id", "wid"} or name.endswith("ticketfield.41021162892948"):
         return "workspace_id"
     return ""
 
@@ -152,8 +148,7 @@ def normalize_messaging_content(content: dict[str, Any]) -> dict[str, Any]:
         image_urls.extend(extract_inline_image_urls(raw_body))
     elif content_type in {"form", "formResponse"}:
         fields = [
-            field for field in (content.get("fields") or [])
-            if isinstance(field, dict)
+            field for field in (content.get("fields") or []) if isinstance(field, dict)
         ]
         form_data = _form_data(fields)
         if content_type == "formResponse":
@@ -248,15 +243,17 @@ def _messaging_customer_messages(
             body = "[客户附图 / Customer attached image]"
         if not body:
             continue
-        out.append({
-            "id": event.get("id"),
-            "author_id": author.get("zen:support:user_id"),
-            "created_at": event.get("created_at"),
-            "body": body,
-            "public": True,
-            "image_urls": image_urls,
-            "content_type": content_type,
-            "classification_body": normalized["classification_body"],
-            "form_data": normalized["form_data"],
-        })
+        out.append(
+            {
+                "id": event.get("id"),
+                "author_id": author.get("zen:support:user_id"),
+                "created_at": event.get("created_at"),
+                "body": body,
+                "public": True,
+                "image_urls": image_urls,
+                "content_type": content_type,
+                "classification_body": normalized["classification_body"],
+                "form_data": normalized["form_data"],
+            }
+        )
     return out

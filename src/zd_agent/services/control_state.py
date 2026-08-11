@@ -1,4 +1,5 @@
 """Runtime control state for global agent operations."""
+
 from __future__ import annotations
 
 import json

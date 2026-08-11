@@ -5,6 +5,7 @@ the Answer Bot data-capture flow.  Classification must wait for that form to be
 submitted, while the later ``formResponse`` remains available as structured
 profile context without becoming issue text or language evidence.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +18,7 @@ import pytest
 from zd_agent.config import (
     AppConfig,
     PublicReplyConfig,
-    TriggerDeciderConfig,
+    IntakeConfig,
     ZendeskConfig,
 )
 from zd_agent.services.ticket_message_parsing import (
@@ -25,10 +26,8 @@ from zd_agent.services.ticket_message_parsing import (
     extract_form_data_from_msgs,
 )
 from zd_agent.services.trigger_message_handler import handle_trigger_message
-from zd_agent.services.verdict_classification import classify_ticket_messages
 from zd_agent.services.waiting_poller import scan_once
 from zd_agent.tools.zendesk import _extract_reply_language_hint
-from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -46,8 +45,7 @@ def _cfg() -> AppConfig:
         min_ticket_id=0,
         agent_user_id=45433304089364,
     )
-    cfg.trigger_decider = TriggerDeciderConfig(
-        llm_model="gpt-test",
+    cfg.intake = IntakeConfig(
         silence_minutes_default=0,
         post_agent_cooldown_seconds=180,
     )
@@ -169,24 +167,20 @@ def _ticket_payload(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _substantial_verdict() -> PreCheckVerdict:
-    return PreCheckVerdict(
-        verdict="substantial_issue",
-        completeness=90,
-        reason="The initial free-form message states an actionable issue.",
-    )
-
-
 @pytest.mark.asyncio
 async def test_pending_answer_bot_form_waits_without_classification_or_dispatch(
     tmp_path,
 ) -> None:
     """A blocked, unsubmitted form is an upstream readiness gate."""
     state = TicketStateTracker(tmp_path / "tickets.json")
-    mcp = AsyncMock(return_value=_ticket_payload([
-        _initial_issue_event(),
-        _pending_answer_bot_form_event(),
-    ]))
+    mcp = AsyncMock(
+        return_value=_ticket_payload(
+            [
+                _initial_issue_event(),
+                _pending_answer_bot_form_event(),
+            ]
+        )
+    )
 
     with patch("zd_agent.integrations.zendesk_mcp.call_zendesk_tool", mcp):
         result = await handle_trigger_message(
@@ -230,11 +224,15 @@ async def test_form_response_releases_waiting_form_and_allows_processing(
             last_comment_ts=datetime(2026, 7, 16, 4, 15, 22, tzinfo=timezone.utc),
         ),
     )
-    mcp = AsyncMock(return_value=_ticket_payload([
-        _initial_issue_event(),
-        _pending_answer_bot_form_event(),
-        _form_response_event(),
-    ]))
+    mcp = AsyncMock(
+        return_value=_ticket_payload(
+            [
+                _initial_issue_event(),
+                _pending_answer_bot_form_event(),
+                _form_response_event(),
+            ]
+        )
+    )
 
     with patch("zd_agent.integrations.zendesk_mcp.call_zendesk_tool", mcp):
         result = await handle_trigger_message(
@@ -269,18 +267,20 @@ def test_fields_only_form_response_preserves_structured_profile_data() -> None:
 
 def test_latest_form_response_wins_when_customer_submits_more_than_once() -> None:
     """Profile consumers must not keep the first, stale workspace submission."""
-    messages = _messaging_customer_messages([
-        _form_response_event(
-            message_id="form-old",
-            email="old@example.test",
-            workspace_id="old-workspace",
-        ),
-        _form_response_event(
-            message_id="form-new",
-            email="new@example.test",
-            workspace_id="new-workspace",
-        ),
-    ])
+    messages = _messaging_customer_messages(
+        [
+            _form_response_event(
+                message_id="form-old",
+                email="old@example.test",
+                workspace_id="old-workspace",
+            ),
+            _form_response_event(
+                message_id="form-new",
+                email="new@example.test",
+                workspace_id="new-workspace",
+            ),
+        ]
+    )
 
     assert extract_form_data_from_msgs(messages) == {
         "name": "Ellie",
@@ -289,37 +289,17 @@ def test_latest_form_response_wins_when_customer_submits_more_than_once() -> Non
     }
 
 
-@pytest.mark.asyncio
-async def test_form_response_is_excluded_from_issue_text_classification() -> None:
-    """Profile fields are context, not a second customer problem statement."""
+def test_form_response_is_profile_context_not_issue_text() -> None:
+    """Profile fields remain structured context, not customer issue prose."""
     [form_response] = _messaging_customer_messages([_form_response_event()])
-    classify = AsyncMock(return_value=_substantial_verdict())
 
-    await classify_ticket_messages(
-        ticket_id=_TICKET_ID,
-        customer_msgs=[
-            {
-                "id": "m1",
-                "body": "既存のナレッジ文書を表示できません。",
-                "content_type": "text",
-                "image_urls": [],
-            },
-            form_response,
-        ],
-        model="gpt-test",
-        api_key="sk-test",
-        classify_messages_fn=classify,
-    )
-
-    classify.assert_awaited_once_with(
-        messages=["既存のナレッジ文書を表示できません。"],
-        model="gpt-test",
-        api_key="sk-test",
-        base_url=None,
-        image_data_urls=[],
-        image_count=0,
-        enable_vision_input=False,
-    )
+    assert form_response["content_type"] == "formResponse"
+    assert form_response["classification_body"] == ""
+    assert form_response["form_data"] == {
+        "name": "Ellie",
+        "email": "ellie.blackman@atticus.tech",
+        "workspace_id": _WORKSPACE_ID,
+    }
 
 
 def test_form_response_is_excluded_from_reply_language_hint() -> None:
@@ -375,26 +355,27 @@ async def test_waiting_form_is_polled_for_a_lost_form_response_webhook(
         ),
     )
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    fetch = AsyncMock(return_value=(
-        [
-            {"id": "m1", "body": "issue", "content_type": "text"},
-            {"id": "m2", "body": "Name: Ellie", "content_type": "formResponse"},
-        ],
-        {
-            "id": _TICKET_ID,
-            "status": "new",
-            "assignee_id": None,
-            "tags": [],
-            "via": {"channel": "native_messaging"},
-        },
-    ))
+    fetch = AsyncMock(
+        return_value=(
+            [
+                {"id": "m1", "body": "issue", "content_type": "text"},
+                {"id": "m2", "body": "Name: Ellie", "content_type": "formResponse"},
+            ],
+            {
+                "id": _TICKET_ID,
+                "status": "new",
+                "assignee_id": None,
+                "tags": [],
+                "via": {"channel": "native_messaging"},
+            },
+        )
+    )
 
     with patch("zd_agent.services.ticket_messages._fetch_customer_messages", fetch):
         await scan_once(
             state=state,
             trigger_queue=queue,
-            abandoned_hours=24,
-            greeting_alert_minutes=30,
+            customer_wait_timeout_hours=24,
         )
 
     queued = queue.get_nowait()
@@ -404,7 +385,7 @@ async def test_waiting_form_is_polled_for_a_lost_form_response_webhook(
 
 
 @pytest.mark.asyncio
-async def test_waiting_form_abandons_after_readiness_timeout(
+async def test_waiting_form_exits_scope_after_readiness_timeout(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -427,38 +408,35 @@ async def test_waiting_form_abandons_after_readiness_timeout(
         ),
     )
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    fetch = AsyncMock(return_value=(
-        [{"id": "m1", "body": "issue", "content_type": "text"}],
-        {
-            "id": _TICKET_ID,
-            "status": "new",
-            "assignee_id": None,
-            "tags": [],
-            "via": {"channel": "native_messaging"},
-        },
-    ))
+    fetch = AsyncMock(
+        return_value=(
+            [{"id": "m1", "body": "issue", "content_type": "text"}],
+            {
+                "id": _TICKET_ID,
+                "status": "new",
+                "assignee_id": None,
+                "tags": [],
+                "via": {"channel": "native_messaging"},
+            },
+        )
+    )
 
-    alert = AsyncMock()
     with patch(
         "zd_agent.services.ticket_messages._fetch_customer_messages",
         fetch,
-    ), patch(
-        "zd_agent.services.waiting_poller._alert_feishu",
-        alert,
     ):
         processed = await scan_once(
             state=state,
             trigger_queue=queue,
-            abandoned_hours=24,
-            greeting_alert_minutes=30,
+            customer_wait_timeout_hours=24,
         )
 
     assert processed == 1
     fetch.assert_awaited_once_with(_TICKET_ID, log_success=False)
     waiting = state.get(_TICKET_ID)
     assert waiting is not None
-    assert waiting.state == "abandoned"
-    assert waiting.abandoned_alert_sent_at is not None
+    assert waiting.state == "out_of_scope"
+    assert waiting.last_verdict == "form_submission_timeout"
+    assert waiting.abandoned_alert_sent_at is None
     assert waiting.alert_sent_at is None
     assert queue.empty()
-    alert.assert_awaited_once()

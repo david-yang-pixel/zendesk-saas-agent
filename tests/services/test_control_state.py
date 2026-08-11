@@ -23,11 +23,13 @@ def test_read_control_returns_stored_pause_metadata(tmp_path) -> None:
     path = control_path(_cfg(tmp_path))
     path.parent.mkdir(parents=True)
     path.write_text(
-        json.dumps({
-            "paused": True,
-            "updated_at": "2026-06-05T15:00:00+08:00",
-            "updated_by": "ops@dify.ai",
-        }),
+        json.dumps(
+            {
+                "paused": True,
+                "updated_at": "2026-06-05T15:00:00+08:00",
+                "updated_by": "ops@dify.ai",
+            }
+        ),
         encoding="utf-8",
     )
 

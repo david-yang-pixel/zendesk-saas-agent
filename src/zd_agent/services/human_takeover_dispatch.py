@@ -1,4 +1,5 @@
 """Human takeover dispatch orchestration for trigger consumer messages."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

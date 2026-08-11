@@ -4,10 +4,11 @@ from zd_agent.casework.adapters.ticket_snapshot import build_ticket_snapshot
 from zd_agent.session.agent_session import AgentSession
 
 
-def test_ticket_snapshot_uses_latest_customer_message_and_merged_form_identity() -> None:
+def test_ticket_snapshot_uses_latest_customer_message_and_merged_form_identity() -> (
+    None
+):
     session = AgentSession(ticket_id=4321)
     session.customer_context_generation = 3
-    session.customer_profile = {"requester_email": "requester@example.test"}
     messages = [
         {
             "id": "event-1",
@@ -29,6 +30,7 @@ def test_ticket_snapshot_uses_latest_customer_message_and_merged_form_identity()
         "status": "new",
         "via": {"channel": "messaging"},
         "locale": "en-US",
+        "requester": {"email": "requester@example.test"},
     }
 
     snapshot = build_ticket_snapshot(
@@ -40,7 +42,10 @@ def test_ticket_snapshot_uses_latest_customer_message_and_merged_form_identity()
     assert snapshot.ticket_id == 4321
     assert snapshot.generation == 3
     assert snapshot.latest_event_id == "event-2"
-    assert snapshot.questions == ("API requests are rejected after renewal.",)
+    assert snapshot.questions == (
+        "Initial description",
+        "API requests are rejected after renewal.",
+    )
     assert snapshot.form_identity.email == "owner@example.test"
     assert snapshot.form_identity.workspace_id == "target@example.test"
     assert snapshot.requester_email == "requester@example.test"
@@ -49,7 +54,9 @@ def test_ticket_snapshot_uses_latest_customer_message_and_merged_form_identity()
     assert snapshot.attachments[0].attachment_id
 
 
-def test_ticket_snapshot_deduplicates_images_without_exposing_url_as_identifier() -> None:
+def test_ticket_snapshot_deduplicates_images_without_exposing_url_as_identifier() -> (
+    None
+):
     url = "https://example.test/sc/attachments/v2/sensitive-token"
     snapshot = build_ticket_snapshot(
         session=AgentSession(ticket_id=4321),
@@ -69,9 +76,72 @@ def test_ticket_snapshot_deduplicates_images_without_exposing_url_as_identifier(
     assert len(snapshot.attachments[0].attachment_id) == 20
 
 
-def test_current_ticket_requester_email_overrides_stale_session_profile() -> None:
+def test_profile_only_form_response_keeps_prior_issue_and_advances_cursor() -> None:
+    snapshot = build_ticket_snapshot(
+        session=AgentSession(ticket_id=4321),
+        customer_messages=[
+            {
+                "id": "issue-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "content_type": "text",
+                "body": "The API quota is still unavailable after renewal.",
+                "classification_body": "",
+                "form_data": {},
+            },
+            {
+                "id": "form-2",
+                "created_at": "2026-08-11T07:01:00Z",
+                "content_type": "formResponse",
+                "body": "Name: Customer\nEmail: owner@example.test",
+                "classification_body": "",
+                "form_data": {"email": "owner@example.test"},
+            },
+        ],
+        ticket={"status": "new"},
+    )
+
+    assert snapshot.latest_event_id == "form-2"
+    assert snapshot.questions == ("The API quota is still unavailable after renewal.",)
+    assert snapshot.form_identity.email == "owner@example.test"
+
+
+def test_repeated_latest_issue_remains_the_last_question() -> None:
+    snapshot = build_ticket_snapshot(
+        session=AgentSession(ticket_id=4321),
+        customer_messages=[
+            {
+                "id": "event-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "body": "Issue A",
+            },
+            {
+                "id": "event-2",
+                "created_at": "2026-08-11T07:01:00Z",
+                "body": "Issue B",
+            },
+            {
+                "id": "event-3",
+                "created_at": "2026-08-11T07:02:00Z",
+                "body": "Issue A",
+            },
+            {
+                "id": "form-4",
+                "created_at": "2026-08-11T07:03:00Z",
+                "content_type": "formResponse",
+                "body": "Email: owner@example.test",
+                "form_data": {"email": "owner@example.test"},
+            },
+        ],
+        ticket={"status": "new"},
+    )
+
+    assert snapshot.latest_event_id == "form-4"
+    assert snapshot.questions == ("Issue B", "Issue A")
+    assert snapshot.questions[-1] == "Issue A"
+
+
+def test_ticket_snapshot_uses_only_current_ticket_requester_email() -> None:
     session = AgentSession(ticket_id=4321)
-    session.customer_profile = {"requester_email": "stale@example.test"}
 
     snapshot = build_ticket_snapshot(
         session=session,

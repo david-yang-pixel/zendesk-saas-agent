@@ -1,4 +1,5 @@
 """Test SqlQuery tool."""
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,11 +31,16 @@ async def test_sql_query_rejects_write(fake_session, sql_cfg):
         fake_session,
     )
     assert result.success is False
-    assert "DELETE" in (result.error or "").upper() or "forbidden" in (result.error or "").lower()
+    assert (
+        "DELETE" in (result.error or "").upper()
+        or "forbidden" in (result.error or "").lower()
+    )
 
 
 @pytest.mark.asyncio
-async def test_sql_query_allows_forbidden_words_inside_string_literals(fake_session, sql_cfg):
+async def test_sql_query_allows_forbidden_words_inside_string_literals(
+    fake_session, sql_cfg
+):
     tool = SqlQuery()
     fake_result = DbGatewayResult(
         success=True,
@@ -60,7 +66,9 @@ async def test_sql_query_allows_forbidden_words_inside_string_literals(fake_sess
 
 
 @pytest.mark.asyncio
-async def test_sql_query_allows_forbidden_words_inside_escaped_string(fake_session, sql_cfg):
+async def test_sql_query_allows_forbidden_words_inside_escaped_string(
+    fake_session, sql_cfg
+):
     tool = SqlQuery()
     fake_result = DbGatewayResult(
         success=True,
@@ -188,7 +196,10 @@ async def test_sql_query_rejects_unknown_database(fake_session, sql_cfg):
     ],
 )
 async def test_sql_query_rejects_invalid_argument_types(
-    fake_session, sql_cfg, args, expected_error,
+    fake_session,
+    sql_cfg,
+    args,
+    expected_error,
 ):
     tool = SqlQuery()
 
@@ -208,7 +219,10 @@ async def test_sql_query_success(fake_session, sql_cfg):
         elapsed_ms=50,
         truncated=False,
     )
-    with patch("zd_agent.tools.sql_query.query_db_gateway_mcp", AsyncMock(return_value=fake_result)):
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
         result = await tool.execute(
             {"database": "prod", "sql": "SELECT id, name FROM tenants LIMIT 1"},
             fake_session,
@@ -218,25 +232,31 @@ async def test_sql_query_success(fake_session, sql_cfg):
 
 
 @pytest.mark.asyncio
-async def test_sql_query_teleport_expired_from_gateway_marks_session(fake_session, sql_cfg):
+async def test_sql_query_teleport_expired_from_gateway_returns_typed_error(
+    fake_session, sql_cfg
+):
     tool = SqlQuery()
     fake_result = DbGatewayResult(
         success=False,
         code="TELEPORT_EXPIRED",
         error="conn refused",
     )
-    with patch("zd_agent.tools.sql_query.query_db_gateway_mcp", AsyncMock(return_value=fake_result)):
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
         result = await tool.execute(
             {"database": "prod", "sql": "SELECT 1"},
             fake_session,
         )
     assert result.success is False
     assert "teleport" in (result.error or "").lower() or "认证" in (result.error or "")
-    assert fake_session.waiting_for_auth is True  # session marked
 
 
 @pytest.mark.asyncio
-async def test_sql_query_gateway_error_includes_database_elapsed_and_sql(fake_session, sql_cfg):
+async def test_sql_query_gateway_error_includes_database_elapsed_and_sql(
+    fake_session, sql_cfg
+):
     tool = SqlQuery()
     fake_result = DbGatewayResult(
         success=False,
@@ -244,7 +264,10 @@ async def test_sql_query_gateway_error_includes_database_elapsed_and_sql(fake_se
         error="psql failed (rc=1): column does not exist",
         elapsed_ms=3700,
     )
-    with patch("zd_agent.tools.sql_query.query_db_gateway_mcp", AsyncMock(return_value=fake_result)):
+    with patch(
+        "zd_agent.tools.sql_query.query_db_gateway_mcp",
+        AsyncMock(return_value=fake_result),
+    ):
         result = await tool.execute(
             {
                 "database": "prod",

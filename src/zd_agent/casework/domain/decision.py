@@ -130,7 +130,10 @@ def _decision_consistency_error(decision: DispositionDecision) -> str:
     if decision.disposition is Disposition.RETRY_PENDING:
         return _retry_error(decision)
     if decision.disposition is Disposition.HUMAN_ACTION_REQUIRED:
-        if decision.ownership_action not in {OwnershipAction.SUPPORT, OwnershipAction.BILLING}:
+        if decision.ownership_action not in {
+            OwnershipAction.SUPPORT,
+            OwnershipAction.BILLING,
+        }:
             return "human action requires support or billing ownership"
         if decision.reason_code not in _HUMAN_ACTION_REASONS:
             return "human action requires an allowed reason code"

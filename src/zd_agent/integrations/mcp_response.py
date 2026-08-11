@@ -1,4 +1,5 @@
 """Helpers for parsing remote MCP JSON or SSE responses."""
+
 from __future__ import annotations
 
 import json
@@ -13,7 +14,9 @@ def expect_json_object(value: Any, *, context: str) -> dict[str, Any]:
     raise RuntimeError(f"{context} expected JSON object, got {type(value).__name__}")
 
 
-def load_json_or_sse_response(response: httpx.Response, *, context: str) -> dict[str, Any]:
+def load_json_or_sse_response(
+    response: httpx.Response, *, context: str
+) -> dict[str, Any]:
     """Parse either ordinary JSON or streamable HTTP/SSE MCP responses."""
     content_type = (response.headers.get("Content-Type") or "").lower()
     if "text/event-stream" not in content_type:

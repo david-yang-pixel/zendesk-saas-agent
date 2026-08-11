@@ -4,6 +4,7 @@ The structured tools are the default investigation path. Four legacy sz
 convenience tools remain available for focused errors, traceback, service, and
 read-only fallback queries.
 """
+
 from __future__ import annotations
 
 import json
@@ -45,8 +46,14 @@ SIGNOZ_STRUCTURED_SPECS: tuple[dict[str, Any], ...] = (
         "parameters": {
             "type": "object",
             "properties": {
-                "timeRange": {"type": "string", "description": "相对时间窗，如 30m、2h、1d；默认 1h"},
-                "environment": {"type": "string", "description": "可选 deployment.environment"},
+                "timeRange": {
+                    "type": "string",
+                    "description": "相对时间窗，如 30m、2h、1d；默认 1h",
+                },
+                "environment": {
+                    "type": "string",
+                    "description": "可选 deployment.environment",
+                },
                 "limit": {"type": "integer", "description": "1-1000；默认 30"},
             },
         },
@@ -138,7 +145,10 @@ SIGNOZ_STRUCTURED_SPECS: tuple[dict[str, Any], ...] = (
             "properties": {
                 "aggregation": {"type": "string", "enum": _AGGREGATIONS},
                 "aggregateOn": {"type": "string"},
-                "groupBy": {"type": "string", "description": "逗号分隔安全字段，最多 3 个"},
+                "groupBy": {
+                    "type": "string",
+                    "description": "逗号分隔安全字段，最多 3 个",
+                },
                 "requestType": {"type": "string", "enum": ["scalar", "time_series"]},
                 "stepInterval": {"type": "integer", "description": "秒"},
                 "timeRange": {"type": "string", "description": "默认 1h"},
@@ -180,7 +190,10 @@ SIGNOZ_STRUCTURED_SPECS: tuple[dict[str, Any], ...] = (
             "properties": {
                 "aggregation": {"type": "string", "enum": _AGGREGATIONS},
                 "aggregateOn": {"type": "string"},
-                "groupBy": {"type": "string", "description": "逗号分隔安全字段，最多 3 个"},
+                "groupBy": {
+                    "type": "string",
+                    "description": "逗号分隔安全字段，最多 3 个",
+                },
                 "requestType": {"type": "string", "enum": ["scalar", "time_series"]},
                 "stepInterval": {"type": "integer", "description": "秒"},
                 "timeRange": {"type": "string", "description": "默认 1h"},
@@ -207,7 +220,10 @@ SIGNOZ_STRUCTURED_SPECS: tuple[dict[str, Any], ...] = (
                     "type": "string",
                     "enum": ["avg", "min", "max", "sum", "latest"],
                 },
-                "groupBy": {"type": "string", "description": "逗号分隔安全字段，最多 3 个"},
+                "groupBy": {
+                    "type": "string",
+                    "description": "逗号分隔安全字段，最多 3 个",
+                },
                 "requestType": {"type": "string", "enum": ["scalar", "time_series"]},
                 "stepInterval": {"type": "integer", "description": "秒"},
                 "timeRange": {"type": "string", "description": "默认 1h"},
@@ -341,8 +357,14 @@ class SignozErrors(Tool):
         "properties": {
             "tenant": {"type": "string", "description": "tenant_id 精确过滤"},
             "grep": {"type": "string", "description": "body 子串过滤"},
-            "deployment": {"type": "string", "description": "k8s.deployment.name，如 dify-api-oltp / dify-app-worker"},
-            "env": {"type": "string", "description": "deployment.environment，默认 production"},
+            "deployment": {
+                "type": "string",
+                "description": "k8s.deployment.name，如 dify-api-oltp / dify-app-worker",
+            },
+            "env": {
+                "type": "string",
+                "description": "deployment.environment，默认 production",
+            },
             "hours": {"type": "number", "description": "lookback 小时，默认 1"},
             "limit": {"type": "integer", "description": "行上限，默认 30"},
         },
@@ -378,7 +400,10 @@ class SignozErrors(Tool):
         sz_args += ["--limit", str(limit)]
         rows = await run_signoz_sz(*sz_args)
         if rows is None:
-            return ToolResult(success=False, error="远程 sz MCP errors 查询失败（SigNoz MCP 不可达或查询错误）")
+            return ToolResult(
+                success=False,
+                error="远程 sz MCP errors 查询失败（SigNoz MCP 不可达或查询错误）",
+            )
         return ToolResult(output=_rows_to_text(rows))
 
 
@@ -462,8 +487,15 @@ class SignozServices(Tool):
         if isinstance(env, ToolResult):
             return env
 
-        sz_args = ["services", "--env", env or "production",
-                   "--hours", str(hours), "--limit", str(limit)]
+        sz_args = [
+            "services",
+            "--env",
+            env or "production",
+            "--hours",
+            str(hours),
+            "--limit",
+            str(limit),
+        ]
         rows = await run_signoz_sz(*sz_args)
         if rows is None:
             return ToolResult(success=False, error="远程 sz MCP services 查询失败")
@@ -481,8 +513,14 @@ class SignozQuery(Tool):
     parameters = {
         "type": "object",
         "properties": {
-            "sql": {"type": "string", "description": "ClickHouse SELECT，可含 {start_ns}/{end_ns}"},
-            "hours": {"type": "number", "description": "{start_ns}/{end_ns} 的窗口小时，默认 1"},
+            "sql": {
+                "type": "string",
+                "description": "ClickHouse SELECT，可含 {start_ns}/{end_ns}",
+            },
+            "hours": {
+                "type": "number",
+                "description": "{start_ns}/{end_ns} 的窗口小时，默认 1",
+            },
         },
         "required": ["sql"],
     }
@@ -499,5 +537,8 @@ class SignozQuery(Tool):
             return hours
         rows = await run_signoz_sz("query", sql, "--hours", str(hours))
         if rows is None:
-            return ToolResult(success=False, error="远程 sz MCP query 执行失败（SQL 错误或 SigNoz MCP 不可达）")
+            return ToolResult(
+                success=False,
+                error="远程 sz MCP query 执行失败（SQL 错误或 SigNoz MCP 不可达）",
+            )
         return ToolResult(output=_rows_to_text(rows))

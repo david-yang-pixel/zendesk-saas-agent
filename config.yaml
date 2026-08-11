@@ -1,32 +1,11 @@
 agent:
   max_concurrent_sessions: 2
-  guardrails:
-    max_rounds: 30
-    timeout_seconds: 600
-    # 500K → 1500K：观察到 5/8 工单（62.5%）触发 Token 超预算被强制截断，
-    # 导致 agent "I couldn't verify" 频发。gpt-5.x 支持 1M context，
-    # 单 ticket 累计 1.5M 足够覆盖 fan-out + 多轮总结。
-    max_tokens_per_session: 1500000
-    # compaction_threshold 只用于"整单累计 token"护栏；它不能代表当前上下文大小，
-    # 也不能倒扣已经花掉的 token。
-    compaction_threshold: 0.3
-    # 当前 message_store 超过 45K 时正式压缩到约 30K，避免后续每轮重复携带
-    # 40K+ 上下文。12K 以上仍会先做 cheap history_snip。
-    context_compaction_trigger_tokens: 45000
-    context_compaction_target_tokens: 30000
 llm:
   provider: openai
   model: gpt-5.5
   # 空字符串 = 模型默认。GPT-5.6 带工具且为空时会安全使用 none；在管理后台
   # 选择 low/medium/high/xhigh/max 后，工具轮会自动切到 Responses API。
   reasoning_effort: ''
-  # 招 1（省钱）：subagent 用 mini 模型。subagent 80% 是机械抓数活，mini 够用，
-  # 比 full 便宜 10×。空字符串 = subagent 也用 model 字段（向后兼容）。
-  # ⚠️ 注意：必须用 LLM proxy 实际存在的模型名。之前试 gpt-5.5-mini 不存在
-  # 全 404。gpt-5.4-mini 是 trigger_decider 之前用过的，确认存在。
-  subagent_model: gpt-5.4-mini
-  # Subagent 独立设置，不继承主模型；空字符串 = Subagent 模型默认。
-  subagent_reasoning_effort: ''
   # 下载 Zendesk 图片后以受控 data URL 注入主模型；附件网络与大小校验仍由工具层强制。
   enable_vision_input: true
   temperature: 0.2
@@ -55,7 +34,7 @@ zendesk:
   # Zendesk Messaging / 队列自动化身份，不算人工受托人。
   # 46493567999892 = Zendesk Messaging "AI Agent" automation identity.
   non_human_assignee_ids: [46493567999892]
-  # 灰度上线：feat/auto-public-reply 分支首次部署只处理 ID ≥ 2624 的工单。
+  # 灰度上线：首次 v2 部署只处理 ID ≥ 2624 的工单。
   # 0 = 不过滤；上线稳定后改 0 处理全部 SaaS 工单。
   min_ticket_id: 2624
 webhook:
@@ -63,15 +42,11 @@ webhook:
   listen_port: 8080
   zendesk_path: /webhook/zendesk
 public_reply:
-  # 总开关：true = agent 自动给客户发 public reply（ask 模板 A/B/C/D / handoff /
-  # solution / closed）。false = 全部走 Internal Note，SE 看到后手动 forward。
-  # 上线灰度：true + min_ticket_id=2624 限缩处理范围，出问题立即 flip 为 false。
+  # 客户写入总开关。false 时 v2 仍调查并生成草稿，但不会调用 Browser Relay，
+  # 也不会回落到旧 Internal Note / handoff 决策链。
   enabled: true
-  max_ask_count: 10
   silent_initial_wait_seconds: 60
   silence_window_seconds: 30
-  ask_followup_alert_minutes: 30
-  abandoned_hours: 24
   browser_relay_url: https://zendesk.smlershou.top/zendesk-reply-mcp
   # Reuse the already-deployed /webhook/ reverse-proxy boundary. The aiohttp
   # route itself still requires the browser-relay Bearer token.
@@ -80,11 +55,13 @@ public_reply:
 casework:
   # v2 是唯一生产决策路径；canary 模式仅暂缓未列入白名单的工单。
   mode: casework
+  # 代码强制执行的调查预算；不再保留旧 tool-loop/compaction 配置。
+  max_investigation_rounds: 10
+  max_investigation_calls: 16
+  max_investigation_tokens: 1500000
 sandbox:
-  type: local
+  # 只供 CLI 查看/清理 pre-v2 取证文件；v2 不使用 sandbox 执行工具。
   base_dir: /opt/zd-agent/resources/sandbox
-  cleanup_on_success: true
-  cleanup_on_failure: false
 zendesk_mcp:
   # Zendesk 读取 / Internal Note / 标签 / 关注走独立 Zendesk MCP。
   # public reply 仍走 zendesk-browser-relay。
@@ -92,35 +69,18 @@ zendesk_mcp:
   # 由环境变量 ZENDESK_MCP_API_KEY 注入，不要写入仓库。
   mcp_api_key: ''
   request_timeout_seconds: 35
-feishu:
-  webhook_url: ''
-  daily_summary_time: 09:00
-  daily_summary_timezone: Asia/Shanghai
-trigger_decider:
-  # gpt-5.4-mini → gpt-5.5：verdict 误分类会让 dispatch 走错路径
-  # （substantial 误判成 greeting 等），mini 省的钱不抵后续 agent 跑歪的代价
-  llm_model: gpt-5.5
-  # 触发判定、自动追问生成和发送前灰区复核共用；空字符串 = 模型默认。
-  reasoning_effort: ''
-  # 让触发判定也能读取客户最近上传的图片，避免仅凭空文本误分类。
-  enable_vision_input: true
+intake:
+  # v2 intake 仅负责 durable queue 去抖，不再做旧 verdict 分类。
   silence_minutes_default: 0
-  silence_extend_to_minutes: 1
-  rapid_burst_window_seconds: 30
-  rapid_burst_threshold: 2
-  insufficient_timeout_minutes: 20
-  abandoned_hours: 24
-  greeting_only_alert_minutes: 30
-  # 主动公开 ask 默认关闭；等 messaging 回复路径验证后再 flip
-  enable_public_nudge: false
+  post_agent_cooldown_seconds: 180
 silence_waker:
   scan_interval_seconds: 30
 waiting_poller:
   # 60s → 300s：messaging webhook 接管客户消息检测后，poller 退化为低频兜底。
   # 真正的实时来源是 /webhook/zendesk-messaging（messaging_ticket.message_added）。
   scan_interval_seconds: 300
-  abandoned_hours: 24
-  greeting_alert_minutes: 30
+  # 超时后仅停止自动化并记录原因，不自动转人工。
+  customer_wait_timeout_hours: 24
 db_gateway:
   # agent 只调用外部 DB Gateway；Teleport / DB proxy / 续期属于同级 db-gateway 项目。
   url: ''
@@ -155,11 +115,6 @@ notification_service:
   mcp_url: ''
   mcp_api_key: ''
   request_timeout_seconds: 35
-sandbox_worker:
-  # sandbox 文件读写/搜索/执行只调用独立 sandbox-worker。
-  mcp_url: ''
-  mcp_api_key: ''
-  request_timeout_seconds: 65
 repos:
   base_dir: ''
   repositories:

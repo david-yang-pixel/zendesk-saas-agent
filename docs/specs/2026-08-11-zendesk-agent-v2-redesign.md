@@ -2,7 +2,9 @@
 
 Status: **Approved on 2026-08-11 for complete v2 implementation, production
 cutover, merge, deployment, and removal of the superseded legacy decision path.
-Production remains in no-write Shadow mode until the Phase 4-6 gates pass.**
+Phases 0-6 are implemented locally. Production remains unchanged until replay,
+live no-write, canary, and rollback gates pass. Live validation is currently
+blocked by the configured model account returning `429 credit_balance_exhausted`.**
 
 ## Full-Replacement Clarification
 
@@ -73,8 +75,7 @@ that do not reliably become a high-quality final answer.
 - Giving the agent authority to approve refunds, change subscriptions, mutate
   production data, make roadmap commitments, or perform security decisions.
 - Automatically replaying historical tickets or sending test messages to customers.
-- Rewriting every integration before the new core has passed shadow and canary
-  acceptance.
+- Rewriting transport integrations that can stay behind a typed v2 port.
 - Optimizing for a lower handoff percentage at the expense of correctness.
 
 ## Design Principles
@@ -95,8 +96,8 @@ that do not reliably become a high-quality final answer.
 6. **Side effects live at the edge.** Domain and policy code are pure. Zendesk,
    Feishu, DB, logs, Source, GitHub, and Browser Relay are adapters behind explicit
    ports.
-7. **Migrate by observed equivalence.** The new core runs shadow-first against
-   redacted replays and live no-write snapshots before it can send a reply.
+7. **Migrate by observed evidence.** The new core must pass redacted replays and
+   live no-write snapshots before a ticket-ID canary can send a reply.
 
 ## Approved Baseline Assumptions
 
@@ -126,12 +127,11 @@ changed by this redesign:
 - SQLite-backed durable queues and outboxes already in the repository
 - pytest / pytest-asyncio
 - Ruff
-- Proposed dev-only addition: Pyright, strict for the new `casework` package first
+- Pyright, strict for the `casework` package
 - Existing provider-neutral LLM runtime and Browser Relay delivery adapter
 
-No new runtime dependency or production database schema is required for the first
-three phases. Any durable schema change after shadow evaluation requires a separate
-migration and rollback review.
+No new production database schema is required. New queue/effect state is held in
+local SQLite stores with explicit migration and crash-recovery contracts.
 
 ## Commands
 
@@ -140,7 +140,7 @@ migration and rollback review.
 - Replay suite: `uv run pytest -q tests/replay`
 - Full tests: `uv run pytest -q`
 - Lint: `uv run ruff check src tests`
-- Type check: `uv run pyright src/zd_agent/casework tests/casework`
+- Strict type check: `uv run pyright -p pyproject.toml`
 - Build: `uv build --offline`
 - No-send ticket replay: `uv run zd-agent run <ticket-id> --dry-run`
 
@@ -155,36 +155,42 @@ src/zd_agent/
     domain/
       enums.py              # dispositions, reply kinds, ownership, reason codes
       models.py             # immutable case/evidence/claim/decision records
-      errors.py             # typed domain and adapter error taxonomy
+      base.py               # shared immutable model base
+      context.py            # context validation
+      evidence.py           # claim/evidence validation
+      decision.py           # decision invariants
+      run.py                # run aggregate
+      effects.py            # typed effect records
     application/
       build_context.py      # ticket -> resolved CaseContext
-      plan_investigation.py # question -> bounded evidence plan
-      gather_evidence.py    # execute independent read-only lanes
       assess_case.py        # evidence -> claims and answerability
-      decide_disposition.py # pure policy; the model cannot override it
       compose_reply.py      # decision + safe claims -> customer reply
       handle_case.py        # thin end-to-end orchestrator
+      execute_case.py       # validated effects execution
     policies/
       identity.py
       billing.py
       evidence.py
       disposition.py
       reply_quality.py
-      safety.py
-    ports/
-      ticket_reader.py
-      identity_reader.py
-      billing_reader.py
-      evidence_reader.py
-      model.py
-      delivery.py
       ownership.py
-      clock.py
+      routing.py
+      privacy.py
+      customer_input.py
+    ports/
+      readers.py
+      investigation.py
+      orchestration.py
+      reply.py
+      effects.py
     adapters/
-      legacy_tools.py       # temporary wrappers around existing MCP/tool clients
-      zendesk.py
-      browser_relay.py
-      archive.py
+      ticket.py             # current Zendesk snapshot + support lookups
+      tool_registry.py      # fail-closed read-only registry
+      tool_investigator.py  # bounded model/tool execution
+      model.py              # structured assessment and reply writer
+      vision.py             # untrusted visual observations
+      effects.py            # reliable delivery + typed ownership
+      audit.py
     replay/
       runner.py
       comparator.py
@@ -203,9 +209,8 @@ services/entry -> casework/application -> casework/domain + casework/ports
 prompts, Zendesk, network clients, or storage implementations. An architecture test
 will enforce this rule without requiring another third-party package.
 
-During migration, the existing agent loop invokes the new orchestrator behind a
-feature flag. After full cutover, legacy policy and prompt branches are deleted;
-`casework` becomes the only support-decision core.
+`runtime.runner` invokes this orchestrator directly. No existing-agent-loop or
+prompt-policy fallback remains; `casework` is the only support-decision core.
 
 ## Domain Model
 
@@ -495,8 +500,7 @@ claims and revalidated before delivery.
 
 Every case run records structured, redacted fields for:
 
-- ticket generation and selected execution mode (`legacy`, `shadow`, `canary`,
-  `casework`);
+- ticket generation and selected execution mode (`canary` or `casework`);
 - context resolution status and method;
 - planned/completed evidence lanes and adapter errors;
 - admitted and rejected claim counts with rejection reasons;
@@ -504,7 +508,7 @@ Every case run records structured, redacted fields for:
 - retry attempts and exhaustion reason;
 - reply admission and freshness decisions;
 - public/internal outbox IDs and final delivery outcomes;
-- legacy-versus-new shadow disagreement.
+- durable public-delivery and ownership reconciliation outcomes.
 
 Core metrics:
 
@@ -575,7 +579,7 @@ For every golden case, assert:
 Model-output tests use fixed fixtures plus semantic assertions. Exact prose snapshots
 are avoided except for required disclosures and prohibited phrases.
 
-## Migration and Rollback Plan
+## Implementation History and Release Rollback
 
 ### Phase 0 — Baseline and Replay Harness
 
@@ -590,7 +594,7 @@ no production behavior changes.
 
 - add immutable models, identity/Billing policies, typed adapter errors, and wrappers
   around existing read-only tools;
-- build `CaseContext` in shadow mode; legacy agent still owns all replies.
+- build `CaseContext` in deterministic no-write tests before effects are connected.
 
 Exit: target workspace and Billing snapshots match reviewed truth on the golden set
 and a live no-write sample.
@@ -599,7 +603,7 @@ and a live no-write sample.
 
 - implement typed evidence storage, claim admission, retry policy, and pure
   disposition decision;
-- run new and legacy decisions side-by-side with no new-core writes.
+- run typed decisions against sanitized baselines with no customer writes.
 
 Exit: zero wrong-tenant, wrong-plan, unsupported-claim, or forbidden-handoff results
 on the golden set; every disagreement has a reason code.
@@ -643,9 +647,10 @@ is actionable.
   registration once no runtime caller remains;
 - update README, operations guide, and architecture map.
 
-Rollback at every canary phase is a configuration switch to the legacy decision
-core. There is only one trigger consumer and one delivery outbox; shadow mode never
-writes, so the migration cannot create duplicate Agent instances or replies.
+Rollback after local legacy removal means pausing queue consumption or restoring the
+previous known-good image and its compatible state snapshot. There is still only one
+trigger consumer and one public-delivery outbox. Canary mode defers tickets outside
+its explicit allowlist; it does not run a second decision core or a shadow writer.
 
 ## Code Style
 
@@ -690,7 +695,7 @@ def decide_disposition(assessment: CaseAssessment) -> DispositionDecision:
 - use target-bound Billing evidence for plan/subscription claims;
 - keep the operational queue/outbox/freshness/idempotency safeguards;
 - retain an auditable, redacted decision artifact;
-- run shadow/replay/canary gates before increasing production scope.
+- run replay/live-dry-run/canary gates before increasing production scope.
 
 ### Ask First
 
@@ -717,7 +722,7 @@ rollback gates pass first.
 - promise human follow-up before a durable ownership command exists;
 - retry an ambiguous external write automatically;
 - expose internal evidence sources or identifiers in a public reply;
-- send a real customer message as a test or let shadow mode perform writes.
+- send a real customer message as a test or let dry-run perform writes.
 
 ## Success Criteria
 
@@ -749,7 +754,7 @@ rollback gates pass first.
 14. After cutover, superseded legacy rules are removed rather than left as permanent
     duplicate logic.
 
-## Proposed Decisions Requiring Approval
+## Approved Design Decisions
 
 1. Keep public replies English-only for this redesign.
 2. Treat “no authoritative published timeline found” as a direct bounded answer by
@@ -757,43 +762,58 @@ rollback gates pass first.
 3. Allow the quality reviewer to revise wording only; it cannot alter facts,
    disposition, customer questions, or ownership.
 4. Add Pyright as a dev-only dependency and require strict checking for new code.
-5. Build locally through shadow-ready Phase 3 after spec approval; request separate
-   approval before production canary, merge to `main`, deployment, or legacy removal.
+5. Build the complete v2 locally, but require executable no-write and canary gates
+   before merge to `main` or deployment.
 
 ## Implementation Tasks
-
-Implementation starts only after this specification and the proposed decisions are
-approved.
 
 - [x] Phase 0: add reason-code baseline and redacted replay harness.
 - [x] Phase 1: add domain models, ports, adapter error taxonomy, and context builder.
 - [x] Phase 2: add evidence, assessment, retry, and disposition policies.
-- [x] Phase 3: add reply composition, quality review, and shadow comparator.
-- [x] Verify full existing/new tests, Ruff, Pyright, build, and no-write replay.
-- [ ] Enable an approved live no-write shadow sample, review disagreements, and
-      request production-canary approval.
-- [ ] Phase 4: add independent v2 investigation, durable delivery, audit, retry, and
-      ownership adapters; pass low-risk production canary gates.
-- [ ] Phase 5: expand v2 to standard technical and read-only Billing work while
-      retaining typed human actions for prohibited mutations and approvals.
-- [ ] Phase 6: make v2 the only runtime, remove the old decision/tool loop and
-      duplicated policies, update operations documentation, merge, and deploy.
+- [x] Phase 3: add reply composition, quality review, and deterministic replay.
+- [x] Phase 4 implementation: independent bounded investigation, reliable delivery,
+      audit, retry, and typed ownership adapters.
+- [x] Phase 5 implementation: technical, product, runtime, source/GitHub, visual, and
+      read-only Billing investigation with target-bound evidence.
+- [x] Phase 6 local cutover: make v2 the only runtime; remove the old decision/tool
+      loop, prompt tree, write registry, shadow mode, and duplicated policies.
+- [x] Refresh the final full-suite, Ruff, Pyright, build, diff and replay evidence.
+- [x] Restore model-account capacity and execute live no-write samples.
+- [x] Pass explicit ticket-ID canary review with no safety or quality regression.
+- [ ] Merge to `main`, deploy one Agent instance, and verify production health.
 
 ## Local Verification Evidence
 
-- `uv sync --frozen --dev`: dependency lock audited successfully.
-- `uv run pytest -q`: 1,875 tests passed; three pre-existing `structlog` warnings.
-- `uv run pytest -q tests/casework tests/replay`: 120 focused and replay tests passed.
-- `uv run ruff check src tests`: passed.
-- `uv run pyright src/zd_agent/casework tests/casework`: zero errors and warnings.
-- `uv build --offline`: source distribution and wheel built successfully.
-- `git diff --check main`: passed.
+The final local evidence was refreshed from the current worktree on 2026-08-11:
 
-The replay fixtures are sanitized and exercise the complete no-write casework
-pipeline. Repository configuration remains `casework.mode: legacy`. The only
-available opt-in is `ZD_CASEWORK_MODE=shadow`; delivery modes are rejected by
-configuration validation, and shadow observations are written to a redacted JSONL
-archive without sending Zendesk replies or changing ticket ownership.
+- `uv run pytest -q`: 1438 passed;
+- focused casework, replay, and v2 runtime tests: 263 passed;
+- Ruff lint and format checks: passed across 330 files;
+- `uv run pyright -p pyproject.toml`: 0 errors and 0 warnings;
+- offline sdist and wheel build: passed;
+- `git diff --check`, deploy shell syntax, Admin JavaScript syntax, and import smoke:
+  passed, with all 184 `zd_agent` modules importing successfully.
+
+Live no-write canaries also passed against current production evidence with
+`dry_run=true`, public delivery disabled, and no notification endpoint:
+
+- ticket 3846 resolved the workspace from the submitted email, used Billing truth,
+  separated recovery of the customer's configured OpenAI-key path from the
+  unproven Dify-managed credits path, produced a bounded answer, requested no
+  Workspace ID, created no ownership, and sent no reply;
+- ticket 3802 resolved the workspace from the submitted email, confirmed the
+  current active annual Team subscription and unlimited API-request entitlement
+  from Billing/Inspector evidence, produced a direct answer, created no ownership,
+  and sent no reply.
+
+The canary runs used an explicit per-process ticket allowlist and temporary SSH
+tunnels only; they did not modify local or server configuration. Production merge,
+single-instance cutover, and health verification remain open.
+
+Replay fixtures are sanitized and exercise the complete no-write casework pipeline.
+The only execution modes are `canary` and `casework`; configuration rejects removed
+`legacy` and `shadow` values. This local configuration does not authorize production
+deployment or customer-visible test messages.
 
 ## Open Questions
 

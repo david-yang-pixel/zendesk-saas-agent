@@ -6,6 +6,7 @@ an ambiguous delivery failure: no customer-visible reply was sent.  The agent
 must therefore receive typed recovery context and a regenerated reply may
 replace the stale pending body for the same logical delivery attempt.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -17,24 +18,11 @@ import pytest
 from zd_agent.config import AppConfig, PublicReplyConfig
 from zd_agent.integrations import zendesk_browser_relay as relay_module
 from zd_agent.services.public_reply_delivery_store import PublicReplyDeliveryStore
-from zd_agent.session.agent_session import AgentSession
-from zd_agent.tools import zendesk_public_reply as public_reply_module
 from zd_agent.tools.public_reply_delivery import send_public_reply_safely
 
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
 TICKET_ID = 3461
-
-
-def _customer_message(message_id: str, body: str) -> dict[str, Any]:
-    return {
-        "id": message_id,
-        "created_at": "2026-07-16T04:18:53Z",
-        "body": body,
-        "public": True,
-        "image_urls": [],
-        "content_type": "formResponse" if message_id == "m2" else "text",
-    }
 
 
 def _late_stale_result() -> relay_module.BrowserRelaySendResult:
@@ -108,102 +96,6 @@ async def test_browser_relay_raises_typed_stale_context_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_public_reply_refetches_after_late_relay_stale_context(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    """A relay-side abort must return typed recovery metadata to the agent loop."""
-    initial = _customer_message("m1", "I cannot update our knowledge documents.")
-    late_form = _customer_message(
-        "m2",
-        "Workspace ID: 86628345-731d-4475-b681-5006f48a2287",
-    )
-    fetch_messages = AsyncMock(
-        side_effect=[
-            [initial],
-            [initial, late_form],
-        ],
-    )
-
-    cfg = _config()
-    cfg.resources.base_dir = str(tmp_path)
-    cfg.resources.state_dir = ".state"
-    monkeypatch.setattr(public_reply_module, "get_config", lambda: cfg)
-    monkeypatch.setattr(
-        public_reply_module,
-        "public_reply_privacy_blockers",
-        lambda _body: [],
-    )
-    monkeypatch.setattr(
-        public_reply_module,
-        "public_reply_evidence_blockers",
-        lambda **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        public_reply_module,
-        "refund_owner_gate_block_reason",
-        lambda **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        "zd_agent.services.ticket_messages.fetch_customer_messages_for_freshness",
-        fetch_messages,
-    )
-
-    async def fetch_ticket(_ticket_id: int):
-        return (
-            await fetch_messages(_ticket_id),
-            {"_zd_agent_conversation_events": []},
-        )
-
-    monkeypatch.setattr(
-        "zd_agent.services.ticket_messages._fetch_customer_messages",
-        fetch_ticket,
-    )
-
-    async def relay_detects_late_message(**_kwargs: Any) -> bool:
-        relay_module._ensure_sent(_late_stale_result())
-        raise AssertionError("stale relay result must raise")
-
-    monkeypatch.setattr(
-        public_reply_module,
-        "_send_public_reply_safely",
-        relay_detects_late_message,
-    )
-
-    session = AgentSession(
-        ticket_id=TICKET_ID,
-        delivery_attempt_id="session-3461",
-    )
-    session.customer_msgs_snapshot_captured = True
-    session.customer_msgs_snapshot_count = 1
-    session.customer_msgs_snapshot_last_id = "m1"
-
-    result = await public_reply_module.ZendeskPublicReply().execute(
-        {
-            "ticket_id": TICKET_ID,
-            "body": "Here is the answer based on the original message.",
-            "reply_type": "ask",
-            "internal_analysis": "Exercise late-relay freshness recovery.",
-            "conversation_id": "conversation-3461",
-        },
-        session,
-    )
-
-    assert result.success is False
-    assert fetch_messages.await_count == 2, (
-        "the first fetch is the tool guard; a late relay stale_context must "
-        "trigger a second fetch"
-    )
-    recovery = result.metadata.get("freshness_recovery")
-    assert recovery is not None, (
-        "late relay stale_context must not collapse into a generic tool error"
-    )
-    assert list(recovery.new_messages) == [late_form]
-    assert recovery.next_snapshot_count == 2
-    assert recovery.next_snapshot_last_id == "m2"
-
-
-@pytest.mark.asyncio
 async def test_regenerated_reply_replaces_stale_body_for_same_delivery_attempt(
     tmp_path,
 ) -> None:
@@ -255,3 +147,50 @@ async def test_regenerated_reply_replaces_stale_body_for_same_delivery_attempt(
         "the first body is known not to have been sent, so a regenerated body "
         "must replace it even when the logical delivery attempt id is unchanged"
     )
+
+
+@pytest.mark.asyncio
+async def test_mismatched_success_receipt_keeps_public_outbox_ambiguous(
+    tmp_path,
+) -> None:
+    receipt = relay_module.BrowserRelaySendResult(
+        ok=True,
+        ticket_id=9999,
+        status="sent",
+        current_url="https://example.zendesk.com/agent/tickets/9999",
+    )
+    mismatch = relay_module.BrowserRelayAmbiguousReceiptError(
+        "success receipt belongs to another ticket",
+        receipt=receipt,
+    )
+
+    async def relay_sender(**_kwargs: Any) -> None:
+        raise mismatch
+
+    store = PublicReplyDeliveryStore(tmp_path / "public-reply-outbox.sqlite3")
+    with pytest.raises(relay_module.BrowserRelayAmbiguousReceiptError) as raised:
+        await send_public_reply_safely(
+            cfg=_config(),
+            ticket_id=TICKET_ID,
+            body_with_footer="Customer-visible reply",
+            reply_type="solution",
+            conversation_id="conversation-3461",
+            snapshot_customer_message_count=1,
+            snapshot_customer_last_message_id="m1",
+            delivery_attempt_id="receipt-mismatch",
+            delivery_store=store,
+            delivery_store_factory=lambda _cfg: store,
+            zendesk_tool_caller=AsyncMock(
+                return_value={"success": True, "data": {"comments": []}},
+            ),
+            relay_sender=relay_sender,
+        )
+
+    frozen = store.get(
+        delivery_attempt_id="receipt-mismatch",
+        ticket_id=TICKET_ID,
+    )
+    assert frozen is not None
+    assert frozen.delivered is False
+    assert frozen.ambiguous is True
+    assert raised.value.receipt == receipt

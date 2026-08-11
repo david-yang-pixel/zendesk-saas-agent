@@ -1,4 +1,5 @@
 """Test TicketRecordSearch + TicketRecordRead."""
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -46,7 +47,8 @@ async def test_search_single_keyword(fake_session, records_setup):
 async def test_search_multiple_keywords_and_semantics(fake_session, records_setup):
     tool = TicketRecordSearch()
     r = await tool.execute(
-        {"keywords": ["workflow", "timeout"]}, fake_session,
+        {"keywords": ["workflow", "timeout"]},
+        fake_session,
     )
     assert r.success is True
     # Only 300 has both
@@ -81,7 +83,9 @@ async def test_search_empty_keywords_rejected(fake_session, records_setup):
 @pytest.mark.asyncio
 async def test_search_rejects_non_string_keyword_items(fake_session, records_setup):
     tool = TicketRecordSearch()
-    r = await tool.execute({"keywords": ["workflow", {"text": "timeout"}]}, fake_session)
+    r = await tool.execute(
+        {"keywords": ["workflow", {"text": "timeout"}]}, fake_session
+    )
     assert r.success is False
     assert r.error == "keywords items must be strings"
 
@@ -110,7 +114,8 @@ async def test_search_rejects_invalid_max_results(fake_session, records_setup):
 async def test_search_max_results_respected(fake_session, records_setup):
     tool = TicketRecordSearch()
     r = await tool.execute(
-        {"keywords": ["问题"], "max_results": 2}, fake_session,
+        {"keywords": ["问题"], "max_results": 2},
+        fake_session,
     )
     assert r.success is True
     # Should contain exactly 2 file entries (start with "- ")

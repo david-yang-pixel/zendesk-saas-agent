@@ -1,4 +1,5 @@
 """Tests for human takeover dispatch orchestration."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -70,11 +71,16 @@ async def test_takeover_records_external_owner_with_latest_customer_context(
     human_takeover.assert_awaited_once()
     kwargs = human_takeover.await_args.kwargs
     assert kwargs["ticket_id"] == 12345
-    assert kwargs["existing"] is existing
+    assert kwargs["existing"] == existing
     assert kwargs["source"] == "waiting_poller"
     assert kwargs["latest_cid"] == "cid-2"
     assert kwargs["latest_ts"] == datetime(
-        2026, 6, 5, 6, 10, tzinfo=timezone.utc,
+        2026,
+        6,
+        5,
+        6,
+        10,
+        tzinfo=timezone.utc,
     )
     assert kwargs["detection_reason"] == "last public reply by other SE"
     assert not log_path.exists()

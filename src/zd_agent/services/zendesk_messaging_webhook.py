@@ -1,4 +1,5 @@
 """Zendesk Messaging webhook handler."""
+
 from __future__ import annotations
 
 import hashlib
@@ -25,7 +26,11 @@ _CUSTOMER_ACTOR_TYPES = {"user", "end_user", "end-user"}
 
 
 def verify_messaging_signature(
-    *, secret: str, timestamp: str, body: bytes, signature: str,
+    *,
+    secret: str,
+    timestamp: str,
+    body: bytes,
+    signature: str,
 ) -> bool:
     """Verify HMAC-SHA256 signature per Zendesk webhook spec."""
     return verify_zendesk_signature(
@@ -93,7 +98,9 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     sig = request.headers.get("X-Zendesk-Webhook-Signature", "")
     ts = request.headers.get("X-Zendesk-Webhook-Signature-Timestamp", "")
 
-    if not verify_messaging_signature(secret=secret, timestamp=ts, body=body, signature=sig):
+    if not verify_messaging_signature(
+        secret=secret, timestamp=ts, body=body, signature=sig
+    ):
         logger.warning("zendesk_messaging_webhook_bad_signature")
         return web.Response(status=401, text="bad signature")
 
@@ -108,9 +115,7 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
         return web.Response(status=400, text="bad json")
 
     event_id = event.get("id") or ""
-    actor_type = (
-        event.get("event", {}).get("actor", {}).get("type", "") or ""
-    ).lower()
+    actor_type = (event.get("event", {}).get("actor", {}).get("type", "") or "").lower()
     msg_id = event.get("event", {}).get("message", {}).get("id") or ""
     ticket_id = _extract_ticket_id(event)
     conversation_id = _extract_conversation_id(event)
@@ -119,25 +124,32 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     if actor_type not in _CUSTOMER_ACTOR_TYPES:
         logger.info(
             "zendesk_messaging_webhook_skip_non_user",
-            event_id=event_id, actor_type=actor_type,
-            ticket_id=ticket_id, msg_id=msg_id,
+            event_id=event_id,
+            actor_type=actor_type,
+            ticket_id=ticket_id,
+            msg_id=msg_id,
         )
         return web.Response(status=200, text="skip non-user actor")
 
     if not ticket_id:
         logger.warning(
             "zendesk_messaging_webhook_missing_ticket_id",
-            event_id=event_id, subject=event.get("subject"),
+            event_id=event_id,
+            subject=event.get("subject"),
         )
         return web.Response(status=400, text="missing ticket_id")
 
     dedup = webhook_dedup(request.app)
-    event_key = str(event_id) if event_id else f"body:{hashlib.sha256(body).hexdigest()}"
+    event_key = (
+        str(event_id) if event_id else f"body:{hashlib.sha256(body).hexdigest()}"
+    )
     dedup_key = f"messaging:{event_key}"
     if dedup.seen(dedup_key):
         logger.info(
             "zendesk_messaging_webhook_dup",
-            event_id=event_id, ticket_id=ticket_id, msg_id=msg_id,
+            event_id=event_id,
+            ticket_id=ticket_id,
+            msg_id=msg_id,
         )
         return web.Response(status=200, text="dup")
     try:
@@ -197,7 +209,9 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     dedup.add(dedup_key)
     logger.info(
         "zendesk_messaging_webhook_enqueued",
-        event_id=event_id, ticket_id=ticket_id, msg_id=msg_id,
+        event_id=event_id,
+        ticket_id=ticket_id,
+        msg_id=msg_id,
         has_conversation_id=bool(conversation_id),
         has_messaging_app_id=bool(messaging_app_id),
     )

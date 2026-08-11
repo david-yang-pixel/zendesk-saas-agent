@@ -1,4 +1,5 @@
 """Regression tests for messaging events that arrive before Zendesk creates a ticket."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
+from zd_agent.config import AppConfig, IntakeConfig, PublicReplyConfig, ZendeskConfig
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.trigger_consumer import run_trigger_consumer
 from zd_agent.services.trigger_errors import TriggerDeferredError
@@ -25,8 +26,7 @@ def _cfg() -> AppConfig:
         min_ticket_id=0,
         agent_user_id=45433304089364,
     )
-    cfg.trigger_decider = TriggerDeciderConfig(
-        llm_model="gpt-test",
+    cfg.intake = IntakeConfig(
         post_agent_cooldown_seconds=180,
     )
     return cfg
@@ -64,11 +64,13 @@ async def test_materialization_wait_survives_five_fetch_misses_then_dispatches(
         retry_base_seconds=5,
         now_fn=lambda: now[0],
     )
-    await queue.put({
-        "ticket_id": 3461,
-        "source": "messaging_webhook",
-        "_queue_key": "messaging:3461:first-customer-message",
-    })
+    await queue.put(
+        {
+            "ticket_id": 3461,
+            "source": "messaging_webhook",
+            "_queue_key": "messaging:3461:first-customer-message",
+        }
+    )
 
     terminal = asyncio.Event()
     completed = False
@@ -109,11 +111,13 @@ async def test_materialization_wait_survives_five_fetch_misses_then_dispatches(
         if fetch_count <= 5:
             return [], None
         return (
-            [{
-                "id": "form-response-1",
-                "body": "Workspace ID: 86628345-731d-4475-b681-5006f48a2287",
-                "created_at": "2026-07-16T04:18:53Z",
-            }],
+            [
+                {
+                    "id": "form-response-1",
+                    "body": "Workspace ID: 86628345-731d-4475-b681-5006f48a2287",
+                    "created_at": "2026-07-16T04:18:53Z",
+                }
+            ],
             {"id": 3461, "_zd_agent_conversation_events": []},
         )
 

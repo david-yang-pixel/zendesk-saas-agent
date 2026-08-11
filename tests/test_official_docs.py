@@ -76,7 +76,9 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
     async def test_search_rejects_blank_query(self) -> None:
         tool = OfficialDocsSearch()
 
-        with patch("zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock) as call_docs:
+        with patch(
+            "zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock
+        ) as call_docs:
             result = await tool.execute(
                 {"query": "   "},
                 AgentSession(ticket_id=1),
@@ -100,7 +102,9 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
     async def test_search_rejects_non_string_query(self) -> None:
         tool = OfficialDocsSearch()
 
-        with patch("zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock):
+        with patch(
+            "zd_agent.tools.official_docs.call_docs_tool", new_callable=AsyncMock
+        ):
             result = await tool.execute(
                 {"query": {"text": "helm"}},
                 AgentSession(ticket_id=1),

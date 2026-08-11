@@ -45,7 +45,9 @@ def _resolve_docs_dir() -> Path | None:
     return None
 
 
-def _resolve_search_dir(docs_dir: Path, raw_path: Any) -> tuple[Path | None, str | None]:
+def _resolve_search_dir(
+    docs_dir: Path, raw_path: Any
+) -> tuple[Path | None, str | None]:
     """Resolve an optional search subdirectory under ``docs_dir`` safely."""
     docs_dir = docs_dir.resolve()
     if raw_path is None or raw_path == "":
@@ -160,10 +162,14 @@ async def _search_with_rg(search_dir: Path, query: str) -> str | None:
             "rg",
             "--ignore-case",
             "--fixed-strings",
-            "--max-count", "5",
-            "--context", str(_CONTEXT_LINES),
-            "-g", "*.md",
-            "-g", "*.json",
+            "--max-count",
+            "5",
+            "--context",
+            str(_CONTEXT_LINES),
+            "-g",
+            "*.md",
+            "-g",
+            "*.json",
             query,
             str(search_dir),
             stdout=asyncio.subprocess.PIPE,
@@ -192,9 +198,14 @@ async def _search_with_grep(search_dir: Path, query: str) -> str | None:
     try:
         proc = await asyncio.create_subprocess_exec(
             "grep",
-            "-r", "-i", "-n", "-F",
-            "--include=*.md", "--include=*.json",
-            "-C", str(_CONTEXT_LINES),
+            "-r",
+            "-i",
+            "-n",
+            "-F",
+            "--include=*.md",
+            "--include=*.json",
+            "-C",
+            str(_CONTEXT_LINES),
             query,
             str(search_dir),
             stdout=asyncio.subprocess.PIPE,
@@ -295,7 +306,9 @@ class KnowledgeRead(Tool):
         if not target.exists():
             return ToolResult(success=False, error=f"文件不存在: {filepath}")
         if not target.is_file():
-            return ToolResult(success=False, error=f"filepath is not a file: {filepath}")
+            return ToolResult(
+                success=False, error=f"filepath is not a file: {filepath}"
+            )
 
         try:
             content = target.read_text(encoding="utf-8")

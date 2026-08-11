@@ -4,10 +4,13 @@ The relay is used for SaaS native messaging tickets where ordinary Support API
 ticket comments are not visible in the customer widget and Conversations API is
 not available.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -32,6 +35,14 @@ class BrowserRelayDefiniteUnsentError(RuntimeError):
 
 class BrowserRelayStaleContextError(BrowserRelayDefiniteUnsentError):
     """The relay definitely aborted before clicking Send due to a newer message."""
+
+
+class BrowserRelayAmbiguousReceiptError(RuntimeError):
+    """A relay claims success without proving it sent on the requested ticket."""
+
+    def __init__(self, message: str, *, receipt: BrowserRelaySendResult) -> None:
+        super().__init__(message)
+        self.receipt = receipt
 
 
 def _safe_error_text(value: Any) -> str:
@@ -69,9 +80,37 @@ def _coerce_ticket_id(value: Any, *, fallback: int, context: str) -> int:
     return ticket_id
 
 
+def _receipt_ticket_id(
+    value: Any,
+    *,
+    requested_ticket_id: int,
+    ok: bool,
+    status: str,
+    context: str,
+) -> int:
+    if ok and status == "sent" and value in (None, ""):
+        return 0
+    return _coerce_ticket_id(
+        value,
+        fallback=requested_ticket_id,
+        context=context,
+    )
+
+
 def _uses_mcp_endpoint(base_url: str) -> bool:
     lowered = base_url.lower().rstrip("/")
     return lowered.endswith("/mcp") or lowered.endswith("/zendesk-reply-mcp")
+
+
+def _ticket_id_from_current_url(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        path = urlparse(value).path
+    except ValueError:
+        return None
+    match = re.search(r"/agent/tickets/(\d+)(?:/|$)", path)
+    return int(match.group(1)) if match else None
 
 
 async def send_browser_relay_reply(
@@ -110,7 +149,7 @@ async def send_browser_relay_reply(
             snapshot_customer_message_count=snapshot_customer_message_count,
             snapshot_customer_last_message_id=snapshot_customer_last_message_id,
         )
-        return _ensure_sent(result)
+        return _ensure_sent(result, requested_ticket_id=ticket_id)
 
     endpoint = f"{base_url}/send"
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -135,9 +174,7 @@ async def send_browser_relay_reply(
         ) from exc
 
     if response.status_code in (401, 403):
-        raise BrowserRelayDefiniteUnsentError(
-            "Zendesk browser relay rejected API key"
-        )
+        raise BrowserRelayDefiniteUnsentError("Zendesk browser relay rejected API key")
     if response.status_code >= 400:
         raise RuntimeError(
             "Zendesk browser relay HTTP "
@@ -146,17 +183,24 @@ async def send_browser_relay_reply(
 
     data = load_json_or_sse_response(response, context="Zendesk browser relay")
 
-    return _ensure_sent(BrowserRelaySendResult(
-        ok=bool(data.get("ok")),
-        ticket_id=_coerce_ticket_id(
-            data.get("ticket_id"),
-            fallback=ticket_id,
-            context="Zendesk browser relay response",
+    response_ok = bool(data.get("ok"))
+    response_status = str(data.get("status") or "unknown")
+    return _ensure_sent(
+        BrowserRelaySendResult(
+            ok=response_ok,
+            ticket_id=_receipt_ticket_id(
+                data.get("ticket_id"),
+                requested_ticket_id=ticket_id,
+                ok=response_ok,
+                status=response_status,
+                context="Zendesk browser relay response",
+            ),
+            status=response_status,
+            current_url=data.get("current_url") or None,
+            error=data.get("error") or None,
         ),
-        status=str(data.get("status") or "unknown"),
-        current_url=data.get("current_url") or None,
-        error=data.get("error") or None,
-    ))
+        requested_ticket_id=ticket_id,
+    )
 
 
 async def _send_via_mcp(
@@ -184,7 +228,9 @@ async def _send_via_mcp(
     if snapshot_customer_message_count is not None:
         arguments["snapshot_customer_message_count"] = snapshot_customer_message_count
     if snapshot_customer_last_message_id:
-        arguments["snapshot_customer_last_message_id"] = snapshot_customer_last_message_id
+        arguments["snapshot_customer_last_message_id"] = (
+            snapshot_customer_last_message_id
+        )
 
     payload = {
         "jsonrpc": "2.0",
@@ -206,9 +252,7 @@ async def _send_via_mcp(
         ) from exc
 
     if response.status_code in (401, 403):
-        raise BrowserRelayDefiniteUnsentError(
-            "Zendesk browser relay rejected API key"
-        )
+        raise BrowserRelayDefiniteUnsentError("Zendesk browser relay rejected API key")
     if response.status_code >= 400:
         raise RuntimeError(
             "Zendesk browser relay MCP HTTP "
@@ -219,8 +263,7 @@ async def _send_via_mcp(
 
     if "error" in data:
         raise RuntimeError(
-            "Zendesk browser relay MCP error: "
-            f"{_safe_error_text(data.get('error'))}"
+            f"Zendesk browser relay MCP error: {_safe_error_text(data.get('error'))}"
         )
 
     result = expect_json_object(
@@ -235,29 +278,46 @@ async def _send_via_mcp(
     error_text = structured.get("error")
     if is_error and not error_text:
         error_text = _mcp_text_content(result.get("content"))
+    response_ok = bool(structured.get("ok")) and not is_error
+    response_status = str(
+        structured.get("status") or ("mcp_tool_error" if is_error else "unknown")
+    )
     return BrowserRelaySendResult(
-        ok=bool(structured.get("ok")) and not is_error,
-        ticket_id=_coerce_ticket_id(
+        ok=response_ok,
+        ticket_id=_receipt_ticket_id(
             structured.get("ticket_id"),
-            fallback=ticket_id,
+            requested_ticket_id=ticket_id,
+            ok=response_ok,
+            status=response_status,
             context="Zendesk browser relay MCP response",
         ),
-        status=str(
-            structured.get("status")
-            or ("mcp_tool_error" if is_error else "unknown")
-        ),
+        status=response_status,
         current_url=structured.get("current_url") or None,
         error=error_text or None,
     )
 
 
-def _ensure_sent(result: BrowserRelaySendResult) -> BrowserRelaySendResult:
+def _ensure_sent(
+    result: BrowserRelaySendResult,
+    *,
+    requested_ticket_id: int | None = None,
+) -> BrowserRelaySendResult:
     if result.ok and result.status == "sent":
+        current_url_ticket_id = _ticket_id_from_current_url(result.current_url)
+        if requested_ticket_id is not None and (
+            result.ticket_id != requested_ticket_id
+            or current_url_ticket_id != requested_ticket_id
+        ):
+            raise BrowserRelayAmbiguousReceiptError(
+                "Zendesk browser relay success receipt does not bind to the "
+                "requested ticket "
+                f"request={requested_ticket_id} receipt={result.ticket_id} "
+                f"current_url_ticket={current_url_ticket_id}",
+                receipt=result,
+            )
         return result
     if result.status == "login_required":
-        raise BrowserRelayDefiniteUnsentError(
-            "Zendesk browser relay login_required"
-        )
+        raise BrowserRelayDefiniteUnsentError("Zendesk browser relay login_required")
     if result.status == "stale_context":
         raise BrowserRelayStaleContextError(
             "Zendesk browser relay aborted stale_context"

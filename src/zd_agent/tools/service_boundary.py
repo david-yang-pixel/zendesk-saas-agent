@@ -69,9 +69,8 @@ _ZENDESK_MCP = _boundary(
     service_backed=True,
     fully_isolated=True,
     notes=(
-        "Ticket reads, searches, Help Center reads, attachment discovery/download, "
-        "user lookup, internal notes, metadata writes, and follow operations "
-        "execute through Zendesk MCP."
+        "Current-ticket reads and Help Center reads execute through Zendesk MCP; "
+        "cross-ticket search and arbitrary user lookup are not exposed to casework."
     ),
 )
 _LOCAL_KNOWLEDGE = _boundary(
@@ -104,27 +103,13 @@ _SIGNOZ_MCP = _boundary(
 TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     # Zendesk tools
     "zendesk_get_ticket": _ZENDESK_MCP,
-    "zendesk_get_attachments": _ZENDESK_MCP,
-    "zendesk_search": _ZENDESK_MCP,
     "zendesk_search_articles": _ZENDESK_MCP,
     "zendesk_get_article": _ZENDESK_MCP,
-    "zendesk_get_user": _ZENDESK_MCP,
-    "zendesk_internal_reply": _ZENDESK_MCP,
-    "zendesk_add_tags": _ZENDESK_MCP,
-    "zendesk_follow_ticket": _ZENDESK_MCP,
-    "zendesk_public_reply": _boundary(
-        "remote_mcp",
-        "zendesk-browser-relay",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Customer-visible browser reply executes through the zendesk-browser-relay MCP endpoint.",
-    ),
     # Knowledge and local records
     "knowledge_search": _LOCAL_KNOWLEDGE,
     "knowledge_read": _LOCAL_KNOWLEDGE,
     "official_docs_search": _OFFICIAL_DOCS_MCP,
     "official_docs_read": _OFFICIAL_DOCS_MCP,
-    "ticket_record_search": _LOCAL_KNOWLEDGE,
     "ticket_record_read": _LOCAL_KNOWLEDGE,
     # Source tools
     "git_show": _SOURCE_PARTIAL,
@@ -175,19 +160,7 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
         fully_isolated=True,
         notes="GitHub code search executes through github-mcp.",
     ),
-    "saas_branch_switch": _boundary(
-        "local_process",
-        "agent-container",
-        migration_target="tool-service/source-tool-service",
-    ),
     # Database and production telemetry
-    "sql_query": _boundary(
-        "remote_mcp",
-        "db-gateway",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Read-only SQL executes through the DB Gateway MCP service.",
-    ),
     "inspector_exec": _boundary(
         "local_process",
         "inspector-cli",
@@ -196,98 +169,10 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     ),
     "signoz_errors": _SIGNOZ_MCP,
     "signoz_traceback": _SIGNOZ_MCP,
-    "signoz_services": _SIGNOZ_MCP,
-    "signoz_query": _SIGNOZ_MCP,
-    "signoz_list_services": _SIGNOZ_MCP,
-    "signoz_get_trace_details": _SIGNOZ_MCP,
-    "signoz_list_metrics": _SIGNOZ_MCP,
-    "signoz_get_field_keys": _SIGNOZ_MCP,
-    "signoz_get_field_values": _SIGNOZ_MCP,
     "signoz_search_logs": _SIGNOZ_MCP,
     "signoz_aggregate_logs": _SIGNOZ_MCP,
     "signoz_search_traces": _SIGNOZ_MCP,
     "signoz_aggregate_traces": _SIGNOZ_MCP,
-    "signoz_query_metrics": _SIGNOZ_MCP,
-    # Local environment and sandbox tools
-    "run_script": _boundary(
-        "remote_mcp",
-        "sandbox-worker",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Diagnostic scripts execute through sandbox-worker MCP.",
-    ),
-    "sandbox_exec": _boundary(
-        "remote_mcp",
-        "sandbox-worker",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Sandbox commands execute through sandbox-worker MCP.",
-    ),
-    "sandbox_list": _boundary(
-        "remote_mcp",
-        "sandbox-worker",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Sandbox listing executes through sandbox-worker MCP.",
-    ),
-    "sandbox_search": _boundary(
-        "remote_mcp",
-        "sandbox-worker",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Sandbox search executes through sandbox-worker MCP.",
-    ),
-    "sandbox_write": _boundary(
-        "remote_mcp",
-        "sandbox-worker",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Sandbox writes execute through sandbox-worker MCP.",
-    ),
-    "sandbox_read": _boundary(
-        "remote_mcp",
-        "sandbox-worker",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Sandbox reads execute through sandbox-worker MCP.",
-    ),
-    # Workflow/orchestration tools
-    "classify_ticket": _boundary(
-        "in_process",
-        "agent-process",
-        migration_target="tool-service/workflow",
-    ),
-    "plan_investigation": _boundary(
-        "in_process",
-        "agent-process",
-        migration_target="tool-service/workflow",
-        notes="Validates and freezes the current session investigation plan.",
-    ),
-    "run_subagent": _boundary(
-        "in_process",
-        "agent-process",
-        migration_target="tool-service/orchestrator",
-    ),
-    "run_subagents_parallel": _boundary(
-        "in_process",
-        "agent-process",
-        migration_target="tool-service/orchestrator",
-    ),
-    # Notifications
-    "feishu_push": _boundary(
-        "remote_mcp",
-        "notification-service",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Feishu credentials and retry logic live in notification-service MCP.",
-    ),
-    "custom_mcp_call": _boundary(
-        "remote_mcp",
-        "admin-configured-mcp",
-        service_backed=True,
-        fully_isolated=True,
-        notes="Calls an enabled MCP service configured from the admin console.",
-    ),
 }
 
 
@@ -295,7 +180,9 @@ def get_tool_service_boundary(tool_name: str) -> ToolServiceBoundary:
     try:
         return TOOL_SERVICE_BOUNDARIES[tool_name]
     except KeyError as exc:
-        raise KeyError(f"tool service boundary is not declared for {tool_name!r}") from exc
+        raise KeyError(
+            f"tool service boundary is not declared for {tool_name!r}"
+        ) from exc
 
 
 def summarize_tool_service_boundaries(tools: Iterable[Any]) -> dict[str, Any]:

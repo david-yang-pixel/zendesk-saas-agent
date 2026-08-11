@@ -1,8 +1,10 @@
 """Lifecycle wiring for the SaaS aiohttp app."""
+
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -33,20 +35,53 @@ class BackgroundRunners:
     mention_poller: RunnerFn
 
 
-def wire_session_finished_callback(*, manager: Any, state: Any) -> None:
+def wire_session_finished_callback(
+    *,
+    manager: Any,
+    state: Any,
+    casework_effect_store: Any | None = None,
+    trigger_queue: Any | None = None,
+) -> None:
     """Wire manager completion callback that updates trigger state."""
 
     async def _on_session_finished(session: Any) -> None:  # noqa: ANN401
-        try:
-            from zd_agent.services.trigger_state_machine import apply_session_finished
+        from zd_agent.services.trigger_state_machine import apply_session_finished
 
-            apply_session_finished(state, session)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "set_last_agent_finish_ts_failed",
-                ticket_id=getattr(session, "ticket_id", None),
-                error=str(e),
-            )
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                apply_session_finished(
+                    state,
+                    session,
+                    casework_effect_store=casework_effect_store,
+                )
+                return
+            except Exception as error:  # noqa: BLE001 - bounded durable retry.
+                last_error = error
+                logger.warning(
+                    "set_last_agent_finish_ts_failed",
+                    ticket_id=getattr(session, "ticket_id", None),
+                    attempt=attempt,
+                    error=str(error),
+                )
+                if attempt < 3:
+                    await asyncio.sleep(0.1 * attempt)
+        if trigger_queue is not None:
+            record = state.get(getattr(session, "ticket_id", 0))
+            if record is not None and record.state == "processing":
+                queued = trigger_queue.ensure_processing_recovery(
+                    int(session.ticket_id),
+                    delivery_attempt_id=(
+                        record.delivery_attempt_id
+                        or getattr(session, "delivery_attempt_id", "")
+                        or getattr(session, "session_id", "")
+                    ),
+                )
+                if inspect.isawaitable(queued):
+                    await queued
+        raise RuntimeError(
+            "finished session state could not be committed durably",
+        ) from last_error
 
     if hasattr(manager, "set_on_finished"):
         manager.set_on_finished(_on_session_finished)
@@ -79,8 +114,9 @@ def register_background_lifecycle(
                 state=state,
                 trigger_queue=trigger_queue,
                 scan_interval_seconds=cfg.waiting_poller.scan_interval_seconds,
-                abandoned_hours=cfg.waiting_poller.abandoned_hours,
-                greeting_alert_minutes=cfg.waiting_poller.greeting_alert_minutes,
+                customer_wait_timeout_hours=(
+                    cfg.waiting_poller.customer_wait_timeout_hours
+                ),
             )
         )
         mention_tracker = MentionTracker(state_dir / "processed_mentions.json")

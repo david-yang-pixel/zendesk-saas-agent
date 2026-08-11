@@ -1,8 +1,10 @@
 """Tests for deterministic post-session notifications."""
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 
 
@@ -11,14 +13,13 @@ async def test_v2_runner_notifies_after_confirmed_direct_reply(monkeypatch):
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
-    cfg.agent.guardrails = MagicMock()
-    cfg.casework.mode.value = "casework"
+    cfg.casework.mode = ExecutionMode.CASEWORK
+    cfg.casework.canary_ticket_ids = ()
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
     notify = AsyncMock()
     archive = MagicMock()
     monkeypatch.setattr(runner, "create_casework_tool_registry", MagicMock())
-    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock(_provider=object()))
-    monkeypatch.setattr(runner, "Guardrails", lambda config: MagicMock(elapsed_seconds=0))
+    monkeypatch.setattr(runner, "create_llm_provider", MagicMock(return_value=object()))
     monkeypatch.setattr(runner, "execute_casework_v2", AsyncMock(return_value=object()))
     monkeypatch.setattr(
         runner,
@@ -45,17 +46,12 @@ async def test_v2_runner_does_not_notify_when_ownership_is_required(monkeypatch)
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
-    cfg.agent.guardrails = MagicMock()
-    cfg.casework.mode.value = "casework"
+    cfg.casework.mode = ExecutionMode.CASEWORK
+    cfg.casework.canary_ticket_ids = ()
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
     notify = AsyncMock()
     monkeypatch.setattr(runner, "create_casework_tool_registry", MagicMock())
-    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock(_provider=object()))
-    monkeypatch.setattr(
-        runner,
-        "Guardrails",
-        lambda config: MagicMock(elapsed_seconds=0),
-    )
+    monkeypatch.setattr(runner, "create_llm_provider", MagicMock(return_value=object()))
     monkeypatch.setattr(runner, "execute_casework_v2", AsyncMock(return_value=object()))
     monkeypatch.setattr(
         runner,
@@ -79,12 +75,11 @@ async def test_v2_runner_failure_never_writes_legacy_customer_handoff(monkeypatc
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
-    cfg.agent.guardrails = MagicMock()
-    cfg.casework.mode.value = "casework"
+    cfg.casework.mode = ExecutionMode.CASEWORK
+    cfg.casework.canary_ticket_ids = ()
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
     monkeypatch.setattr(runner, "create_casework_tool_registry", MagicMock())
-    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock(_provider=object()))
-    monkeypatch.setattr(runner, "Guardrails", lambda config: MagicMock(elapsed_seconds=0))
+    monkeypatch.setattr(runner, "create_llm_provider", MagicMock(return_value=object()))
     monkeypatch.setattr(
         runner,
         "execute_casework_v2",
@@ -102,6 +97,30 @@ async def test_v2_runner_failure_never_writes_legacy_customer_handoff(monkeypatc
     assert not hasattr(runner, "_send_error_note")
     assert not hasattr(runner, "send_feishu_escalation_best_effort")
     notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_v2_runner_defers_non_allowlisted_canary_before_any_write(monkeypatch):
+    from zd_agent.runtime import runner
+
+    cfg = MagicMock()
+    cfg.casework.mode = ExecutionMode.CANARY
+    cfg.casework.canary_ticket_ids = (1111,)
+    ack = AsyncMock()
+    execute = AsyncMock()
+    archive = MagicMock()
+    monkeypatch.setattr(runner, "_send_ack_note", ack)
+    monkeypatch.setattr(runner, "execute_casework_v2", execute)
+    monkeypatch.setattr(runner, "ensure_archive", archive)
+
+    session = AgentSession(ticket_id=2222)
+    await runner._run_casework_agent(session, cfg)
+
+    assert session.status is SessionStatus.DEFERRED
+    assert "outside the v2 canary allowlist" in session.error_message
+    ack.assert_not_awaited()
+    execute.assert_not_awaited()
+    archive.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -137,7 +156,7 @@ def test_ticket_done_fallback_summary_formats_customer_reply_digest():
         "The workspace subscription is healthy in billing DB. "
         "Please retry /subscription/info and provide the endpoint and timestamp if it persists.\n\n"
         "🤖 This message is sent by Dify AI (Dify SaaS Agent). "
-        "If you would prefer a human teammate, reply with \"human\"."
+        'If you would prefer a human teammate, reply with "human".'
     )
 
     summary = _ticket_done_summary(session)

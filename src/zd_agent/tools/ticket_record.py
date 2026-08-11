@@ -1,4 +1,5 @@
 """Ticket record tools: grep/read local 工单记录/ directory for historical tickets."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -65,7 +66,9 @@ class TicketRecordSearch(Tool):
     group = "knowledge"
     concurrency_safe = True
 
-    async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
+    async def execute(
+        self, args: dict[str, Any], session: "AgentSession"
+    ) -> ToolResult:
         keywords = _normalize_keywords(args.get("keywords"))
         if isinstance(keywords, ToolResult):
             return keywords
@@ -133,7 +136,9 @@ class TicketRecordRead(Tool):
     group = "knowledge"
     concurrency_safe = True
 
-    async def execute(self, args: dict[str, Any], session: "AgentSession") -> ToolResult:
+    async def execute(
+        self, args: dict[str, Any], session: "AgentSession"
+    ) -> ToolResult:
         raw_ticket_id = args.get("ticket_id", "")
         if not isinstance(raw_ticket_id, str):
             return ToolResult(success=False, error="ticket_id must be a string")

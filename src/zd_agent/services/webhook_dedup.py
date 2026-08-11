@@ -1,4 +1,5 @@
 """Idempotent webhook-event dedup cache backed by JSON on disk."""
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,7 @@ class WebhookDedup:
             return
         keys = raw.get("keys") if isinstance(raw, dict) else raw
         if isinstance(keys, list):
-            for k in keys[-self.max_size:]:
+            for k in keys[-self.max_size :]:
                 self._seen[str(k)] = True
 
     def _save(self) -> None:

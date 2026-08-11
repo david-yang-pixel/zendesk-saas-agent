@@ -1,4 +1,5 @@
 """Archive inspection helpers for CLI commands."""
+
 from __future__ import annotations
 
 import json
@@ -123,10 +124,12 @@ def collect_ticket_log(
             content = file_path.read_text(encoding="utf-8", errors="replace")
             if len(content) > max_content_chars:
                 content = content[:max_content_chars] + "\n\n... (截断)"
-            entries.append({
-                "name": str(file_path.relative_to(archive_dir)),
-                "content": content,
-            })
+            entries.append(
+                {
+                    "name": str(file_path.relative_to(archive_dir)),
+                    "content": content,
+                }
+            )
         return TicketLogResult(kind="archive", base_dir=archive_dir, entries=entries)
 
     sandbox_dir = sandbox_base / str(ticket_id)
@@ -155,7 +158,8 @@ def parse_time_range(last: str) -> timedelta:
 
 def _archive_meta_identity_keys(meta: dict[str, object]) -> set[str]:
     keys = {
-        "run:" + json.dumps(
+        "run:"
+        + json.dumps(
             {
                 "created_at": meta.get("created_at") or meta.get("archived_at"),
                 "status": meta.get("status"),
@@ -237,7 +241,9 @@ def collect_archive_stats(
 
         meta_files = _archive_meta_files(ticket_dir)
         if not meta_files:
-            dir_mtime = datetime.fromtimestamp(ticket_dir.stat().st_mtime, tz=timezone.utc)
+            dir_mtime = datetime.fromtimestamp(
+                ticket_dir.stat().st_mtime, tz=timezone.utc
+            )
             if dir_mtime < cutoff:
                 continue
             total += 1

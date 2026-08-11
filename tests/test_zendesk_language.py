@@ -39,10 +39,10 @@ class StripTechnicalContentTest(unittest.TestCase):
         self.assertIn("请问正常吗", result)
 
     def test_strips_stack_traces(self) -> None:
-        text = "报错了\nTraceback (most recent call last):\n  File \"/app/main.py\", line 42\nTypeError: cannot unpack\n怎么办"
+        text = '报错了\nTraceback (most recent call last):\n  File "/app/main.py", line 42\nTypeError: cannot unpack\n怎么办'
         result = _strip_technical_content(text)
         self.assertNotIn("Traceback", result)
-        self.assertNotIn("File \"/app", result)
+        self.assertNotIn('File "/app', result)
         self.assertNotIn("TypeError", result)
         self.assertIn("报错了", result)
         self.assertIn("怎么办", result)
@@ -50,7 +50,9 @@ class StripTechnicalContentTest(unittest.TestCase):
 
 class DetectReplyLanguageTest(unittest.TestCase):
     def test_prefers_japanese_when_kana_present(self) -> None:
-        self.assertEqual(_detect_reply_language("問題が発生しています。ご確認ください。"), "ja")
+        self.assertEqual(
+            _detect_reply_language("問題が発生しています。ご確認ください。"), "ja"
+        )
 
     def test_chinese_with_english_error_logs(self) -> None:
         """中文客户贴了大量英文报错——应判定为中文"""
@@ -58,9 +60,9 @@ class DetectReplyLanguageTest(unittest.TestCase):
             "你好，我部署的时候遇到报错：\n"
             "```\n"
             "Error: ImagePullBackOff\n"
-            "  Warning  Failed  3m  kubelet  Failed to pull image \"dify/api:1.2.3\"\n"
+            '  Warning  Failed  3m  kubelet  Failed to pull image "dify/api:1.2.3"\n'
             "  Warning  Failed  3m  kubelet  Error response from daemon\n"
-            "  Normal   Pulling  2m (x4 over 3m)  kubelet  Pulling image \"dify/api:1.2.3\"\n"
+            '  Normal   Pulling  2m (x4 over 3m)  kubelet  Pulling image "dify/api:1.2.3"\n'
             "```\n"
             "请问怎么解决？"
         )
@@ -90,7 +92,9 @@ class DetectReplyLanguageTest(unittest.TestCase):
         self.assertEqual(_detect_reply_language(text), "ja")
 
     def test_pure_english(self) -> None:
-        self.assertEqual(_detect_reply_language("Hello, I need help with my deployment"), "en")
+        self.assertEqual(
+            _detect_reply_language("Hello, I need help with my deployment"), "en"
+        )
 
     def test_pure_chinese(self) -> None:
         self.assertEqual(_detect_reply_language("你好，我需要帮助"), "zh")

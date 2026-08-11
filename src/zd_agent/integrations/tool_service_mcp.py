@@ -76,7 +76,11 @@ async def call_mcp_tool(
 
     if resp.status_code == 401:
         logger.warning("tool_service_mcp_unauthorized", service=service, tool=name)
-        return {"success": False, "code": f"{prefix}_UNAUTHORIZED", "error": "unauthorized"}
+        return {
+            "success": False,
+            "code": f"{prefix}_UNAUTHORIZED",
+            "error": "unauthorized",
+        }
     if resp.status_code >= 400:
         logger.warning(
             "tool_service_mcp_http_error",

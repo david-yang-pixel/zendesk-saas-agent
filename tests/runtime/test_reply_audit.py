@@ -3,7 +3,10 @@
 零成本审计：scan agent's reply for "specific claims" + cross-reference
 tool_call_log. 找出未经证实的 claim 作为 SE 复核 hint。
 """
+
 from __future__ import annotations
+
+import pytest
 
 from zd_agent.runtime.reply_audit import (
     audit_reply_against_tools,
@@ -15,8 +18,14 @@ from zd_agent.runtime.reply_audit import (
 def _tool_log(*previews: str) -> list[dict]:
     """构造 tool_call_log mock，每个 preview 是一条 tool 返回"""
     return [
-        {"round": i, "tool": "x", "args": {}, "success": True,
-         "error": None, "result_preview": p}
+        {
+            "round": i,
+            "tool": "x",
+            "args": {},
+            "success": True,
+            "error": None,
+            "result_preview": p,
+        }
         for i, p in enumerate(previews)
     ]
 
@@ -24,6 +33,7 @@ def _tool_log(*previews: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 # 正常路径：claim 都在 tool log 里 → 无 warning
 # ---------------------------------------------------------------------------
+
 
 class TestNoWarnings:
     def test_pr_in_tool_log_no_warning(self) -> None:
@@ -33,7 +43,9 @@ class TestNoWarnings:
 
     def test_file_path_in_tool_log_no_warning(self) -> None:
         body = "See api/services/workflow_service.py for details."
-        log = _tool_log("git_grep result: api/services/workflow_service.py contains ...")
+        log = _tool_log(
+            "git_grep result: api/services/workflow_service.py contains ..."
+        )
         assert audit_reply_against_tools(body=body, tool_call_log=log) == []
 
     def test_empty_body_empty_log_no_warnings(self) -> None:
@@ -48,6 +60,7 @@ class TestNoWarnings:
 # ---------------------------------------------------------------------------
 # Hallucination 检测
 # ---------------------------------------------------------------------------
+
 
 class TestPrHallucination:
     def test_pr_not_in_log_warns(self) -> None:
@@ -88,7 +101,9 @@ class TestTicketRefHallucination:
         body = "Similar to historical ticket #1188."
         log = _tool_log("no historical reference here")
         warnings = audit_reply_against_tools(
-            body=body, tool_call_log=log, current_ticket_id=5000,
+            body=body,
+            tool_call_log=log,
+            current_ticket_id=5000,
         )
         assert len(warnings) == 1
         assert "#1188" in warnings[0]
@@ -98,7 +113,9 @@ class TestTicketRefHallucination:
         body = "Processing ticket #5000."
         log = _tool_log("nothing")
         warnings = audit_reply_against_tools(
-            body=body, tool_call_log=log, current_ticket_id=5000,
+            body=body,
+            tool_call_log=log,
+            current_ticket_id=5000,
         )
         # 不该 flag 当前工单号
         assert all("#5000" not in w for w in warnings)
@@ -160,7 +177,9 @@ class TestMultipleWarnings:
         )
         log = _tool_log("totally empty")
         warnings = audit_reply_against_tools(
-            body=body, tool_call_log=log, current_ticket_id=1,
+            body=body,
+            tool_call_log=log,
+            current_ticket_id=1,
         )
         # PR + file + ticket ref + version = 4 warnings
         assert len(warnings) >= 4
@@ -194,3 +213,15 @@ class TestPublicReplyPrivacyBlockers:
         )
 
         assert public_reply_privacy_blockers(body) == []
+
+    @pytest.mark.parametrize(
+        "body",
+        (
+            "The affected workspace 11111111-1111-4111-8111-111111111111 is active.",
+            "The trace 0123456789abcdef0123456789abcdef completed.",
+            "The workload api-worker-7d9f8c6b5f-abc12 restarted.",
+            "The affected account other-tenant@example.test is active.",
+        ),
+    )
+    def test_public_reply_blocks_raw_identifiers_and_email_values(self, body) -> None:
+        assert public_reply_privacy_blockers(body)

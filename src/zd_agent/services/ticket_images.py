@@ -1,4 +1,5 @@
 """Shared Zendesk ticket image extraction helpers."""
+
 from __future__ import annotations
 
 import html
@@ -36,6 +37,8 @@ _SVG_RE = re.compile(
     rb"^(?:<\?xml[^>]*>\s*)?(?:(?:<!--.*?-->\s*)|(?:<!DOCTYPE[^>]*>\s*))*<svg(?:\s|>)",
     re.IGNORECASE | re.DOTALL,
 )
+
+
 def detected_image_content_type(content_type: str, data: bytes) -> str | None:
     """Return a media type only when headers and file signature both indicate image."""
     declared = content_type.split(";", 1)[0].strip().lower()
@@ -119,7 +122,9 @@ def image_url_from_attachment(att: dict) -> str:
     return cleaned if _url_looks_like_image(cleaned) else ""
 
 
-def collect_image_urls_from_attachments(attachments: Iterable[dict] | None) -> list[str]:
+def collect_image_urls_from_attachments(
+    attachments: Iterable[dict] | None,
+) -> list[str]:
     return _dedupe(
         image_url_from_attachment(att)
         for att in (attachments or [])

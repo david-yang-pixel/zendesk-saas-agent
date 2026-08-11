@@ -1,4 +1,5 @@
 """Human takeover detection for Zendesk tickets."""
+
 from __future__ import annotations
 
 from zd_agent.config import get_config

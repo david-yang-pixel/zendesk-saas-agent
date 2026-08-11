@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from zd_agent.config import InspectorConfig
-from zd_agent.runtime.agent_loop import _TOOL_CALL_TIMEOUT_SECONDS
 from zd_agent.tools.inspector_exec import InspectorExec, _terminate_process_tree
 
 
@@ -66,7 +65,9 @@ async def test_rejects_non_string_primary_query_before_spawn(
     spawn = AsyncMock(side_effect=AssertionError("subprocess should not be called"))
     monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
 
-    result = await InspectorExec().execute({"email": ["alice@example.com"]}, fake_session)
+    result = await InspectorExec().execute(
+        {"email": ["alice@example.com"]}, fake_session
+    )
 
     assert result.success is False
     assert result.error == "email must be a string"
@@ -92,11 +93,10 @@ async def test_rejects_non_string_date_filter_before_spawn(
     spawn.assert_not_called()
 
 
-def test_default_retry_budget_leaves_room_below_outer_tool_timeout() -> None:
+def test_default_retry_budget_is_bounded() -> None:
     timeout = InspectorConfig().timeout_seconds
 
     assert timeout == 45
-    assert timeout * 2 < _TOOL_CALL_TIMEOUT_SECONDS
 
 
 @pytest.mark.asyncio
@@ -129,7 +129,9 @@ async def test_timeout_kills_inspector_process_group_before_retry(
         awaitable.close()
         raise asyncio.TimeoutError
 
-    monkeypatch.setattr("zd_agent.tools.inspector_exec.asyncio.wait_for", timeout_immediately)
+    monkeypatch.setattr(
+        "zd_agent.tools.inspector_exec.asyncio.wait_for", timeout_immediately
+    )
     killpg = MagicMock()
     monkeypatch.setattr(os, "killpg", killpg)
 
@@ -140,7 +142,9 @@ async def test_timeout_kills_inspector_process_group_before_retry(
 
     assert result.success is False
     assert spawn.await_count == 2
-    assert all(call.kwargs["start_new_session"] is True for call in spawn.await_args_list)
+    assert all(
+        call.kwargs["start_new_session"] is True for call in spawn.await_args_list
+    )
     assert killpg.call_count == 2
     assert [call.args for call in killpg.call_args_list] == [
         (4321, 9),

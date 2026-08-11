@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from hashlib import sha256
+import json
 import sqlite3
+from typing import Any
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from zd_agent.services.public_reply_internal_note import (
@@ -128,13 +131,93 @@ async def test_ambiguous_note_write_is_never_reissued_after_restart(tmp_path) ->
     )
 
     retry = AsyncMock(return_value={"success": True, "data": {"comments": []}})
-    assert await reconcile_pending_post_public_internal_notes(
-        note_store=PostPublicInternalNoteStore(path),
-        zendesk_tool_caller=retry,
-    ) == 0
+    assert (
+        await reconcile_pending_post_public_internal_notes(
+            note_store=PostPublicInternalNoteStore(path),
+            zendesk_tool_caller=retry,
+        )
+        == 0
+    )
     assert [call.args[0] for call in retry.await_args_list] == [
         "get_ticket_comments",
     ]
+
+
+@pytest.mark.asyncio
+async def test_real_zendesk_wrapper_response_loss_is_not_reissued(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zd_agent.config import AppConfig
+    from zd_agent.integrations import zendesk_mcp
+    from zd_agent.services.public_reply_internal_note import (
+        PostPublicInternalNoteStore,
+    )
+
+    cfg = AppConfig()
+    cfg.zendesk_mcp.mcp_url = "https://zendesk.example.test/mcp"
+    cfg.zendesk_mcp.mcp_api_key = "secret"
+    accepted_writes: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        rpc = json.loads(request.content.decode("utf-8"))
+        name = rpc["params"]["name"]
+        arguments = rpc["params"]["arguments"]
+        if name == "add_internal_note":
+            accepted_writes.append(arguments)
+            raise httpx.ReadTimeout("response lost after accept", request=request)
+        assert name == "get_ticket_comments"
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": rpc["id"],
+                "result": {
+                    "structuredContent": {
+                        "success": True,
+                        "data": {"comments": []},
+                    },
+                },
+            },
+        )
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        zendesk_mcp.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    async def caller(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        return await zendesk_mcp.call_zendesk_tool(name, arguments, cfg=cfg)
+
+    store = PostPublicInternalNoteStore(tmp_path / "notes.sqlite3")
+    first = await ensure_post_public_internal_note(
+        ticket_id=42,
+        delivery_attempt_id="attempt-response-loss",
+        reply_type="solution",
+        body_with_footer="Customer-visible answer.",
+        internal_analysis="Evidence-backed answer.",
+        zendesk_tool_caller=caller,
+        note_store=store,
+    )
+    second = await ensure_post_public_internal_note(
+        ticket_id=42,
+        delivery_attempt_id="attempt-response-loss",
+        reply_type="solution",
+        body_with_footer="Customer-visible answer.",
+        internal_analysis="Evidence-backed answer.",
+        zendesk_tool_caller=caller,
+        note_store=store,
+    )
+
+    assert first is False
+    assert second is False
+    assert len(accepted_writes) == 1
+    pending = store.pending()
+    assert len(pending) == 1
+    assert pending[0].write_attempted is True
 
 
 @pytest.mark.asyncio

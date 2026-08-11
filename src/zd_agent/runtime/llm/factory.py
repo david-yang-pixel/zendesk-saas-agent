@@ -14,6 +14,7 @@ def create_llm_provider(cfg: LLMConfig, env: EnvSettings) -> LLMProvider:
     """根据 cfg.provider 字段选择并实例化对应 Provider。"""
     if cfg.provider == "openai":
         from zd_agent.runtime.llm.openai_provider import OpenAIProvider
+
         return OpenAIProvider(
             api_key=env.openai_api_key,
             model=cfg.model,
@@ -24,6 +25,7 @@ def create_llm_provider(cfg: LLMConfig, env: EnvSettings) -> LLMProvider:
         )
     elif cfg.provider == "anthropic":
         from zd_agent.runtime.llm.anthropic_provider import AnthropicProvider
+
         return AnthropicProvider(
             api_key=env.anthropic_api_key,
             model=cfg.model,

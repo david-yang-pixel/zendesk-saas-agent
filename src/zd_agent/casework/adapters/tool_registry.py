@@ -24,31 +24,30 @@ from zd_agent.tools.official_docs import OfficialDocsRead, OfficialDocsSearch
 from zd_agent.tools.saas_version import SaasDeployedVersion
 from zd_agent.tools.signoz_tools import (
     SignozErrors,
-    SignozQuery,
-    SignozServices,
     SignozTraceback,
     structured_signoz_tools,
 )
-from zd_agent.tools.sql_query import SqlQuery
-from zd_agent.tools.ticket_record import TicketRecordRead, TicketRecordSearch
+from zd_agent.tools.ticket_record import TicketRecordRead
 from zd_agent.tools.zendesk import (
     ZendeskGetArticle,
-    ZendeskGetAttachments,
     ZendeskGetTicket,
-    ZendeskGetUser,
-    ZendeskSearch,
     ZendeskSearchArticles,
 )
+
+
+def _tenant_scoped_signoz_tools() -> tuple[Tool, ...]:
+    return tuple(
+        tool
+        for tool in structured_signoz_tools()
+        if "tenant" in tool.parameters.get("properties", {})
+    )
 
 
 def _casework_tools() -> tuple[Tool, ...]:
     return (
         ZendeskGetTicket(),
-        ZendeskGetAttachments(),
-        ZendeskSearch(),
         ZendeskSearchArticles(),
         ZendeskGetArticle(),
-        ZendeskGetUser(),
         KnowledgeSearch(),
         KnowledgeRead(),
         OfficialDocsSearch(),
@@ -66,14 +65,10 @@ def _casework_tools() -> tuple[Tool, ...]:
         GithubCodeSearch(),
         SaasDeployedVersion(),
         InspectorExec(),
-        SqlQuery(),
-        TicketRecordSearch(),
         TicketRecordRead(),
         SignozErrors(),
         SignozTraceback(),
-        SignozServices(),
-        SignozQuery(),
-        *structured_signoz_tools(),
+        *_tenant_scoped_signoz_tools(),
     )
 
 

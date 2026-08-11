@@ -4,24 +4,24 @@
 
 - `/opt/zd-agent/code`: 只运行 Zendesk 工单处理 agent。
 - `/opt/db-gateway/code`: 独立维护 Teleport DB proxy、Teleport 证书续期、续期页面、只读 DB Gateway API 和 MCP server。
-- `/opt/mcp/code`: GitHub、official docs、notification、sandbox worker 四个远程 MCP 服务源码；独立管理、独立部署，agent CI/CD 不重启它们。
+- `/opt/mcp/code`: Source、GitHub、official docs、notification 四个当前远程 MCP 服务源码；独立管理、独立部署，agent CI/CD 不重启它们。历史 sandbox worker 即使仍运行也不属于 v2 支持链路。
 
 ## One-time Setup (~2 hours)
 
 ### 1. 服务器资源预算
 
-本项目支持两种内存档位：
+本项目支持两种内存档位。`casework.max_investigation_tokens` 是整次 v2
+调查（含视觉）的质量/成本预算，不是 Python 内存或模型 context 配置，不能用它
+推算容器内存。
 
 **🟢 推荐（4G）**：Baidu Cloud BCC Console → resize 到 **4G**（2C/4G）
-- `config.yaml`: `max_concurrent_sessions: 5`, `max_tokens_per_session: 1050000`
+- `config.yaml`: 可将 `agent.max_concurrent_sessions` 从 `2` 逐步提高到 `5`，扩大前先做并发压测
 - `zd-agent.service`: `--memory=1500m --cpus=1.0`（去掉 `--memory-swap`）
 - 可同时跑 5 个工单分析会话
 
 **🟡 最低（2G，当前服务器档位）** — 默认配置已按此优化：
-- `config.yaml`: `max_concurrent_sessions: 2`, `max_tokens_per_session: 1500000`, `compaction_threshold: 0.3`
-  - ⚠️ `max_tokens` 从 500K 提到 1.5M（gpt-5.x 支持 1M context；旧 500K 导致
-    62.5% 工单触发 Token 截断 → agent 频繁 "I couldn't verify"）。配套把
-    `compaction_threshold` 从 0.65 降到 0.3，否则压缩永远不触发。
+- `config.yaml`: `agent.max_concurrent_sessions: 2`
+- `casework.max_investigation_tokens: 1500000` 由统一 token ledger 对视觉和调查模型共同计账；旧 tool-loop compaction 配置已删除
 - `zd-agent.service`: `--memory=800m --memory-swap=1500m --cpus=0.8`
 - swap 作为 burst 兜底；2 个并发会话稳定运行
 - **务必确认 swap 已启用**（`free -h` 看 Swap 行应 ≥ 1.5G）
@@ -33,10 +33,10 @@
 | 字段 | 当前值 | 说明 |
 |---|---|---|
 | `llm.model` | `gpt-5.5` | 主 Agent 模型 |
-| `llm.subagent_model` | `gpt-5.4-mini` | Subagent 用便宜模型省 ~70% 成本。**必须是 proxy 真实存在的模型名**（`gpt-5.5-mini` 不存在会全 404，踩过坑）|
-| `trigger_decider.llm_model` | `gpt-5.5` | 触发判定模型（误判代价高，不省这个钱）|
-| `public_reply.enabled` | `true` | **总开关 / 应急回退**：出问题立即 flip 为 `false`，agent 全部退回只发 Internal Note（SE 手动 forward），无需改代码 |
-| `public_reply.max_ask_count` | `10` | 累计追问上限，超过转人工 |
+| `llm.enable_vision_input` | `true` | 下载并校验 Zendesk 图片后作为不可信视觉观察输入；OpenAI/Anthropic 均有 provider 适配 |
+| `casework.mode` | `casework` | v2 是唯一决策核心；`canary` 仅允许显式 ticket allowlist，`legacy/shadow` 会被配置校验拒绝 |
+| `casework.max_investigation_tokens` | `1500000` | 视觉与有界调查共用的累计 token 上限 |
+| `public_reply.enabled` | `true` | **仅客户写入 kill switch**。`false` 时继续调查和归档草稿，不调用 Browser Relay，不回落旧 Internal Note/handoff；已确认的 typed ownership 仍独立执行 |
 | `public_reply.browser_relay_url` | `https://zendesk.smlershou.top/zendesk-reply-mcp` | SaaS native messaging 客户可见回复走独立 browser relay MCP，不使用 Conversations API |
 | `public_reply.freshness_callback_url` | `https://zendesk.smlershou.top/webhook/relay-pre-send-freshness` | remote relay 在点击 Send 前调用的 HTTPS freshness gate；复用现有 `/webhook/` 反代，应用层仍强制 Bearer 校验 |
 | `zendesk.min_ticket_id` | `2624` | **灰度边界**：只处理 ID ≥ 此值的工单。上线稳定后改 `0` 处理全部 SaaS 工单 |
@@ -47,7 +47,9 @@
 > `/opt/zd-agent/releases/main/config.yaml`。
 > 生产 checkout 必须保持 tracked files clean；不要直接编辑其中的 `config.yaml`。
 > 配置变更应走管理后台/`.env`，或提交到 `main` 后由 CI/CD 发布。
-> 应急回退 public reply：在管理后台将 `enabled` 设为 `false`，最快止血。
+> 应急停止客户写入：在管理后台将 `public_reply.enabled` 设为 `false`。
+> 如需停止全部后台处理，直接 `systemctl stop zd-agent`；不要把 public reply
+> kill switch 误当成全局暂停。
 > CI/CD 会在重启前使用目标镜像加载 `config.yaml`、`.env` 和管理后台覆盖，
 > 并在重启后再次检查运行容器的最终有效配置。远程 Browser Relay 缺少 HTTPS
 > 非 loopback callback 时部署必须失败。CI/CD 还会从服务器本机请求 freshness
@@ -91,7 +93,7 @@ done
 ### 5. Configure env files
 
 ```bash
-# Agent env: Zendesk / LLM / app integrations + DB Gateway MCP client only
+# Agent env: Zendesk / LLM plus authenticated client URLs for external MCP services
 cp /opt/zd-agent/code/.env.example /opt/zd-agent/.env
 vim /opt/zd-agent/.env
 chmod 600 /opt/zd-agent/.env
@@ -118,26 +120,27 @@ chmod 600 /opt/zd-agent/.env
 # Tool Services env lives outside the agent process and is managed from
 # /opt/mcp/code, not from this repo's CI/CD. Copy only the remote MCP URLs/API
 # keys into /opt/zd-agent/.env:
+# SOURCE_MCP_URL=https://zendesk.smlershou.top/source-mcp/mcp
+# SOURCE_MCP_API_KEY=<from /etc/source-mcp/env>
 # GITHUB_MCP_URL=https://zendesk.smlershou.top/github-mcp/mcp
 # DOCS_TOOL_SERVICE_URL=https://zendesk.smlershou.top/docs-tool-service/mcp
 # NOTIFICATION_SERVICE_URL=https://zendesk.smlershou.top/notification-service/mcp
-# SANDBOX_WORKER_URL=https://zendesk.smlershou.top/sandbox-worker/mcp
 ```
 
 Required variables for `/opt/zd-agent/.env` (see `.env.example`):
-- ZENDESK_SUBDOMAIN / ZENDESK_EMAIL (`<zendesk-agent-email>`) / ZENDESK_API_TOKEN / ZENDESK_WEBHOOK_SECRET
+- ZENDESK_SUBDOMAIN / ZENDESK_EMAIL (`<zendesk-agent-email>`) / ZENDESK_API_TOKEN
+- ZENDESK_WEBHOOK_SECRET / ZENDESK_MESSAGING_WEBHOOK_SECRET（两条入口必须使用不同 secret）
 - ZENDESK_MCP_URL / ZENDESK_MCP_API_KEY
 - OPENAI_API_KEY
-- FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_VERIFY_TOKEN / FEISHU_ENCRYPT_KEY / FEISHU_BOT_CHAT_ID
 - SIGNOZ_MCP_URL / SIGNOZ_MCP_API_KEY
+- SOURCE_MCP_URL / SOURCE_MCP_API_KEY
 - GITHUB_MCP_URL / GITHUB_MCP_API_KEY
 - DOCS_TOOL_SERVICE_URL / DOCS_TOOL_SERVICE_API_KEY
 - NOTIFICATION_SERVICE_URL / NOTIFICATION_SERVICE_API_KEY
-- SANDBOX_WORKER_URL / SANDBOX_WORKER_API_KEY
 - DB_GATEWAY_URL / DB_GATEWAY_API_KEY
 
-`GITHUB_TOKEN` is optional in the agent env for legacy repo clone and branch
-switch flows only. GitHub PR/code search uses the remote `github-mcp` service;
+`GITHUB_TOKEN` is optional in the agent env for operator-run local repository
+clone/fetch commands only. The v2 model never receives it. GitHub PR/code search uses the remote `github-mcp` service;
 the PAT, rate limit handling, and service env are owned by the independent MCP
 deployment.
 
@@ -160,10 +163,14 @@ Required variables for `/opt/zendesk-mcp/.env` are documented in `/opt/zendesk-m
 - ZENDESK_API_TOKEN
 
 Required variables for the independent Tool Services deployment:
+- `/etc/source-mcp/env`: `SOURCE_MCP_API_KEY`
 - `/etc/github-mcp/env`: `GITHUB_MCP_API_KEY`, `GITHUB_MCP_GITHUB_TOKEN`
 - `/etc/docs-tool-service/env`: `DOCS_TOOL_SERVICE_API_KEY`
 - `/etc/notification-service/env`: `NOTIFICATION_SERVICE_API_KEY`, `FEISHU_WEBHOOK_URL`, optional `FEISHU_WEBHOOK_SECRET`
-- `/etc/sandbox-worker/env`: `SANDBOX_WORKER_API_KEY`, `SANDBOX_WORKER_BASE_DIR`
+
+The v2 agent does not call sandbox-worker. An independently deployed historical
+sandbox-worker may remain running, but it is not part of the current support path
+and needs no `/opt/zd-agent/.env` entry.
 
 Do not manage those files from `zd-agent` CI/CD. Update/restart Tool Services
 from `/opt/mcp/code`, then update `/opt/zd-agent/.env` only if a remote URL or
@@ -200,14 +207,22 @@ API key changes.
        "updated_at": "{{ticket.updated_at}}"
      }
      ```
+5. 为 Zendesk Messaging 的 `messaging_ticket.message_added` 事件创建独立 webhook：
+   - Endpoint: `https://<agent-public-domain>/webhook/zendesk-messaging`
+   - Secret: `ZENDESK_MESSAGING_WEBHOOK_SECRET`，不得复用 Tickets webhook secret
+   - 这条入口负责客户实时追问；waiting poller 只作为 300 秒低频丢事件兜底
 
-### 7. Configure Feishu bot
+### 7. Verify the notification service
 
-1. Feishu Open Platform → Create custom app → enable "Bot" capability
-2. Set event subscription URL: `https://<agent-public-domain>/webhook/feishu`
-3. Subscribe events: `im.message.receive_v1`
-4. Add bot to your team chat
-5. Copy App ID / Secret / Verify Token / Encrypt Key → .env
+v2 不接收飞书 bot webhook，也不在 Agent 内保存飞书 webhook secret。工单完成和
+typed ownership 通知统一调用独立 `notification-service` MCP；它负责飞书凭据、
+签名、幂等键和传输重试。
+
+```bash
+source /opt/zd-agent/.env
+test -n "$NOTIFICATION_SERVICE_URL"
+test -n "$NOTIFICATION_SERVICE_API_KEY"
+```
 
 ### 8. DNS
 
@@ -231,8 +246,8 @@ sudo nginx -t && sudo systemctl reload nginx
 This `zd-agent` nginx template exposes only agent endpoints (`/webhook/`,
 `/healthz`, `/admin`, `/admin/`) and intentionally does not define routes for
 remote MCP services.
-Routes such as `/github-mcp/`, `/docs-tool-service/`, `/notification-service/`,
-`/sandbox-worker/`, `/zendesk-mcp/`, `/signoz-mcp/`, and
+Routes such as `/source-mcp/`, `/github-mcp/`, `/docs-tool-service/`, `/notification-service/`,
+`/zendesk-mcp/`, `/signoz-mcp/`, and
 `/zendesk-reply-mcp` are owned by their independent service configs.
 
 ### 10. Install and start DB Gateway sibling project
@@ -382,20 +397,57 @@ sudo journalctl -u zd-agent -f
 
 ## Daily Operations
 
+### Cross-host cutover (single active Agent)
+
+Do not start the new host while the old Agent can restart. The host identity
+marker is part of `.state` and the production systemd unit refuses to start if
+the marker does not equal the host machine ID.
+
+```bash
+# 1. On the NEW host, record its identity.
+NEW_INSTANCE_ID="$(tr -d '[:space:]' </etc/machine-id)"
+
+# 2. On the OLD host, stop, mask, verify no container, and transfer ownership.
+sudo /opt/zd-agent/code/deploy/demote-instance.sh "$NEW_INSTANCE_ID"
+
+# 3. Only after step 2 succeeds, perform the final stopped-state sync.
+# Run on the NEW host; use a temporary directory and then atomically replace .state.
+sudo rsync -a --delete root@<old-host>:/opt/zd-agent/resources/.state/ \
+  /opt/zd-agent/resources/.state.incoming/
+test "$(cat /opt/zd-agent/resources/.state.incoming/active_instance_id)" = \
+  "$NEW_INSTANCE_ID"
+sudo mv /opt/zd-agent/resources/.state \
+  /opt/zd-agent/resources/.state.pre-cutover
+sudo mv /opt/zd-agent/resources/.state.incoming \
+  /opt/zd-agent/resources/.state
+
+# 4. Verify the fence, deploy, then check health before changing DNS.
+sudo ZD_AGENT_INSTANCE_ID="$NEW_INSTANCE_ID" \
+  /opt/zd-agent/code/deploy/verify-instance-fence.sh
+sudo systemctl start zd-agent
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+The old service remains permanently masked and its local marker now names the
+new host. Reversing the cutover requires the same stopped-state procedure in
+the opposite direction; DNS changes alone never transfer background-worker
+ownership.
+
 | What | How |
 |------|-----|
 | Restart agent | `sudo systemctl restart zd-agent` |
 | Restart DB Gateway | `sudo systemctl restart db-gateway`（DB Gateway 项目负责） |
 | Restart Tool Services | 通过 `/opt/mcp/code` 的独立 MCP 运维流程处理；agent 部署不会重启它们 |
 | View live logs | `sudo docker logs -f zd-agent` (or `journalctl -u zd-agent -f`) |
-| Manual Teleport renew | Feishu `/relogin` or `sudo systemctl restart tsh-auth-watchdog` |
-| Pause processing | Feishu `/pause` (doesn't restart process, just suspends polling) |
-| Resume | Feishu `/resume` |
-| Force reprocess ticket | Feishu `/reprocess 12345` |
-| Check status | Feishu `/status` |
-| Update SaaS branch | Feishu `/branch dify hotfix/1.11.2-fix3` |
+| Manual Teleport renew | Follow `/opt/db-gateway/code/README.md`; Agent does not own DB credentials or Teleport login |
+| Stop all processing | `sudo systemctl stop zd-agent` |
+| Resume all processing | `sudo systemctl start zd-agent` (instance fence must pass) |
+| Resolve an ambiguous historical reply | After verifying the exact Zendesk comment, run `zd-agent reconcile-delivery <ticket> --attempt-id <id> --outcome delivered\|unsent --reason '<evidence>' --actor '<operator>'`; never guess an outcome |
+| Check status | `curl -fsS http://127.0.0.1:8080/healthz` |
+| Refresh local source fallback | `uv run zd-agent repos fetch <repo>`; production root-cause evidence should prefer Source MCP `ref=runtime` |
 | Update agent code | Push the desired commit to `main`; CI/CD deploys its immutable digest |
-| Roll back agent image | Set `ZD_AGENT_IMAGE_DIGEST=sha256:<digest>` and deploy the matching `sha-<40-hex-commit>` |
+| List downgrade-safe rollback bundles | `sudo find /opt/zd-agent/resources/.release-rollbacks -mindepth 1 -maxdepth 1 -type d -printf '%f\n'` |
+| Roll back after a successful deploy/canary | `cd /opt/zd-agent/code && sudo ./deploy/rollback-release.sh <40-hex-previous-revision>`; this restores the retained image, matching config, systemd unit, and state snapshot under the deployment lock |
 | Restart only (管理后台要求重启或 `.env` 变更后) | `sudo systemctl restart zd-agent` |
 | Refresh DB schema cheat sheet | `bash /opt/db-gateway/code/scripts/dump_db_schema.sh` (写到 saas版知识库/database_schema.md，agent 重启后即生效) |
 

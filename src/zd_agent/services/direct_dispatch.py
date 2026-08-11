@@ -1,4 +1,5 @@
 """Direct dispatch handling for trigger sources that bypass verdict checks."""
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from zd_agent.log import get_logger
+from zd_agent.services.casework_effect_store import casework_effect_reference
 from zd_agent.services.trigger_routing import direct_trigger_cooldown
 from zd_agent.trigger.decision_log import log_decision
 from zd_agent.trigger.state_store import TicketState
@@ -53,6 +55,17 @@ async def handle_direct_dispatch_source(
     # objects.  The CAS below must compare against the snapshot observed here,
     # not against fields another task may mutate in place while dispatch waits.
     existing_state = deepcopy(state.get(ticket_id))
+    if source == "silence_waker" and _pending_dispatch_ownership_matches(
+        existing_state,
+        msg,
+    ):
+        return await _resume_pending_dispatch_ownership(
+            ticket_id=ticket_id,
+            state=state,
+            pending=existing_state,
+            cfg=cfg,
+            runtime_failure_ownership_fn=runtime_failure_ownership_fn,
+        )
     if source == "silence_waker" and not _silence_generation_matches(
         existing_state,
         msg,
@@ -62,7 +75,7 @@ async def handle_direct_dispatch_source(
         existing=existing_state,
         source=source,
         hint=hint,
-        full_cooldown_seconds=cfg.trigger_decider.post_agent_cooldown_seconds,
+        full_cooldown_seconds=cfg.intake.post_agent_cooldown_seconds,
         now=now,
     )
     if cooldown.should_skip:
@@ -121,9 +134,8 @@ async def handle_direct_dispatch_source(
         if not session_id:
             raise RuntimeError("dispatched session is missing session_id")
         session.casework_attempt = (
-            (previous_state.consecutive_agent_failures if previous_state else 0)
-            + 1
-        )
+            previous_state.consecutive_agent_failures if previous_state else 0
+        ) + 1
 
         def _claim_generation(current: TicketState | None) -> TicketState:
             processing_state = (
@@ -176,9 +188,7 @@ async def handle_direct_dispatch_source(
                 "trigger_dispatch_coalesced_existing_session",
                 ticket_id=ticket_id,
                 source=source,
-                session_id=str(
-                    getattr(dispatched_session, "session_id", "") or ""
-                ),
+                session_id=str(getattr(dispatched_session, "session_id", "") or ""),
             )
             return DirectDispatchResult(
                 handled=True,
@@ -206,9 +216,56 @@ async def handle_direct_dispatch_source(
             )
             raise
         if source == "silence_waker" and previous_state is not None:
-            previous_state.consecutive_agent_failures += 1
-            previous_state.delivery_attempt_id = delivery_attempt_id
-            if previous_state.consecutive_agent_failures >= _MAX_DIRECT_DISPATCH_FAILURES:
+            failure_revision = (
+                bound_revision
+                if bound_revision is not None
+                else previous_state.state_revision
+            )
+            failure_state = "processing" if bound_session_id else previous_state.state
+            failure_owner = (
+                bound_session_id
+                if bound_session_id
+                else previous_state.active_session_id
+            )
+            failure_count = previous_state.consecutive_agent_failures + 1
+            if failure_count >= _MAX_DIRECT_DISPATCH_FAILURES:
+                owner_token = f"dispatch-failure:{delivery_attempt_id}:{failure_count}"
+                expected_effect_reference = casework_effect_reference(
+                    ticket_id,
+                    f"{delivery_attempt_id}:runtime-failure",
+                )
+
+                def _claim_failure_ownership(
+                    current_state: TicketState | None,
+                ) -> TicketState:
+                    if current_state is None:
+                        raise RuntimeError("dispatch failure ownership requires state")
+                    pending = deepcopy(current_state)
+                    pending.state = "ownership_pending"
+                    pending.active_session_id = owner_token
+                    pending.silence_window_end = None
+                    pending.delivery_attempt_id = delivery_attempt_id
+                    pending.consecutive_agent_failures = failure_count
+                    pending.ownership_action = "support"
+                    pending.ownership_reason = "automation_retry_exhausted"
+                    pending.ownership_effect_reference = expected_effect_reference
+                    pending.last_verdict = "automation_retry_exhausted_pending"
+                    return pending
+
+                ownership_claim = state.update_if_revision(
+                    ticket_id,
+                    expected_revision=failure_revision,
+                    expected_state=failure_state,
+                    expected_active_session_id=failure_owner,
+                    mutate=_claim_failure_ownership,
+                )
+                if ownership_claim is None:
+                    logger.info(
+                        "trigger_dispatch_failure_claim_lost_generation",
+                        ticket_id=ticket_id,
+                        source=source,
+                    )
+                    raise
                 if runtime_failure_ownership_fn is None:
                     from zd_agent.services.casework_runtime_failures import (
                         persist_runtime_failure_ownership,
@@ -216,62 +273,142 @@ async def handle_direct_dispatch_source(
 
                     runtime_failure_ownership_fn = persist_runtime_failure_ownership
                 receipt = await runtime_failure_ownership_fn(
-                    state_dir=(
-                        Path(cfg.resources.base_dir) / cfg.resources.state_dir
-                    ),
+                    state_dir=(Path(cfg.resources.base_dir) / cfg.resources.state_dir),
                     ticket_id=ticket_id,
                     delivery_attempt_id=delivery_attempt_id,
-                    generation=previous_state.state_revision,
+                    generation=ownership_claim.state_revision,
                     source_event_id=(
-                        previous_state.last_customer_comment_id or ""
+                        ownership_claim.after.last_customer_comment_id or ""
                     ),
                     snapshot_customer_message_count=None,
                     snapshot_customer_last_message_id=(
-                        previous_state.last_customer_comment_id or ""
+                        ownership_claim.after.last_customer_comment_id or ""
                     ),
-                    automation_attempt=(
-                        previous_state.consecutive_agent_failures
-                    ),
+                    automation_attempt=failure_count,
                     failure_type="AgentDispatchUnavailable",
                 )
-                previous_state.state = "owned"
-                previous_state.active_session_id = ""
-                previous_state.silence_window_end = None
-                previous_state.ownership_action = receipt.ownership_action.value
-                previous_state.ownership_reason = receipt.reason_code.value
-                previous_state.ownership_effect_reference = receipt.reference
-                previous_state.last_verdict = receipt.reason_code.value
-                state.set(ticket_id, previous_state)
+                from zd_agent.casework.domain.enums import OwnershipState
+
+                if receipt.ownership_state is not OwnershipState.CONFIRMED:
+                    logger.warning(
+                        "trigger_dispatch_failure_ownership_pending",
+                        ticket_id=ticket_id,
+                        source=source,
+                        reference=receipt.reference,
+                    )
+                    return DirectDispatchResult(
+                        handled=True,
+                        action="ownership_pending_dispatch_retry_exhausted",
+                    )
+
+                def _confirm_failure_ownership(
+                    pending: TicketState | None,
+                ) -> TicketState:
+                    if pending is None:
+                        raise RuntimeError("dispatch ownership claim disappeared")
+                    pending.state = "owned"
+                    pending.active_session_id = ""
+                    pending.silence_window_end = None
+                    pending.ownership_action = receipt.ownership_action.value
+                    pending.ownership_reason = receipt.reason_code.value
+                    pending.ownership_effect_reference = receipt.reference
+                    pending.last_verdict = receipt.reason_code.value
+                    return pending
+
+                confirmed = state.update_if_revision(
+                    ticket_id,
+                    expected_revision=ownership_claim.state_revision,
+                    expected_state="ownership_pending",
+                    expected_active_session_id=owner_token,
+                    mutate=_confirm_failure_ownership,
+                )
+                if confirmed is None:
+                    logger.info(
+                        "trigger_dispatch_failure_confirmation_lost_generation",
+                        ticket_id=ticket_id,
+                        source=source,
+                        reference=receipt.reference,
+                    )
+                    return DirectDispatchResult(
+                        handled=True,
+                        action="stale_dispatch_failure_ownership",
+                    )
                 logger.error(
                     "trigger_dispatch_retry_exhausted",
                     ticket_id=ticket_id,
                     source=source,
-                    failures=previous_state.consecutive_agent_failures,
+                    failures=failure_count,
                 )
                 return DirectDispatchResult(
                     handled=True,
                     action="owned_dispatch_retry_exhausted",
                 )
 
-            previous_state.state = "in_silence_window"
-            previous_state.last_verdict = "agent_retry"
+            retry_state = deepcopy(previous_state)
+            retry_state.consecutive_agent_failures = failure_count
+            retry_state.delivery_attempt_id = delivery_attempt_id
+            retry_state.state = "in_silence_window"
+            retry_state.active_session_id = ""
+            retry_state.last_verdict = "agent_retry"
             backoff_seconds = min(
                 300,
-                30 * (2 ** (previous_state.consecutive_agent_failures - 1)),
+                30 * (2 ** (failure_count - 1)),
             )
-            previous_state.silence_window_end = now + timedelta(
+            retry_state.silence_window_end = now + timedelta(
                 seconds=backoff_seconds,
             )
-            state.set(ticket_id, previous_state)
+            restored = state.update_if_revision(
+                ticket_id,
+                expected_revision=failure_revision,
+                expected_state=failure_state,
+                expected_active_session_id=failure_owner,
+                mutate=lambda _current: retry_state,
+            )
+            if restored is None:
+                logger.info(
+                    "trigger_dispatch_retry_restore_lost_generation",
+                    ticket_id=ticket_id,
+                    source=source,
+                )
+                raise
         elif previous_state is None:
-            state.delete(ticket_id)
+            if bound_revision is not None:
+                state.delete_if_revision(
+                    ticket_id,
+                    expected_revision=bound_revision,
+                    expected_state="processing",
+                    expected_active_session_id=bound_session_id,
+                )
         else:
-            state.set(ticket_id, previous_state)
+            expected_current_revision = (
+                bound_revision
+                if bound_revision is not None
+                else previous_state.state_revision
+            )
+            expected_current_state = (
+                "processing" if bound_session_id else previous_state.state
+            )
+            expected_current_owner = (
+                bound_session_id
+                if bound_session_id
+                else previous_state.active_session_id
+            )
+            state.update_if_revision(
+                ticket_id,
+                expected_revision=expected_current_revision,
+                expected_state=expected_current_state,
+                expected_active_session_id=expected_current_owner,
+                mutate=lambda _current: deepcopy(previous_state),
+            )
         logger.exception(
             "trigger_dispatch_direct_failed_state_restored",
             ticket_id=ticket_id,
             source=source,
-            restored_state=(previous_state.state if previous_state else None),
+            restored_state=(
+                "in_silence_window"
+                if source == "silence_waker" and previous_state is not None
+                else (previous_state.state if previous_state else None)
+            ),
         )
         raise
     return DirectDispatchResult(handled=True, dispatched=True, action="dispatch")
@@ -291,4 +428,82 @@ def _silence_generation_matches(current: TicketState | None, msg: dict) -> bool:
         isinstance(expected_revision, int)
         and current.state_revision == expected_revision
         and current_window == expected_window
+    )
+
+
+def _pending_dispatch_ownership_matches(
+    current: TicketState | None,
+    msg: dict,
+) -> bool:
+    return bool(
+        current is not None
+        and current.state == "ownership_pending"
+        and current.active_session_id.startswith("dispatch-failure:")
+        and current.delivery_attempt_id == str(msg.get("delivery_attempt_id") or "")
+    )
+
+
+async def _resume_pending_dispatch_ownership(
+    *,
+    ticket_id: int,
+    state: Any,
+    pending: TicketState,
+    cfg: Any,
+    runtime_failure_ownership_fn: Any | None,
+) -> DirectDispatchResult:
+    """Resume the crash gap after the state claim but before owner completion."""
+    if runtime_failure_ownership_fn is None:
+        from zd_agent.services.casework_runtime_failures import (
+            persist_runtime_failure_ownership,
+        )
+
+        runtime_failure_ownership_fn = persist_runtime_failure_ownership
+    receipt = await runtime_failure_ownership_fn(
+        state_dir=(Path(cfg.resources.base_dir) / cfg.resources.state_dir),
+        ticket_id=ticket_id,
+        delivery_attempt_id=pending.delivery_attempt_id,
+        generation=pending.state_revision,
+        source_event_id=pending.last_customer_comment_id or "",
+        snapshot_customer_message_count=None,
+        snapshot_customer_last_message_id=pending.last_customer_comment_id or "",
+        automation_attempt=max(
+            _MAX_DIRECT_DISPATCH_FAILURES,
+            pending.consecutive_agent_failures,
+        ),
+        failure_type="AgentDispatchUnavailable",
+    )
+    from zd_agent.casework.domain.enums import OwnershipState
+
+    if receipt.ownership_state is not OwnershipState.CONFIRMED:
+        return DirectDispatchResult(
+            handled=True,
+            action="ownership_pending_dispatch_retry_exhausted",
+        )
+
+    def _confirm(current: TicketState | None) -> TicketState:
+        if current is None:
+            raise RuntimeError("pending dispatch ownership state disappeared")
+        current.state = "owned"
+        current.active_session_id = ""
+        current.silence_window_end = None
+        current.ownership_action = receipt.ownership_action.value
+        current.ownership_reason = receipt.reason_code.value
+        current.ownership_effect_reference = receipt.reference
+        current.last_verdict = receipt.reason_code.value
+        return current
+
+    confirmed = state.update_if_revision(
+        ticket_id,
+        expected_revision=pending.state_revision,
+        expected_state="ownership_pending",
+        expected_active_session_id=pending.active_session_id,
+        mutate=_confirm,
+    )
+    return DirectDispatchResult(
+        handled=True,
+        action=(
+            "owned_dispatch_retry_exhausted"
+            if confirmed is not None
+            else "stale_dispatch_failure_ownership"
+        ),
     )

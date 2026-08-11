@@ -79,6 +79,11 @@ async def persist_runtime_failure_ownership(
     if automation_attempt < _MAX_AUTOMATION_ATTEMPTS:
         raise ValueError("runtime ownership requires an exhausted retry budget")
     safe_failure_type = _safe_failure_type(failure_type)
+    fallback_cursor = f"runtime-failure:{delivery_attempt_id}"
+    source_event_id = source_event_id.strip() or fallback_cursor
+    snapshot_customer_last_message_id = (
+        snapshot_customer_last_message_id.strip() or fallback_cursor
+    )
     store = CaseworkEffectStore(state_dir / "casework_effects.sqlite3")
     effect = store.prepare(
         ticket_id=ticket_id,

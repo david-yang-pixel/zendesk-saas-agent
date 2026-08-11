@@ -1,4 +1,5 @@
 """Entry gates for trigger consumer messages."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -65,11 +66,34 @@ def handle_trigger_entry_gate(
         return TriggerGateResult(handled=True, action="paused")
 
     existing_state = state.get(ticket_id)
+    if existing_state is not None and existing_state.state == "manual_reconciliation":
+        logger.error(
+            "trigger_skip_manual_reconciliation",
+            ticket_id=ticket_id,
+            source=source,
+            delivery_attempt_id=existing_state.delivery_attempt_id,
+        )
+        decision_log.log_decision(
+            log_path=log_path,
+            ticket_id=ticket_id,
+            verdict="manual_reconciliation",
+            action="skip",
+            extra={"source": source},
+        )
+        return TriggerGateResult(
+            handled=True,
+            action="manual_reconciliation_required",
+        )
     if (
         existing_state is not None
-        and existing_state.state == "processing"
         and existing_state.active_session_id
-        and source != "startup_recovery"
+        and (
+            (existing_state.state == "processing" and source != "startup_recovery")
+            or (
+                existing_state.state == "ownership_pending"
+                and source != "silence_waker"
+            )
+        )
     ):
         logger.info(
             "trigger_coalesced_into_active_session",
@@ -94,7 +118,8 @@ def handle_trigger_entry_gate(
 
     if (
         existing_state is not None
-        and existing_state.state in {
+        and existing_state.state
+        in {
             "escalated_to_human",
             "owned",
             "externally_owned",
@@ -109,7 +134,8 @@ def handle_trigger_entry_gate(
             escalated_reason=existing_state.escalated_reason,
             escalated_at=(
                 existing_state.escalated_at.isoformat()
-                if existing_state.escalated_at else None
+                if existing_state.escalated_at
+                else None
             ),
         )
         decision_log.log_decision(

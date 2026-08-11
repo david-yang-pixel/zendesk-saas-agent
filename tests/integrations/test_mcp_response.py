@@ -1,4 +1,5 @@
 """Tests for remote MCP JSON/SSE response parsing."""
+
 from __future__ import annotations
 
 import httpx
@@ -19,12 +20,12 @@ def test_load_json_or_sse_response_parses_crlf_sse_events() -> None:
         200,
         headers={"Content-Type": "text/event-stream"},
         text=(
-            'event: ping\r\n'
+            "event: ping\r\n"
             'data: {"jsonrpc":"2.0","id":1}\r\n'
-            '\r\n'
-            'event: message\r\n'
+            "\r\n"
+            "event: message\r\n"
             'data: {"jsonrpc":"2.0","id":1,"result":{"ok":true}}\r\n'
-            '\r\n'
+            "\r\n"
         ),
     )
 

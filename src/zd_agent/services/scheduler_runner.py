@@ -150,7 +150,9 @@ async def poll_mention_task() -> None:
                 if matched_trigger:
                     _mention_tracker.mark_processed(comment_id)
                     hint = f"[来自 @mention 的请求]\n{comment.get('body', '')}"
-                    await _manager.dispatch(tid, hint=hint, dry_run=_dry_run, trigger_type="mention")
+                    await _manager.dispatch(
+                        tid, hint=hint, dry_run=_dry_run, trigger_type="mention"
+                    )
                     logger.info(
                         "mention_poll_dispatched",
                         ticket_id=tid,
@@ -255,7 +257,9 @@ async def run_scheduler(
 
     # 优雅关闭：等待所有活跃 session 完成
     if _manager.active_count > 0:
-        console.print(f"[yellow]等待 {_manager.active_count} 个活跃 session 完成...[/yellow]")
+        console.print(
+            f"[yellow]等待 {_manager.active_count} 个活跃 session 完成...[/yellow]"
+        )
         await _manager.wait_all()
 
     console.print("[bold green]Scheduler 已停止[/bold green]")

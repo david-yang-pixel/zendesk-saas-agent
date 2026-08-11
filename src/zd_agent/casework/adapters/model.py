@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from hashlib import sha256
-import json
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
-from zd_agent.casework.adapters.legacy_evidence import LegacyCaseMaterial
 from zd_agent.casework.domain.base import FrozenModel, TargetReference
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
@@ -29,7 +28,7 @@ from zd_agent.casework.domain.models import (
     ReplyCandidate,
 )
 from zd_agent.casework.policies.privacy import claim_is_customer_safe
-from zd_agent.runtime.llm.types import LLMProvider
+from zd_agent.runtime.llm.types import LLMProvider, LLMResponse
 
 
 class ModelOutputError(RuntimeError):
@@ -95,6 +94,7 @@ async def read_structured_output(
     system: str,
     user: str | list[dict[str, Any]],
     model_type: type[_ModelType],
+    on_response: Callable[[LLMResponse], None] | None = None,
 ) -> _ModelType:
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system},
@@ -103,6 +103,8 @@ async def read_structured_output(
     last_error = ""
     for attempt in range(2):
         response = await provider.chat(messages, tools=None, temperature=0.0)
+        if on_response is not None:
+            on_response(response)
         content = response.content or ""
         try:
             return model_type.model_validate_json(_json_object(content))
@@ -121,68 +123,9 @@ async def read_structured_output(
                         },
                     ),
                 )
-    raise ModelOutputError(f"model returned invalid structured output: {last_error[:1000]}")
-
-
-def _bounded_text(value: str, limit: int) -> str:
-    if len(value) <= limit:
-        return value
-    return value[:limit] + "\n[truncated for model context]"
-
-
-def _evidence_for_prompt(material: LegacyCaseMaterial) -> list[dict[str, object]]:
-    rendered: list[dict[str, object]] = []
-    remaining = 60_000
-    for item in material.evidence:
-        metadata = item.model_dump(
-            mode="json",
-            exclude={"payload", "payload_ref"},
-        )
-        payload = json.dumps(item.payload, ensure_ascii=False, separators=(",", ":"))
-        allowance = min(8_000, remaining)
-        if allowance <= 0:
-            break
-        metadata["payload"] = _bounded_text(payload, allowance)
-        rendered.append(metadata)
-        remaining -= min(len(payload), allowance)
-    return rendered
-
-
-def _context_for_prompt(context: CaseContext) -> dict[str, object]:
-    billing = context.billing.snapshot if context.billing else None
-    return {
-        "question": context.ticket.questions[-1],
-        "identity": {
-            "status": context.identity.status.value,
-            "method": context.identity.method.value,
-            "selected_tenant_id": context.identity.selected_tenant_id,
-            "workspace_name": context.identity.selected_workspace_name,
-            "candidate_count": len(context.identity.candidates),
-        },
-        "billing": billing.model_dump(mode="json") if billing else None,
-        "visual_observations": [
-            observation.model_dump(mode="json")
-            for observation in context.visual_observations
-        ],
-    }
-
-
-def _investigation_prompt(
-    context: CaseContext,
-    material: LegacyCaseMaterial,
-) -> str:
-    payload = {
-        "case_context": _context_for_prompt(context),
-        "eligible_evidence": _evidence_for_prompt(material),
-        "legacy_reference": {
-            "warning": "Navigation only. It cannot prove a claim or select ownership.",
-            "analysis": _bounded_text(material.legacy_analysis, 12_000),
-            "reply_type": material.legacy_reply_type,
-            "reply": _bounded_text(material.legacy_reply_body, 6_000),
-        },
-        "output_schema": _ModelAssessment.model_json_schema(),
-    }
-    return json.dumps(payload, ensure_ascii=False)
+    raise ModelOutputError(
+        f"model returned invalid structured output: {last_error[:1000]}"
+    )
 
 
 def build_investigation_result(
@@ -251,21 +194,29 @@ _TENANT_BOUND_CLAIM_ROLES = {
 
 
 def _bind_claim_to_context(context: CaseContext, claim: Claim) -> Claim:
-    """Attach code-resolved target and binding evidence without changing prose."""
+    """Replace model-chosen targets with the code-resolved case target."""
+    if claim.role is ClaimRole.VISUAL_OBSERVATION:
+        return claim.model_copy(
+            update={
+                "targets": (
+                    TargetReference(
+                        kind="ticket_id",
+                        value=str(context.ticket.ticket_id),
+                    ),
+                ),
+            },
+        )
     if (
         context.identity.status is not ResolutionStatus.RESOLVED
         or claim.role not in _TENANT_BOUND_CLAIM_ROLES
     ):
-        return claim
-    targets = claim.targets
-    if not any(target.kind == "tenant_id" for target in targets):
-        targets = (
-            *targets,
-            TargetReference(
-                kind="tenant_id",
-                value=context.identity.selected_tenant_id,
-            ),
-        )
+        return claim.model_copy(update={"targets": ()})
+    targets = (
+        TargetReference(
+            kind="tenant_id",
+            value=context.identity.selected_tenant_id,
+        ),
+    )
     evidence_ids = [*claim.supporting_evidence_ids, *context.identity.evidence_ids]
     if (
         claim.role is ClaimRole.CURRENT_STATE
@@ -279,40 +230,6 @@ def _bind_claim_to_context(context: CaseContext, claim: Claim) -> Claim:
             "supporting_evidence_ids": tuple(dict.fromkeys(evidence_ids)),
         },
     )
-
-
-class LlmCaseInvestigator:
-    def __init__(
-        self,
-        *,
-        provider: LLMProvider,
-        material: LegacyCaseMaterial,
-    ) -> None:
-        self._provider = provider
-        self._material = material
-
-    async def investigate(self, context: CaseContext) -> InvestigationResult:
-        model_result = await read_structured_output(
-            provider=self._provider,
-            system=(
-                "You are the evidence synthesis lane of a support system. Return "
-                "only JSON matching the supplied schema. Cite only eligible evidence "
-                "IDs. A legacy analysis or reply is navigation, never evidence. Use "
-                "confirmed only for direct current evidence; use evidence_supported "
-                "for a bounded inference. Do not invent a workspace, plan, recovery, "
-                "root cause, customer field, action, or commitment. Claims must be "
-                "concise customer-safe English. You cannot choose an owner or handoff."
-                " A tenant Billing claim must cite both case_context.identity and "
-                "case_context.billing evidence and target the selected tenant."
-            ),
-            user=_investigation_prompt(context, self._material),
-            model_type=_ModelAssessment,
-        )
-        return build_investigation_result(
-            context=context,
-            evidence=self._material.evidence,
-            model_result=model_result,
-        )
 
 
 _FIELD_QUESTIONS = {
@@ -395,7 +312,9 @@ class PolicyReplyWriter:
         return ReplyCandidate(
             body="\n\n".join(paragraphs),
             reply_kind=decision.reply_kind,
-            used_claim_ids=tuple(claim.claim_id for claim in assessment.admitted_claims),
+            used_claim_ids=tuple(
+                claim.claim_id for claim in assessment.admitted_claims
+            ),
             requested_customer_fields=decision.required_customer_fields,
             mentions_human_followup=(
                 decision.ownership_action is not OwnershipAction.NONE

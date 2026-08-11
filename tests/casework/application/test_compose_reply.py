@@ -1,3 +1,5 @@
+import pytest
+
 from zd_agent.casework.application.compose_reply import ReplyComposer, ReplyQualityError
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
@@ -180,6 +182,40 @@ async def test_reply_without_ownership_cannot_promise_human_followup() -> None:
         raise AssertionError("human promise without ownership must fail")
 
 
+@pytest.mark.parametrize(
+    "body",
+    (
+        "A support specialist will follow up in this ticket.",
+        "Our team will follow up in this ticket.",
+        "A colleague will take over from here.",
+        "We will have someone contact you.",
+        "I've escalated this to our engineering team.",
+        "Our engineers are looking into this.",
+        "A specialist has been assigned to your case.",
+        "Your case is now with our billing team.",
+        "We'll get back to you after an engineer checks this.",
+        "This has been forwarded to the SRE team.",
+        "Expect a response from our team shortly.",
+        "A colleague will reach out shortly.",
+    ),
+)
+async def test_reply_body_cannot_hide_human_promise_without_ownership(body) -> None:
+    candidate = ReplyCandidate(
+        body=body,
+        language="en",
+        reply_kind=ReplyKind.ANSWER,
+        used_claim_ids=("claim-current",),
+        mentions_human_followup=False,
+    )
+    composer = ReplyComposer(
+        writer=FakeWriter(candidate),
+        reviewer=FakeReviewer(candidate.body),
+    )
+
+    with pytest.raises(ReplyQualityError, match="human follow-up"):
+        await composer.compose(assessment=_assessment(), decision=_decision())
+
+
 async def test_customer_ask_fields_must_exactly_match_decision() -> None:
     assessment = CaseAssessment(
         question="Which workspace is affected?",
@@ -253,6 +289,57 @@ async def test_reviewer_cannot_introduce_unapproved_workspace_id_question() -> N
         assert "workspace identity" in str(error)
     else:
         raise AssertionError("reviewer-introduced identity ask must fail")
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "What is your Workspace ID?",
+        "Tell me your workspace name.",
+        "I need your Workspace ID to continue.",
+        "Let us know which workspace is affected.",
+        "We need you to identify the affected workspace.",
+        "Name the workspace where this happens.",
+        "Share the workspace URL used for this request.",
+        "The affected workspace still needs to be identified.",
+    ),
+)
+async def test_resolved_reply_cannot_rephrase_workspace_identity_question(body) -> None:
+    candidate = ReplyCandidate(
+        body=body,
+        language="en",
+        reply_kind=ReplyKind.ANSWER,
+        used_claim_ids=("claim-current",),
+    )
+    composer = ReplyComposer(
+        writer=FakeWriter(candidate),
+        reviewer=FakeReviewer(candidate.body),
+    )
+
+    with pytest.raises(ReplyQualityError, match="workspace identity"):
+        await composer.compose(assessment=_assessment(), decision=_decision())
+
+
+async def test_workspace_recovery_instruction_is_not_misread_as_identity_request() -> (
+    None
+):
+    candidate = ReplyCandidate(
+        body=(
+            "Please run one request with the Dify-managed provider in this "
+            "workspace; we can then verify that execution."
+        ),
+        language="en",
+        reply_kind=ReplyKind.ANSWER,
+        used_claim_ids=("claim-current",),
+    )
+    composer = ReplyComposer(
+        writer=FakeWriter(candidate),
+        reviewer=FakeReviewer(candidate.body),
+    )
+
+    result = await composer.compose(assessment=_assessment(), decision=_decision())
+
+    assert result.body == candidate.body
 
 
 async def test_engineering_ownership_may_be_described_without_changing_it() -> None:

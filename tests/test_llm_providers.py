@@ -21,8 +21,11 @@ from zd_agent.runtime.llm.openai_provider import (
     _parse_completion,
     _tool_schemas_to_openai,
 )
-from zd_agent.runtime.llm.types import LLMProvider, LLMResponse, ToolCallRequest, ToolSchema
-from zd_agent.runtime.messages import MessageStore
+from zd_agent.runtime.llm.types import (
+    LLMResponse,
+    ToolCallRequest,
+    ToolSchema,
+)
 
 
 # --- types.py ---
@@ -84,14 +87,27 @@ def test_tool_schemas_to_openai_format() -> None:
     """_tool_schemas_to_openai 将 ToolSchema 列表转为 OpenAI tools 格式。"""
     tools = [
         ToolSchema(name="f1", description="d1", parameters={"type": "object"}),
-        ToolSchema(name="f2", description="d2", parameters={"type": "object", "properties": {}}),
+        ToolSchema(
+            name="f2", description="d2", parameters={"type": "object", "properties": {}}
+        ),
     ]
     out = _tool_schemas_to_openai(tools)
     assert out == [
-        {"type": "function", "function": {"name": "f1", "description": "d1", "parameters": {"type": "object"}}},
         {
             "type": "function",
-            "function": {"name": "f2", "description": "d2", "parameters": {"type": "object", "properties": {}}},
+            "function": {
+                "name": "f1",
+                "description": "d1",
+                "parameters": {"type": "object"},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "f2",
+                "description": "d2",
+                "parameters": {"type": "object", "properties": {}},
+            },
         },
     ]
 
@@ -106,7 +122,10 @@ def test_messages_to_responses_input_converts_multimodal_chat_content() -> None:
                     {"type": "text", "text": "See screenshot"},
                     {
                         "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,abc", "detail": "low"},
+                        "image_url": {
+                            "url": "data:image/png;base64,abc",
+                            "detail": "low",
+                        },
                     },
                 ],
             },
@@ -705,6 +724,67 @@ def test_openai_messages_to_anthropic_user_and_skip_unknown_role() -> None:
     assert out == [{"role": "user", "content": "hello"}]
 
 
+def test_openai_image_data_url_converts_to_anthropic_image_source() -> None:
+    out = _openai_messages_to_anthropic(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Inspect this screenshot"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgo=",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert out == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Inspect this screenshot"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "iVBORw0KGgo=",
+                    },
+                },
+            ],
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.test/image.png",
+        "data:text/plain;base64,aGVsbG8=",
+        "data:image/png;base64,not-valid-base64!",
+    ],
+)
+def test_anthropic_image_conversion_fails_closed_for_unsupported_sources(
+    url: str,
+) -> None:
+    with pytest.raises(ValueError, match="Anthropic image"):
+        _openai_messages_to_anthropic(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": url}},
+                    ],
+                }
+            ]
+        )
+
+
 def test_map_stop_reason_known_and_unknown() -> None:
     """_map_stop_reason：内置映射与未知值透传。"""
     assert _map_stop_reason(None) == "stop"
@@ -768,51 +848,3 @@ def test_create_llm_provider_unknown_raises() -> None:
 
     with pytest.raises(ValueError, match="不支持的 LLM provider"):
         create_llm_provider(cfg, env)
-
-
-# --- messages.py ---
-
-
-class _FakeProvider(LLMProvider):
-    """测试用最小 LLMProvider：仅实现 format_tool_result。"""
-
-    async def chat(self, messages, tools=None, temperature=0.2):
-        raise NotImplementedError
-
-    def format_tool_result(self, tool_call_id: str, name: str, content: str) -> dict:
-        return {"role": "tool", "tool_call_id": tool_call_id, "name": name, "content": content}
-
-
-def test_message_store_append_and_to_api_messages_same_reference() -> None:
-    """MessageStore：append 系列与 to_api_messages 返回同一内部列表引用。"""
-    store = MessageStore(_FakeProvider())
-    store.append_system("sys")
-    store.append_user("u")
-    store.append_assistant({"role": "assistant", "content": "a"})
-    store.append_tool_result("id1", "n", "out")
-    api = store.to_api_messages()
-    assert api is store.raw
-    assert len(store) == 4
-    assert api[0] == {"role": "system", "content": "sys"}
-    assert api[1] == {"role": "user", "content": "u"}
-    assert api[2]["role"] == "assistant"
-    assert api[3]["role"] == "tool" and api[3]["tool_call_id"] == "id1"
-
-
-def test_message_store_append_assistant_non_dict() -> None:
-    """MessageStore：append_assistant 非 dict 时包装为字符串 content。"""
-    store = MessageStore(_FakeProvider())
-    store.append_assistant("plain")
-    assert store.to_api_messages()[0] == {"role": "assistant", "content": "plain"}
-
-
-def test_message_store_raw_setter_replaces_list() -> None:
-    """MessageStore：raw setter 替换内部消息列表。"""
-    store = MessageStore(_FakeProvider())
-    store.append_user("x")
-    new_list = [{"role": "user", "content": "y"}]
-    store.raw = new_list
-    assert len(store) == 1
-    assert store.to_api_messages()[0]["content"] == "y"
-    # 应持有同一引用
-    assert store.raw is new_list

@@ -34,9 +34,7 @@ async def test_all_redacted_golden_cases_match_expected_casework_outcome() -> No
         "confirmed-platform-defect",
     }
     failures = {
-        item.scenario_id: item.mismatches
-        for item in comparisons
-        if not item.matches
+        item.scenario_id: item.mismatches for item in comparisons if not item.matches
     }
     assert failures == {}
 

@@ -135,8 +135,23 @@ def test_confirmed_v2_execution_sets_typed_terminal_session_state() -> None:
     assert session.casework_reason_code == "confirmed_platform_defect"
     assert session.casework_delivery_state == "confirmed"
     assert session.casework_effect_reference == "casework-effect:1"
-    assert session.public_reply_type == ""
+    assert session.casework_reply_kind == "answer"
     assert session.customer_msgs_snapshot_count == 6
+
+
+def test_session_archive_uses_the_frozen_effect_audit() -> None:
+    session = AgentSession(ticket_id=4001)
+    execution = _execution()
+    frozen = execution.effect_receipt.model_copy(
+        update={"authoritative_audit": "Frozen coherent v2 audit"},
+    )
+
+    apply_casework_execution_to_session(
+        session,
+        execution.model_copy(update={"effect_receipt": frozen}),
+    )
+
+    assert session.analysis == "Frozen coherent v2 audit"
 
 
 def test_v2_retry_pending_defers_without_customer_reply() -> None:
@@ -150,11 +165,52 @@ def test_v2_retry_pending_defers_without_customer_reply() -> None:
     assert session.casework_delivery_state == "not_required"
 
 
+def test_paused_delivery_projects_to_typed_non_failure_session() -> None:
+    session = AgentSession(ticket_id=4001)
+    execution = _execution()
+    paused_receipt = CaseworkEffectReceipt(
+        delivery_state=DeliveryState.PAUSED,
+        ownership_state=OwnershipState.NOT_REQUIRED,
+        detail="Public reply is currently disabled (kill switch).",
+    )
+
+    apply_casework_execution_to_session(
+        session,
+        execution.model_copy(update={"effect_receipt": paused_receipt}),
+    )
+
+    assert session.status is SessionStatus.COMPLETED
+    assert session.reply_sent is False
+    assert session.casework_delivery_state == "paused"
+    assert session.casework_ownership_state == "not_required"
+
+
+def test_paused_delivery_keeps_typed_ownership_receipt() -> None:
+    session = AgentSession(ticket_id=4001)
+    execution = _execution()
+    paused_receipt = CaseworkEffectReceipt(
+        delivery_state=DeliveryState.PAUSED,
+        ownership_state=OwnershipState.CONFIRMED,
+        ownership_reference="casework-effect:paused-engineering",
+        detail="Public reply is currently disabled (kill switch).",
+    )
+
+    apply_casework_execution_to_session(
+        session,
+        execution.model_copy(update={"effect_receipt": paused_receipt}),
+    )
+
+    assert session.status is SessionStatus.COMPLETED
+    assert session.reply_sent is False
+    assert session.casework_ownership_action == "engineering"
+    assert session.casework_ownership_state == "confirmed"
+    assert session.casework_effect_reference == ("casework-effect:paused-engineering")
+
+
 async def test_runner_has_only_the_v2_casework_path(monkeypatch) -> None:
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
-    cfg.agent.guardrails = MagicMock()
     cfg.casework.mode = ExecutionMode.CASEWORK
     monkeypatch.setattr(runner, "get_config", lambda: cfg)
     casework = AsyncMock()
@@ -237,13 +293,12 @@ async def test_ownership_persistence_retry_skips_the_model(
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
-    cfg.agent.guardrails = MagicMock()
-    cfg.casework.mode.value = "casework"
+    cfg.casework.mode = ExecutionMode.CASEWORK
     cfg.resources.base_dir = str(tmp_path)
     cfg.resources.state_dir = "state"
     session = AgentSession(ticket_id=4001, casework_attempt=4)
     registry = MagicMock()
-    llm = MagicMock()
+    provider_factory = MagicMock()
     execute = AsyncMock()
     persist = AsyncMock(
         return_value=RuntimeFailureOwnershipReceipt(
@@ -254,7 +309,7 @@ async def test_ownership_persistence_retry_skips_the_model(
         ),
     )
     monkeypatch.setattr(runner, "create_casework_tool_registry", registry)
-    monkeypatch.setattr(runner, "LLMClient", llm)
+    monkeypatch.setattr(runner, "create_llm_provider", provider_factory)
     monkeypatch.setattr(runner, "execute_casework_v2", execute)
     monkeypatch.setattr(runner, "persist_runtime_failure_ownership", persist)
     monkeypatch.setattr(runner, "ensure_archive", MagicMock())
@@ -262,7 +317,7 @@ async def test_ownership_persistence_retry_skips_the_model(
     await runner._run_casework_agent(session, cfg)
 
     registry.assert_not_called()
-    llm.assert_not_called()
+    provider_factory.assert_not_called()
     execute.assert_not_awaited()
     persist.assert_awaited_once()
     assert session.status is SessionStatus.COMPLETED

@@ -53,7 +53,9 @@ def test_unique_form_email_membership_resolves_without_workspace_id() -> None:
     assert set(resolution.evidence_ids) == {"ev-form", "ev-owner@example.com"}
 
 
-def test_noncanonical_workspace_label_does_not_override_unique_email_membership() -> None:
+def test_noncanonical_workspace_label_does_not_override_unique_email_membership() -> (
+    None
+):
     resolution = resolve_workspace_identity(
         form_email="owner@example.com",
         form_workspace_id="A different display label",

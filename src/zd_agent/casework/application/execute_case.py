@@ -57,9 +57,13 @@ class CaseworkExecutor:
                 delivery_attempt_id=delivery_attempt_id,
                 dry_run=dry_run,
             )
+            if receipt.authority_projection is not None:
+                run = receipt.authority_projection.project(run)
             run = run.model_copy(
                 update={
                     "delivery_attempted": not dry_run,
                 },
             )
+            if receipt.authority_projection is not None:
+                receipt = receipt.model_copy(update={"authority_projection": None})
         return CaseworkExecution(run=run, effect_receipt=receipt)

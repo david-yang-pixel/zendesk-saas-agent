@@ -1,4 +1,5 @@
 """Typed aiohttp app context for the SaaS service."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -26,6 +27,13 @@ BACKGROUND_TASK_KEYS = (
     TRIGGER_TASK_KEY,
 )
 
+BACKGROUND_TASK_NAMES = {
+    SILENCE_TASK_KEY: "silence_task",
+    WAITING_POLLER_TASK_KEY: "waiting_poller_task",
+    MENTION_POLLER_TASK_KEY: "mention_poller_task",
+    TRIGGER_TASK_KEY: "trigger_task",
+}
+
 _LEGACY_KEYS = {
     CONFIG_KEY: "config",
     TRIGGER_QUEUE_KEY: "trigger_queue",
@@ -34,10 +42,7 @@ _LEGACY_KEYS = {
     SESSION_MANAGER_KEY: "session_manager",
     ADMIN_AUTH_KEY: "admin_auth",
     ADMIN_CONFIG_KEY: "admin_config",
-    SILENCE_TASK_KEY: "silence_task",
-    WAITING_POLLER_TASK_KEY: "waiting_poller_task",
-    MENTION_POLLER_TASK_KEY: "mention_poller_task",
-    TRIGGER_TASK_KEY: "trigger_task",
+    **BACKGROUND_TASK_NAMES,
     MENTION_TRACKER_KEY: "mention_tracker",
 }
 
@@ -59,7 +64,9 @@ def install_saas_app_context(
     app[SESSION_MANAGER_KEY] = manager
 
 
-def install_admin_context(*, app: web.Application, auth_store: Any, config_store: Any) -> None:
+def install_admin_context(
+    *, app: web.Application, auth_store: Any, config_store: Any
+) -> None:
     app[ADMIN_AUTH_KEY] = auth_store
     app[ADMIN_CONFIG_KEY] = config_store
 

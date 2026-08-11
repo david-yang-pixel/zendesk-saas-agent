@@ -1,4 +1,5 @@
 """Regression tests for trigger-state recovery failures."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -6,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
+from zd_agent.config import AppConfig, IntakeConfig, PublicReplyConfig, ZendeskConfig
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
@@ -22,8 +23,7 @@ def _config() -> AppConfig:
         min_ticket_id=0,
         agent_user_id=45433304089364,
     )
-    config.trigger_decider = TriggerDeciderConfig(
-        llm_model="gpt-test",
+    config.intake = IntakeConfig(
         post_agent_cooldown_seconds=180,
     )
     return config
@@ -53,14 +53,18 @@ async def test_startup_recovery_reprocesses_matching_saved_comment(
         state=state,
         cfg=_config(),
         log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=(
-            [{
-                "id": "form-response-1",
-                "body": "Name: Ellie\nWorkspace ID: 86628345-731d-4475-b681-5006f48a2287",
-                "created_at": message_time.isoformat(),
-            }],
-            {"id": 3461},
-        )),
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "form-response-1",
+                        "body": "Name: Ellie\nWorkspace ID: 86628345-731d-4475-b681-5006f48a2287",
+                        "created_at": message_time.isoformat(),
+                    }
+                ],
+                {"id": 3461},
+            )
+        ),
         human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )

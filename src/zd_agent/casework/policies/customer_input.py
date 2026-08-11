@@ -41,10 +41,7 @@ def admit_customer_fields(
     rejected = [
         field
         for field in proposed
-        if (
-            field not in _CUSTOMER_ONLY_FIELDS
-            and field not in _IDENTITY_FIELDS
-        )
+        if (field not in _CUSTOMER_ONLY_FIELDS and field not in _IDENTITY_FIELDS)
         or (field == "attachment_resend" and not attachment_resend_allowed)
     ]
     identity_fields = tuple(field for field in proposed if field in _IDENTITY_FIELDS)

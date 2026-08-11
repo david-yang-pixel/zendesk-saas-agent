@@ -28,6 +28,7 @@ is_substantive 混合判断
 
 设计来自 2026-05-13 跟用户讨论。
 """
+
 from __future__ import annotations
 
 import json
@@ -51,6 +52,7 @@ logger = get_logger(module="runtime.pre_send_check")
 # ---------------------------------------------------------------------------
 # 公共数据结构
 # ---------------------------------------------------------------------------
+
 
 class FreshnessRecoveryAction(str, Enum):
     """Typed next step for a failed customer-message freshness check."""
@@ -78,6 +80,7 @@ class FreshnessResult:
     ``continue_send=True``  → 没新消息 / 新消息都不实质 → 可以发原 reply
     ``continue_send=False`` → 有实质性新消息 → abort 当前 reply，重新走 trigger
     """
+
     continue_send: bool
     reason: str = ""
     new_messages_count: int = 0
@@ -90,18 +93,49 @@ class FreshnessResult:
 
 # 客户的"非实质"短消息：寒暄 / 确认 / 催促 / 表情符
 # 这些不应该让 agent abort 重新分析（continue_send=True）
-_IGNORE_LIST: frozenset[str] = frozenset({
-    # 中文
-    "谢谢", "谢谢了", "thx", "好的", "好", "嗯", "嗯嗯", "ok",
-    "在吗", "急", "急急急", "请问还在吗", "您还在吗",
-    "不用了", "算了",
-    # English
-    "thanks", "thank you", "ty", "thx", "got it", "ok",
-    "okay", "k", "alright", "any update", "any update?",
-    "still there?", "you there?", "hello?", "hi?",
-    # 表情符 / 单字
-    "👍", "👌", "✅", "🥲", "🙏", "😅",
-})
+_IGNORE_LIST: frozenset[str] = frozenset(
+    {
+        # 中文
+        "谢谢",
+        "谢谢了",
+        "thx",
+        "好的",
+        "好",
+        "嗯",
+        "嗯嗯",
+        "ok",
+        "在吗",
+        "急",
+        "急急急",
+        "请问还在吗",
+        "您还在吗",
+        "不用了",
+        "算了",
+        # English
+        "thanks",
+        "thank you",
+        "ty",
+        "thx",
+        "got it",
+        "ok",
+        "okay",
+        "k",
+        "alright",
+        "any update",
+        "any update?",
+        "still there?",
+        "you there?",
+        "hello?",
+        "hi?",
+        # 表情符 / 单字
+        "👍",
+        "👌",
+        "✅",
+        "🥲",
+        "🙏",
+        "😅",
+    }
+)
 
 # 视为"实质性"的硬规则匹配模式
 _UUID_RE = re.compile(
@@ -232,7 +266,8 @@ async def is_substantive_llm(
     if resp.status_code != 200:
         logger.warning(
             "pre_send_llm_bad_status",
-            status=resp.status_code, body=resp.text[:200],
+            status=resp.status_code,
+            body=resp.text[:200],
         )
         return True
 
@@ -293,7 +328,8 @@ async def pre_send_check_or_abort(
     except Exception as e:
         logger.warning(
             "pre_send_fetch_error",
-            ticket_id=ticket_id, error_type=type(e).__name__,
+            ticket_id=ticket_id,
+            error_type=type(e).__name__,
         )
         return FreshnessResult(
             continue_send=False,
@@ -332,7 +368,7 @@ async def pre_send_check_or_abort(
                     reason="snapshot_last_id_missing",
                 ),
             )
-        new_msgs = current[snapshot_index + 1:]
+        new_msgs = current[snapshot_index + 1 :]
     else:
         if current_count <= snapshot_count:
             # 没新消息（或者甚至变少了，少见但容错）
@@ -352,17 +388,17 @@ async def pre_send_check_or_abort(
         )
     logger.info(
         "pre_send_new_msgs_detected",
-        ticket_id=ticket_id, new_count=new_count,
-        snapshot_count=snapshot_count, current_count=current_count,
+        ticket_id=ticket_id,
+        new_count=new_count,
+        snapshot_count=snapshot_count,
+        current_count=current_count,
     )
 
     recovery = FreshnessRecovery(
         action=FreshnessRecoveryAction.REFRESH_CONTEXT,
         new_messages=tuple(new_msgs),
         next_snapshot_count=current_count,
-        next_snapshot_last_id=(
-            str(current[-1].get("id") or "") if current else ""
-        ),
+        next_snapshot_last_id=(str(current[-1].get("id") or "") if current else ""),
     )
 
     # 逐条评估新消息，遇任何一条实质性立刻 abort
@@ -372,7 +408,8 @@ async def pre_send_check_or_abort(
         if verdict is True:
             logger.info(
                 "pre_send_abort_heuristic",
-                ticket_id=ticket_id, msg_index=i,
+                ticket_id=ticket_id,
+                msg_index=i,
                 body_preview=(msg.get("body") or "")[:80],
                 has_image=bool(msg.get("image_urls")),
             )
@@ -405,7 +442,8 @@ async def pre_send_check_or_abort(
             if substantive:
                 logger.info(
                     "pre_send_abort_llm",
-                    ticket_id=ticket_id, msg_index=i,
+                    ticket_id=ticket_id,
+                    msg_index=i,
                     body_preview=body[:80],
                 )
                 return FreshnessResult(
@@ -419,7 +457,8 @@ async def pre_send_check_or_abort(
     # 所有新消息都是 non-substantive（寒暄 / 催促 / emoji）→ OK 发原 reply
     logger.info(
         "pre_send_continue_all_non_substantive",
-        ticket_id=ticket_id, new_count=new_count,
+        ticket_id=ticket_id,
+        new_count=new_count,
     )
     return FreshnessResult(
         continue_send=True,

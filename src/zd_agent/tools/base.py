@@ -36,8 +36,9 @@ class Tool(ABC):
     is_write_operation: bool = False
 
     @abstractmethod
-    async def execute(self, args: dict[str, Any], session: AgentSession) -> ToolResult:
-        ...
+    async def execute(
+        self, args: dict[str, Any], session: AgentSession
+    ) -> ToolResult: ...
 
     def to_openai_schema(self) -> dict[str, Any]:
         """转换为 OpenAI function calling 格式"""
@@ -57,7 +58,9 @@ _CHARS_PER_TOKEN = 4
 
 
 def _enforce_max_output(
-    result: ToolResult, max_tokens: int, tool_name: str,
+    result: ToolResult,
+    max_tokens: int,
+    tool_name: str,
 ) -> ToolResult:
     """强制截断 tool 返回，超过 max_tokens*4 字符就截到 90% + 截断标记。
 
@@ -73,9 +76,9 @@ def _enforce_max_output(
     truncated_output = (
         result.output[:keep]
         + f"\n\n[... {tool_name} output truncated from {len(result.output)} "
-          f"to {keep} chars (max_output_tokens={max_tokens}). "
-          f"Add filters / GROUP BY / LIMIT to narrow your query, "
-          f"or call again with a more specific argument.]"
+        f"to {keep} chars (max_output_tokens={max_tokens}). "
+        f"Add filters / GROUP BY / LIMIT to narrow your query, "
+        f"or call again with a more specific argument.]"
     )
     return ToolResult(
         success=result.success,

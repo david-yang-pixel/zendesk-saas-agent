@@ -1,20 +1,15 @@
-"""Test SqlQuery is registered in the tool registry."""
-from zd_agent.tools.registry import create_tool_registry
+"""Raw SQL is intentionally unreachable from the v2 model tool surface."""
+
+from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 
 
-def test_sql_query_registered():
-    reg = create_tool_registry()
-    tool = reg.get("sql_query")
-    assert tool is not None
-    assert tool.name == "sql_query"
-    assert tool.group == "database_query"
+def test_raw_sql_query_is_not_registered():
+    reg = create_casework_tool_registry()
+    assert reg.get("sql_query") is None
 
 
-def test_sql_query_openai_schema_includes_database_enum():
-    reg = create_tool_registry()
-    schema = reg.get("sql_query").to_openai_schema()
-    assert "DB Gateway MCP" in schema["function"]["description"]
-    params = schema["function"]["parameters"]
-    assert "database" in params["properties"]
-    assert params["properties"]["database"]["enum"] == ["prod", "billing", "plugin"]
-    assert params["required"] == ["database", "sql"]
+def test_scoped_inspector_replaces_model_authored_sql():
+    reg = create_casework_tool_registry()
+    inspector = reg.get("inspector_exec")
+    assert inspector is not None
+    assert "tenant_id" in inspector.parameters["properties"]

@@ -1,4 +1,5 @@
 """Default background runner wiring for the SaaS entrypoint."""
+
 from __future__ import annotations
 
 from zd_agent.services.app_lifecycle import BackgroundRunners

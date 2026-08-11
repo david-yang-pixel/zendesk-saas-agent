@@ -16,6 +16,7 @@
 注意 result_preview 只有 500 字符，长 tool 结果里的引用可能被截断 → 这是
 "soft warning"，不当作绝对判断。
 """
+
 from __future__ import annotations
 
 import re
@@ -89,9 +90,7 @@ def audit_reply_against_tools(
     issue_nums = set(_ISSUE_PATTERN.findall(body))
     for issue in issue_nums:
         if f"#{issue}" not in tool_dump and f"Issue {issue}" not in tool_dump:
-            warnings.append(
-                f"Reply 引用 Issue #{issue} 但 tool 调用结果里未见该编号"
-            )
+            warnings.append(f"Reply 引用 Issue #{issue} 但 tool 调用结果里未见该编号")
 
     # 3. 历史工单 #NNNN 引用（排除当前工单）
     ticket_refs = set(_TICKET_REF_PATTERN.findall(body))
@@ -159,8 +158,10 @@ def public_reply_privacy_blockers(body: str) -> list[str]:
     if not body:
         return []
 
+    from zd_agent.casework.policies.privacy import customer_visible_privacy_markers
+
     paths = sorted(set(_PUBLIC_INTERNAL_SOURCE_PATH_PATTERN.findall(body)))
-    return [
+    blockers = [
         (
             "Public reply contains internal source path "
             f"`{path}`. Remove repository/file paths from customer-visible "
@@ -168,3 +169,9 @@ def public_reply_privacy_blockers(body: str) -> list[str]:
         )
         for path in paths
     ]
+    blockers.extend(
+        f"Public reply contains a customer-unsafe {marker}. "
+        "Describe the verified behavior without exposing identifiers or PII."
+        for marker in customer_visible_privacy_markers(body)
+    )
+    return blockers

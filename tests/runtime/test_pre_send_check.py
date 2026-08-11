@@ -13,6 +13,7 @@
     - 灰区 + LLM 判 non-substantive → continue
     - fetch 失败 → abort（阻断过期公开回复）
 """
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,6 +30,7 @@ from zd_agent.runtime.pre_send_check import (
 # ============================================================================
 # is_substantive_heuristic — 各种硬规则
 # ============================================================================
+
 
 class TestHeuristicTrueRules:
     """硬规则 → True（实质性）"""
@@ -78,18 +80,39 @@ class TestHeuristicTrueRules:
 class TestHeuristicFalseRules:
     """IGNORE_LIST → False（非实质）"""
 
-    @pytest.mark.parametrize("body", [
-        "谢谢", "thanks", "Thanks", "thx", "OK", "ok",
-        "got it", "Got it", "嗯", "好的", "在吗", "急", "any update?",
-        "👍", "🙏",
-    ])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "谢谢",
+            "thanks",
+            "Thanks",
+            "thx",
+            "OK",
+            "ok",
+            "got it",
+            "Got it",
+            "嗯",
+            "好的",
+            "在吗",
+            "急",
+            "any update?",
+            "👍",
+            "🙏",
+        ],
+    )
     def test_ignore_list_returns_false(self, body: str) -> None:
         msg = {"body": body}
         assert is_substantive_heuristic(msg) is False
 
-    @pytest.mark.parametrize("body", [
-        "谢谢！", "Thanks.", "OK!", "在吗？",
-    ])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "谢谢！",
+            "Thanks.",
+            "OK!",
+            "在吗？",
+        ],
+    )
     def test_ignore_list_with_punctuation(self, body: str) -> None:
         """带标点 / 大小写变体也算 IGNORE"""
         assert is_substantive_heuristic({"body": body}) is False
@@ -104,15 +127,18 @@ class TestHeuristicFalseRules:
 class TestHeuristicGreyZone:
     """灰区 → None（让 LLM 判断）"""
 
-    @pytest.mark.parametrize("body", [
-        "didn't work",
-        "still broken",
-        "也一样",
-        "请问",
-        "我试试",
-        "what should I do next?",
-        "doesn't help",
-    ])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "didn't work",
+            "still broken",
+            "也一样",
+            "请问",
+            "我试试",
+            "what should I do next?",
+            "doesn't help",
+        ],
+    )
     def test_short_unstructured_text_returns_none(self, body: str) -> None:
         assert is_substantive_heuristic({"body": body}) is None
 
@@ -121,19 +147,26 @@ class TestHeuristicGreyZone:
 # is_substantive_llm — mocked HTTP
 # ============================================================================
 
+
 class TestLLMJudge:
     @pytest.mark.asyncio
     async def test_substantive_true_response(self) -> None:
         mock_resp = AsyncMock()
         mock_resp.status_code = 200
         mock_resp.json = lambda: {
-            "choices": [{"message": {"content":
-                '{"substantive": true, "reason": "客户给了具体行为"}'
-            }}]
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"substantive": true, "reason": "客户给了具体行为"}'
+                    }
+                }
+            ]
         }
         with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
             result = await is_substantive_llm(
-                "didn't help, still same error", model="x", api_key="k",
+                "didn't help, still same error",
+                model="x",
+                api_key="k",
             )
         assert result is True
 
@@ -142,9 +175,13 @@ class TestLLMJudge:
         mock_resp = AsyncMock()
         mock_resp.status_code = 200
         mock_resp.json = lambda: {
-            "choices": [{"message": {"content":
-                '{"substantive": false, "reason": "pure acknowledgement"}'
-            }}]
+            "choices": [
+                {
+                    "message": {
+                        "content": '{"substantive": false, "reason": "pure acknowledgement"}'
+                    }
+                }
+            ]
         }
         client = MagicMock()
         client.__aenter__ = AsyncMock(return_value=client)
@@ -170,13 +207,15 @@ class TestLLMJudge:
         mock_resp = AsyncMock()
         mock_resp.status_code = 200
         mock_resp.json = lambda: {
-            "choices": [{"message": {"content":
-                '{"substantive": false, "reason": "纯催促"}'
-            }}]
+            "choices": [
+                {"message": {"content": '{"substantive": false, "reason": "纯催促"}'}}
+            ]
         }
         with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
             result = await is_substantive_llm(
-                "什么时候能修好啊", model="x", api_key="k",
+                "什么时候能修好啊",
+                model="x",
+                api_key="k",
             )
         assert result is False
 
@@ -203,9 +242,9 @@ class TestLLMJudge:
     async def test_malformed_json_conservative_true(self) -> None:
         mock_resp = AsyncMock()
         mock_resp.status_code = 200
-        mock_resp.json = lambda: {"choices": [{"message": {"content":
-            "not json at all"
-        }}]}
+        mock_resp.json = lambda: {
+            "choices": [{"message": {"content": "not json at all"}}]
+        }
         with patch("httpx.AsyncClient.post", AsyncMock(return_value=mock_resp)):
             result = await is_substantive_llm("x", model="m", api_key="k")
         assert result is True
@@ -215,10 +254,13 @@ class TestLLMJudge:
 # pre_send_check_or_abort — 完整流程
 # ============================================================================
 
+
 def _make_fetcher(msgs: list[dict]):
     """返回 fetch_messages_fn 的 async 实现"""
+
     async def _fetch():
         return msgs
+
     return _fetch
 
 
@@ -362,7 +404,8 @@ class TestPreSendCheckOrAbort:
                 snapshot_count=1,
                 snapshot_last_id="m1",
                 fetch_messages_fn=_make_fetcher(msgs),
-                model="x", api_key="k",
+                model="x",
+                api_key="k",
             )
         assert result.continue_send is False
 
@@ -381,7 +424,8 @@ class TestPreSendCheckOrAbort:
                 snapshot_count=1,
                 snapshot_last_id="m1",
                 fetch_messages_fn=_make_fetcher(msgs),
-                model="x", api_key="k",
+                model="x",
+                api_key="k",
             )
         assert result.continue_send is True
 

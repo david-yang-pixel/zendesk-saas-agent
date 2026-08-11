@@ -8,12 +8,14 @@ def test_run_records_initial_request_is_quick_without_detail() -> None:
         .read_text(encoding="utf-8")
     )
     initial_load = app_js[
-        app_js.index("async function renderRunRecords"):
-        app_js.index("function refreshRunRecordsInBackground")
+        app_js.index("async function renderRunRecords") : app_js.index(
+            "function refreshRunRecordsInBackground"
+        )
     ]
     background_refresh = app_js[
-        app_js.index("function refreshRunRecordsInBackground"):
-        app_js.index("function runQueryKey")
+        app_js.index("function refreshRunRecordsInBackground") : app_js.index(
+            "function runQueryKey"
+        )
     ]
 
     assert "quick: true" in initial_load
@@ -31,12 +33,12 @@ def test_run_records_treat_deferred_as_a_distinct_non_success_status() -> None:
     )
 
     run_status = app_js[
-        app_js.index("function runStatus"):
-        app_js.index("function renderStatusBadge")
+        app_js.index("function runStatus") : app_js.index("function renderStatusBadge")
     ]
     summary = app_js[
-        app_js.index("function buildRunSummary"):
-        app_js.index("function renderRunRecordRow")
+        app_js.index("function buildRunSummary") : app_js.index(
+            "function renderRunRecordRow"
+        )
     ]
 
     assert 'text.includes("deferred")' in run_status

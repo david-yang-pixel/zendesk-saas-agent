@@ -1,4 +1,5 @@
 """Persist Zendesk Messaging conversation context by ticket id."""
+
 from __future__ import annotations
 
 import json

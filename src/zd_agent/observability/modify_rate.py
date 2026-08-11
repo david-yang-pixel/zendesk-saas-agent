@@ -17,6 +17,7 @@
 - 程序: ``await measure_ticket_modify_rate(ticket_id, agent_user_id)``
 - 批量: ``await measure_recent_modify_rate(ticket_ids, agent_user_id)``
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,8 +34,10 @@ logger = get_logger(module="observability.modify_rate")
 # 提取 agent 草稿正文里的 Suggested Reply 段（去掉 banner / Internal Analysis）
 # 草稿格式由 html_renderer 渲染，正文 markdown 里有 "## Suggested Reply" / "## 客户回复建议" 等标题
 _SUGGESTED_REPLY_HEADERS = [
-    "Suggested Reply", "客户回复建议",
-    "Customer Reply", "Reply Suggestion",
+    "Suggested Reply",
+    "客户回复建议",
+    "Customer Reply",
+    "Reply Suggestion",
     "建议客户回复",
 ]
 
@@ -44,6 +47,7 @@ _AGENT_DRAFT_MARKER = "🤖 AI-generated reply"
 @dataclass
 class ModifyRateSample:
     """单工单 modify-rate 测量结果。"""
+
     ticket_id: int
     classification: str  # "as_is" | "minor" | "major" | "no_reply" | "no_draft"
     similarity: float | None  # 0.0-1.0，no_reply/no_draft 时 None
@@ -116,15 +120,19 @@ async def measure_ticket_modify_rate(
         comments_resp = payload.get("data") or {}
     except Exception as e:
         logger.warning(
-            "modify_rate_fetch_failed", ticket_id=ticket_id, error=str(e)[:200],
+            "modify_rate_fetch_failed",
+            ticket_id=ticket_id,
+            error=str(e)[:200],
         )
-        return ModifyRateSample(ticket_id=ticket_id, classification="no_draft",
-                                similarity=None)
+        return ModifyRateSample(
+            ticket_id=ticket_id, classification="no_draft", similarity=None
+        )
 
     comments = (comments_resp or {}).get("comments") or comments_resp or []
     if not isinstance(comments, list):
-        return ModifyRateSample(ticket_id=ticket_id, classification="no_draft",
-                                similarity=None)
+        return ModifyRateSample(
+            ticket_id=ticket_id, classification="no_draft", similarity=None
+        )
 
     # 找 agent 草稿（最早的 internal note + 含 🤖 marker）
     draft_idx = -1
@@ -133,37 +141,40 @@ async def measure_ticket_modify_rate(
         author = c.get("author_id")
         public = c.get("public")
         body = c.get("body") or ""
-        if (
-            not public
-            and author == agent_user_id
-            and _AGENT_DRAFT_MARKER in body
-        ):
+        if not public and author == agent_user_id and _AGENT_DRAFT_MARKER in body:
             draft_idx = i
             draft_body = body
             break
 
     if draft_idx == -1:
-        return ModifyRateSample(ticket_id=ticket_id, classification="no_draft",
-                                similarity=None)
+        return ModifyRateSample(
+            ticket_id=ticket_id, classification="no_draft", similarity=None
+        )
 
     # 在草稿之后找第一条 SE public reply（author = agent_user_id 因为 yonggang
     # 自己发的 public reply 也是 agent_user_id；区别在 public=True）
     se_reply = ""
-    for c in comments[draft_idx + 1:]:
+    for c in comments[draft_idx + 1 :]:
         if c.get("public") and c.get("author_id") == agent_user_id:
             se_reply = c.get("body") or ""
             break
 
     suggested = _extract_suggested_reply(draft_body)
     if not suggested:
-        return ModifyRateSample(ticket_id=ticket_id, classification="no_draft",
-                                similarity=None,
-                                agent_draft_chars=len(draft_body))
+        return ModifyRateSample(
+            ticket_id=ticket_id,
+            classification="no_draft",
+            similarity=None,
+            agent_draft_chars=len(draft_body),
+        )
 
     if not se_reply:
-        return ModifyRateSample(ticket_id=ticket_id, classification="no_reply",
-                                similarity=None,
-                                agent_draft_chars=len(suggested))
+        return ModifyRateSample(
+            ticket_id=ticket_id,
+            classification="no_reply",
+            similarity=None,
+            agent_draft_chars=len(suggested),
+        )
 
     # 计算相似度
     a = _strip_for_compare(suggested)

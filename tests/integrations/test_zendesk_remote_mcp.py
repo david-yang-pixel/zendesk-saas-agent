@@ -1,4 +1,5 @@
 """Tests for Zendesk remote MCP transport."""
+
 from __future__ import annotations
 
 import json
@@ -107,7 +108,9 @@ async def test_call_zendesk_tool_parses_sse_response() -> None:
         "zd_agent.integrations.zendesk_mcp.httpx.AsyncClient",
         lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
     ):
-        result = await call_zendesk_tool("get_ticket_comments", {"ticket_id": 3134}, cfg=cfg)
+        result = await call_zendesk_tool(
+            "get_ticket_comments", {"ticket_id": 3134}, cfg=cfg
+        )
 
     assert result == {"success": True, "data": {"comments": []}}
 
@@ -151,7 +154,9 @@ async def test_call_zendesk_tool_returns_structured_error() -> None:
         "zd_agent.integrations.zendesk_mcp.httpx.AsyncClient",
         lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
     ):
-        result = await call_zendesk_tool("add_internal_note", {"ticket_id": 3134}, cfg=cfg)
+        result = await call_zendesk_tool(
+            "add_internal_note", {"ticket_id": 3134}, cfg=cfg
+        )
 
     assert result["success"] is False
     assert result["code"] == "EXPLICIT_INTERNAL_NOTE_REQUEST_REQUIRED"

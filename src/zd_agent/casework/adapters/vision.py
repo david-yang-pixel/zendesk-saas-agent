@@ -7,13 +7,16 @@ from typing import Any, Protocol
 from pydantic import Field
 
 from zd_agent.casework.adapters.model import read_structured_output
+from zd_agent.casework.adapters.token_budget import CaseworkTokenBudget
 from zd_agent.casework.domain.base import FrozenModel
+from zd_agent.casework.domain.enums import VisualObservationStatus
 from zd_agent.casework.domain.models import (
     AttachmentRef,
     TicketSnapshot,
     VisualObservation,
 )
 from zd_agent.runtime.llm.types import LLMProvider
+from zd_agent.session.agent_session import AgentSession
 
 _MAX_VISUAL_ATTACHMENTS = 6
 
@@ -49,6 +52,7 @@ def _unavailable(attachment: AttachmentRef) -> VisualObservation:
     return VisualObservation(
         attachment_id=attachment.attachment_id,
         evidence_id=f"visual:{attachment.attachment_id}",
+        status=VisualObservationStatus.UNAVAILABLE,
         uncertainty="attachment could not be retrieved for visual analysis",
         untrusted=True,
     )
@@ -58,6 +62,7 @@ def _omitted(attachment: AttachmentRef) -> VisualObservation:
     return VisualObservation(
         attachment_id=attachment.attachment_id,
         evidence_id=f"visual:{attachment.attachment_id}",
+        status=VisualObservationStatus.OMITTED,
         uncertainty="attachment omitted because the visual analysis limit was reached",
         untrusted=True,
     )
@@ -108,15 +113,26 @@ class LlmVisualAnalyzer:
         *,
         provider: LLMProvider,
         image_loader: ImageLoader,
+        session: AgentSession | None = None,
+        max_tokens: int | None = None,
     ) -> None:
+        if (session is None) != (max_tokens is None):
+            raise ValueError("visual token accounting requires session and max_tokens")
         self._provider = provider
         self._image_loader = image_loader
+        self._budget = (
+            CaseworkTokenBudget(session=session, maximum=max_tokens)
+            if session is not None and max_tokens is not None
+            else None
+        )
 
     async def analyze(self, ticket: TicketSnapshot) -> tuple[VisualObservation, ...]:
         if not ticket.attachments:
             return ()
         selected = ticket.attachments[:_MAX_VISUAL_ATTACHMENTS]
-        omitted = tuple(_omitted(item) for item in ticket.attachments[_MAX_VISUAL_ATTACHMENTS:])
+        omitted = tuple(
+            _omitted(item) for item in ticket.attachments[_MAX_VISUAL_ATTACHMENTS:]
+        )
         loaded_values = await asyncio.gather(
             *(self._image_loader.load(item.download_url) for item in selected),
         )
@@ -132,6 +148,8 @@ class LlmVisualAnalyzer:
         )
         if not loaded:
             return (*unavailable, *omitted)
+        if self._budget is not None:
+            self._budget.ensure_available()
         result = await read_structured_output(
             provider=self._provider,
             system=(
@@ -140,15 +158,21 @@ class LlmVisualAnalyzer:
             ),
             user=_visual_message(loaded),
             model_type=_VisualResult,
+            on_response=(self._budget.record if self._budget is not None else None),
         )
         by_id = {item.attachment_id: item for item in result.observations}
-        observations = []
+        observations: list[VisualObservation] = []
         for attachment, _ in loaded:
             item = by_id.get(attachment.attachment_id)
             observations.append(
                 VisualObservation(
                     attachment_id=attachment.attachment_id,
                     evidence_id=f"visual:{attachment.attachment_id}",
+                    status=(
+                        VisualObservationStatus.OBSERVED
+                        if item
+                        else VisualObservationStatus.NO_MODEL_RESULT
+                    ),
                     visible_text=item.visible_text if item else "",
                     ui_state=item.ui_state if item else "",
                     uncertainty=(

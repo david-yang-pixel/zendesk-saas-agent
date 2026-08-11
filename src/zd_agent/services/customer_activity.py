@@ -1,4 +1,5 @@
 """Customer message activity gates for trigger consumer processing."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -56,9 +57,8 @@ def handle_customer_activity_gate(
     # A startup recovery intentionally replays the last saved customer message.
     # Treating that message as a duplicate would ACK the only recovery event and
     # leave the durable ticket state stuck in ``processing`` forever.
-    if (
-        source != "startup_recovery"
-        and is_duplicate_customer_comment(existing, latest_cid)
+    if source != "startup_recovery" and is_duplicate_customer_comment(
+        existing, latest_cid
     ):
         logger.info(
             "trigger_skip_duplicate_comment",
@@ -82,7 +82,9 @@ def handle_customer_activity_gate(
         now=now,
     )
     if reopen_metric is not None:
-        emit_customer_reopen_fn = emit_customer_reopen_fn or metrics.emit_customer_reopen
+        emit_customer_reopen_fn = (
+            emit_customer_reopen_fn or metrics.emit_customer_reopen
+        )
         emit_customer_reopen_fn(
             ticket_id=ticket_id,
             prev_state=reopen_metric.prev_state,

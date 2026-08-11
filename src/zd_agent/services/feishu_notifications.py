@@ -1,4 +1,5 @@
 """Best-effort Feishu notification helpers for session lifecycle events."""
+
 from __future__ import annotations
 
 import re
@@ -6,7 +7,6 @@ from typing import Any
 
 from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.log import get_logger
-from zd_agent.runtime.image_evidence import guard_against_stale_no_image_claim
 
 logger = get_logger(module="services.feishu_notifications")
 
@@ -23,6 +23,7 @@ _REPLY_DIGEST_MAX_CHARS = 320
 
 
 def _has_successful_ticket_done(session: Any) -> bool:
+    """Recognize a completion card recorded by a pre-v2 archived session."""
     for item in getattr(session, "tool_call_log", []) or []:
         if item.get("tool") != "feishu_push":
             continue
@@ -71,24 +72,22 @@ def _reply_digest(reply_draft: str, *, max_sentences: int = 2) -> str:
 def _ticket_done_summary(session: Any) -> str:
     reply_draft = (getattr(session, "reply_draft", "") or "").strip()
     if reply_draft:
-        summary = (
-            "处理结果：已回复客户\n"
-            f"客户回复：{_reply_digest(reply_draft)}"
-        )[:1800]
-        return guard_against_stale_no_image_claim(summary, session)
+        summary = (f"处理结果：已回复客户\n客户回复：{_reply_digest(reply_draft)}")[
+            :1800
+        ]
+        return summary
     summary = (
         "处理结果：已完成\n"
         f"关键事实：Agent completed ticket #{getattr(session, 'ticket_id', '')}."
     )
-    return guard_against_stale_no_image_claim(summary, session)
+    return summary
 
 
 async def notify_ticket_done_best_effort(session: Any) -> bool:
     """Push a deterministic ticket_done card after successful public reply.
 
-    The LLM is still allowed to call ``feishu_push`` itself. This fallback only
-    runs when no successful ticket_done push is recorded, so a failed or omitted
-    tool call does not silently drop the completion notification.
+    v2 owns this notification outside the model tool registry. The tool-log
+    check only prevents a duplicate when resuming a frozen pre-v2 session.
     """
     ticket_id = getattr(session, "ticket_id", None)
     if _has_successful_ticket_done(session):

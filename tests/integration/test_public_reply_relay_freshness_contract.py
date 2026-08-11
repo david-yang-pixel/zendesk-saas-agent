@@ -3,6 +3,7 @@
 These tests cross the public-reply delivery and browser-relay client boundary so
 they exercise the JSON-RPC payload used by the production remote MCP endpoint.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,9 +34,7 @@ FRESHNESS_FIELDS = {
 def _relay_config() -> AppConfig:
     cfg = AppConfig()
     cfg.public_reply.enabled = True
-    cfg.public_reply.browser_relay_url = (
-        "https://relay.example.test/zendesk-reply-mcp"
-    )
+    cfg.public_reply.browser_relay_url = "https://relay.example.test/zendesk-reply-mcp"
     cfg.public_reply.browser_relay_api_key = "relay-secret"
     cfg.public_reply.freshness_callback_url = (
         "https://relay.example.test/webhook/relay-pre-send-freshness"
@@ -216,6 +215,9 @@ async def _send_and_capture_relay_arguments(reply_type: str) -> dict[str, object
                         "ok": True,
                         "ticket_id": 3461,
                         "status": "sent",
+                        "current_url": (
+                            "https://example.zendesk.com/agent/tickets/3461"
+                        ),
                     },
                     "isError": False,
                 },
@@ -285,6 +287,7 @@ async def test_handoff_without_snapshot_still_sends_form_readiness_callback() ->
         relay_sender=relay,
     )
 
+    assert relay.await_args is not None
     assert relay.await_args.kwargs["freshness_check_url"] == (
         "https://relay.example.test/webhook/relay-pre-send-freshness"
     )

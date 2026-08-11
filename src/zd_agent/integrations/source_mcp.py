@@ -1,4 +1,5 @@
 """Remote MCP client wrapper for SaaS source-code queries."""
+
 from __future__ import annotations
 
 import json
@@ -75,7 +76,11 @@ async def call_source_tool(
 
     if resp.status_code == 401:
         logger.warning("source_mcp_unauthorized", tool=name)
-        return {"success": False, "code": "SOURCE_MCP_UNAUTHORIZED", "error": "unauthorized"}
+        return {
+            "success": False,
+            "code": "SOURCE_MCP_UNAUTHORIZED",
+            "error": "unauthorized",
+        }
     if resp.status_code >= 400:
         logger.warning(
             "source_mcp_http_error",

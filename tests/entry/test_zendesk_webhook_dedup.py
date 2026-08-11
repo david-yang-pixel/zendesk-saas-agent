@@ -7,6 +7,7 @@ new implementation keys on `sha256(body)` (delivery-unique), so distinct
 events with the same `latest_comment_id` are still all forwarded to the
 trigger consumer.
 """
+
 from __future__ import annotations
 
 import base64
@@ -46,6 +47,7 @@ def _build_app(tmp_path) -> web.Application:
     cfg.public_reply.silent_initial_wait_seconds = 60
 
     import asyncio
+
     install_saas_app_context(
         app=app,
         cfg=cfg,
@@ -109,15 +111,18 @@ async def test_different_body_same_comment_id_not_deduped(tmp_path):
     placeholder = 48640250132756
 
     body_a = {
-        "ticket_id": 2278, "latest_comment_id": placeholder,
+        "ticket_id": 2278,
+        "latest_comment_id": placeholder,
         "event_id": "evt-1",  # something distinguishing
     }
     body_b = {
-        "ticket_id": 2278, "latest_comment_id": placeholder,
+        "ticket_id": 2278,
+        "latest_comment_id": placeholder,
         "event_id": "evt-2",
     }
     body_c = {
-        "ticket_id": 2278, "latest_comment_id": placeholder,
+        "ticket_id": 2278,
+        "latest_comment_id": placeholder,
         "event_id": "evt-3",
     }
 

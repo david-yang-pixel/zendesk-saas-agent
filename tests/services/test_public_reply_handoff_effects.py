@@ -1,8 +1,54 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+
+
+@pytest.mark.asyncio
+async def test_historical_notification_sender_is_self_contained(monkeypatch) -> None:
+    from zd_agent.config import AppConfig
+    from zd_agent.services import public_reply_handoff_effects as effects
+
+    cfg = AppConfig()
+    cfg.zendesk.subdomain = "example"
+    push = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(effects, "get_config", lambda: cfg)
+    monkeypatch.setattr(effects, "push_notification_card", push)
+
+    assert await effects._send_historical_handoff_notification_best_effort(
+        ticket_id=3461,
+        reason="agent_handoff",
+        source="frozen-v1-row",
+        customer_phrase="Please connect me with a person.",
+        agent_last_reply="A human will follow up.",
+        handoff_reply_sent=True,
+        idempotency_reference="public-handoff:abc",
+    )
+
+    payload = push.await_args.kwargs
+    assert payload["card_type"] == "ticket_escalate"
+    assert payload["ticket_id"] == "3461"
+    assert "历史 v1" in payload["content"]
+    assert "frozen-v1-row" in payload["content"]
+    assert payload["zendesk_url"].endswith("/agent/tickets/3461")
+
+
+@pytest.mark.asyncio
+async def test_historical_tag_sender_uses_compatibility_actor(monkeypatch) -> None:
+    from zd_agent.services import public_reply_handoff_effects as effects
+
+    call = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(effects, "call_zendesk_tool", call)
+
+    assert await effects._add_historical_handoff_tag_best_effort(ticket_id=3461)
+
+    tool_name, payload = call.await_args.args
+    assert tool_name == "update_ticket_metadata"
+    assert payload["add_tags"] == ["escalated-to-human"]
+    assert payload["actor"] == "zd-agent-v2-historical-reconciler"
 
 
 @pytest.mark.asyncio
@@ -105,6 +151,64 @@ async def test_ambiguous_feishu_result_is_not_reissued_after_restart(tmp_path) -
         tag_sender=tag,
     )
     retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_historical_production_notification_response_loss_is_not_reissued(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from zd_agent.config import AppConfig
+    from zd_agent.integrations import tool_service_mcp
+    from zd_agent.services import public_reply_handoff_effects as effects
+
+    cfg = AppConfig()
+    cfg.zendesk.subdomain = "example"
+    cfg.notification_service.mcp_url = "https://notify.example.test/mcp"
+    cfg.notification_service.mcp_api_key = "secret"
+    accepted_requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        rpc = json.loads(request.content.decode("utf-8"))
+        assert rpc["params"]["name"] == "feishu_push"
+        accepted_requests.append(rpc["params"]["arguments"])
+        raise httpx.ReadTimeout("response lost after accept", request=request)
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(effects, "get_config", lambda: cfg)
+    monkeypatch.setattr(
+        tool_service_mcp.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+    path = tmp_path / "handoff.sqlite3"
+    tag = AsyncMock(return_value=True)
+
+    first = await effects.ensure_post_public_handoff_effects(
+        ticket_id=3461,
+        delivery_attempt_id="attempt-response-loss",
+        body_with_footer="A human will follow up.",
+        store=effects.PostPublicHandoffStore(path),
+        public_delivery_confirmed=True,
+        tag_sender=tag,
+    )
+    second = await effects.ensure_post_public_handoff_effects(
+        ticket_id=3461,
+        delivery_attempt_id="attempt-response-loss",
+        body_with_footer="A human will follow up.",
+        store=effects.PostPublicHandoffStore(path),
+        public_delivery_confirmed=True,
+        tag_sender=tag,
+    )
+
+    assert first is False
+    assert second is False
+    assert len(accepted_requests) == 1
+    pending = effects.PostPublicHandoffStore(path).pending()
+    assert len(pending) == 1
+    assert accepted_requests[0]["idempotency_reference"] == pending[0].reference
+    assert pending[0].feishu_ambiguous is True
 
 
 @pytest.mark.asyncio

@@ -1,9 +1,17 @@
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
 import zd_agent.tools.git_source as git_source_module
-from zd_agent.tools.git_source import GitDiff, GitGrep, GitLog, GitShow, ListRepoTags, ListRepos
+from zd_agent.tools.git_source import (
+    GitDiff,
+    GitGrep,
+    GitLog,
+    GitShow,
+    ListRepoTags,
+    ListRepos,
+)
 
 
 @pytest.mark.asyncio
@@ -57,7 +65,9 @@ async def test_git_grep_rejects_invalid_string_args(fake_session):
 
 
 @pytest.mark.asyncio
-async def test_git_grep_fetches_once_on_ambiguous_ref(fake_session, tmp_path, monkeypatch):
+async def test_git_grep_fetches_once_on_ambiguous_ref(
+    fake_session, tmp_path, monkeypatch
+):
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     monkeypatch.setattr(
@@ -71,7 +81,11 @@ async def test_git_grep_fetches_once_on_ambiguous_ref(fake_session, tmp_path, mo
         nonlocal calls
         calls += 1
         if calls == 1:
-            return 128, "", "fatal: ambiguous argument 'hotfix--1.14.2': unknown revision"
+            return (
+                128,
+                "",
+                "fatal: ambiguous argument 'hotfix--1.14.2': unknown revision",
+            )
         return 0, "api/foo.py\n12:queue\n", ""
 
     fetches = 0
@@ -96,7 +110,9 @@ async def test_git_grep_fetches_once_on_ambiguous_ref(fake_session, tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_git_grep_ref_error_tells_agent_to_confirm_ref(fake_session, tmp_path, monkeypatch):
+async def test_git_grep_ref_error_tells_agent_to_confirm_ref(
+    fake_session, tmp_path, monkeypatch
+):
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     monkeypatch.setattr(
@@ -163,7 +179,11 @@ async def test_git_grep_uses_source_mcp_runtime_by_default(fake_session, monkeyp
 async def test_git_show_uses_source_mcp(fake_session, monkeypatch):
     async def fake_call_source_tool(name, arguments):
         assert name == "source_read"
-        assert arguments == {"repo": "dify", "ref": "main", "filepath": "api/service.py"}
+        assert arguments == {
+            "repo": "dify",
+            "ref": "main",
+            "filepath": "api/service.py",
+        }
         return {
             "success": True,
             "data": {
@@ -299,6 +319,59 @@ async def test_git_diff_rejects_invalid_string_args(fake_session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        (
+            GitShow(),
+            {
+                "repo": "dify",
+                "ref": "--output=/tmp/model-controlled",
+                "filepath": "README.md",
+            },
+        ),
+        (
+            GitGrep(),
+            {
+                "repo": "dify",
+                "ref": "-c core.pager=/tmp/model-controlled",
+                "pattern": "queue",
+            },
+        ),
+        (
+            GitLog(),
+            {"repo": "dify", "ref": "--output=/tmp/model-controlled"},
+        ),
+        (
+            GitDiff(),
+            {
+                "repo": "dify",
+                "ref1": "main",
+                "ref2": "--output=/tmp/model-controlled",
+            },
+        ),
+    ],
+)
+async def test_git_source_tools_reject_option_like_refs_before_execution(
+    fake_session,
+    monkeypatch,
+    tool,
+    arguments,
+):
+    run_git = AsyncMock()
+    remote = AsyncMock()
+    monkeypatch.setattr(git_source_module, "_run_git", run_git)
+    monkeypatch.setattr(git_source_module, "call_source_tool", remote)
+
+    result = await tool.execute(arguments, fake_session)
+
+    assert result.success is False
+    assert "safe tag, branch, or commit" in (result.error or "")
+    run_git.assert_not_awaited()
+    remote.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_list_repo_tags_rejects_invalid_repo_arg(fake_session):
     result = await ListRepoTags().execute(
         {"repo": ["dify"]},
@@ -310,7 +383,9 @@ async def test_list_repo_tags_rejects_invalid_repo_arg(fake_session):
 
 
 @pytest.mark.asyncio
-async def test_list_repo_tags_rejects_invalid_limit(fake_session, tmp_path, monkeypatch):
+async def test_list_repo_tags_rejects_invalid_limit(
+    fake_session, tmp_path, monkeypatch
+):
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     monkeypatch.setattr(

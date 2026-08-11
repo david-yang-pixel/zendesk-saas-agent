@@ -108,9 +108,9 @@ def test_admin_static_assets_are_split_from_html_shell() -> None:
     shell_asset = admin_routes._load_static_asset("shell.css")
 
     assert "系统摘要" not in html
-    assert '/admin/static/styles.css' in html
-    assert '/admin/static/shell.css' in html
-    assert '/admin/static/app.js' in html
+    assert "/admin/static/styles.css" in html
+    assert "/admin/static/shell.css" in html
+    assert "/admin/static/app.js" in html
     assert "最近运行事件" not in html
     assert shell_asset is not None
     assert shell_asset[1] == "text/css"
@@ -171,13 +171,10 @@ def test_admin_shell_uses_focused_auth_and_grouped_responsive_navigation() -> No
         .joinpath("app.js")
         .read_text(encoding="utf-8")
     )
-    css = (
-        resources.files("zd_agent.admin_static")
-        .joinpath("styles.css")
-        .read_text(encoding="utf-8")
-        + resources.files("zd_agent.admin_static")
-        .joinpath("shell.css")
-        .read_text(encoding="utf-8")
+    css = resources.files("zd_agent.admin_static").joinpath("styles.css").read_text(
+        encoding="utf-8"
+    ) + resources.files("zd_agent.admin_static").joinpath("shell.css").read_text(
+        encoding="utf-8"
     )
 
     for symbol in [
@@ -229,7 +226,13 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
 
     for text in ["总处理数", "成功率", "平均耗时", "Token 消耗", "轮次", "触发方式"]:
         assert text in app_js
-    for symbol in ["run-record-card", "record-expand", "round-timeline", "tool-call-row", "event-trace"]:
+    for symbol in [
+        "run-record-card",
+        "record-expand",
+        "round-timeline",
+        "tool-call-row",
+        "event-trace",
+    ]:
         assert symbol in app_js
         assert symbol in css
     for text in ["原始事件", "扫描文件", "加载更多"]:
@@ -239,7 +242,10 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert ".run-record-row" in css
     assert "grid-template-columns" in css
     assert "position: sticky" in css
-    assert 'numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1' in app_js
+    assert (
+        'numberFromKeys(item, ["rounds", "round_count"]) || rounds.length || 1'
+        in app_js
+    )
     assert 'round: numberFromKeys(round, ["round", "round_number"]) ||' in app_js
     assert "round.round || round.index || index + 1" in app_js
     assert "仅聚合轮次" in app_js
@@ -255,10 +261,17 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert "quick: false" in app_js
     assert "renderRecentRunsIntoOverview" in app_js
     assert "renderRunRecordsShell" in app_js
-    assert 'detail: false' in app_js
+    assert "detail: false" in app_js
     assert "ensureRunRecordDetail" in app_js
-    assert 'detail: true' in app_js
-    assert "await Promise.all" not in app_js[app_js.index("async function renderOverview"):app_js.index("function goMenu")]
+    assert "detail: true" in app_js
+    assert (
+        "await Promise.all"
+        not in app_js[
+            app_js.index("async function renderOverview") : app_js.index(
+                "function goMenu"
+            )
+        ]
+    )
 
 
 def test_admin_config_pages_render_prompt_textareas() -> None:
@@ -279,38 +292,26 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "点击卡片查看配置" in app_js
     assert "config-section-tile" in app_js
     assert "config-section-card" in app_js
-    assert "系统提示词" in app_js
-    assert "Skills" in app_js
-    assert "skills.enabled" in app_js
-    assert "skills.custom" in app_js
     assert "mcp_services.custom" in app_js
     assert "openIntegrationConfig" in app_js
     assert "openCustomMcpConfig" in app_js
-    assert "openSkillManager" in app_js
     assert "openMcpManager" in app_js
-    assert "custom_mcp_call" in app_js
     assert "zendesk.mention_aliases" in app_js
     assert "fieldComparableValue" in app_js
     assert "json-textarea" in app_js
-    assert "触发判定与等待策略" in app_js
-    assert "主模型与判定模型" in app_js
+    assert "v2 Intake 与等待策略" in app_js
+    assert "v2 调查与回复模型" in app_js
     assert "llm.reasoning_effort" in app_js
-    assert "llm.subagent_reasoning_effort" in app_js
-    assert "trigger_decider.reasoning_effort" in app_js
     assert 'field.input === "reasoning_effort"' in app_js
     assert "reasoningEffortsForModel" in app_js
     assert "refreshReasoningEffortOptions" in app_js
-    assert '"trigger_decider.llm_model"' in app_js
     assert "reasoningEffortsForModel(model).length === 0" in app_js
     assert "reasoningUnsupportedReason" in app_js
-    assert "触发判定暂不支持仅限 Responses API 的模型" in app_js
     assert "reasoning_capabilities" in app_js
-    assert "判定模型放在「模型与运行」里" in app_js
-    assert "Ask 提示词补充规则" in (
-        resources.files("zd_agent.services")
-        .joinpath("admin_config.py")
-        .read_text(encoding="utf-8")
-    )
+    assert "trigger_decider" not in app_js
+    assert "llm.subagent" not in app_js
+    assert "skills.enabled" not in app_js
+    assert "skills.custom" not in app_js
 
 
 def test_admin_storage_config_page_is_not_blank() -> None:
@@ -332,10 +333,14 @@ def test_admin_storage_config_page_is_not_blank() -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_static_asset_serves_known_files_and_rejects_unknown(tmp_path) -> None:
+async def test_admin_static_asset_serves_known_files_and_rejects_unknown(
+    tmp_path,
+) -> None:
     app = _app(tmp_path)
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
 
@@ -415,8 +420,7 @@ async def test_admin_login_rate_limits_failures_per_ip_and_username(tmp_path) ->
     )
 
     responses = [
-        await app[ADMIN_HANDLERS_KEY]["login"](request)
-        for _attempt in range(6)
+        await app[ADMIN_HANDLERS_KEY]["login"](request) for _attempt in range(6)
     ]
     other_ip_response = await app[ADMIN_HANDLERS_KEY]["login"](
         _Request(
@@ -564,39 +568,49 @@ async def test_admin_config_requires_default_password_change(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_and_redaction(tmp_path) -> None:
+async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_and_redaction(
+    tmp_path,
+) -> None:
     app = _app(tmp_path)
     cfg = app_config(app)
     cfg.logging.log_dir = str(tmp_path / "logs")
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     (log_dir / "events-2026-06-29.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-06-29T10:00:00Z",
-                "event": "agent_started",
-                "ticket_id": 3134,
-                "module": "runtime",
-            }),
-            json.dumps({
-                "timestamp": "2026-06-29T10:01:00Z",
-                "event": "agent_failed",
-                "ticket_id": 3135,
-                "module": "runtime",
-                "input_tokens": 1234,
-                "output_tokens": 56,
-                "api_key": "sk-test-secret",
-                "nested": {"token": "secret-token"},
-                "error": "boom",
-            }),
-            json.dumps({
-                "timestamp": "2026-06-29T10:02:00Z",
-                "event": "agent_done",
-                "ticket_id": 3134,
-                "module": "reply",
-                "rounds": 5,
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:00:00Z",
+                        "event": "agent_started",
+                        "ticket_id": 3134,
+                        "module": "runtime",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:01:00Z",
+                        "event": "agent_failed",
+                        "ticket_id": 3135,
+                        "module": "runtime",
+                        "input_tokens": 1234,
+                        "output_tokens": 56,
+                        "api_key": "sk-test-secret",
+                        "nested": {"token": "secret-token"},
+                        "error": "boom",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:02:00Z",
+                        "event": "agent_done",
+                        "ticket_id": 3134,
+                        "module": "reply",
+                        "rounds": 5,
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
@@ -634,44 +648,52 @@ async def test_admin_run_records_reads_recent_jsonl_events_with_summary_filters_
 
 
 @pytest.mark.asyncio
-async def test_admin_run_records_ignore_internal_events_and_normalize_agent_done(tmp_path) -> None:
+async def test_admin_run_records_ignore_internal_events_and_normalize_agent_done(
+    tmp_path,
+) -> None:
     app = _app(tmp_path)
     cfg = app_config(app)
     cfg.logging.log_dir = str(tmp_path / "logs")
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     lines = [
-        json.dumps({
-            "timestamp": f"2026-06-29T10:00:{second:02d}Z",
-            "event": "self_user_id_resolved",
-            "module": "mention.detector",
-            "source": "webhook",
-        })
+        json.dumps(
+            {
+                "timestamp": f"2026-06-29T10:00:{second:02d}Z",
+                "event": "self_user_id_resolved",
+                "module": "mention.detector",
+                "source": "webhook",
+            }
+        )
         for second in range(60)
     ]
     lines.append(
-        json.dumps({
-            "timestamp": "2026-06-29T10:01:00Z",
-            "event": "agent_done",
-            "ticket_id": 3172,
-            "status": "completed",
-            "module": "runtime.runner",
-            "rounds": 17,
-            "prompt_tokens": 18_200,
-            "completion_tokens": 127,
-            "total_tokens": 18_327,
-            "elapsed": "4.6s",
-            "trigger_type": "webhook",
-            "model": "gpt-5.5",
-        })
+        json.dumps(
+            {
+                "timestamp": "2026-06-29T10:01:00Z",
+                "event": "agent_done",
+                "ticket_id": 3172,
+                "status": "completed",
+                "module": "runtime.runner",
+                "rounds": 17,
+                "prompt_tokens": 18_200,
+                "completion_tokens": 127,
+                "total_tokens": 18_327,
+                "elapsed": "4.6s",
+                "trigger_type": "webhook",
+                "model": "gpt-5.5",
+            }
+        )
     )
     lines.extend(
-        json.dumps({
-            "timestamp": f"2026-06-29T10:02:{second:02d}Z",
-            "event": "self_user_id_resolved",
-            "module": "mention.detector",
-            "source": "webhook",
-        })
+        json.dumps(
+            {
+                "timestamp": f"2026-06-29T10:02:{second:02d}Z",
+                "event": "self_user_id_resolved",
+                "module": "mention.detector",
+                "source": "webhook",
+            }
+        )
         for second in range(60)
     )
     (log_dir / "events-2026-06-29.jsonl").write_text(
@@ -708,53 +730,65 @@ async def test_admin_run_records_ignore_internal_events_and_normalize_agent_done
 
 
 @pytest.mark.asyncio
-async def test_admin_run_records_collapse_agent_lifecycle_to_one_ticket_run(tmp_path) -> None:
+async def test_admin_run_records_collapse_agent_lifecycle_to_one_ticket_run(
+    tmp_path,
+) -> None:
     app = _app(tmp_path)
     cfg = app_config(app)
     cfg.logging.log_dir = str(tmp_path / "logs")
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     (log_dir / "events-2026-06-29.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-06-29T10:00:00Z",
-                "event": "session_dispatched",
-                "ticket_id": 3172,
-                "session_id": "session-3172",
-                "module": "session_manager",
-            }),
-            json.dumps({
-                "timestamp": "2026-06-29T10:00:01Z",
-                "event": "agent_start",
-                "ticket_id": 3172,
-                "session_id": "session-3172",
-                "trigger_type": "webhook",
-                "module": "runtime.runner",
-            }),
-            json.dumps({
-                "timestamp": "2026-06-29T10:04:36Z",
-                "event": "agent_done",
-                "ticket_id": 3172,
-                "status": "completed",
-                "module": "runtime.runner",
-                "rounds": 17,
-                "prompt_tokens": 18_200,
-                "completion_tokens": 127,
-                "total_tokens": 18_327,
-                "elapsed": "4.6min",
-                "model": "gpt-5.5",
-            }),
-            json.dumps({
-                "timestamp": "2026-06-29T10:04:37Z",
-                "event": "session_finished",
-                "ticket_id": 3172,
-                "status": "completed",
-                "rounds": 17,
-                "tokens": 18_327,
-                "elapsed": "4.6min",
-                "remaining_active": 0,
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:00:00Z",
+                        "event": "session_dispatched",
+                        "ticket_id": 3172,
+                        "session_id": "session-3172",
+                        "module": "session_manager",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:00:01Z",
+                        "event": "agent_start",
+                        "ticket_id": 3172,
+                        "session_id": "session-3172",
+                        "trigger_type": "webhook",
+                        "module": "runtime.runner",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:04:36Z",
+                        "event": "agent_done",
+                        "ticket_id": 3172,
+                        "status": "completed",
+                        "module": "runtime.runner",
+                        "rounds": 17,
+                        "prompt_tokens": 18_200,
+                        "completion_tokens": 127,
+                        "total_tokens": 18_327,
+                        "elapsed": "4.6min",
+                        "model": "gpt-5.5",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:04:37Z",
+                        "event": "session_finished",
+                        "ticket_id": 3172,
+                        "status": "completed",
+                        "rounds": 17,
+                        "tokens": 18_327,
+                        "elapsed": "4.6min",
+                        "remaining_active": 0,
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
@@ -801,64 +835,72 @@ async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> 
     log_dir.mkdir()
     archive_dir.mkdir(parents=True)
     (log_dir / "events-2026-06-29.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-06-29T10:04:36Z",
-                "event": "agent_done",
-                "ticket_id": 3172,
-                "status": "completed",
-                "module": "runtime.runner",
-                "rounds": 17,
-                "prompt_tokens": 18_200,
-                "completion_tokens": 127,
-                "total_tokens": 18_327,
-                "elapsed": "4.6min",
-                "model": "gpt-5.5",
-            }),
-            json.dumps({
-                "timestamp": "2026-06-29T10:04:37Z",
-                "event": "session_finished",
-                "ticket_id": 3172,
-                "status": "completed",
-                "rounds": 17,
-                "tokens": 18_327,
-                "elapsed": "4.6min",
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:04:36Z",
+                        "event": "agent_done",
+                        "ticket_id": 3172,
+                        "status": "completed",
+                        "module": "runtime.runner",
+                        "rounds": 17,
+                        "prompt_tokens": 18_200,
+                        "completion_tokens": 127,
+                        "total_tokens": 18_327,
+                        "elapsed": "4.6min",
+                        "model": "gpt-5.5",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-29T10:04:37Z",
+                        "event": "session_finished",
+                        "ticket_id": 3172,
+                        "status": "completed",
+                        "rounds": 17,
+                        "tokens": 18_327,
+                        "elapsed": "4.6min",
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     (archive_dir / "meta.json").write_text(
-        json.dumps({
-            "ticket_id": 3172,
-            "session_id": "session-3172",
-            "status": "completed",
-            "rounds": 17,
-            "token_usage": {"prompt": 18_200, "completion": 127, "total": 18_327},
-            "tool_call_count": 3,
-            "tool_calls": [
-                {
-                    "round": 1,
-                    "tool": "zendesk_get_ticket",
-                    "success": True,
-                    "error": None,
-                    "result_preview": "loaded ticket",
-                },
-                {
-                    "round": 2,
-                    "tool": "sql_query",
-                    "success": False,
-                    "error": "database unavailable",
-                    "result_preview": "",
-                },
-                {
-                    "round": 17,
-                    "tool": "archive_ticket",
-                    "success": True,
-                    "error": None,
-                    "result_preview": "archived",
-                },
-            ],
-        }),
+        json.dumps(
+            {
+                "ticket_id": 3172,
+                "session_id": "session-3172",
+                "status": "completed",
+                "rounds": 17,
+                "token_usage": {"prompt": 18_200, "completion": 127, "total": 18_327},
+                "tool_call_count": 3,
+                "tool_calls": [
+                    {
+                        "round": 1,
+                        "tool": "zendesk_get_ticket",
+                        "success": True,
+                        "error": None,
+                        "result_preview": "loaded ticket",
+                    },
+                    {
+                        "round": 2,
+                        "tool": "sql_query",
+                        "success": False,
+                        "error": "database unavailable",
+                        "result_preview": "",
+                    },
+                    {
+                        "round": 17,
+                        "tool": "archive_ticket",
+                        "success": True,
+                        "error": None,
+                        "result_preview": "archived",
+                    },
+                ],
+            }
+        ),
         encoding="utf-8",
     )
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
@@ -888,116 +930,144 @@ async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> 
     assert item["event_count"] == 2
 
 
-def test_admin_run_records_keep_retries_isolated_from_legacy_ticket_meta(tmp_path) -> None:
+def test_admin_run_records_keep_retries_isolated_from_legacy_ticket_meta(
+    tmp_path,
+) -> None:
     log_dir = tmp_path / "logs"
     archive_base = tmp_path / "archive"
     legacy_archive = archive_base / "3485"
     log_dir.mkdir()
     legacy_archive.mkdir(parents=True)
     (log_dir / "events-2026-07-17.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-07-17T06:21:42Z",
-                "event": "agent_start",
-                "ticket_id": 3485,
-                "session_id": "first-session",
-                "model": "gpt-test",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:22:00Z",
-                "event": "llm_round",
-                "ticket_id": 3485,
-                "session_id": "first-session",
-                "round": 1,
-                "prompt_tokens": 1_000,
-                "completion_tokens": 100,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:22:47Z",
-                "event": "connection_error_retry",
-                "ticket_id": 3485,
-                "round": 1,
-                "error_type": "APIConnectionError",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:25:20Z",
-                "event": "agent_done",
-                "ticket_id": 3485,
-                "session_id": "first-session",
-                "status": "deferred",
-                "rounds": 6,
-                "prompt_tokens": 214_982,
-                "completion_tokens": 4_956,
-                "total_tokens": 219_938,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:25:21Z",
-                "event": "session_finished",
-                "ticket_id": 3485,
-                "session_id": "first-session",
-                "status": "deferred",
-                "rounds": 6,
-                "tokens": 219_938,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:29:13Z",
-                "event": "agent_start",
-                "ticket_id": 3485,
-                "session_id": "second-session",
-                "model": "gpt-test",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:30:00Z",
-                "event": "llm_round",
-                "ticket_id": 3485,
-                "session_id": "second-session",
-                "round": 1,
-                "prompt_tokens": 2_000,
-                "completion_tokens": 200,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:33:03Z",
-                "event": "tool_execution_timeout",
-                "ticket_id": 3485,
-                "round": 3,
-                "tool": "inspector_exec",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:35:26Z",
-                "event": "agent_done",
-                "ticket_id": 3485,
-                "session_id": "second-session",
-                "status": "completed",
-                "rounds": 7,
-                "prompt_tokens": 189_607,
-                "completion_tokens": 5_850,
-                "total_tokens": 195_457,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:35:27Z",
-                "event": "session_finished",
-                "ticket_id": 3485,
-                "session_id": "second-session",
-                "status": "completed",
-                "rounds": 7,
-                "tokens": 195_457,
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:21:42Z",
+                        "event": "agent_start",
+                        "ticket_id": 3485,
+                        "session_id": "first-session",
+                        "model": "gpt-test",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:22:00Z",
+                        "event": "llm_round",
+                        "ticket_id": 3485,
+                        "session_id": "first-session",
+                        "round": 1,
+                        "prompt_tokens": 1_000,
+                        "completion_tokens": 100,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:22:47Z",
+                        "event": "connection_error_retry",
+                        "ticket_id": 3485,
+                        "round": 1,
+                        "error_type": "APIConnectionError",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:25:20Z",
+                        "event": "agent_done",
+                        "ticket_id": 3485,
+                        "session_id": "first-session",
+                        "status": "deferred",
+                        "rounds": 6,
+                        "prompt_tokens": 214_982,
+                        "completion_tokens": 4_956,
+                        "total_tokens": 219_938,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:25:21Z",
+                        "event": "session_finished",
+                        "ticket_id": 3485,
+                        "session_id": "first-session",
+                        "status": "deferred",
+                        "rounds": 6,
+                        "tokens": 219_938,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:29:13Z",
+                        "event": "agent_start",
+                        "ticket_id": 3485,
+                        "session_id": "second-session",
+                        "model": "gpt-test",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:30:00Z",
+                        "event": "llm_round",
+                        "ticket_id": 3485,
+                        "session_id": "second-session",
+                        "round": 1,
+                        "prompt_tokens": 2_000,
+                        "completion_tokens": 200,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:33:03Z",
+                        "event": "tool_execution_timeout",
+                        "ticket_id": 3485,
+                        "round": 3,
+                        "tool": "inspector_exec",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:35:26Z",
+                        "event": "agent_done",
+                        "ticket_id": 3485,
+                        "session_id": "second-session",
+                        "status": "completed",
+                        "rounds": 7,
+                        "prompt_tokens": 189_607,
+                        "completion_tokens": 5_850,
+                        "total_tokens": 195_457,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:35:27Z",
+                        "event": "session_finished",
+                        "ticket_id": 3485,
+                        "session_id": "second-session",
+                        "status": "completed",
+                        "rounds": 7,
+                        "tokens": 195_457,
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     (legacy_archive / "meta.json").write_text(
-        json.dumps({
-            "ticket_id": 3485,
-            "session_id": "first-session",
-            "status": "deferred",
-            "rounds": 6,
-            "total_tokens": 219_938,
-            "tool_calls": [{
-                "round": 1,
-                "tool": "legacy_first_run_tool",
-                "success": True,
-            }],
-        }),
+        json.dumps(
+            {
+                "ticket_id": 3485,
+                "session_id": "first-session",
+                "status": "deferred",
+                "rounds": 6,
+                "total_tokens": 219_938,
+                "tool_calls": [
+                    {
+                        "round": 1,
+                        "tool": "legacy_first_run_tool",
+                        "success": True,
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1033,66 +1103,84 @@ def test_admin_run_records_isolate_reused_session_id_by_run_window(tmp_path) -> 
     log_dir.mkdir()
     legacy_archive.mkdir(parents=True)
     (log_dir / "events-2026-07-17.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-07-17T06:21:42Z",
-                "event": "agent_start",
-                "ticket_id": 3485,
-                "session_id": "reused-session",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:22:00Z",
-                "event": "tool_call",
-                "ticket_id": 3485,
-                "session_id": "reused-session",
-                "round": 1,
-                "tool": "first_run_tool",
-                "success": True,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:25:20Z",
-                "event": "agent_done",
-                "ticket_id": 3485,
-                "session_id": "reused-session",
-                "status": "deferred",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:29:13Z",
-                "event": "agent_start",
-                "ticket_id": 3485,
-                "session_id": "reused-session",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:30:00Z",
-                "event": "tool_call",
-                "ticket_id": 3485,
-                "session_id": "reused-session",
-                "round": 1,
-                "tool": "second_run_tool",
-                "success": True,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-17T06:35:26Z",
-                "event": "agent_done",
-                "ticket_id": 3485,
-                "session_id": "reused-session",
-                "status": "completed",
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:21:42Z",
+                        "event": "agent_start",
+                        "ticket_id": 3485,
+                        "session_id": "reused-session",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:22:00Z",
+                        "event": "tool_call",
+                        "ticket_id": 3485,
+                        "session_id": "reused-session",
+                        "round": 1,
+                        "tool": "first_run_tool",
+                        "success": True,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:25:20Z",
+                        "event": "agent_done",
+                        "ticket_id": 3485,
+                        "session_id": "reused-session",
+                        "status": "deferred",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:29:13Z",
+                        "event": "agent_start",
+                        "ticket_id": 3485,
+                        "session_id": "reused-session",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:30:00Z",
+                        "event": "tool_call",
+                        "ticket_id": 3485,
+                        "session_id": "reused-session",
+                        "round": 1,
+                        "tool": "second_run_tool",
+                        "success": True,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-17T06:35:26Z",
+                        "event": "agent_done",
+                        "ticket_id": 3485,
+                        "session_id": "reused-session",
+                        "status": "completed",
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     (legacy_archive / "meta.json").write_text(
-        json.dumps({
-            "ticket_id": 3485,
-            "session_id": "reused-session",
-            "status": "deferred",
-            "archived_at": "2026-07-17T06:25:20Z",
-            "tool_calls": [{
-                "round": 1,
-                "tool": "first_run_archive_tool",
-                "success": True,
-            }],
-        }),
+        json.dumps(
+            {
+                "ticket_id": 3485,
+                "session_id": "reused-session",
+                "status": "deferred",
+                "archived_at": "2026-07-17T06:25:20Z",
+                "tool_calls": [
+                    {
+                        "round": 1,
+                        "tool": "first_run_archive_tool",
+                        "success": True,
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1130,11 +1218,13 @@ def test_archive_meta_lookup_rejects_session_path_traversal(tmp_path) -> None:
     outside_meta = tmp_path / "outside" / "meta.json"
     outside_meta.parent.mkdir(parents=True)
     outside_meta.write_text(
-        json.dumps({
-            "session_id": "../../../outside",
-            "status": "completed",
-            "total_tokens": 999_999,
-        }),
+        json.dumps(
+            {
+                "session_id": "../../../outside",
+                "status": "completed",
+                "total_tokens": 999_999,
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -1158,30 +1248,38 @@ def test_admin_run_records_trace_index_supports_module_filters(tmp_path) -> None
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     (log_dir / "events-2026-07-02.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:00Z",
-                "event": "agent_done",
-                "ticket_id": 4001,
-                "session_id": "session-4001",
-                "module": "runtime.runner",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:01Z",
-                "event": "tool_call",
-                "ticket_id": 4001,
-                "session_id": "session-4001",
-                "module": "db.gateway",
-                "tool": "sql_query",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:01:00Z",
-                "event": "agent_done",
-                "ticket_id": 4002,
-                "session_id": "session-4002",
-                "module": "runtime.runner",
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:00Z",
+                        "event": "agent_done",
+                        "ticket_id": 4001,
+                        "session_id": "session-4001",
+                        "module": "runtime.runner",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:01Z",
+                        "event": "tool_call",
+                        "ticket_id": 4001,
+                        "session_id": "session-4001",
+                        "module": "db.gateway",
+                        "tool": "sql_query",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:01:00Z",
+                        "event": "agent_done",
+                        "ticket_id": 4002,
+                        "session_id": "session-4002",
+                        "module": "runtime.runner",
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -1203,71 +1301,85 @@ def test_admin_run_records_builds_rounds_from_jsonl_trace_events(tmp_path) -> No
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     (log_dir / "events-2026-07-02.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:00Z",
-                "event": "agent_start",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "model": "gpt-5.5",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:03Z",
-                "event": "llm_round",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "round": 1,
-                "model": "gpt-5.5",
-                "prompt_tokens": 1200,
-                "completion_tokens": 80,
-                "llm_elapsed_seconds": 2.4,
-                "tool_call_count": 1,
-                "stop_reason": "tool_calls",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:05Z",
-                "event": "tool_call",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "round": 1,
-                "tool": "zendesk_get_ticket",
-                "success": True,
-                "duration_seconds": 1.5,
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:10Z",
-                "event": "llm_round",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "round": 2,
-                "model": "gpt-5.5",
-                "prompt_tokens": 1500,
-                "completion_tokens": 120,
-                "llm_elapsed_seconds": 3.1,
-                "tool_call_count": 1,
-                "stop_reason": "tool_calls",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:13Z",
-                "event": "tool_call",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "round": 2,
-                "tool": "sql_query",
-                "success": False,
-                "duration_seconds": 2.2,
-                "error": "database unavailable",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:20Z",
-                "event": "agent_done",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "status": "completed",
-                "rounds": 2,
-                "total_tokens": 2900,
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:00Z",
+                        "event": "agent_start",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "model": "gpt-5.5",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:03Z",
+                        "event": "llm_round",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "round": 1,
+                        "model": "gpt-5.5",
+                        "prompt_tokens": 1200,
+                        "completion_tokens": 80,
+                        "llm_elapsed_seconds": 2.4,
+                        "tool_call_count": 1,
+                        "stop_reason": "tool_calls",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:05Z",
+                        "event": "tool_call",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "round": 1,
+                        "tool": "zendesk_get_ticket",
+                        "success": True,
+                        "duration_seconds": 1.5,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:10Z",
+                        "event": "llm_round",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "round": 2,
+                        "model": "gpt-5.5",
+                        "prompt_tokens": 1500,
+                        "completion_tokens": 120,
+                        "llm_elapsed_seconds": 3.1,
+                        "tool_call_count": 1,
+                        "stop_reason": "tool_calls",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:13Z",
+                        "event": "tool_call",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "round": 2,
+                        "tool": "sql_query",
+                        "success": False,
+                        "duration_seconds": 2.2,
+                        "error": "database unavailable",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:20Z",
+                        "event": "agent_done",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "status": "completed",
+                        "rounds": 2,
+                        "total_tokens": 2900,
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -1293,38 +1405,48 @@ def test_admin_run_records_quick_list_skips_detail_and_reads_newest_tail_first(
     log_dir.mkdir()
     archive_dir.mkdir()
     (log_dir / "events-2026-07-01.jsonl").write_text(
-        json.dumps({
-            "timestamp": "2026-07-01T08:00:00Z",
-            "event": "agent_done",
-            "ticket_id": 3999,
-            "session_id": "session-3999",
-        }),
+        json.dumps(
+            {
+                "timestamp": "2026-07-01T08:00:00Z",
+                "event": "agent_done",
+                "ticket_id": 3999,
+                "session_id": "session-3999",
+            }
+        ),
         encoding="utf-8",
     )
     (log_dir / "events-2026-07-02.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:00Z",
-                "event": "agent_started",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:01:00Z",
-                "event": "tool_call",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "round": 1,
-                "tool": "zendesk_get_ticket",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:02:00Z",
-                "event": "agent_done",
-                "ticket_id": 4101,
-                "session_id": "session-4101",
-                "rounds": 1,
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:00Z",
+                        "event": "agent_started",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:01:00Z",
+                        "event": "tool_call",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "round": 1,
+                        "tool": "zendesk_get_ticket",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:02:00Z",
+                        "event": "agent_done",
+                        "ticket_id": 4101,
+                        "session_id": "session-4101",
+                        "rounds": 1,
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -1376,13 +1498,15 @@ def test_admin_run_records_quick_list_uses_short_lived_cache(tmp_path) -> None:
     log_dir.mkdir()
     archive_dir.mkdir()
     (log_dir / "events-2026-07-02.jsonl").write_text(
-        json.dumps({
-            "timestamp": "2026-07-02T08:02:00Z",
-            "event": "agent_done",
-            "ticket_id": 4101,
-            "session_id": "session-4101",
-            "rounds": 3,
-        }),
+        json.dumps(
+            {
+                "timestamp": "2026-07-02T08:02:00Z",
+                "event": "agent_done",
+                "ticket_id": 4101,
+                "session_id": "session-4101",
+                "rounds": 3,
+            }
+        ),
         encoding="utf-8",
     )
     admin_routes._RUN_RECORD_CACHE.clear()
@@ -1417,20 +1541,26 @@ def test_admin_run_records_only_reads_archive_meta_for_returned_page(
     log_dir.mkdir()
     archive_dir.mkdir()
     (log_dir / "events-2026-07-02.jsonl").write_text(
-        "\n".join([
-            json.dumps({
-                "timestamp": "2026-07-02T08:00:00Z",
-                "event": "agent_done",
-                "ticket_id": 4001,
-                "session_id": "session-4001",
-            }),
-            json.dumps({
-                "timestamp": "2026-07-02T08:01:00Z",
-                "event": "agent_done",
-                "ticket_id": 4002,
-                "session_id": "session-4002",
-            }),
-        ]),
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:00:00Z",
+                        "event": "agent_done",
+                        "ticket_id": 4001,
+                        "session_id": "session-4001",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": "2026-07-02T08:01:00Z",
+                        "event": "agent_done",
+                        "ticket_id": 4002,
+                        "session_id": "session-4002",
+                    }
+                ),
+            ]
+        ),
         encoding="utf-8",
     )
     calls = []
@@ -1459,7 +1589,9 @@ def test_admin_run_records_only_reads_archive_meta_for_returned_page(
 async def test_admin_audit_logs_support_filters_and_summary(tmp_path) -> None:
     app = _app(tmp_path)
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
     cookie = await _change_default_password(app, cookie)
@@ -1484,13 +1616,17 @@ async def test_admin_audit_logs_support_filters_and_summary(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_integration_check_reports_reachability_and_writes_audit(tmp_path) -> None:
+async def test_admin_integration_check_reports_reachability_and_writes_audit(
+    tmp_path,
+) -> None:
     app = _app(tmp_path)
     cfg = app_config(app)
     cfg.signoz.mcp_url = "https://signoz.example.test/mcp"
     cfg.signoz.mcp_api_key = "super-secret-key"
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
     cookie = await _change_default_password(app, cookie)
@@ -1541,7 +1677,9 @@ async def test_admin_integration_check_supports_custom_mcp_services(tmp_path) ->
         ),
     ]
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
     cookie = await _change_default_password(app, cookie)
@@ -1577,12 +1715,16 @@ async def test_admin_integration_check_supports_custom_mcp_services(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_admin_deploy_status_includes_runtime_metadata_and_pending_restart(tmp_path, monkeypatch) -> None:
+async def test_admin_deploy_status_includes_runtime_metadata_and_pending_restart(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("ZD_AGENT_IMAGE_TAG", "sha-test")
     monkeypatch.setenv("GITHUB_SHA", "abc123")
     app = _app(tmp_path)
     login_response = await app[ADMIN_HANDLERS_KEY]["login"](
-        _Request(app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD})
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
     )
     cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
     cookie = await _change_default_password(app, cookie)

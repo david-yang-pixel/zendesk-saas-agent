@@ -86,17 +86,23 @@ def _evidence_eligibility_error(
     *,
     as_of: datetime,
 ) -> tuple[ClaimRejectionCode, str] | None:
-    if any(item.result_status is not EvidenceResultStatus.SUCCESS for item in supporting):
+    if any(
+        item.result_status is not EvidenceResultStatus.SUCCESS for item in supporting
+    ):
         return (
             ClaimRejectionCode.FAILED_EVIDENCE,
             "failed or partial evidence cannot prove a material claim",
         )
-    if any(item.authority is EvidenceAuthority.HISTORICAL_GUIDANCE for item in supporting):
+    if any(
+        item.authority is EvidenceAuthority.HISTORICAL_GUIDANCE for item in supporting
+    ):
         return (
             ClaimRejectionCode.HISTORICAL_EVIDENCE,
             "historical guidance cannot prove a current claim",
         )
-    if any(item.fresh_until is not None and item.fresh_until < as_of for item in supporting):
+    if any(
+        item.fresh_until is not None and item.fresh_until < as_of for item in supporting
+    ):
         return (
             ClaimRejectionCode.STALE_EVIDENCE,
             "supporting evidence expired before claim admission",
@@ -108,7 +114,9 @@ def _target_coverage_error(
     claim: Claim,
     supporting: tuple[EvidenceItem, ...],
 ) -> tuple[ClaimRejectionCode, str] | None:
-    covered = {(target.kind, target.value) for item in supporting for target in item.targets}
+    covered = {
+        (target.kind, target.value) for item in supporting for target in item.targets
+    }
     required = {(target.kind, target.value) for target in claim.targets}
     if required.issubset(covered):
         return None
@@ -153,27 +161,39 @@ def _required_evidence_error(
     )
 
 
+_FACTUAL_AUTHORITIES = {
+    EvidenceAuthority.CURRENT_AUTHORITATIVE,
+    EvidenceAuthority.CURRENT_SUPPORTING,
+}
+
+
 def _role_coverage_error(
     claim: Claim,
     supporting: tuple[EvidenceItem, ...],
 ) -> tuple[ClaimRejectionCode, str] | None:
     if claim.role is ClaimRole.ROOT_CAUSE:
-        required = {ClaimRole.FAILING_BOUNDARY, ClaimRole.ROOT_CAUSE}
-        covered_roles = {
-            role
-            for role in required
-            if any(
-                role in item.supports_roles and _item_covers_claim(item, claim)
-                for item in supporting
-            )
-        }
-        if not required.issubset(covered_roles):
+        boundary_covered = any(
+            ClaimRole.FAILING_BOUNDARY in item.supports_roles
+            and item.authority in _FACTUAL_AUTHORITIES
+            and _item_covers_claim(item, claim)
+            for item in supporting
+        )
+        mechanism_covered = any(
+            ClaimRole.ROOT_CAUSE in item.supports_roles
+            and item.authority in _FACTUAL_AUTHORITIES
+            and (not item.targets or _item_covers_claim(item, claim))
+            for item in supporting
+        )
+        if not boundary_covered or not mechanism_covered:
             return (
                 ClaimRejectionCode.ROOT_CAUSE_INCOMPLETE,
-                "root cause requires both failing-boundary and mechanism evidence",
+                "root cause requires a target-bound failing boundary and an aligned "
+                "mechanism",
             )
     elif not any(
-        claim.role in item.supports_roles and _item_covers_claim(item, claim)
+        claim.role in item.supports_roles
+        and item.authority in _FACTUAL_AUTHORITIES
+        and _item_covers_claim(item, claim)
         for item in supporting
     ):
         return (
@@ -198,9 +218,7 @@ def _authority_error(
     if claim.status is not ClaimStatus.CONFIRMED:
         return None
     role = (
-        ClaimRole.FAILING_BOUNDARY
-        if claim.role is ClaimRole.ROOT_CAUSE
-        else claim.role
+        ClaimRole.FAILING_BOUNDARY if claim.role is ClaimRole.ROOT_CAUSE else claim.role
     )
     if role not in _AUTHORITATIVE_ROLES:
         return None

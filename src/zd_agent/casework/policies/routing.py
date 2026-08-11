@@ -16,7 +16,5 @@ _BILLING_RE = re.compile(
 )
 
 
-def billing_context_required(ticket: TicketSnapshot, *, ticket_type: str = "") -> bool:
-    if ticket_type.casefold() in {"billing", "refund"}:
-        return True
+def billing_context_required(ticket: TicketSnapshot) -> bool:
     return bool(_BILLING_RE.search("\n".join(ticket.questions)))

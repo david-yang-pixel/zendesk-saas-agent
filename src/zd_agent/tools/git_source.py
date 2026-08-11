@@ -30,6 +30,7 @@ _REF_NOT_FOUND_MARKERS = (
 )
 
 _COMPLEX_RE_PATTERN = re.compile(r"(\(\?[!=<]|\\[bBdDwWsS]|\{[\d,]+\}|[|()]{3,})")
+_SAFE_SOURCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 _GIT_COMMAND_TIMEOUT_SECONDS = 60.0
 
 
@@ -39,10 +40,38 @@ def _coerce_source_ref(args: dict[str, Any]) -> str | ToolResult:
         return "runtime"
     if not isinstance(ref, str):
         return ToolResult(success=False, error="ref must be a string")
-    return ref.strip() or "runtime"
+    return _validate_source_ref(ref.strip() or "runtime")
 
 
-def _coerce_limit(value: Any, *, default: int = 30, maximum: int = 200) -> int | ToolResult:
+def _coerce_required_source_ref(
+    args: dict[str, Any],
+    name: str,
+) -> str | ToolResult:
+    value = _coerce_required_string(args, name)
+    if isinstance(value, ToolResult):
+        return value
+    return _validate_source_ref(value, name=name)
+
+
+def _validate_source_ref(ref: str, *, name: str = "ref") -> str | ToolResult:
+    unsafe = bool(
+        not _SAFE_SOURCE_REF.fullmatch(ref)
+        or ".." in ref
+        or "//" in ref
+        or ref.endswith(("/", "."))
+        or any(part.endswith(".lock") for part in ref.split("/"))
+    )
+    if unsafe:
+        return ToolResult(
+            success=False,
+            error=f"{name} must be a safe tag, branch, or commit reference",
+        )
+    return ref
+
+
+def _coerce_limit(
+    value: Any, *, default: int = 30, maximum: int = 200
+) -> int | ToolResult:
     try:
         limit = int(default if value is None else value)
     except (TypeError, ValueError):
@@ -121,7 +150,9 @@ def _format_source_mcp_header(data: dict[str, Any]) -> str:
     return f"[source-mcp: repo={repo}, ref={ref}{commit_part}{source_part}]\n"
 
 
-async def _remote_source_tool(name: str, arguments: dict[str, Any]) -> ToolResult | None:
+async def _remote_source_tool(
+    name: str, arguments: dict[str, Any]
+) -> ToolResult | None:
     if not source_mcp_enabled():
         return None
     payload = await call_source_tool(name, arguments)
@@ -130,10 +161,15 @@ async def _remote_source_tool(name: str, arguments: dict[str, Any]) -> ToolResul
     return ToolResult(output=_format_source_mcp_output(payload.get("data")))
 
 
-async def _run_git(repo_dir: str, *args: str, max_output: int = 30000) -> tuple[int, str, str]:
+async def _run_git(
+    repo_dir: str, *args: str, max_output: int = 30000
+) -> tuple[int, str, str]:
     """在指定仓库目录执行 git 命令"""
     proc = await asyncio.create_subprocess_exec(
-        "git", "-C", repo_dir, *args,
+        "git",
+        "-C",
+        repo_dir,
+        *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -253,10 +289,14 @@ class GitShow(Tool):
         # 版本不存在时自动 fetch 重试
         if code != 0 and _is_ref_not_found(err):
             if await _auto_fetch_repo(repo):
-                code, out, err = await _run_git(str(repo_dir), "show", f"{ref}:{filepath}")
+                code, out, err = await _run_git(
+                    str(repo_dir), "show", f"{ref}:{filepath}"
+                )
 
         if code != 0:
-            return ToolResult(success=False, error=_format_git_error("git show", ref, err))
+            return ToolResult(
+                success=False, error=_format_git_error("git show", ref, err)
+            )
         return ToolResult(output=out)
 
 
@@ -319,8 +359,14 @@ class GitGrep(Tool):
         grep_flag = "-F" if use_fixed else "-e"
 
         git_args = [
-            "grep", "-n", "--break", "--heading", "-i",
-            grep_flag, pattern, ref,
+            "grep",
+            "-n",
+            "--break",
+            "--heading",
+            "-i",
+            grep_flag,
+            pattern,
+            ref,
         ]
         if glob:
             git_args.extend(["--", glob])
@@ -335,8 +381,14 @@ class GitGrep(Tool):
         # 正则语法错误时，自动回退为固定字符串重试
         if code != 0 and code != 1 and not use_fixed and "invalid" in err.lower():
             git_args_fixed = [
-                "grep", "-n", "--break", "--heading", "-i",
-                "-F", pattern, ref,
+                "grep",
+                "-n",
+                "--break",
+                "--heading",
+                "-i",
+                "-F",
+                pattern,
+                ref,
             ]
             if glob:
                 git_args_fixed.extend(["--", glob])
@@ -345,7 +397,9 @@ class GitGrep(Tool):
         if code == 1:
             return ToolResult(output=f"未找到匹配「{pattern}」的代码")
         if code != 0:
-            return ToolResult(success=False, error=_format_git_error("git grep", ref, err))
+            return ToolResult(
+                success=False, error=_format_git_error("git grep", ref, err)
+            )
         return ToolResult(output=out)
 
 
@@ -404,9 +458,11 @@ class GitLog(Tool):
             return ToolResult(success=False, error=f"仓库未找到: {repo}")
 
         git_args = [
-            "log", ref,
+            "log",
+            ref,
             f"-{limit}",
-            "--oneline", "--decorate",
+            "--oneline",
+            "--decorate",
         ]
         if filepath:
             git_args.extend(["--", filepath])
@@ -455,10 +511,10 @@ class GitDiff(Tool):
         repo = _coerce_required_string(args, "repo")
         if isinstance(repo, ToolResult):
             return repo
-        ref1 = _coerce_required_string(args, "ref1")
+        ref1 = _coerce_required_source_ref(args, "ref1")
         if isinstance(ref1, ToolResult):
             return ref1
-        ref2 = _coerce_required_string(args, "ref2")
+        ref2 = _coerce_required_source_ref(args, "ref2")
         if isinstance(ref2, ToolResult):
             return ref2
         filepath = _coerce_optional_string(args, "filepath")
@@ -567,7 +623,9 @@ class ListRepoTags(Tool):
             return ToolResult(output=f"仓库 {repo_name} 没有可用 tag")
 
         shown = tags[:limit]
-        lines = [f"仓库 {repo_name} 的 tag（共 {len(tags)} 个，显示前 {len(shown)} 个）:"]
+        lines = [
+            f"仓库 {repo_name} 的 tag（共 {len(tags)} 个，显示前 {len(shown)} 个）:"
+        ]
         lines.extend(f"- {tag}" for tag in shown)
         if len(tags) > limit:
             lines.append(f"- ... 还有 {len(tags) - limit} 个未显示")

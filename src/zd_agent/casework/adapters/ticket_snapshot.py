@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 from zd_agent.casework.domain.models import AttachmentRef, FormIdentity, TicketSnapshot
 from zd_agent.services.ticket_message_parsing import extract_form_data_from_msgs
@@ -21,22 +21,47 @@ def _required_event_time(value: object) -> datetime:
     return parsed
 
 
-def _question(message: dict[str, Any]) -> str:
+def _issue_text(message: dict[str, Any]) -> str:
+    """Return customer issue prose without leaking profile-form fields into it."""
     classification = message.get("classification_body")
+    if isinstance(classification, str) and classification.strip():
+        return classification.strip()
+    if message.get("content_type") == "formResponse":
+        return ""
     body = message.get("body")
-    for value in (classification, body):
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    raise ValueError("latest customer message has no readable content")
+    return body.strip() if isinstance(body, str) else ""
 
 
-def _attachment_refs(customer_messages: list[dict[str, Any]]) -> tuple[AttachmentRef, ...]:
+def _questions(customer_messages: list[dict[str, Any]]) -> tuple[str, ...]:
+    # Deduplicate from the tail so the last tuple item remains the customer's
+    # latest actual issue (A -> B -> A must end in A, not B).
+    seen: set[str] = set()
+    reverse_unique: list[str] = []
+    for message in reversed(customer_messages):
+        text = _issue_text(message)
+        if text and text not in seen:
+            seen.add(text)
+            reverse_unique.append(text)
+    questions = tuple(reversed(reverse_unique))
+    if not questions:
+        raise ValueError("ticket snapshot requires customer issue text")
+    return questions
+
+
+def _attachment_refs(
+    customer_messages: list[dict[str, Any]],
+) -> tuple[AttachmentRef, ...]:
     urls: list[str] = []
     for message in customer_messages:
         raw_urls = message.get("image_urls")
         if not isinstance(raw_urls, list):
             continue
-        urls.extend(value.strip() for value in raw_urls if isinstance(value, str) and value.strip())
+        url_values = cast(list[object], raw_urls)
+        urls.extend(
+            value.strip()
+            for value in url_values
+            if isinstance(value, str) and value.strip()
+        )
     unique_urls = tuple(dict.fromkeys(urls))
     return tuple(
         AttachmentRef(
@@ -49,15 +74,12 @@ def _attachment_refs(customer_messages: list[dict[str, Any]]) -> tuple[Attachmen
     )
 
 
-def _requester_email(session: AgentSession, ticket: dict[str, Any]) -> str:
+def _requester_email(ticket: dict[str, Any]) -> str:
     requester = ticket.get("requester")
     if isinstance(requester, dict):
-        value = requester.get("email")
+        value = cast(dict[str, object], requester).get("email")
         if isinstance(value, str) and value.strip():
             return value.strip().casefold()
-    profile_email = session.customer_profile.get("requester_email")
-    if isinstance(profile_email, str) and profile_email.strip():
-        return profile_email.strip().casefold()
     return ""
 
 
@@ -67,7 +89,7 @@ def _channel(ticket: dict[str, Any]) -> str:
         return direct
     via = ticket.get("via")
     if isinstance(via, dict):
-        value = via.get("channel")
+        value = cast(dict[str, object], via).get("channel")
         return value if isinstance(value, str) else ""
     return ""
 
@@ -94,11 +116,11 @@ def build_ticket_snapshot(
         locale=str(ticket.get("locale") or ""),
         latest_event_id=latest_id,
         latest_event_at=_required_event_time(latest.get("created_at")),
-        questions=(_question(latest),),
+        questions=_questions(customer_messages),
         form_identity=FormIdentity(
             email=form.get("email", ""),
             workspace_id=form.get("workspace_id", ""),
         ),
-        requester_email=_requester_email(session, ticket),
+        requester_email=_requester_email(ticket),
         attachments=_attachment_refs(customer_messages),
     )

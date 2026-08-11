@@ -1,4 +1,5 @@
 """Test Silence Waker: scan once + infinite loop (limited via cancel)."""
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 
@@ -17,12 +18,15 @@ async def test_scan_once_dispatches_substantial_on_expiry(tmp_path):
     """A substantial ticket queues a generation-bound Agent wakeup."""
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()
-    state.set("1", TicketState(
-        state="in_silence_window",
-        first_seen=_now() - timedelta(minutes=10),
-        silence_window_end=_now() - timedelta(seconds=1),
-        last_verdict="substantial_issue",
-    ))
+    state.set(
+        "1",
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now() - timedelta(minutes=10),
+            silence_window_end=_now() - timedelta(seconds=1),
+            last_verdict="substantial_issue",
+        ),
+    )
     n = await scan_once(state=state, trigger_queue=queue)
     assert n == 1
     msg = queue.get_nowait()
@@ -52,21 +56,24 @@ async def test_scan_once_dispatches_v2_casework_ready_on_expiry(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_scan_once_asks_when_not_substantial_on_expiry(tmp_path):
-    """A non-substantial ticket queues an ask without claiming ownership."""
+async def test_historical_verdicts_always_wake_v2_casework(tmp_path):
+    """No verdict can recreate the deleted legacy generic-ask route."""
     for verdict in ("greeting", "insufficient_info", ""):
         state = TicketStateTracker(tmp_path / f"tickets_{verdict or 'blank'}.json")
         queue: asyncio.Queue = asyncio.Queue()
-        state.set("1", TicketState(
-            state="in_silence_window",
-            first_seen=_now() - timedelta(minutes=10),
-            silence_window_end=_now() - timedelta(seconds=1),
-            last_verdict=verdict,
-        ))
+        state.set(
+            "1",
+            TicketState(
+                state="in_silence_window",
+                first_seen=_now() - timedelta(minutes=10),
+                silence_window_end=_now() - timedelta(seconds=1),
+                last_verdict=verdict,
+            ),
+        )
         n = await scan_once(state=state, trigger_queue=queue)
         assert n == 1
         msg = queue.get_nowait()
-        assert msg["source"] == "silence_expired_ask", verdict
+        assert msg["source"] == "silence_waker", verdict
         rec = state.get("1")
         assert rec.state == "in_silence_window", verdict
         assert msg["expected_state_revision"] == rec.state_revision
@@ -76,11 +83,14 @@ async def test_scan_once_asks_when_not_substantial_on_expiry(tmp_path):
 async def test_scan_once_skips_unexpired(tmp_path):
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()
-    state.set("1", TicketState(
-        state="in_silence_window",
-        first_seen=_now(),
-        silence_window_end=_now() + timedelta(minutes=5),
-    ))
+    state.set(
+        "1",
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now(),
+            silence_window_end=_now() + timedelta(minutes=5),
+        ),
+    )
     n = await scan_once(state=state, trigger_queue=queue)
     assert n == 0
     assert queue.empty()
@@ -91,11 +101,14 @@ async def test_scan_once_ignores_other_states(tmp_path):
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()
     # Processed ticket, even if silence_end in the past, should not wake
-    state.set("1", TicketState(
-        state="processed",
-        first_seen=_now() - timedelta(hours=1),
-        silence_window_end=_now() - timedelta(hours=1),
-    ))
+    state.set(
+        "1",
+        TicketState(
+            state="processed",
+            first_seen=_now() - timedelta(hours=1),
+            silence_window_end=_now() - timedelta(hours=1),
+        ),
+    )
     n = await scan_once(state=state, trigger_queue=queue)
     assert n == 0
 
@@ -104,11 +117,14 @@ async def test_scan_once_ignores_other_states(tmp_path):
 async def test_scan_once_skips_missing_silence_end(tmp_path):
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()
-    state.set("1", TicketState(
-        state="in_silence_window",
-        first_seen=_now(),
-        silence_window_end=None,
-    ))
+    state.set(
+        "1",
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now(),
+            silence_window_end=None,
+        ),
+    )
     n = await scan_once(state=state, trigger_queue=queue)
     assert n == 0
 
@@ -118,9 +134,24 @@ async def test_scan_once_wakes_many(tmp_path):
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()
     past = _now() - timedelta(seconds=1)
-    state.set("1", TicketState(state="in_silence_window", first_seen=past, silence_window_end=past))
-    state.set("2", TicketState(state="in_silence_window", first_seen=past, silence_window_end=past))
-    state.set("3", TicketState(state="in_silence_window", first_seen=past, silence_window_end=past))
+    state.set(
+        "1",
+        TicketState(
+            state="in_silence_window", first_seen=past, silence_window_end=past
+        ),
+    )
+    state.set(
+        "2",
+        TicketState(
+            state="in_silence_window", first_seen=past, silence_window_end=past
+        ),
+    )
+    state.set(
+        "3",
+        TicketState(
+            state="in_silence_window", first_seen=past, silence_window_end=past
+        ),
+    )
     n = await scan_once(state=state, trigger_queue=queue)
     assert n == 3
     assert queue.qsize() == 3
@@ -134,12 +165,15 @@ async def test_scan_once_queue_failure_leaves_ticket_retryable(tmp_path):
 
     state = TicketStateTracker(tmp_path / "tickets.json")
     past = _now() - timedelta(seconds=1)
-    state.set("1", TicketState(
-        state="in_silence_window",
-        first_seen=past,
-        silence_window_end=past,
-        last_verdict="substantial_issue",
-    ))
+    state.set(
+        "1",
+        TicketState(
+            state="in_silence_window",
+            first_seen=past,
+            silence_window_end=past,
+            last_verdict="substantial_issue",
+        ),
+    )
 
     with pytest.raises(OSError, match="disk unavailable"):
         await scan_once(state=state, trigger_queue=FailingQueue())
@@ -180,7 +214,9 @@ async def test_run_silence_waker_loop_handles_exception(tmp_path, monkeypatch):
 
     task = asyncio.create_task(
         run_silence_waker(
-            state=state, trigger_queue=queue, scan_interval_seconds=0.01,
+            state=state,
+            trigger_queue=queue,
+            scan_interval_seconds=0.01,
         )
     )
     await asyncio.sleep(0.1)

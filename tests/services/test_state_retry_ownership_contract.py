@@ -1,36 +1,27 @@
-"""Contracts for durable Agent retry budgets and session ownership."""
+"""Contracts for durable v2 retry budgets and session ownership."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from zd_agent.services.casework_effect_store import CaseworkEffectStore
 from zd_agent.services.trigger_state_machine import (
-    apply_escalated_to_human,
     apply_session_finished,
-    apply_verdict_enter_silence,
-    apply_verdict_processed,
-    apply_verdict_waiting_for_issue,
+    enter_casework_silence,
     apply_waiting_for_form,
 )
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
-_NOW = datetime(2026, 7, 16, 8, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 16, 8, 0, tzinfo=timezone.utc)
 
 
-def _owned_session(
-    ticket_id: int,
-    *,
-    status: SessionStatus,
-    reply_sent: bool = False,
-    reply_type: str = "solution",
-) -> AgentSession:
+def _session(ticket_id: int, status: SessionStatus) -> AgentSession:
     session = AgentSession(ticket_id=ticket_id, session_id="session-current")
     session.status = status
-    session.reply_sent = reply_sent
-    session.public_reply_type = reply_type
     return session
 
 
@@ -43,317 +34,234 @@ def _owned_session(
         SessionStatus.COMPLETED,
     ],
 )
-def test_every_owned_no_reply_outcome_consumes_retry_budget(
-    tmp_path,
-    status: SessionStatus,
-) -> None:
-    """A third no-delivery outcome retries typed ownership, not legacy handoff."""
+def test_every_owned_no_reply_outcome_consumes_retry_budget(tmp_path, status):
     tracker = TicketStateTracker(tmp_path / f"{status.value}.json")
     tracker.set(
         3461,
         TicketState(
             state="processing",
-            first_seen=_NOW - timedelta(minutes=10),
+            first_seen=NOW - timedelta(minutes=10),
             active_session_id="session-current",
             delivery_attempt_id="delivery-stable",
             consecutive_agent_failures=2,
         ),
     )
 
-    changed = apply_session_finished(
-        tracker,
-        _owned_session(3461, status=status),
-        now=_NOW,
-    )
+    apply_session_finished(tracker, _session(3461, status), now=NOW)
 
-    persisted = TicketStateTracker(tracker.path).get(3461)
-    assert changed is True
-    assert persisted is not None
-    assert persisted.state == "in_silence_window"
-    assert persisted.last_verdict == "ownership_retry"
-    assert persisted.silence_window_end == _NOW + timedelta(minutes=5)
-    assert persisted.consecutive_agent_failures == 3
-    assert persisted.active_session_id == ""
-    assert persisted.delivery_attempt_id == "delivery-stable"
+    record = TicketStateTracker(tracker.path).get(3461)
+    assert record is not None
+    assert record.state == "in_silence_window"
+    assert record.last_verdict == "ownership_retry"
+    assert record.silence_window_end == NOW + timedelta(minutes=5)
+    assert record.consecutive_agent_failures == 3
+    assert record.delivery_attempt_id == "delivery-stable"
 
 
-def test_confirmed_v2_ask_projects_to_awaiting_customer(tmp_path) -> None:
-    tracker = TicketStateTracker(tmp_path / "awaiting.json")
+def test_deferred_retry_is_bounded_and_backed_off(tmp_path):
+    tracker = TicketStateTracker(tmp_path / "deferred.json")
     tracker.set(
         3461,
         TicketState(
             state="processing",
-            first_seen=_NOW - timedelta(minutes=10),
+            first_seen=NOW,
             active_session_id="session-current",
-            delivery_attempt_id="delivery-stable",
         ),
     )
-    session = _owned_session(
-        3461,
-        status=SessionStatus.COMPLETED,
-        reply_sent=True,
+
+    apply_session_finished(
+        tracker,
+        _session(3461, SessionStatus.DEFERRED),
+        now=NOW,
     )
-    session.casework_disposition = "awaiting_customer"
-    session.customer_msgs_snapshot_captured = True
-    session.customer_msgs_snapshot_last_id = "customer-1"
 
-    assert apply_session_finished(tracker, session, now=_NOW) is True
-
-    persisted = TicketStateTracker(tracker.path).get(3461)
-    assert persisted is not None
-    assert persisted.state == "awaiting_customer"
-    assert persisted.last_verdict == "awaiting_customer"
-    assert persisted.last_customer_comment_id == "customer-1"
-    assert persisted.last_agent_finish_ts == _NOW
+    record = tracker.get(3461)
+    assert record is not None
+    assert record.last_verdict == "agent_deferred"
+    assert record.silence_window_end == NOW + timedelta(seconds=60)
+    assert record.consecutive_agent_failures == 1
 
 
-def test_durable_v2_ownership_terminalizes_without_a_public_reply(tmp_path) -> None:
+def test_typed_ownership_terminalizes_without_public_reply(tmp_path):
     tracker = TicketStateTracker(tmp_path / "owned.json")
     tracker.set(
         3461,
         TicketState(
             state="processing",
-            first_seen=_NOW - timedelta(minutes=10),
+            first_seen=NOW,
             active_session_id="session-current",
             consecutive_agent_failures=2,
         ),
     )
-    session = _owned_session(3461, status=SessionStatus.COMPLETED)
+    session = _session(3461, SessionStatus.COMPLETED)
     session.casework_ownership_action = "support"
     session.casework_reason_code = "automation_retry_exhausted"
+    session.casework_delivery_state = "not_required"
     session.casework_ownership_state = "confirmed"
-    session.casework_effect_reference = "casework-effect:runtime"
+    store = CaseworkEffectStore(tmp_path / "effects.sqlite3")
+    effect = store.prepare(
+        ticket_id=3461,
+        delivery_attempt_id="runtime-owner:runtime-failure",
+        generation=1,
+        source_event_id="runtime-failure:runtime-owner",
+        reply_type="none",
+        body="",
+        internal_analysis="retry exhausted",
+        snapshot_customer_message_count=None,
+        snapshot_customer_last_message_id="runtime-failure:runtime-owner",
+        ownership_action="support",
+        reason_code="automation_retry_exhausted",
+        ownership_packet="Support must complete this case.",
+        delivery_required=False,
+    )
+    token = store.claim_ownership(effect.reference)
+    assert token is not None
+    assert store.mark_ownership_effect(effect.reference, token, "notification_sent")
+    assert store.mark_ownership_effect(effect.reference, token, "zendesk_tag_sent")
+    store.release(effect.reference, token)
+    session.casework_effect_reference = effect.reference
 
-    changed = apply_session_finished(tracker, session, now=_NOW)
+    apply_session_finished(
+        tracker,
+        session,
+        now=NOW,
+        casework_effect_store=store,
+    )
 
-    persisted = TicketStateTracker(tracker.path).get(3461)
-    assert changed is True
-    assert persisted is not None
-    assert persisted.state == "owned"
-    assert persisted.ownership_action == "support"
-    assert persisted.ownership_reason == "automation_retry_exhausted"
-    assert persisted.consecutive_agent_failures == 0
-    assert persisted.active_session_id == ""
+    record = tracker.get(3461)
+    assert record is not None
+    assert record.state == "owned"
+    assert record.ownership_action == "support"
+    assert record.ownership_reason == "automation_retry_exhausted"
+    assert record.consecutive_agent_failures == 0
 
 
-def test_deferred_retry_consumes_budget_and_keeps_backoff_before_exhaustion(
-    tmp_path,
-) -> None:
-    tracker = TicketStateTracker(tmp_path / "tickets.json")
+def test_deferred_ownership_reply_remains_retryable_until_effects_confirm(tmp_path):
+    tracker = TicketStateTracker(tmp_path / "pending-owned.json")
     tracker.set(
         3461,
         TicketState(
             state="processing",
-            first_seen=_NOW - timedelta(minutes=10),
+            first_seen=NOW,
             active_session_id="session-current",
-            consecutive_agent_failures=0,
         ),
     )
+    session = _session(3461, SessionStatus.DEFERRED)
+    session.casework_ownership_action = "engineering"
+    session.casework_reason_code = "confirmed_platform_defect"
+    session.casework_delivery_state = "deferred"
+    session.casework_ownership_state = "pending"
+    session.casework_effect_reference = "casework-effect:engineering"
 
-    apply_session_finished(
-        tracker,
-        _owned_session(3461, status=SessionStatus.DEFERRED),
-        now=_NOW,
-    )
+    apply_session_finished(tracker, session, now=NOW)
 
-    persisted = TicketStateTracker(tracker.path).get(3461)
-    assert persisted is not None
-    assert persisted.state == "in_silence_window"
-    assert persisted.consecutive_agent_failures == 1
-    assert persisted.last_verdict == "agent_deferred"
-    assert persisted.silence_window_end == _NOW + timedelta(seconds=60)
+    record = tracker.get(3461)
+    assert record is not None
+    assert record.state == "in_silence_window"
+    assert record.last_verdict == "agent_deferred"
+    assert record.ownership_action == ""
 
 
-def test_rebuilding_transitions_preserve_durable_failure_budget(tmp_path) -> None:
-    """Classification/form transitions cannot silently reset retry history."""
+def test_current_rebuilding_transitions_preserve_retry_identity(tmp_path):
     existing = TicketState(
         state="processing",
-        first_seen=_NOW - timedelta(hours=1),
+        first_seen=NOW - timedelta(hours=1),
         delivery_attempt_id="delivery-stable",
         consecutive_agent_failures=2,
     )
-    transitions = (
-        lambda tracker, ticket_id: apply_waiting_for_form(
-            tracker,
-            ticket_id,
-            existing=existing,
-            latest_cid="cid-form",
-            latest_ts=_NOW,
-            now=_NOW,
-        ),
-        lambda tracker, ticket_id: apply_escalated_to_human(
-            tracker,
-            ticket_id,
-            existing=existing,
-            latest_cid="cid-human",
-            latest_ts=_NOW,
-            now=_NOW,
-            verdict_str="request_human",
-            reason="customer_requested",
-        ),
-        lambda tracker, ticket_id: apply_verdict_processed(
-            tracker,
-            ticket_id,
-            existing=existing,
-            latest_cid="cid-processed",
-            latest_ts=_NOW,
-            now=_NOW,
-            verdict_str="self_resolved",
-            ask_count_now=0,
-        ),
-        lambda tracker, ticket_id: apply_verdict_enter_silence(
-            tracker,
-            ticket_id,
-            existing=existing,
-            latest_cid="cid-silence",
-            latest_ts=_NOW,
-            now=_NOW,
-            verdict_str="substantial_issue",
-            ask_count_now=0,
-            silence_minutes=3,
-        ),
-        lambda tracker, ticket_id: apply_verdict_waiting_for_issue(
-            tracker,
-            ticket_id,
-            existing=existing,
-            latest_cid="cid-waiting",
-            latest_ts=_NOW,
-            now=_NOW,
-            verdict_str="insufficient_info",
-            ask_count_now=0,
-            sent=False,
-        ),
+    tracker = TicketStateTracker(tmp_path / "form.json")
+    apply_waiting_for_form(
+        tracker,
+        3500,
+        existing=existing,
+        latest_cid="form-1",
+        latest_ts=NOW,
+        now=NOW,
     )
+    form = tracker.get(3500)
+    assert form is not None
+    assert form.delivery_attempt_id == "delivery-stable"
+    assert form.consecutive_agent_failures == 2
 
-    for ticket_id, transition in enumerate(transitions, start=3500):
-        tracker = TicketStateTracker(tmp_path / f"{ticket_id}.json")
-        transition(tracker, ticket_id)
-        persisted = TicketStateTracker(tracker.path).get(ticket_id)
-        assert persisted is not None
-        assert persisted.consecutive_agent_failures == 2
-        assert persisted.delivery_attempt_id == "delivery-stable"
+    tracker = TicketStateTracker(tmp_path / "silence.json")
+    enter_casework_silence(
+        tracker,
+        3501,
+        existing=existing,
+        latest_cid="customer-1",
+        latest_ts=NOW,
+        now=NOW,
+        intake_reason="casework_ready",
+        ask_count_now=0,
+        silence_minutes=3,
+    )
+    silence = tracker.get(3501)
+    assert silence is not None
+    assert silence.delivery_attempt_id == "delivery-stable"
+    assert silence.consecutive_agent_failures == 2
 
 
 @pytest.mark.parametrize(
     "state_name",
-    ["waiting_for_issue", "processed", "escalated_to_human"],
+    ["awaiting_customer", "processed", "externally_owned", "out_of_scope"],
 )
 def test_reply_callback_cannot_overwrite_non_processing_state(
     tmp_path,
-    state_name: str,
-) -> None:
+    state_name,
+):
     tracker = TicketStateTracker(tmp_path / f"{state_name}.json")
     tracker.set(
         3461,
         TicketState(
             state=state_name,
-            first_seen=_NOW - timedelta(minutes=10),
+            first_seen=NOW,
             active_session_id="session-current",
             last_verdict="newer-lifecycle",
-            escalated_reason=(
-                "customer_requested"
-                if state_name == "escalated_to_human"
-                else ""
-            ),
         ),
     )
-    session = _owned_session(
-        3461,
-        status=SessionStatus.COMPLETED,
-        reply_sent=True,
-        reply_type="handoff",
-    )
+    session = _session(3461, SessionStatus.COMPLETED)
+    session.reply_sent = True
 
-    apply_session_finished(tracker, session, now=_NOW)
+    apply_session_finished(tracker, session, now=NOW)
 
-    persisted = TicketStateTracker(tracker.path).get(3461)
-    assert persisted is not None
-    assert persisted.state == state_name
-    assert persisted.last_verdict == "newer-lifecycle"
-    assert persisted.last_agent_finish_ts is None
+    record = tracker.get(3461)
+    assert record is not None
+    assert record.state == state_name
+    assert record.last_verdict == "newer-lifecycle"
+    assert record.last_agent_finish_ts is None
 
 
-def test_unowned_legacy_processing_cannot_accept_terminal_reply_callback(
-    tmp_path,
-) -> None:
-    """Without a durable owner, a reply callback cannot prove its generation."""
-    tracker = TicketStateTracker(tmp_path / "terminal.json")
+def test_ownerless_historical_processing_rejects_delivery_callback(tmp_path):
+    tracker = TicketStateTracker(tmp_path / "unowned.json")
     tracker.set(
         3461,
-        TicketState(
-            state="processing",
-            first_seen=_NOW - timedelta(minutes=10),
-            active_session_id="",
-            last_verdict="substantial_issue",
-        ),
+        TicketState(state="processing", first_seen=NOW, active_session_id=""),
     )
+    session = _session(3461, SessionStatus.COMPLETED)
+    session.reply_sent = True
 
-    apply_session_finished(
-        tracker,
-        _owned_session(
-            3461,
-            status=SessionStatus.COMPLETED,
-            reply_sent=True,
-            reply_type="handoff",
-        ),
-        now=_NOW,
-    )
+    apply_session_finished(tracker, session, now=NOW)
 
-    persisted = TicketStateTracker(tracker.path).get(3461)
-    assert persisted is not None
-    assert persisted.state == "processing"
-    assert persisted.last_agent_finish_ts is None
+    record = tracker.get(3461)
+    assert record is not None
+    assert record.state == "processing"
+    assert record.last_agent_finish_ts is None
 
 
-def test_unowned_legacy_processing_allows_only_no_reply_recovery(tmp_path) -> None:
-    """Legacy ownerless records may safely leave processing after a failure."""
+def test_ownerless_historical_processing_allows_no_reply_recovery(tmp_path):
     tracker = TicketStateTracker(tmp_path / "retry.json")
     tracker.set(
         3461,
-        TicketState(
-            state="processing",
-            first_seen=_NOW - timedelta(minutes=10),
-            active_session_id="",
-        ),
+        TicketState(state="processing", first_seen=NOW, active_session_id=""),
     )
 
     apply_session_finished(
         tracker,
-        _owned_session(3461, status=SessionStatus.FAILED),
-        now=_NOW,
+        _session(3461, SessionStatus.FAILED),
+        now=NOW,
     )
 
-    persisted = TicketStateTracker(tracker.path).get(3461)
-    assert persisted is not None
-    assert persisted.state == "in_silence_window"
-    assert persisted.consecutive_agent_failures == 1
-
-
-def test_v2_typed_ownership_terminalizes_without_handoff_reply_type(tmp_path) -> None:
-    tracker = TicketStateTracker(tmp_path / "v2-ownership.json")
-    tracker.set(
-        4001,
-        TicketState(
-            state="processing",
-            first_seen=_NOW - timedelta(minutes=5),
-            active_session_id="session-current",
-        ),
-    )
-    session = _owned_session(
-        4001,
-        status=SessionStatus.COMPLETED,
-        reply_sent=True,
-        reply_type="",
-    )
-    session.casework_ownership_action = "engineering"
-    session.casework_reason_code = "confirmed_platform_defect"
-    session.casework_effect_reference = "casework-effect:engineering"
-
-    apply_session_finished(tracker, session, now=_NOW)
-
-    persisted = TicketStateTracker(tracker.path).get(4001)
-    assert persisted is not None
-    assert persisted.state == "owned"
-    assert persisted.ownership_action == "engineering"
-    assert persisted.ownership_reason == "confirmed_platform_defect"
-    assert persisted.last_verdict == "confirmed_platform_defect"
+    record = tracker.get(3461)
+    assert record is not None
+    assert record.state == "in_silence_window"
+    assert record.consecutive_agent_failures == 1

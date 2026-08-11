@@ -23,6 +23,7 @@ def _make_jsonl_sink(log_dir: str):
     <log_dir>/events-<UTC date>.jsonl，然后**原样返回 event_dict**（不消费，
     让后续 ConsoleRenderer 继续渲染 stdout）。写文件失败时静默降级。
     """
+
     def _sink(logger: Any, method_name: str, event_dict: dict) -> dict:
         try:
             os.makedirs(log_dir, exist_ok=True)

@@ -22,8 +22,7 @@ def test_removed_casework_modes_fail_fast_from_yaml(
 ) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "casework:\n"
-        f"  mode: {mode}\n",
+        f"casework:\n  mode: {mode}\n",
     )
 
     with pytest.raises(

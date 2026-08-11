@@ -1,4 +1,5 @@
 """Remote MCP client wrapper for Zendesk support-ticket operations."""
+
 from __future__ import annotations
 
 import json
@@ -73,7 +74,11 @@ async def call_zendesk_tool(
 
     if resp.status_code == 401:
         logger.warning("zendesk_mcp_unauthorized", tool=name)
-        return {"success": False, "code": "ZENDESK_MCP_UNAUTHORIZED", "error": "unauthorized"}
+        return {
+            "success": False,
+            "code": "ZENDESK_MCP_UNAUTHORIZED",
+            "error": "unauthorized",
+        }
     if resp.status_code >= 400:
         logger.warning(
             "zendesk_mcp_http_error",

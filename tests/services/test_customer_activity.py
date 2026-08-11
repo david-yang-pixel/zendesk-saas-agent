@@ -1,4 +1,5 @@
 """Tests for customer activity gates after message fetch."""
+
 from __future__ import annotations
 
 import json
@@ -73,7 +74,7 @@ def test_processed_ticket_new_customer_comment_emits_reopen_metric(tmp_path) -> 
     assert result.handled is False
     assert result.action == "continue"
     assert result.latest_cid == "cid-2"
-    assert result.existing is state.get(12345)
+    assert result.existing == state.get(12345)
     emit_reopen.assert_called_once_with(
         ticket_id=12345,
         prev_state="processed",

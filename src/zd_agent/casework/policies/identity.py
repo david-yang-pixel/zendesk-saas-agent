@@ -132,7 +132,9 @@ def _normalize_inputs(
     canonical_id = "" if workspace_email else _canonical_tenant_id(form_workspace_id)
     display_name = "" if workspace_email or canonical_id else form_workspace_id
     target_email = workspace_email or contact_email
-    target_identity = workspace_email or canonical_id or display_name.strip() or contact_email
+    target_identity = (
+        workspace_email or canonical_id or display_name.strip() or contact_email
+    )
     required_emails = tuple(
         dict.fromkeys(
             email
@@ -252,7 +254,11 @@ def _resolve_canonical_candidate(
     evidence_ids: tuple[str, ...],
 ) -> IdentityResolution:
     matching = next(
-        (candidate for candidate in candidates if candidate.tenant_id == inputs.canonical_id),
+        (
+            candidate
+            for candidate in candidates
+            if candidate.tenant_id == inputs.canonical_id
+        ),
         None,
     )
     if matching is None:
@@ -284,7 +290,8 @@ def _resolve_multiple_candidates(
     matches = tuple(
         candidate
         for candidate in candidates
-        if normalized_name and _workspace_name(candidate.workspace_name) == normalized_name
+        if normalized_name
+        and _workspace_name(candidate.workspace_name) == normalized_name
     )
     if len(matches) == 1:
         return _resolved(
@@ -325,7 +332,9 @@ def _resolve_candidates(
             detail="successful membership lookup returned no target workspace",
         )
     if inputs.canonical_id:
-        return _resolve_canonical_candidate(inputs, candidates, evidence_ids=evidence_ids)
+        return _resolve_canonical_candidate(
+            inputs, candidates, evidence_ids=evidence_ids
+        )
     if len(candidates) == 1:
         return _resolved(
             contact_email=inputs.contact_email,

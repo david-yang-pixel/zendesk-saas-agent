@@ -12,11 +12,147 @@ import secrets
 import sqlite3
 import time
 
+from zd_agent.config import get_config
+from zd_agent.integrations.notification_service import (
+    notification_result_is_definitely_unsent,
+    push_notification_card,
+)
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.public_reply_delivery_store import PublicReplyDeliveryStore
 
 logger = get_logger(module="services.public_reply_handoff_effects")
 EffectSender = Callable[..., Awaitable[bool]]
+
+
+def _historical_handoff_content(
+    *,
+    reason: str,
+    source: str,
+    customer_phrase: str,
+    agent_last_reply: str,
+    handoff_reply_sent: bool | None,
+) -> str:
+    """Render a frozen pre-v2 handoff row without reviving v1 policy code."""
+    sections = [
+        "**历史 v1 转人工记录补偿**",
+        f"**原始原因**\n{reason.strip() or '未记录'}",
+        f"**原始来源**\n{source.strip() or '未记录'}",
+    ]
+    if handoff_reply_sent is True:
+        sections.append("**历史客户通知状态**\n已确认送达")
+    elif handoff_reply_sent is False:
+        sections.append("**历史客户通知状态**\n未确认送达，请人工复核")
+    if customer_phrase.strip():
+        sections.append(f"**客户原话**\n{customer_phrase.strip()}")
+    if agent_last_reply.strip():
+        sections.append(f"**历史已发送回复**\n{agent_last_reply.strip()}")
+    return "\n\n".join(sections)
+
+
+async def _send_historical_handoff_notification_best_effort(
+    *,
+    ticket_id: int,
+    reason: str,
+    source: str,
+    customer_phrase: str = "",
+    agent_last_reply: str = "",
+    handoff_reply_sent: bool | None = None,
+    idempotency_reference: str = "",
+) -> bool:
+    """Reconcile only a persisted pre-v2 notification transport effect."""
+    if not idempotency_reference.strip():
+        logger.warning(
+            "historical_handoff_notification_rejected_before_send",
+            ticket_id=ticket_id,
+            error="missing durable idempotency reference",
+        )
+        return False
+    try:
+        cfg = get_config()
+        zendesk_url = (
+            f"https://{cfg.zendesk.subdomain}.zendesk.com/agent/tickets/{ticket_id}"
+            if cfg.zendesk.subdomain
+            else ""
+        )
+        payload = await push_notification_card(
+            card_type="ticket_escalate",
+            ticket_id=str(ticket_id),
+            content=_historical_handoff_content(
+                reason=reason,
+                source=source,
+                customer_phrase=customer_phrase,
+                agent_last_reply=agent_last_reply,
+                handoff_reply_sent=handoff_reply_sent,
+            ),
+            title="Historical handoff reconciliation",
+            zendesk_url=zendesk_url,
+            idempotency_reference=idempotency_reference,
+            cfg=cfg,
+        )
+    except Exception as exc:  # noqa: BLE001 - remote outcome may be ambiguous.
+        logger.warning(
+            "historical_handoff_notification_ambiguous",
+            ticket_id=ticket_id,
+            reference=idempotency_reference,
+            error=str(exc)[:200],
+            exc_info=True,
+        )
+        raise
+    if payload.get("success") is not True:
+        if notification_result_is_definitely_unsent(payload):
+            logger.warning(
+                "historical_handoff_notification_rejected_before_send",
+                ticket_id=ticket_id,
+                reference=idempotency_reference,
+                code=payload.get("code"),
+                error=str(payload.get("error") or "unknown")[:200],
+            )
+            return False
+        error = RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        logger.warning(
+            "historical_handoff_notification_ambiguous",
+            ticket_id=ticket_id,
+            reference=idempotency_reference,
+            error=str(error)[:200],
+        )
+        raise error
+    logger.info(
+        "historical_handoff_notification_sent",
+        ticket_id=ticket_id,
+        reference=idempotency_reference,
+    )
+    return True
+
+
+async def _add_historical_handoff_tag_best_effort(*, ticket_id: int) -> bool:
+    """Finish a frozen pre-v2 tag effect without creating a new handoff."""
+    try:
+        payload = await call_zendesk_tool(
+            "update_ticket_metadata",
+            {
+                "ticket_id": ticket_id,
+                "add_tags": ["escalated-to-human"],
+                "explicit_user_metadata_request": (
+                    "reconcile frozen pre-v2 handoff tag"
+                ),
+                "dry_run": False,
+                "confirm": True,
+                "actor": "zd-agent-v2-historical-reconciler",
+            },
+        )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+    except Exception as exc:  # noqa: BLE001 - durable row remains retryable.
+        logger.warning(
+            "historical_handoff_tag_failed",
+            ticket_id=ticket_id,
+            error=str(exc)[:200],
+            exc_info=True,
+        )
+        return False
+    logger.info("historical_handoff_tag_added", ticket_id=ticket_id)
+    return True
 
 
 def _handoff_reference(ticket_id: int, delivery_attempt_id: str) -> str:
@@ -149,6 +285,15 @@ class PostPublicHandoffStore:
             ).fetchall()
         return [_from_row(row) for row in rows]
 
+    def pending_count(self) -> int:
+        """Count frozen pre-v2 effects that still need transport reconciliation."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM post_public_handoff_effects "
+                "WHERE feishu_sent = 0 OR zendesk_tag_sent = 0",
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def claim(self, reference: str) -> str | None:
         now = time.time()
         token = secrets.token_hex(16)
@@ -209,7 +354,9 @@ class PostPublicHandoffStore:
         return self.mark_feishu_ambiguous(reference, token)
 
     def clear_feishu_ambiguous_if_definitely_unsent(
-        self, reference: str, token: str,
+        self,
+        reference: str,
+        token: str,
     ) -> bool:
         with self._connect() as connection:
             cursor = connection.execute(
@@ -286,21 +433,10 @@ async def ensure_post_public_handoff_effects(
     token = store.claim(pending.reference)
     if token is None:
         return False
-    if feishu_sender is None or tag_sender is None:
-        from zd_agent.services import escalation_notifications
+    feishu_sender = feishu_sender or _send_historical_handoff_notification_best_effort
+    tag_sender = tag_sender or _add_historical_handoff_tag_best_effort
 
-        feishu_sender = (
-            feishu_sender
-            or escalation_notifications.send_feishu_escalation_best_effort
-        )
-        tag_sender = (
-            tag_sender
-            or escalation_notifications.add_zendesk_escalation_tag_best_effort
-        )
-
-    heartbeat = asyncio.create_task(
-        _renew_claim(store, pending.reference, token)
-    )
+    heartbeat = asyncio.create_task(_renew_claim(store, pending.reference, token))
     feishu_sent = pending.feishu_sent
     feishu_definitely_unsent = False
     tag_sent = pending.zendesk_tag_sent
@@ -343,7 +479,8 @@ async def ensure_post_public_handoff_effects(
                 # Sender's normal False result is its explicit
                 # definite-unsent contract; only that permits a later retry.
                 store.clear_feishu_ambiguous_if_definitely_unsent(
-                    pending.reference, token,
+                    pending.reference,
+                    token,
                 )
         if not tag_sent:
             try:

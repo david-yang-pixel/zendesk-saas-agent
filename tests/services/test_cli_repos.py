@@ -65,7 +65,10 @@ def test_run_repo_fetch_uses_fetch_when_clone_is_false():
     assert result.not_found == set()
     assert result.total == 2
     assert result.success_count == 2
-    assert [row["message"] for row in result.rows] == ["dify fetched", "billing fetched"]
+    assert [row["message"] for row in result.rows] == [
+        "dify fetched",
+        "billing fetched",
+    ]
     assert calls == ["dify", "billing"]
 
 

@@ -58,7 +58,9 @@ class EvidenceItem(FrozenModel):
         return self
 
     def target_value(self, kind: str) -> str | None:
-        return next((target.value for target in self.targets if target.kind == kind), None)
+        return next(
+            (target.value for target in self.targets if target.kind == kind), None
+        )
 
 
 class Claim(FrozenModel):
@@ -80,7 +82,10 @@ class Claim(FrozenModel):
             and not self.supporting_evidence_ids
         ):
             raise ValueError("supported material claim requires evidence IDs")
-        if self.status is ClaimStatus.CONTRADICTED and not self.contradicting_evidence_ids:
+        if (
+            self.status is ClaimStatus.CONTRADICTED
+            and not self.contradicting_evidence_ids
+        ):
             raise ValueError("contradicted claim requires contradicting evidence IDs")
         return self
 

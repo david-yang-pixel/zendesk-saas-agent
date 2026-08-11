@@ -3,6 +3,7 @@
 These endpoints intentionally expose only redacted runtime state. Secrets stay
 in the agent environment and are represented as *_configured booleans.
 """
+
 from __future__ import annotations
 
 from copy import deepcopy
@@ -62,26 +63,12 @@ def _get_int(obj: Any, *names: str, default: int) -> int:
     return default
 
 
-def _guardrails_manifest(cfg: AppConfig) -> dict[str, Any]:
-    guardrails = cfg.agent.guardrails
-    return {
-        "max_rounds": guardrails.max_rounds,
-        "timeout_seconds": guardrails.timeout_seconds,
-        "max_context_tokens": guardrails.max_tokens_per_session,
-        "compaction_threshold": guardrails.compaction_threshold,
-        "context_compaction_trigger_tokens": guardrails.context_compaction_trigger_tokens,
-        "context_compaction_target_tokens": guardrails.context_compaction_target_tokens,
-    }
-
-
 def build_agent_config_manifest(
     cfg: AppConfig,
     *,
     env: EnvSettings | None = None,
 ) -> dict[str, Any]:
     """Return the current runtime config in hc-client's expected shape."""
-    subagent_model = cfg.llm.subagent_model or None
-    effective_subagent_model = cfg.llm.subagent_model or cfg.llm.model
     openai_key_configured = _configured(env.openai_api_key) if env else False
     anthropic_key_configured = _configured(env.anthropic_api_key) if env else False
     llm_key_configured = openai_key_configured or anthropic_key_configured
@@ -99,27 +86,23 @@ def build_agent_config_manifest(
         },
         "agent": {
             "max_concurrent_sessions": cfg.agent.max_concurrent_sessions,
-            "guardrails": _guardrails_manifest(cfg),
         },
-        "subagent": {
-            "model": subagent_model,
-            "effective_model": effective_subagent_model,
-            "base_url": cfg.llm.base_url,
-            "effective_base_url": cfg.llm.base_url,
-            "api_key_configured": llm_key_configured,
-            "reasoning_effort": cfg.llm.subagent_reasoning_effort or None,
-            "effective_reasoning_effort": cfg.llm.subagent_reasoning_effort or None,
-            "guardrails": _guardrails_manifest(cfg),
+        "casework": {
+            "mode": cfg.casework.mode.value,
+            "max_investigation_rounds": cfg.casework.max_investigation_rounds,
+            "max_investigation_calls": cfg.casework.max_investigation_calls,
+            "max_investigation_tokens": cfg.casework.max_investigation_tokens,
         },
         "features": {
             "auto_public_reply": {
                 "enabled": cfg.public_reply.enabled,
             },
-            "customer_reply_loop": {
+            "customer_event_recovery": {
                 "enabled": cfg.waiting_poller.poll_new_messages,
                 "debounce_seconds": cfg.public_reply.silence_window_seconds,
-                "l1_group_id": 0,
-                "max_auto_replies": cfg.public_reply.max_ask_count,
+                "customer_wait_timeout_hours": (
+                    cfg.waiting_poller.customer_wait_timeout_hours
+                ),
             },
         },
         "hindsight": {
@@ -143,15 +126,14 @@ def build_agent_config_manifest(
             "messaging_signing_secret_configured": _configured(
                 cfg.webhook.messaging_signing_secret
             ),
-            "internal_bearer_configured": _configured(env.hc_client_api_key) if env else False,
+            "internal_bearer_configured": _configured(env.hc_client_api_key)
+            if env
+            else False,
         },
         "public_reply": {
             "enabled": cfg.public_reply.enabled,
-            "max_ask_count": cfg.public_reply.max_ask_count,
             "silent_initial_wait_seconds": cfg.public_reply.silent_initial_wait_seconds,
             "silence_window_seconds": cfg.public_reply.silence_window_seconds,
-            "ask_followup_alert_minutes": cfg.public_reply.ask_followup_alert_minutes,
-            "abandoned_hours": cfg.public_reply.abandoned_hours,
             "browser_relay_url": cfg.public_reply.browser_relay_url,
             "browser_relay_api_key_configured": _configured(
                 cfg.public_reply.browser_relay_api_key
@@ -192,7 +174,9 @@ def _set_if_present(target: Any, payload: dict[str, Any], attr: str) -> None:
         setattr(target, attr, payload[attr])
 
 
-def _set_positive_int_if_present(target: Any, payload: dict[str, Any], attr: str) -> None:
+def _set_positive_int_if_present(
+    target: Any, payload: dict[str, Any], attr: str
+) -> None:
     value = payload.get(attr)
     if value is None:
         return
@@ -229,27 +213,12 @@ def update_agent_config(
     update = deepcopy(payload)
 
     llm = _as_mapping(update.get("llm"))
-    subagent = _as_mapping(update.get("subagent"))
     if "model" in llm:
         llm["model"] = str(llm.get("model") or "").strip()
-    if "model" in subagent:
-        subagent["model"] = str(subagent.get("model") or "").strip()
     main_model = str(llm.get("model", cfg.llm.model))
     main_reasoning_effort = validate_reasoning_effort(
         main_model,
         str(llm.get("reasoning_effort", cfg.llm.reasoning_effort)),
-    )
-    subagent_model = str(
-        subagent.get("model", cfg.llm.subagent_model) or main_model
-    )
-    subagent_reasoning_effort = validate_reasoning_effort(
-        subagent_model,
-        str(
-            subagent.get(
-                "reasoning_effort",
-                cfg.llm.subagent_reasoning_effort,
-            )
-        ),
     )
     _set_if_present(cfg.llm, llm, "provider")
     _set_if_present(cfg.llm, llm, "model")
@@ -266,54 +235,38 @@ def update_agent_config(
         if max_tokens >= 0:
             cfg.llm.max_tokens = max_tokens
 
-    if "model" in subagent:
-        cfg.llm.subagent_model = str(subagent.get("model") or "")
-    if "reasoning_effort" in subagent:
-        cfg.llm.subagent_reasoning_effort = subagent_reasoning_effort
-    if "base_url" in subagent:
-        cfg.llm.base_url = subagent.get("base_url") or None
-
     agent = _as_mapping(update.get("agent"))
     _set_positive_int_if_present(cfg.agent, agent, "max_concurrent_sessions")
-    guardrails = _as_mapping(agent.get("guardrails"))
-    _set_positive_int_if_present(cfg.agent.guardrails, guardrails, "max_rounds")
-    _set_positive_int_if_present(cfg.agent.guardrails, guardrails, "timeout_seconds")
-    if "max_context_tokens" in guardrails:
-        _set_positive_int_if_present(
-            cfg.agent.guardrails,
-            {"max_tokens_per_session": guardrails["max_context_tokens"]},
-            "max_tokens_per_session",
-        )
-    _set_float_if_present(cfg.agent.guardrails, guardrails, "compaction_threshold")
-    _set_positive_int_if_present(
-        cfg.agent.guardrails,
-        guardrails,
-        "context_compaction_trigger_tokens",
-    )
-    _set_positive_int_if_present(
-        cfg.agent.guardrails,
-        guardrails,
-        "context_compaction_target_tokens",
-    )
+    casework = _as_mapping(update.get("casework"))
+    for attr in (
+        "max_investigation_rounds",
+        "max_investigation_calls",
+        "max_investigation_tokens",
+    ):
+        _set_positive_int_if_present(cfg.casework, casework, attr)
 
     features = _as_mapping(update.get("features"))
     auto_public_reply = _as_mapping(features.get("auto_public_reply"))
     if "enabled" in auto_public_reply:
         cfg.public_reply.enabled = bool(auto_public_reply["enabled"])
-    customer_reply_loop = _as_mapping(features.get("customer_reply_loop"))
-    if "enabled" in customer_reply_loop:
-        cfg.waiting_poller.poll_new_messages = bool(customer_reply_loop["enabled"])
-    if "debounce_seconds" in customer_reply_loop:
+    customer_event_recovery = _as_mapping(features.get("customer_event_recovery"))
+    if "enabled" in customer_event_recovery:
+        cfg.waiting_poller.poll_new_messages = bool(customer_event_recovery["enabled"])
+    if "debounce_seconds" in customer_event_recovery:
         _set_positive_int_if_present(
             cfg.public_reply,
-            {"silence_window_seconds": customer_reply_loop["debounce_seconds"]},
+            {"silence_window_seconds": customer_event_recovery["debounce_seconds"]},
             "silence_window_seconds",
         )
-    if "max_auto_replies" in customer_reply_loop:
+    if "customer_wait_timeout_hours" in customer_event_recovery:
         _set_positive_int_if_present(
-            cfg.public_reply,
-            {"max_ask_count": customer_reply_loop["max_auto_replies"]},
-            "max_ask_count",
+            cfg.waiting_poller,
+            {
+                "customer_wait_timeout_hours": customer_event_recovery[
+                    "customer_wait_timeout_hours"
+                ]
+            },
+            "customer_wait_timeout_hours",
         )
 
     zendesk = _as_mapping(update.get("zendesk"))
@@ -328,11 +281,8 @@ def update_agent_config(
 
     public_reply = _as_mapping(update.get("public_reply"))
     for attr in (
-        "max_ask_count",
         "silent_initial_wait_seconds",
         "silence_window_seconds",
-        "ask_followup_alert_minutes",
-        "abandoned_hours",
         "browser_relay_timeout_seconds",
     ):
         _set_positive_int_if_present(cfg.public_reply, public_reply, attr)
@@ -416,11 +366,10 @@ async def list_agent_models(
     model_fetcher: ModelFetcher = _fetch_openai_compatible_models,
 ) -> dict[str, Any]:
     """Return model options for hc-client, with safe local fallbacks."""
-    if target == "subagent":
-        model_id = cfg.llm.subagent_model or cfg.llm.model
-    else:
-        model_id = cfg.llm.model
-    effective_base_url = base_url or cfg.llm.base_url or (env.openai_base_url if env else None)
+    model_id = cfg.llm.model
+    effective_base_url = (
+        base_url or cfg.llm.base_url or (env.openai_base_url if env else None)
+    )
     effective_api_key = (api_key or (env.openai_api_key if env else "") or "").strip()
     provider_models: list[str] = []
     default_models: tuple[str | None, ...] = ()
@@ -428,13 +377,13 @@ async def list_agent_models(
         provider_models = await model_fetcher(effective_base_url, effective_api_key)
         default_models = _DEFAULT_OPENAI_COMPATIBLE_MODELS
     model_ids = _dedupe_model_ids(
-        (model_id, cfg.llm.model, cfg.llm.subagent_model),
+        (model_id,),
         provider_models,
         default_models,
     )
     return {
         "provider": cfg.llm.provider,
-        "target": target,
+        "target": "agent",
         "base_url": effective_base_url,
         "count": len(model_ids),
         "models": [
@@ -470,9 +419,13 @@ def build_agent_tools_manifest() -> dict[str, Any]:
                 "metadata": {
                     "group": getattr(tool, "group", "default"),
                     "concurrency_safe": bool(getattr(tool, "concurrency_safe", True)),
-                    "max_output_tokens": int(getattr(tool, "max_output_tokens", 0) or 0),
+                    "max_output_tokens": int(
+                        getattr(tool, "max_output_tokens", 0) or 0
+                    ),
                     "requires_sandbox": bool(getattr(tool, "requires_sandbox", False)),
-                    "is_write_operation": bool(getattr(tool, "is_write_operation", False)),
+                    "is_write_operation": bool(
+                        getattr(tool, "is_write_operation", False)
+                    ),
                     "risk_level": _risk_level(tool),
                     "source_path": f"{tool.__class__.__module__}.{tool.__class__.__name__}",
                     "tool_service": tool_service,
@@ -481,6 +434,8 @@ def build_agent_tools_manifest() -> dict[str, Any]:
         )
     return {
         "count": len(tools),
-        "tool_service_summary": summarize_tool_service_boundaries(registry.list_tools()),
+        "tool_service_summary": summarize_tool_service_boundaries(
+            registry.list_tools()
+        ),
         "tools": tools,
     }

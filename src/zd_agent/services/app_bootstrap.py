@@ -1,4 +1,5 @@
 """Runtime dependency bootstrap for the SaaS aiohttp app."""
+
 from __future__ import annotations
 
 import asyncio
@@ -18,6 +19,7 @@ from zd_agent.services.casework_ownership_effects import (
     reconcile_casework_ownership_effects,
 )
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
+from zd_agent.services.instance_fence import verify_active_instance
 from zd_agent.services.public_reply_internal_note import (
     PostPublicInternalNoteStore,
     reconcile_pending_post_public_internal_notes,
@@ -57,11 +59,18 @@ def apply_saved_admin_config(cfg: AppConfig) -> Path:
     return state_dir
 
 
-def create_configured_session_manager(cfg: AppConfig) -> SessionManager:
+def create_configured_session_manager(
+    cfg: AppConfig,
+    *,
+    force_dry_run: bool = False,
+) -> SessionManager:
     from zd_agent.session.manager import SessionManager
 
     apply_saved_admin_config(cfg)
-    return SessionManager(max_concurrent=cfg.agent.max_concurrent_sessions)
+    return SessionManager(
+        max_concurrent=cfg.agent.max_concurrent_sessions,
+        force_dry_run=force_dry_run,
+    )
 
 
 def prepare_saas_app_runtime(
@@ -72,6 +81,7 @@ def prepare_saas_app_runtime(
 ) -> SaasAppRuntime:
     """Create shared runtime dependencies and install them into the app."""
     state_dir = apply_saved_admin_config(cfg)
+    verify_active_instance(state_dir)
 
     trigger_queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
     state = TicketStateTracker(state_dir / "tickets.json")
@@ -93,7 +103,9 @@ def prepare_saas_app_runtime(
         recovered = trigger_queue.ensure_processing_recovery(
             numeric_ticket_id,
             delivery_attempt_id=(
-                record.delivery_attempt_id if record is not None else ""
+                record.delivery_attempt_id or record.active_session_id
+                if record is not None
+                else ""
             ),
         )
         if recovered:
@@ -113,7 +125,13 @@ def prepare_saas_app_runtime(
         state_dir / "processed_webhooks.json",
         max_size=10000,
     )
-    wire_session_finished_callback(manager=manager, state=state)
+    casework_store = CaseworkEffectStore(state_dir / "casework_effects.sqlite3")
+    wire_session_finished_callback(
+        manager=manager,
+        state=state,
+        casework_effect_store=casework_store,
+        trigger_queue=trigger_queue,
+    )
     install_saas_app_context(
         app=app,
         cfg=cfg,
@@ -135,7 +153,9 @@ def prepare_saas_app_runtime(
                 state=state,
             )
             if reconciled:
-                logger.warning("trigger_dead_letters_startup_reconciled", count=reconciled)
+                logger.warning(
+                    "trigger_dead_letters_startup_reconciled", count=reconciled
+                )
         except Exception as exc:  # noqa: BLE001 - next periodic pass retries.
             logger.warning(
                 "trigger_dead_letter_startup_reconcile_failed",
@@ -153,13 +173,24 @@ def prepare_saas_app_runtime(
             handoff_store = PostPublicHandoffStore(
                 state_dir / "post_public_handoff_outbox.sqlite3"
             )
-            casework_store = CaseworkEffectStore(
-                state_dir / "casework_effects.sqlite3"
-            )
             note_pending = bool(note_store.pending(limit=1))
             handoff_pending = bool(handoff_store.pending(limit=1))
             casework_pending = bool(casework_store.pending_ownership(limit=1))
-            if not note_pending and not handoff_pending and not casework_pending:
+            casework_state_pending = bool(state.list_by_state("ownership_pending"))
+            if not any(
+                (
+                    note_pending,
+                    handoff_pending,
+                    casework_pending,
+                    casework_state_pending,
+                )
+            ):
+                purged_casework = casework_store.purge_completed()
+                if purged_casework:
+                    logger.info(
+                        "casework_effect_startup_retention_purged",
+                        count=purged_casework,
+                    )
                 return
             delivery_store = PublicReplyDeliveryStore(
                 state_dir / "public_reply_outbox.sqlite3"
@@ -184,16 +215,21 @@ def prepare_saas_app_runtime(
                     ),
                     timeout=90,
                 )
-            if casework_pending:
+            if casework_pending or casework_state_pending:
                 reconciled_casework = await asyncio.wait_for(
-                    reconcile_casework_ownership_effects(store=casework_store),
+                    reconcile_casework_ownership_effects(
+                        store=casework_store,
+                        state=state,
+                    ),
                     timeout=90,
                 )
+            purged_casework = casework_store.purge_completed()
             logger.info(
                 "post_public_side_effects_startup_reconciled",
                 notes=reconciled_notes,
                 handoffs=reconciled_handoffs,
                 casework_ownership=reconciled_casework,
+                casework_purged=purged_casework,
             )
         except Exception as exc:  # noqa: BLE001 - startup recovery is best effort.
             logger.warning(

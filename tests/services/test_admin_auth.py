@@ -28,14 +28,16 @@ def test_default_admin_login_uses_random_one_time_password(tmp_path) -> None:
 def test_existing_legacy_default_password_is_rotated_on_upgrade(tmp_path) -> None:
     path = tmp_path / "admin_auth.json"
     path.write_text(
-        json.dumps({
-            "users": {
-                "admin": {
-                    "password": hash_password("admin123"),
-                    "force_password_change": True,
+        json.dumps(
+            {
+                "users": {
+                    "admin": {
+                        "password": hash_password("admin123"),
+                        "force_password_change": True,
+                    },
                 },
-            },
-        }),
+            }
+        ),
         encoding="utf-8",
     )
 
