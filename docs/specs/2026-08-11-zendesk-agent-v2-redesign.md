@@ -1,8 +1,8 @@
 # Spec: Zendesk Agent v2 — Evidence-Grounded Autonomous Support
 
-Status: **Approved for local implementation through shadow-ready Phase 3 on
-2026-08-11. Production canary, merge, deployment, and legacy removal still require
-separate approval.**
+Status: **Implemented locally through shadow-ready Phase 3 on 2026-08-11.
+Production shadow activation, canary, merge, deployment, and legacy removal still
+require separate approval.**
 
 ## Objective
 
@@ -736,13 +736,30 @@ remain separate approval points.
 Implementation starts only after this specification and the proposed decisions are
 approved.
 
-- [ ] Phase 0: add reason-code baseline and redacted replay harness.
-- [ ] Phase 1: add domain models, ports, adapter error taxonomy, and context builder.
-- [ ] Phase 2: add evidence, assessment, retry, and disposition policies.
-- [ ] Phase 3: add reply composition, quality review, and shadow comparator.
-- [ ] Verify full existing/new tests, Ruff, Pyright, build, and no-write replay.
-- [ ] Present shadow evidence and request production-canary approval.
+- [x] Phase 0: add reason-code baseline and redacted replay harness.
+- [x] Phase 1: add domain models, ports, adapter error taxonomy, and context builder.
+- [x] Phase 2: add evidence, assessment, retry, and disposition policies.
+- [x] Phase 3: add reply composition, quality review, and shadow comparator.
+- [x] Verify full existing/new tests, Ruff, Pyright, build, and no-write replay.
+- [ ] Enable an approved live no-write shadow sample, review disagreements, and
+      request production-canary approval.
 - [ ] Canary, expand, cut over, and remove legacy code under separate approvals.
+
+## Local Verification Evidence
+
+- `uv sync --frozen --dev`: dependency lock audited successfully.
+- `uv run pytest -q`: 1,875 tests passed; three pre-existing `structlog` warnings.
+- `uv run pytest -q tests/casework tests/replay`: 120 focused and replay tests passed.
+- `uv run ruff check src tests`: passed.
+- `uv run pyright src/zd_agent/casework tests/casework`: zero errors and warnings.
+- `uv build --offline`: source distribution and wheel built successfully.
+- `git diff --check main`: passed.
+
+The replay fixtures are sanitized and exercise the complete no-write casework
+pipeline. Repository configuration remains `casework.mode: legacy`. The only
+available opt-in is `ZD_CASEWORK_MODE=shadow`; delivery modes are rejected by
+configuration validation, and shadow observations are written to a redacted JSONL
+archive without sending Zendesk replies or changing ticket ownership.
 
 ## Open Questions
 

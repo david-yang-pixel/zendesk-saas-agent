@@ -16,4 +16,3 @@ class IdentityReader(Protocol):
 
 class BillingReader(Protocol):
     async def read_billing(self, tenant_id: str) -> BillingLookup: ...
-

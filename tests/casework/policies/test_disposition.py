@@ -120,23 +120,21 @@ def test_exhausted_failure_cannot_create_ownership_without_action_packet() -> No
         decide_disposition(assessment)
 
 
-def test_nonretryable_read_failure_stays_internal_before_budget_exhaustion() -> None:
-    decision = decide_disposition(
-        CaseAssessment(
-            question="What is my subscription?",
-            answer_status=AnswerStatus.INSUFFICIENT,
-            blocking_failure=AdapterFailure(
-                operation="billing.lookup",
-                code=AdapterErrorCode.MALFORMED_RESPONSE,
-                attempt=1,
-                max_attempts=3,
-                evidence_id="ev-malformed",
-            ),
+def test_nonretryable_read_failure_fails_closed_without_ownership() -> None:
+    assessment = CaseAssessment(
+        question="What is my subscription?",
+        answer_status=AnswerStatus.INSUFFICIENT,
+        blocking_failure=AdapterFailure(
+            operation="billing.lookup",
+            code=AdapterErrorCode.MALFORMED_RESPONSE,
+            attempt=1,
+            max_attempts=3,
+            evidence_id="ev-malformed",
         ),
     )
 
-    assert decision.disposition is Disposition.RETRY_PENDING
-    assert decision.ownership_action is OwnershipAction.NONE
+    with pytest.raises(ValueError, match="domain-specific policy"):
+        decide_disposition(assessment)
 
 
 def test_ambiguous_write_is_never_retried() -> None:

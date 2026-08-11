@@ -26,4 +26,3 @@ class ReplyReviewer(Protocol):
         assessment: CaseAssessment,
         decision: DispositionDecision,
     ) -> str: ...
-
