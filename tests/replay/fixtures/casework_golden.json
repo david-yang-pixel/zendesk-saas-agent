@@ -1,0 +1,306 @@
+[
+  {
+    "scenario_id": "ticket-3798-quota",
+    "form_email": "owner-quota@example.test",
+    "form_workspace_id": "",
+    "requester_email": "requester@example.test",
+    "membership_lookups": [
+      {
+        "email": "owner-quota@example.test",
+        "status": "success",
+        "candidates": [
+          {
+            "tenant_id": "11111111-1111-4111-8111-111111111111",
+            "workspace_name": "Quota Workspace",
+            "role": "owner"
+          }
+        ],
+        "evidence_id": "ev-3798-identity"
+      }
+    ],
+    "billing_required": true,
+    "billing_lookup": {
+      "tenant_id": "11111111-1111-4111-8111-111111111111",
+      "status": "success",
+      "observed_at": "2026-08-11T05:00:00Z",
+      "evidence_id": "ev-3798-billing",
+      "plan": "team",
+      "subscription_status": "active",
+      "interval": "month",
+      "entitlement_status": "active"
+    },
+    "assessment": {
+      "question": "What is the current document allowance?",
+      "answer_status": "supported",
+      "admitted_claims": [
+        {
+          "claim_id": "claim-3798-quota",
+          "statement": "The workspace has the verified Team document allowance.",
+          "role": "current_state",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-3798-billing"],
+          "public_allowed": true
+        }
+      ]
+    },
+    "expected": {
+      "tenant_id": "11111111-1111-4111-8111-111111111111",
+      "billing_plan": "team",
+      "disposition": "resolved",
+      "reply_kind": "answer",
+      "ownership_action": "none",
+      "reason_code": "resolved_with_evidence",
+      "required_customer_fields": []
+    }
+  },
+  {
+    "scenario_id": "ticket-3802-target-email",
+    "form_email": "contact-3802@example.test",
+    "form_workspace_id": "target-3802@example.test",
+    "requester_email": "requester@example.test",
+    "membership_lookups": [
+      {
+        "email": "contact-3802@example.test",
+        "status": "success",
+        "candidates": [
+          {
+            "tenant_id": "11111111-1111-4111-8111-111111111111",
+            "workspace_name": "Contact Workspace",
+            "role": "member"
+          }
+        ],
+        "evidence_id": "ev-3802-contact"
+      },
+      {
+        "email": "target-3802@example.test",
+        "status": "success",
+        "candidates": [
+          {
+            "tenant_id": "22222222-2222-4222-8222-222222222222",
+            "workspace_name": "Target Workspace",
+            "role": "owner"
+          }
+        ],
+        "evidence_id": "ev-3802-target"
+      }
+    ],
+    "billing_required": true,
+    "billing_lookup": {
+      "tenant_id": "22222222-2222-4222-8222-222222222222",
+      "status": "success",
+      "observed_at": "2026-08-11T05:00:00Z",
+      "evidence_id": "ev-3802-billing",
+      "plan": "professional",
+      "subscription_status": "ended",
+      "interval": "year",
+      "cancellation_status": "completed",
+      "renewal_status": "will_not_renew",
+      "entitlement_status": "free_fallback"
+    },
+    "assessment": {
+      "question": "Why did the request allowance change?",
+      "answer_status": "supported",
+      "admitted_claims": [
+        {
+          "claim_id": "claim-3802-ended",
+          "statement": "The annual subscription ended after its scheduled cancellation.",
+          "role": "current_state",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-3802-billing"],
+          "public_allowed": true
+        }
+      ]
+    },
+    "expected": {
+      "tenant_id": "22222222-2222-4222-8222-222222222222",
+      "billing_plan": "professional",
+      "disposition": "resolved",
+      "reply_kind": "answer",
+      "ownership_action": "none",
+      "reason_code": "resolved_with_evidence",
+      "required_customer_fields": []
+    }
+  },
+  {
+    "scenario_id": "ticket-3821-refund-approval",
+    "form_email": "owner-refund@example.test",
+    "form_workspace_id": "",
+    "requester_email": "",
+    "membership_lookups": [
+      {
+        "email": "owner-refund@example.test",
+        "status": "success",
+        "candidates": [
+          {
+            "tenant_id": "33333333-3333-4333-8333-333333333333",
+            "workspace_name": "Refund Workspace",
+            "role": "owner"
+          }
+        ],
+        "evidence_id": "ev-3821-identity"
+      }
+    ],
+    "billing_required": true,
+    "billing_lookup": {
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "status": "success",
+      "observed_at": "2026-08-11T05:00:00Z",
+      "evidence_id": "ev-3821-billing",
+      "plan": "professional",
+      "subscription_status": "active",
+      "interval": "year"
+    },
+    "assessment": {
+      "question": "Can the annual plan be refunded before buying monthly?",
+      "answer_status": "insufficient",
+      "human_action": {
+        "ownership_action": "billing",
+        "reason_code": "business_approval_required",
+        "summary": "Eligibility is verified; a refund decision remains.",
+        "customer_impact": "The customer is waiting for a billing decision.",
+        "completed_checks": ["Verified owner", "Verified active annual subscription"],
+        "unresolved_action": "Approve or reject the refund request.",
+        "acceptance_criteria": ["Billing decision is recorded"],
+        "evidence_ids": ["ev-3821-identity", "ev-3821-billing"]
+      }
+    },
+    "expected": {
+      "tenant_id": "33333333-3333-4333-8333-333333333333",
+      "billing_plan": "professional",
+      "disposition": "human_action_required",
+      "reply_kind": "progress",
+      "ownership_action": "billing",
+      "reason_code": "business_approval_required",
+      "required_customer_fields": []
+    }
+  },
+  {
+    "scenario_id": "ticket-3846-exact-workspace-name",
+    "form_email": "owner-credits@example.test",
+    "form_workspace_id": "  Credits Workspace  ",
+    "requester_email": "",
+    "membership_lookups": [
+      {
+        "email": "owner-credits@example.test",
+        "status": "success",
+        "candidates": [
+          {
+            "tenant_id": "44444444-4444-4444-8444-444444444444",
+            "workspace_name": "Other Workspace",
+            "role": "owner"
+          },
+          {
+            "tenant_id": "55555555-5555-4555-8555-555555555555",
+            "workspace_name": "credits workspace",
+            "role": "owner"
+          }
+        ],
+        "evidence_id": "ev-3846-identity"
+      }
+    ],
+    "billing_required": false,
+    "assessment": {
+      "question": "Are credits restored for this workspace?",
+      "answer_status": "bounded",
+      "admitted_claims": [
+        {
+          "claim_id": "claim-3846-boundary",
+          "statement": "The target workspace is resolved; recovery still requires a matching managed-provider run.",
+          "role": "limitation",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-3846-identity"],
+          "public_allowed": true
+        }
+      ]
+    },
+    "expected": {
+      "tenant_id": "55555555-5555-4555-8555-555555555555",
+      "billing_plan": "",
+      "disposition": "resolved",
+      "reply_kind": "answer",
+      "ownership_action": "none",
+      "reason_code": "bounded_authoritative_answer",
+      "required_customer_fields": []
+    }
+  },
+  {
+    "scenario_id": "ticket-3861-no-published-timeline",
+    "form_email": "owner-roadmap@example.test",
+    "form_workspace_id": "",
+    "requester_email": "",
+    "membership_lookups": [
+      {
+        "email": "owner-roadmap@example.test",
+        "status": "success",
+        "candidates": [
+          {
+            "tenant_id": "66666666-6666-4666-8666-666666666666",
+            "workspace_name": "Roadmap Workspace",
+            "role": "owner"
+          }
+        ],
+        "evidence_id": "ev-3861-identity"
+      }
+    ],
+    "billing_required": false,
+    "assessment": {
+      "question": "When will the feature be available on Cloud?",
+      "answer_status": "bounded",
+      "admitted_claims": [
+        {
+          "claim_id": "claim-3861-timeline",
+          "statement": "No authoritative published Cloud release timeline is currently available.",
+          "role": "limitation",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-docs-coverage"],
+          "public_allowed": true
+        }
+      ]
+    },
+    "expected": {
+      "tenant_id": "66666666-6666-4666-8666-666666666666",
+      "billing_plan": "",
+      "disposition": "resolved",
+      "reply_kind": "answer",
+      "ownership_action": "none",
+      "reason_code": "bounded_authoritative_answer",
+      "required_customer_fields": []
+    }
+  },
+  {
+    "scenario_id": "transient-identity-timeout",
+    "form_email": "owner-timeout@example.test",
+    "form_workspace_id": "",
+    "requester_email": "",
+    "membership_lookups": [
+      {
+        "email": "owner-timeout@example.test",
+        "status": "failed",
+        "evidence_id": "ev-identity-timeout",
+        "error_code": "timeout"
+      }
+    ],
+    "billing_required": true,
+    "assessment": {
+      "question": "What subscription is this workspace using?",
+      "answer_status": "insufficient",
+      "blocking_failure": {
+        "operation": "identity.lookup",
+        "code": "timeout",
+        "attempt": 1,
+        "max_attempts": 3,
+        "retry_after_seconds": 2,
+        "evidence_id": "ev-identity-timeout"
+      }
+    },
+    "expected": {
+      "tenant_id": "",
+      "billing_plan": "",
+      "disposition": "retry_pending",
+      "reply_kind": "none",
+      "ownership_action": "none",
+      "reason_code": "internal_retry_pending",
+      "required_customer_fields": []
+    }
+  }
+]
