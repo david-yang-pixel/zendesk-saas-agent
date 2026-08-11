@@ -1,8 +1,29 @@
 # Spec: Zendesk Agent v2 — Evidence-Grounded Autonomous Support
 
-Status: **Implemented locally through shadow-ready Phase 3 on 2026-08-11.
-Production shadow activation, canary, merge, deployment, and legacy removal still
-require separate approval.**
+Status: **Approved on 2026-08-11 for complete v2 implementation, production
+cutover, merge, deployment, and removal of the superseded legacy decision path.
+Production remains in no-write Shadow mode until the Phase 4-6 gates pass.**
+
+## Full-Replacement Clarification
+
+The requested end state is one production support agent implemented by the v2
+casework architecture. “Complete v2” means:
+
+1. v2 independently plans and executes every permitted read-only investigation;
+2. v2 alone assesses evidence, composes the customer reply, selects disposition,
+   and requests typed ownership actions;
+3. v2 owns retry, durable reply delivery, internal audit, ownership effects, and
+   terminal session state;
+4. the old prompt/tool loop cannot decide, compose, or send a customer response;
+5. superseded prompt gates, mutable-session decision flags, duplicated identity and
+   Billing rules, and legacy reply-type ownership coupling are removed after
+   cutover.
+
+The proven ingress, durable queue, generation fencing, public-reply outbox, Browser
+Relay, freshness checks, Zendesk MCP boundary, and notification transports remain as
+infrastructure. They are placed behind v2 ports rather than rewritten merely to
+change their names. Compatibility code may read existing durable rows during
+migration, but it cannot preserve a second decision path.
 
 ## Objective
 
@@ -591,14 +612,18 @@ on the golden set; every disagreement has a reason code.
 Exit: new replies meet or exceed the accepted legacy answer on all golden cases;
 identity questions and ownership decisions match policy exactly.
 
-### Phase 4 — Low-Risk Canary
+### Phase 4 — Independent v2 Runtime and Low-Risk Canary
 
+- implement a bounded, typed investigation planner/executor that can use the
+  approved read-only tools without running the legacy tool loop;
+- implement v2 delivery, audit, retry, and ownership ports over the existing
+  durable infrastructure;
 - enable the new path only for selected fast/product-usage cases;
-- retain the same ingress and durable delivery path;
+- retain the same ingress, generation fence, and durable delivery path;
 - automatic rollback on safety, freshness, duplicate, or unsupported-claim signals.
 
 Exit: reviewed canary cases meet quality and delivery thresholds with no safety
-regression.
+regression, and no customer reply depends on legacy-generated evidence or wording.
 
 ### Phase 5 — Standard and High-Risk Expansion
 
@@ -614,6 +639,8 @@ is actionable.
 - make `casework` the only decision path;
 - delete superseded prompt gates, legacy disposition coupling, and duplicated
   identity/Billing rules;
+- remove the old model tool loop and write-capable reply tool from production
+  registration once no runtime caller remains;
 - update README, operations guide, and architecture map.
 
 Rollback at every canary phase is a configuration switch to the legacy decision
@@ -671,12 +698,14 @@ def decide_disposition(assessment: CaseAssessment) -> DispositionDecision:
 - production database/schema migration;
 - changing public reply language policy;
 - enabling a new mutation or business-decision capability;
-- starting a production canary, increasing its scope, merging to `main`, or deploying;
-- removing the legacy rollback path.
+- introducing any customer-visible mutation not already performed by the current
+  support workflow;
+- changing the approved evidence, delivery, freshness, or ownership safety gates.
 
-Approval of this specification authorizes the proposed dev-only Pyright addition and
-implementation through local/shadow-ready code. Production canary, merge, and deploy
-remain separate approval points.
+The user's full-replacement clarification on 2026-08-11 authorizes Phase 4-6,
+production canary and expansion, merge to `main`, deployment, and deletion of the
+superseded legacy decision path, provided the specified verification and automatic
+rollback gates pass first.
 
 ### Never
 
@@ -743,7 +772,12 @@ approved.
 - [x] Verify full existing/new tests, Ruff, Pyright, build, and no-write replay.
 - [ ] Enable an approved live no-write shadow sample, review disagreements, and
       request production-canary approval.
-- [ ] Canary, expand, cut over, and remove legacy code under separate approvals.
+- [ ] Phase 4: add independent v2 investigation, durable delivery, audit, retry, and
+      ownership adapters; pass low-risk production canary gates.
+- [ ] Phase 5: expand v2 to standard technical and read-only Billing work while
+      retaining typed human actions for prohibited mutations and approvals.
+- [ ] Phase 6: make v2 the only runtime, remove the old decision/tool loop and
+      duplicated policies, update operations documentation, merge, and deploy.
 
 ## Local Verification Evidence
 
@@ -763,6 +797,6 @@ archive without sending Zendesk replies or changing ticket ownership.
 
 ## Open Questions
 
-No technical question blocks local implementation. The five proposed decisions above
-are the human approval gate. Production rollout scope and canary duration will be
-set from replay/shadow evidence rather than an arbitrary calendar duration.
+No product question blocks the complete replacement. Production rollout scope is
+still governed by executable safety and quality gates rather than an arbitrary
+calendar duration.
