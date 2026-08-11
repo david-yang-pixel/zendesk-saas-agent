@@ -35,6 +35,7 @@ from zd_agent.casework.domain.models import (
     WorkspaceCandidate,
 )
 from zd_agent.casework.policies.disposition import decide_disposition
+from zd_agent.casework.policies.ownership import admit_action_proposal
 
 
 NOW = datetime(2026, 8, 11, 6, 0, tzinfo=timezone.utc)
@@ -513,3 +514,78 @@ def test_explicit_refund_request_with_bound_billing_maps_to_billing() -> None:
 
     assert decision.ownership_action is OwnershipAction.BILLING
     assert decision.reason_code is ReasonCode.BUSINESS_APPROVAL_REQUIRED
+
+
+def test_release_date_question_does_not_imply_policy_commitment() -> None:
+    context = _context(_resolved_identity()).model_copy(
+        update={
+            "ticket": _ticket().model_copy(
+                update={"questions": ("When is the Cloud release date?",)},
+            ),
+        },
+    )
+
+    action, reason = admit_action_proposal(
+        context=context,
+        proposal=_action_proposal(ActionRequirement.POLICY_COMMITMENT),
+        admitted_claims=(),
+        eligible_evidence_ids=frozenset({"ev-current"}),
+    )
+
+    assert action is None
+    assert "does not establish" in reason
+
+
+def test_explicit_guarantee_request_can_require_policy_owner() -> None:
+    context = _context(_resolved_identity()).model_copy(
+        update={
+            "ticket": _ticket().model_copy(
+                update={"questions": ("Please guarantee release by Friday.",)},
+            ),
+        },
+    )
+
+    action, reason = admit_action_proposal(
+        context=context,
+        proposal=_action_proposal(ActionRequirement.POLICY_COMMITMENT),
+        admitted_claims=(),
+        eligible_evidence_ids=frozenset({"ev-current"}),
+    )
+
+    assert reason == ""
+    assert action is not None
+    assert action.ownership_action is OwnershipAction.SUPPORT
+
+
+def test_refund_status_question_does_not_imply_new_billing_approval() -> None:
+    identity = _resolved_identity()
+    snapshot = BillingSnapshot(
+        tenant_id=TENANT_1,
+        identity_tenant_id=TENANT_1,
+        plan="professional",
+        observed_at=NOW,
+        evidence_ids=("ev-identity", "ev-billing"),
+    )
+    context = CaseContext(
+        ticket=_ticket().model_copy(
+            update={"questions": ("Where is the refund I already requested?",)},
+        ),
+        built_at=NOW,
+        identity=identity,
+        billing_required=True,
+        billing=BillingBinding(
+            status=BillingBindingStatus.RESOLVED,
+            snapshot=snapshot,
+            evidence_ids=snapshot.evidence_ids,
+        ),
+    )
+
+    action, reason = admit_action_proposal(
+        context=context,
+        proposal=_action_proposal(ActionRequirement.BUSINESS_APPROVAL),
+        admitted_claims=(),
+        eligible_evidence_ids=frozenset({"ev-current"}),
+    )
+
+    assert action is None
+    assert "does not establish" in reason

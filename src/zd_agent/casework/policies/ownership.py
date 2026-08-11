@@ -18,14 +18,6 @@ from zd_agent.casework.domain.models import (
 
 
 _QUESTION_PATTERNS = {
-    ActionRequirement.CUSTOMER_REQUESTED_HUMAN: re.compile(
-        r"\b(?:human|person|representative|support engineer|人工|客服)\b",
-        re.IGNORECASE,
-    ),
-    ActionRequirement.BUSINESS_APPROVAL: re.compile(
-        r"\b(?:refund|credit|exception|contract|退款|退费|合同|例外)\b",
-        re.IGNORECASE,
-    ),
     ActionRequirement.SENSITIVE_ACCOUNT_MUTATION: re.compile(
         r"\b(?:delete|transfer|change owner|remove account|删除|转移|更换所有者)\b",
         re.IGNORECASE,
@@ -34,11 +26,31 @@ _QUESTION_PATTERNS = {
         r"\b(?:security|privacy|breach|exposure|安全|隐私|泄露)\b",
         re.IGNORECASE,
     ),
-    ActionRequirement.POLICY_COMMITMENT: re.compile(
-        r"\b(?:commit|guarantee|sla|release date|deadline|承诺|保证|上线日期)\b",
-        re.IGNORECASE,
-    ),
 }
+
+_HUMAN_SUBJECT_RE = re.compile(
+    r"\b(?:human|person|representative|support engineer)\b|人工|客服",
+    re.IGNORECASE,
+)
+_HUMAN_REQUEST_RE = re.compile(
+    r"\b(?:speak|talk|connect|transfer|escalate|want|need|request)\b|"
+    r"转接|联系|需要|要求",
+    re.IGNORECASE,
+)
+_BUSINESS_SUBJECT_RE = re.compile(
+    r"\b(?:refund|refunded|billing credit|account credit|credit note|"
+    r"contractual exception)\b|退款|退费|账单抵扣|合同例外",
+    re.IGNORECASE,
+)
+_BUSINESS_REQUEST_RE = re.compile(
+    r"\b(?:approve|issue|grant|initiate|request|want|would like|"
+    r"can (?:i|we|you)|could (?:i|we|you))\b|申请|办理|批准|发起|希望|想要|可以",
+    re.IGNORECASE,
+)
+_COMMITMENT_RE = re.compile(
+    r"\b(?:commit|guarantee|promise|sla commitment)\b|承诺|保证",
+    re.IGNORECASE,
+)
 
 _ACTION_MAPPING = {
     ActionRequirement.CUSTOMER_REQUESTED_HUMAN: (
@@ -88,9 +100,24 @@ def _required_claim_error(
     return ""
 
 
-def _question_error(requirement: ActionRequirement, question: str) -> str:
+def _question_establishes(requirement: ActionRequirement, question: str) -> bool:
+    if requirement is ActionRequirement.CUSTOMER_REQUESTED_HUMAN:
+        return bool(
+            _HUMAN_SUBJECT_RE.search(question) and _HUMAN_REQUEST_RE.search(question),
+        )
+    if requirement is ActionRequirement.BUSINESS_APPROVAL:
+        return bool(
+            _BUSINESS_SUBJECT_RE.search(question)
+            and _BUSINESS_REQUEST_RE.search(question),
+        )
+    if requirement is ActionRequirement.POLICY_COMMITMENT:
+        return bool(_COMMITMENT_RE.search(question))
     pattern = _QUESTION_PATTERNS.get(requirement)
-    if pattern is None or pattern.search(question):
+    return pattern is None or bool(pattern.search(question))
+
+
+def _question_error(requirement: ActionRequirement, question: str) -> str:
+    if _question_establishes(requirement, question):
         return ""
     return f"customer question does not establish {requirement.value}"
 
