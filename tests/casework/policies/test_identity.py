@@ -172,7 +172,7 @@ def test_failed_lookup_is_not_customer_ambiguity() -> None:
     assert resolution.selected_tenant_id == ""
 
 
-def test_canonical_workspace_id_without_email_is_still_support_side_resolved() -> None:
+def test_canonical_workspace_id_without_membership_evidence_is_not_resolved() -> None:
     resolution = resolve_workspace_identity(
         form_email="",
         form_workspace_id=TENANT_1,
@@ -181,6 +181,6 @@ def test_canonical_workspace_id_without_email_is_still_support_side_resolved() -
         form_evidence_id="ev-form",
     )
 
-    assert resolution.status is ResolutionStatus.RESOLVED
-    assert resolution.method is ResolutionMethod.EXPLICIT_CANONICAL_ID
-    assert resolution.selected_tenant_id == TENANT_1
+    assert resolution.status is ResolutionStatus.NO_MEMBERSHIP
+    assert resolution.method is ResolutionMethod.NONE
+    assert resolution.selected_tenant_id == ""

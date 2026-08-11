@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
 from typing import Any, Protocol, cast
+from uuid import UUID
 from uuid import uuid4
 
 from zd_agent.casework.domain.enums import AdapterErrorCode, LookupStatus
@@ -127,9 +128,15 @@ def _membership_candidates(payload: dict[str, object]) -> tuple[WorkspaceCandida
             return None
         if not isinstance(role, str):
             return None
+        try:
+            canonical_id = str(UUID(tenant_id))
+        except ValueError:
+            return None
+        if canonical_id != tenant_id.casefold():
+            return None
         candidates.append(
             WorkspaceCandidate(
-                tenant_id=tenant_id,
+                tenant_id=canonical_id,
                 workspace_name=name,
                 role=role,
             ),
@@ -144,8 +151,17 @@ def _validated_memberships(metadata: dict[str, object]) -> tuple[WorkspaceCandid
     payload = cast(dict[str, object], raw_payload)
     status = payload.get("status")
     count = payload.get("count")
+    raw_tenant_ids = payload.get("tenant_ids")
     candidates = _membership_candidates(payload)
-    if payload.get("source") != "prod_membership" or candidates is None:
+    if (
+        payload.get("source") != "prod_membership"
+        or candidates is None
+        or not isinstance(raw_tenant_ids, list)
+        or not all(isinstance(value, str) for value in raw_tenant_ids)
+    ):
+        return None
+    tenant_ids = tuple(cast(str, value).casefold() for value in raw_tenant_ids)
+    if tenant_ids != tuple(candidate.tenant_id for candidate in candidates):
         return None
     if not isinstance(count, int) or isinstance(count, bool) or count != len(candidates):
         return None

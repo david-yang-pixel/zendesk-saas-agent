@@ -69,6 +69,28 @@ def test_ticket_snapshot_deduplicates_images_without_exposing_url_as_identifier(
     assert len(snapshot.attachments[0].attachment_id) == 20
 
 
+def test_current_ticket_requester_email_overrides_stale_session_profile() -> None:
+    session = AgentSession(ticket_id=4321)
+    session.customer_profile = {"requester_email": "stale@example.test"}
+
+    snapshot = build_ticket_snapshot(
+        session=session,
+        customer_messages=[
+            {
+                "id": "event-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "body": "Current question",
+            },
+        ],
+        ticket={
+            "status": "new",
+            "requester": {"email": "current@example.test"},
+        },
+    )
+
+    assert snapshot.requester_email == "current@example.test"
+
+
 def test_ticket_snapshot_fails_closed_without_current_customer_message() -> None:
     with pytest.raises(ValueError, match="customer message"):
         build_ticket_snapshot(

@@ -235,23 +235,13 @@ def _resolve_without_target_email(
     *,
     evidence_ids: tuple[str, ...],
 ) -> IdentityResolution:
-    if inputs.canonical_id:
-        candidate = WorkspaceCandidate(tenant_id=inputs.canonical_id)
-        return _resolved(
-            contact_email=inputs.contact_email,
-            target_identity=inputs.target_identity,
-            candidate=candidate,
-            candidates=(candidate,),
-            method=ResolutionMethod.EXPLICIT_CANONICAL_ID,
-            evidence_ids=evidence_ids,
-        )
     return _unresolved(
         contact_email=inputs.contact_email,
         target_identity=inputs.target_identity,
         status=ResolutionStatus.NO_MEMBERSHIP,
         candidates=(),
         evidence_ids=evidence_ids,
-        detail="no usable support-side identity candidate",
+        detail="canonical identity requires verified email membership evidence",
     )
 
 

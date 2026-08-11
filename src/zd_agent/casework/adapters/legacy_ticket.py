@@ -50,14 +50,14 @@ def _attachment_refs(customer_messages: list[dict[str, Any]]) -> tuple[Attachmen
 
 
 def _requester_email(session: AgentSession, ticket: dict[str, Any]) -> str:
-    profile_email = session.customer_profile.get("requester_email")
-    if isinstance(profile_email, str) and profile_email.strip():
-        return profile_email.strip().casefold()
     requester = ticket.get("requester")
     if isinstance(requester, dict):
         value = requester.get("email")
-        if isinstance(value, str):
+        if isinstance(value, str) and value.strip():
             return value.strip().casefold()
+    profile_email = session.customer_profile.get("requester_email")
+    if isinstance(profile_email, str) and profile_email.strip():
+        return profile_email.strip().casefold()
     return ""
 
 

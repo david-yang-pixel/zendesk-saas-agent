@@ -89,6 +89,58 @@ async def test_identity_reader_fails_closed_on_malformed_metadata() -> None:
     assert result.error_code is AdapterErrorCode.MALFORMED_RESPONSE
 
 
+async def test_identity_reader_rejects_mismatched_tenant_id_summary() -> None:
+    caller = FakeCaller(
+        LegacyToolObservation(
+            call_id="call-mismatch",
+            success=True,
+            metadata={
+                "workspace_resolution": {
+                    "source": "prod_membership",
+                    "status": "unique",
+                    "count": 1,
+                    "tenant_ids": ["22222222-2222-4222-8222-222222222222"],
+                    "candidates": [{"tenant_id": TENANT, "name": "Workspace"}],
+                },
+            },
+        ),
+    )
+
+    result = await InspectorIdentityReader(caller).find_workspaces(
+        "owner@example.test",
+    )
+
+    assert result.status is LookupStatus.FAILED
+    assert result.error_code is AdapterErrorCode.MALFORMED_RESPONSE
+
+
+async def test_identity_reader_rejects_noncanonical_tenant_identifier() -> None:
+    caller = FakeCaller(
+        LegacyToolObservation(
+            call_id="call-invalid-id",
+            success=True,
+            metadata={
+                "workspace_resolution": {
+                    "source": "prod_membership",
+                    "status": "unique",
+                    "count": 1,
+                    "tenant_ids": ["not-a-tenant-uuid"],
+                    "candidates": [
+                        {"tenant_id": "not-a-tenant-uuid", "name": "Workspace"},
+                    ],
+                },
+            },
+        ),
+    )
+
+    result = await InspectorIdentityReader(caller).find_workspaces(
+        "owner@example.test",
+    )
+
+    assert result.status is LookupStatus.FAILED
+    assert result.error_code is AdapterErrorCode.MALFORMED_RESPONSE
+
+
 async def test_identity_reader_maps_transient_tool_failure() -> None:
     caller = FakeCaller(
         LegacyToolObservation(
