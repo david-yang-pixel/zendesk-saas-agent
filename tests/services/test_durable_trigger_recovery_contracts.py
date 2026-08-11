@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -13,7 +13,7 @@ from zd_agent.services.app_bootstrap import prepare_saas_app_runtime
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.silence_waker import scan_once
 from zd_agent.services.trigger_consumer import (
-    _escalate_dead_lettered_trigger,
+    _own_dead_lettered_trigger,
     run_trigger_consumer,
 )
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
@@ -113,9 +113,7 @@ async def test_stale_dead_letter_generation_never_escalates_current_silence_stat
     current = state.get(3461)
     current.last_customer_comment_id = "new-customer-generation"
     state.set(3461, current)
-    escalate = AsyncMock()
-
-    await _escalate_dead_lettered_trigger(
+    await _own_dead_lettered_trigger(
         message={
             "ticket_id": 3461,
             "source": "silence_waker",
@@ -123,11 +121,8 @@ async def test_stale_dead_letter_generation_never_escalates_current_silence_stat
             "_queue_attempts": 5,
         },
         state=state,
-        log_path=tmp_path / "trigger.jsonl",
-        escalate_fn=escalate,
     )
 
-    escalate.assert_not_awaited()
     assert state.get(3461).state == "in_silence_window"
 
 
@@ -170,7 +165,6 @@ async def test_malformed_dead_letter_does_not_stop_trigger_consumer(tmp_path) ->
             MagicMock(),
             TicketStateTracker(tmp_path / "tickets.json"),
             cfg=MagicMock(),
-            env=MagicMock(),
             log_path=tmp_path / "trigger.jsonl",
             handle_message_fn=handle_message,
         )

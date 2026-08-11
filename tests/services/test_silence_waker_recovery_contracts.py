@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -156,12 +155,9 @@ async def test_silence_waker_checks_latest_ticket_for_pending_form_before_dispat
         manager=manager,
         state=state,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
         fetch_customer_messages_fn=fetch_latest,
-        classify_ticket_messages_fn=AsyncMock(),
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
 

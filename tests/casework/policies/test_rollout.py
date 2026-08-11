@@ -2,6 +2,10 @@ from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.casework.policies.rollout import casework_controls_ticket
 
 
+def test_execution_mode_contains_only_v2_rollout_modes() -> None:
+    assert tuple(ExecutionMode) == (ExecutionMode.CANARY, ExecutionMode.CASEWORK)
+
+
 def test_casework_rollout_is_explicit_and_ticket_scoped() -> None:
     assert casework_controls_ticket(
         mode=ExecutionMode.CASEWORK,
@@ -17,9 +21,4 @@ def test_casework_rollout_is_explicit_and_ticket_scoped() -> None:
         mode=ExecutionMode.CANARY,
         canary_ticket_ids=(4001,),
         ticket_id=4002,
-    )
-    assert not casework_controls_ticket(
-        mode=ExecutionMode.SHADOW,
-        canary_ticket_ids=(4001,),
-        ticket_id=4001,
     )

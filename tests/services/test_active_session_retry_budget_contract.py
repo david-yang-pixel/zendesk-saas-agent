@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -22,7 +21,6 @@ from zd_agent.services.trigger_state_machine import (
     apply_silence_window_expired,
 )
 from zd_agent.session.agent_session import AgentSession, SessionStatus
-from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -67,14 +65,6 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
         delivery_attempt_id="delivery-current",
     )
     state.set(_TICKET_ID, original)
-    classify = AsyncMock(return_value=SimpleNamespace(
-        verdict=PreCheckVerdict(
-            verdict="insufficient_info",
-            completeness=30,
-            reason="would overwrite the active processing lifecycle",
-        ),
-    ))
-    dispatch_verdict = AsyncMock()
     manager = MagicMock()
     manager.dispatch = AsyncMock()
     manager.mark_customer_context_dirty.return_value = True
@@ -85,7 +75,6 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
             manager=manager,
             state=state,
             cfg=_cfg(),
-            env=SimpleNamespace(openai_api_key="sk-test"),
             log_path=tmp_path / "trigger.jsonl",
             fetch_customer_messages_fn=AsyncMock(return_value=(
                 [
@@ -104,15 +93,11 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
                     "_zd_agent_conversation_events": [],
                 },
             )),
-            classify_ticket_messages_fn=classify,
-            post_verdict_dispatch_fn=dispatch_verdict,
-            escalate_fn=AsyncMock(),
+            human_takeover_fn=AsyncMock(),
             detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
         )
 
     assert exc_info.value.reason == "active_session_processing"
-    classify.assert_not_awaited()
-    dispatch_verdict.assert_not_awaited()
     manager.dispatch.assert_not_awaited()
     if source == "zendesk_webhook":
         manager.mark_customer_context_dirty.assert_called_once_with(
@@ -132,11 +117,11 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
 
 
 @pytest.mark.asyncio
-async def test_three_consecutive_agent_failures_exhaust_durable_retry_budget(
+async def test_three_failures_retry_only_typed_ownership_persistence(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Repeated no-reply failures must stop waking the Agent after three attempts."""
+    """Three failures must never synthesize a legacy handoff terminal state."""
     state_path = tmp_path / "tickets.json"
     tracker = TicketStateTracker(state_path)
     tracker.set(
@@ -190,8 +175,8 @@ async def test_three_consecutive_agent_failures_exhaust_durable_retry_budget(
 
     terminal = TicketStateTracker(state_path).get(_TICKET_ID)
     assert terminal is not None
-    assert terminal.state == "escalated_to_human"
-    assert terminal.escalated_reason == "agent_retry_exhausted"
+    assert terminal.state == "in_silence_window"
+    assert terminal.last_verdict == "ownership_retry"
     assert terminal.active_session_id == ""
     assert terminal.delivery_attempt_id == "delivery-stable"
 
@@ -203,8 +188,8 @@ async def test_three_consecutive_agent_failures_exhaust_durable_retry_budget(
     assert await scan_once(
         state=TicketStateTracker(state_path),
         trigger_queue=queue,
-    ) == 0
-    assert queue.empty()
+    ) == 1
+    assert queue.get_nowait()["source"] == "silence_waker"
 
 
 @pytest.mark.asyncio
@@ -233,7 +218,6 @@ async def test_unique_mention_is_deferred_instead_of_dropped_during_cooldown(
             manager=manager,
             state=state,
             cfg=_cfg(),
-            env=SimpleNamespace(openai_api_key="sk-test"),
             log_path=tmp_path / "trigger.jsonl",
         )
 

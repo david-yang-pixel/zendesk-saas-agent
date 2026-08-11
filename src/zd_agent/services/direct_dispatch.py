@@ -40,7 +40,6 @@ async def handle_direct_dispatch_source(
     log_path: Path,
     cfg: Any,
     now: datetime | None = None,
-    escalate_fn: Any | None = None,
     runtime_failure_ownership_fn: Any | None = None,
 ) -> DirectDispatchResult:
     """Handle mention/silence_waker sources that directly dispatch sessions."""

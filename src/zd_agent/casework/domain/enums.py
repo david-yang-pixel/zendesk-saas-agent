@@ -4,8 +4,6 @@ from enum import Enum
 
 
 class ExecutionMode(str, Enum):
-    LEGACY = "legacy"
-    SHADOW = "shadow"
     CANARY = "canary"
     CASEWORK = "casework"
 

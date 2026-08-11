@@ -37,8 +37,8 @@ def _ticket(status="new", assignee_id=None, ticket_id=100, tags=None):
 async def test_new_customer_msg_pushes_queue(state, queue):
     """state.last_customer_comment_id 与最新 cid 不一致 → 推 queue 走重判。"""
     state.set("1", TicketState(
-        state="waiting_for_issue", first_seen=_now() - timedelta(minutes=10),
-        last_customer_comment_id="OLD_CID", last_verdict="insufficient_info",
+        state="awaiting_customer", first_seen=_now() - timedelta(minutes=10),
+        last_customer_comment_id="OLD_CID", last_verdict="awaiting_customer",
     ))
     new_msgs = [{"id": "NEW_CID", "body": "actually here is the bug"}]
 
@@ -100,8 +100,7 @@ async def test_poller_fetch_suppresses_success_log(state, queue):
 
 
 @pytest.mark.asyncio
-async def test_status_pending_marks_abandoned(state, queue):
-    """ticket.status=pending → 切 state=abandoned，停扫。"""
+async def test_status_pending_marks_out_of_scope(state, queue):
     state.set("1", TicketState(
         state="waiting_for_issue", first_seen=_now(),
         last_customer_comment_id="C1",
@@ -113,11 +112,11 @@ async def test_status_pending_marks_abandoned(state, queue):
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,
                         abandoned_hours=24, greeting_alert_minutes=30)
-    assert state.get("1").state == "abandoned"
+    assert state.get("1").state == "out_of_scope"
 
 
 @pytest.mark.asyncio
-async def test_status_open_without_asked_tag_marks_abandoned(state, queue):
+async def test_status_open_without_asked_tag_marks_out_of_scope(state, queue):
     """status=open 且没有 zd-agent-asked tag → 让位 abandoned。"""
     state.set("1", TicketState(
         state="waiting_for_issue", first_seen=_now(),
@@ -130,7 +129,7 @@ async def test_status_open_without_asked_tag_marks_abandoned(state, queue):
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,
                         abandoned_hours=24, greeting_alert_minutes=30)
-    assert state.get("1").state == "abandoned"
+    assert state.get("1").state == "out_of_scope"
 
 
 @pytest.mark.asyncio
@@ -162,7 +161,7 @@ async def test_status_open_with_asked_tag_keeps_scanning(state, queue):
 
 
 @pytest.mark.asyncio
-async def test_status_pending_with_asked_tag_still_marks_abandoned(state, queue):
+async def test_status_pending_with_asked_tag_still_marks_out_of_scope(state, queue):
     """tag 例外仅对 status=open 有效；pending/solved 仍让位。"""
     from zd_agent.services.waiting_poller import AGENT_ASKED_TAG
 
@@ -177,12 +176,11 @@ async def test_status_pending_with_asked_tag_still_marks_abandoned(state, queue)
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,
                         abandoned_hours=24, greeting_alert_minutes=30)
-    assert state.get("1").state == "abandoned"
+    assert state.get("1").state == "out_of_scope"
 
 
 @pytest.mark.asyncio
-async def test_human_assignee_marks_abandoned(state, queue):
-    """assignee 不是 yonggang → 切 abandoned，停扫。"""
+async def test_human_assignee_marks_externally_owned(state, queue):
     state.set("1", TicketState(
         state="waiting_for_issue", first_seen=_now(),
         last_customer_comment_id="C1",
@@ -194,12 +192,11 @@ async def test_human_assignee_marks_abandoned(state, queue):
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,
                         abandoned_hours=24, greeting_alert_minutes=30)
-    assert state.get("1").state == "abandoned"
+    assert state.get("1").state == "externally_owned"
 
 
 @pytest.mark.asyncio
-async def test_my_assignee_marks_abandoned(state, queue):
-    """只看是否有受托人：assignee 是 yonggang 也让位。"""
+async def test_my_assignee_marks_externally_owned(state, queue):
     state.set("1", TicketState(
         state="waiting_for_issue", first_seen=_now(),
         last_customer_comment_id="C1",
@@ -211,7 +208,7 @@ async def test_my_assignee_marks_abandoned(state, queue):
                side_effect=fake_fetch):
         await scan_once(state=state, trigger_queue=queue,
                         abandoned_hours=24, greeting_alert_minutes=30)
-    assert state.get("1").state == "abandoned"
+    assert state.get("1").state == "externally_owned"
 
 
 @pytest.mark.asyncio

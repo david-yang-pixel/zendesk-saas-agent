@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from zd_agent.config import EnvSettings, get_config
+from zd_agent.config import get_config
 from zd_agent.log import get_logger
 from zd_agent.services.trigger_delay import wait_for_trigger_availability
 from zd_agent.services.trigger_errors import TriggerDeferredError
@@ -78,12 +78,10 @@ async def _defer_message(
     return True
 
 
-async def _escalate_dead_lettered_trigger(
+async def _own_dead_lettered_trigger(
     *,
     message: dict[str, Any],
     state: Any,
-    log_path: Path,
-    escalate_fn: HandleMessageFn | None,
     runtime_failure_ownership_fn: HandleMessageFn | None = None,
 ) -> bool:
     """Persist typed v2 ownership for one terminal queue failure."""
@@ -103,6 +101,8 @@ async def _escalate_dead_lettered_trigger(
         "processed",
         "escalated_to_human",
         "owned",
+        "externally_owned",
+        "out_of_scope",
         "abandoned",
     }:
         return True
@@ -124,7 +124,6 @@ async def _escalate_dead_lettered_trigger(
         return True
 
     now = datetime.now(timezone.utc)
-    del escalate_fn
     if runtime_failure_ownership_fn is None:
         from zd_agent.services.casework_runtime_failures import (
             persist_runtime_failure_ownership,
@@ -181,16 +180,14 @@ async def reconcile_dead_lettered_triggers(
     *,
     queue: Any,
     state: Any,
-    log_path: Path,
-    escalate_fn: HandleMessageFn | None,
     runtime_failure_ownership_fn: HandleMessageFn | None = None,
     limit: int = 100,
 ) -> int:
     """Finish the state compensation for dead letters left by a crash.
 
-    Queue failure persistence and human escalation cannot be one transaction.
+    Queue failure persistence and typed v2 ownership cannot be one transaction.
     This pass closes that crash gap.  Terminal state and revision checks in
-    ``_escalate_dead_lettered_trigger`` make repeated startup/periodic passes
+    ``_own_dead_lettered_trigger`` makes repeated startup/periodic passes
     idempotent.
     """
     list_dead_letters = getattr(queue, "list_dead_letters", None)
@@ -198,11 +195,9 @@ async def reconcile_dead_lettered_triggers(
         return 0
     reconciled = 0
     for message in await list_dead_letters(limit=limit):
-        resolved = await _escalate_dead_lettered_trigger(
+        resolved = await _own_dead_lettered_trigger(
             message=message,
             state=state,
-            log_path=log_path,
-            escalate_fn=escalate_fn,
             runtime_failure_ownership_fn=runtime_failure_ownership_fn,
         )
         reconciled += int(resolved)
@@ -224,17 +219,13 @@ async def run_trigger_consumer(
     state: Any,
     *,
     cfg: Any | None = None,
-    env: Any | None = None,
     log_path: Path | None = None,
     handle_message_fn: HandleMessageFn = handle_trigger_message,
-    silence_expired_ask_fn: HandleMessageFn | None = None,
-    post_verdict_dispatch_fn: HandleMessageFn | None = None,
-    escalate_fn: HandleMessageFn | None = None,
+    human_takeover_fn: HandleMessageFn | None = None,
     runtime_failure_ownership_fn: HandleMessageFn | None = None,
 ) -> None:
     """Consume trigger queue messages and delegate one-message handling."""
     cfg = cfg or get_config()
-    env = env or EnvSettings()
     log_path = log_path or default_trigger_log_path(cfg)
 
     while True:
@@ -247,11 +238,8 @@ async def run_trigger_consumer(
                 manager=manager,
                 state=state,
                 cfg=cfg,
-                env=env,
                 log_path=log_path,
-                silence_expired_ask_fn=silence_expired_ask_fn,
-                post_verdict_dispatch_fn=post_verdict_dispatch_fn,
-                escalate_fn=escalate_fn,
+                human_takeover_fn=human_takeover_fn,
             )
         except TriggerDeferredError as error:
             deferred = await _defer_message(queue, msg, error)
@@ -265,11 +253,9 @@ async def run_trigger_consumer(
                 attempts=msg.get("_queue_attempts"),
             )
             if not deferred:
-                await _escalate_dead_lettered_trigger(
+                await _own_dead_lettered_trigger(
                     message=msg,
                     state=state,
-                    log_path=log_path,
-                    escalate_fn=escalate_fn,
                     runtime_failure_ownership_fn=runtime_failure_ownership_fn,
                 )
         except asyncio.CancelledError:
@@ -293,11 +279,9 @@ async def run_trigger_consumer(
                 attempts=msg.get("_queue_attempts"),
             )
             if retried is False:
-                await _escalate_dead_lettered_trigger(
+                await _own_dead_lettered_trigger(
                     message=msg,
                     state=state,
-                    log_path=log_path,
-                    escalate_fn=escalate_fn,
                     runtime_failure_ownership_fn=runtime_failure_ownership_fn,
                 )
         else:
@@ -310,26 +294,18 @@ async def run_saas_trigger_consumer(
     state: Any,
     *,
     cfg: Any | None = None,
-    env: Any | None = None,
     log_path: Path | None = None,
     handle_message_fn: HandleMessageFn = handle_trigger_message,
 ) -> None:
     """Run the SaaS trigger consumer with default action adapters."""
-    from zd_agent.services.trigger_actions import (
-        handle_silence_expired_ask_action,
-        post_verdict_dispatch_action,
-        set_escalated_to_human_action,
-    )
+    from zd_agent.services.external_ownership import record_human_takeover
 
     await run_trigger_consumer(
         queue,
         manager,
         state,
         cfg=cfg,
-        env=env,
         log_path=log_path,
         handle_message_fn=handle_message_fn,
-        silence_expired_ask_fn=handle_silence_expired_ask_action,
-        post_verdict_dispatch_fn=post_verdict_dispatch_action,
-        escalate_fn=set_escalated_to_human_action,
+        human_takeover_fn=record_human_takeover,
     )

@@ -13,6 +13,8 @@ from zd_agent.services.trigger_actions import (
     send_ask_template_action,
     set_escalated_to_human_action,
 )
+from zd_agent.services.external_ownership import record_human_takeover
+from zd_agent.trigger.state_store import TicketStateTracker
 
 
 @pytest.mark.asyncio
@@ -151,6 +153,33 @@ async def test_set_escalated_to_human_action_delegates(monkeypatch, tmp_path) ->
         agent_last_reply="reply",
         extra_log={"k": "v"},
     )
+
+
+@pytest.mark.asyncio
+async def test_human_takeover_action_stops_automation_without_customer_effects(
+    tmp_path,
+) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    now = datetime(2026, 8, 11, 15, 0, tzinfo=timezone.utc)
+
+    await record_human_takeover(
+        ticket_id=2808,
+        existing=None,
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        source="zendesk_webhook",
+        now=now,
+        latest_cid="cid-1",
+        latest_ts=now,
+        detection_reason="manual reply",
+    )
+
+    persisted = state.get(2808)
+    assert persisted is not None
+    assert persisted.state == "externally_owned"
+    assert persisted.ownership_action == "support"
+    assert persisted.ownership_reason == "human_takeover_detected"
+    assert persisted.ownership_effect_reference == ""
 
 
 @pytest.mark.asyncio

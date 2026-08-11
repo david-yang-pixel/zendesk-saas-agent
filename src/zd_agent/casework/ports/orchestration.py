@@ -14,5 +14,5 @@ class CaseworkDecisionPort(Protocol):
         billing_required: bool,
         automation_attempt: int = 1,
         visual_observations: tuple[VisualObservation, ...] = (),
-        execution_mode: ExecutionMode = ExecutionMode.SHADOW,
+        execution_mode: ExecutionMode = ExecutionMode.CASEWORK,
     ) -> CaseworkRun: ...

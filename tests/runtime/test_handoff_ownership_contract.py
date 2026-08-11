@@ -194,10 +194,10 @@ async def test_reconciled_handoff_does_not_repeat_operator_notifications(
     zendesk_metadata_update.assert_awaited_once()
 
 
-def test_handoff_completion_transfers_state_and_gates_non_mention_trigger(
+def test_legacy_handoff_reply_type_cannot_synthesize_human_ownership(
     tmp_path,
 ) -> None:
-    """A delivered handoff keeps human ownership after the Agent exits."""
+    """Only a durable typed ownership effect may transfer v2 ownership."""
     tracker = TicketStateTracker(tmp_path / "tickets.json")
     session = AgentSession(
         ticket_id=_TICKET_ID,
@@ -221,9 +221,9 @@ def test_handoff_completion_transfers_state_and_gates_non_mention_trigger(
     persisted = TicketStateTracker(tmp_path / "tickets.json").get(_TICKET_ID)
     assert changed is True
     assert persisted is not None
-    assert persisted.state == "escalated_to_human"
-    assert persisted.escalated_reason == "agent_handoff"
-    assert persisted.escalated_at == _NOW
+    assert persisted.state == "processed"
+    assert persisted.escalated_reason == ""
+    assert persisted.escalated_at is None
     assert persisted.active_session_id == ""
 
     gate = handle_trigger_entry_gate(
@@ -234,5 +234,7 @@ def test_handoff_completion_transfers_state_and_gates_non_mention_trigger(
         cfg=_config(),
         is_paused_fn=lambda _cfg: False,
     )
-    assert gate.handled is True
-    assert gate.action == "escalated_to_human"
+    # A delivered reply does not permanently gate future customer follow-ups.
+    # Only a durable ownership effect may move the ticket into an owned state.
+    assert gate.handled is False
+    assert gate.action == "continue"

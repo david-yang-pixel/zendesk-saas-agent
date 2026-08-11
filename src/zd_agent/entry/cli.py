@@ -165,58 +165,6 @@ def serve(
 
 
 @app.command()
-def webhook(
-    host: str = typer.Option("0.0.0.0", "--host", help="监听地址"),
-    port: int = typer.Option(8080, "--port", "-p", help="监听端口"),
-) -> None:
-    """启动 Webhook HTTP 服务器（接收外部系统推送）"""
-    from zd_agent.services.app_bootstrap import create_configured_session_manager
-    from zd_agent.services.webhook_server import run_webhook_server
-
-    cfg = get_config()
-    manager = create_configured_session_manager(cfg)
-    console.print(f"[bold green]Webhook 服务器启动[/bold green]  {host}:{port}")
-    console.print("  POST /webhook/zendesk — 接收工单推送")
-    console.print("  GET  /health — 健康检查")
-    console.print("  GET  /status — 处理状态")
-    if cfg.repos.auto_fetch:
-        console.print(f"  仓库定时 fetch: {cfg.repos.fetch_cron}")
-    console.print()
-
-    async def _run() -> None:
-        await run_webhook_server(host=host, port=port, manager=manager)
-
-        # 启动仓库定时 fetch（复用 scheduler 中的 fetch 逻辑）
-        if cfg.repos.auto_fetch:
-            from apscheduler import AsyncScheduler
-            from apscheduler.triggers.cron import CronTrigger
-
-            from zd_agent.services.scheduler_runner import fetch_repos_task
-
-            scheduler = AsyncScheduler()
-            await scheduler.__aenter__()
-            await scheduler.add_schedule(
-                fetch_repos_task,
-                CronTrigger.from_crontab(cfg.repos.fetch_cron),
-                id="repo_fetch",
-            )
-            asyncio.create_task(fetch_repos_task())
-            console.print("[dim]仓库定时 fetch 已启动[/dim]")
-
-        stop = asyncio.Event()
-
-        import signal
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
-
-        await stop.wait()
-        console.print("\n[yellow]Webhook 服务器停止[/yellow]")
-
-    asyncio.run(_run())
-
-
-@app.command()
 def clean(
     ticket_id: Optional[int] = typer.Argument(None, help="指定工单 ID 的 sandbox，不指定则清理全部"),
     force: bool = typer.Option(False, "--force", "-f", help="强制清理，不提示确认"),

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,7 +12,6 @@ from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.trigger_consumer import run_trigger_consumer
 from zd_agent.services.trigger_errors import TriggerDeferredError
 from zd_agent.services.trigger_message_handler import handle_trigger_message
-from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketStateTracker
 
 
@@ -45,7 +43,6 @@ async def test_ticket_not_yet_materialized_is_deferred_without_consuming_retry(
             manager=MagicMock(),
             state=TicketStateTracker(tmp_path / "tickets.json"),
             cfg=_cfg(),
-            env=SimpleNamespace(openai_api_key="sk-test"),
             log_path=tmp_path / "trigger.jsonl",
             fetch_customer_messages_fn=AsyncMock(return_value=([], None)),
         )
@@ -120,21 +117,11 @@ async def test_materialization_wait_survives_five_fetch_misses_then_dispatches(
             {"id": 3461, "_zd_agent_conversation_events": []},
         )
 
-    verdict = PreCheckVerdict(
-        verdict="substantial_issue",
-        completeness=90,
-        reason="form is complete",
-    )
-    post_verdict = AsyncMock()
-
     async def handle_with_materialization_fetch(**kwargs):
         observed_queue_attempts.append(int(kwargs["msg"].get("_queue_attempts") or 0))
         return await handle_trigger_message(
             **kwargs,
             fetch_customer_messages_fn=fetch_customer_messages,
-            classify_ticket_messages_fn=AsyncMock(
-                return_value=SimpleNamespace(verdict=verdict),
-            ),
             detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
         )
 
@@ -144,12 +131,9 @@ async def test_materialization_wait_survives_five_fetch_misses_then_dispatches(
             MagicMock(),
             TicketStateTracker(tmp_path / "tickets.json"),
             cfg=_cfg(),
-            env=SimpleNamespace(openai_api_key="sk-test"),
             log_path=tmp_path / "trigger.jsonl",
             handle_message_fn=handle_with_materialization_fetch,
-            silence_expired_ask_fn=AsyncMock(),
-            post_verdict_dispatch_fn=post_verdict,
-            escalate_fn=AsyncMock(),
+            human_takeover_fn=AsyncMock(),
         )
     )
 
@@ -162,5 +146,3 @@ async def test_materialization_wait_survives_five_fetch_misses_then_dispatches(
     assert fetch_count == 6
     assert observed_queue_attempts == [0, 0, 0, 0, 0, 0]
     assert await queue.list_dead_letters() == []
-    post_verdict.assert_awaited_once()
-

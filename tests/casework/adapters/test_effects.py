@@ -29,7 +29,7 @@ from zd_agent.casework.domain.models import (
     TicketSnapshot,
 )
 from zd_agent.services.casework_effect_store import PendingCaseworkEffect
-from zd_agent.tools.zendesk_public_reply import DirectPublicReplyResult
+from zd_agent.services.reliable_public_reply import ReliablePublicReplyResult
 
 
 NOW = datetime(2026, 8, 11, 13, 0, tzinfo=timezone.utc)
@@ -159,10 +159,10 @@ async def test_effects_persist_typed_ownership_before_plain_solution_delivery() 
     send_calls = []
     ownership_calls = []
 
-    async def sender(**kwargs) -> DirectPublicReplyResult:
+    async def sender(**kwargs) -> ReliablePublicReplyResult:
         assert store.prepared is True
         send_calls.append(kwargs)
-        return DirectPublicReplyResult(
+        return ReliablePublicReplyResult(
             True,
             "sent",
             accepted_snapshot_count=5,
@@ -202,8 +202,8 @@ async def test_no_ownership_decision_never_runs_ownership_sender() -> None:
     store = FakeStore()
     ownership_calls = []
 
-    async def sender(**kwargs) -> DirectPublicReplyResult:
-        return DirectPublicReplyResult(True, "sent")
+    async def sender(**kwargs) -> ReliablePublicReplyResult:
+        return ReliablePublicReplyResult(True, "sent")
 
     async def ownership_sender(**kwargs) -> bool:
         ownership_calls.append(kwargs)
@@ -232,8 +232,11 @@ async def test_freshness_failure_defers_without_running_ownership() -> None:
     store = FakeStore()
     ownership_calls = []
 
-    async def sender(**kwargs) -> DirectPublicReplyResult:
-        return DirectPublicReplyResult(False, "Pre-relay freshness check abort")
+    async def sender(**kwargs) -> ReliablePublicReplyResult:
+        return ReliablePublicReplyResult(
+            False,
+            "Pre-relay freshness check abort",
+        )
 
     async def ownership_sender(**kwargs) -> bool:
         ownership_calls.append(kwargs)
@@ -259,10 +262,44 @@ async def test_freshness_failure_defers_without_running_ownership() -> None:
     assert receipt.ownership_state is OwnershipState.PENDING
 
 
+async def test_pending_form_defers_without_running_ownership() -> None:
+    store = FakeStore()
+    ownership_calls = []
+
+    async def sender(**kwargs) -> ReliablePublicReplyResult:
+        return ReliablePublicReplyResult(
+            False,
+            "Public reply deferred because a blocking customer form is pending.",
+        )
+
+    async def ownership_sender(**kwargs) -> bool:
+        ownership_calls.append(kwargs)
+        return True
+
+    effects = ZendeskCaseworkEffects(
+        store=store,
+        public_reply_sender=sender,
+        ownership_sender=ownership_sender,
+        snapshot_customer_message_count=1,
+        snapshot_customer_last_message_id="event-4",
+    )
+
+    receipt = await effects.apply(
+        run=_run(ownership=True),
+        delivery_attempt_id="attempt-pending-form",
+        dry_run=False,
+    )
+
+    assert store.public_confirmed is False
+    assert ownership_calls == []
+    assert receipt.delivery_state is DeliveryState.DEFERRED
+    assert receipt.ownership_state is OwnershipState.PENDING
+
+
 async def test_dry_run_does_not_persist_or_send() -> None:
     store = FakeStore()
 
-    async def fail_sender(**kwargs) -> DirectPublicReplyResult:
+    async def fail_sender(**kwargs) -> ReliablePublicReplyResult:
         raise AssertionError("dry run must not call the transport")
 
     async def fail_ownership(**kwargs) -> bool:

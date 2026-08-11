@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,7 +24,6 @@ from zd_agent.services.ticket_message_parsing import (
     _messaging_customer_messages,
     extract_form_data_from_msgs,
 )
-from zd_agent.services.trigger_actions import post_verdict_dispatch_action
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 from zd_agent.services.verdict_classification import classify_ticket_messages
 from zd_agent.services.waiting_poller import scan_once
@@ -185,10 +183,6 @@ async def test_pending_answer_bot_form_waits_without_classification_or_dispatch(
 ) -> None:
     """A blocked, unsubmitted form is an upstream readiness gate."""
     state = TicketStateTracker(tmp_path / "tickets.json")
-    classify = AsyncMock(
-        return_value=SimpleNamespace(verdict=_substantial_verdict()),
-    )
-    post_verdict = AsyncMock()
     mcp = AsyncMock(return_value=_ticket_payload([
         _initial_issue_event(),
         _pending_answer_bot_form_event(),
@@ -200,11 +194,8 @@ async def test_pending_answer_bot_form_waits_without_classification_or_dispatch(
             manager=MagicMock(),
             state=state,
             cfg=_cfg(),
-            env=SimpleNamespace(openai_api_key="sk-test"),
             log_path=tmp_path / "trigger.jsonl",
-            classify_ticket_messages_fn=classify,
-            post_verdict_dispatch_fn=post_verdict,
-            escalate_fn=AsyncMock(),
+            human_takeover_fn=AsyncMock(),
             detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
         )
 
@@ -213,8 +204,6 @@ async def test_pending_answer_bot_form_waits_without_classification_or_dispatch(
     assert waiting is not None
     assert waiting.state == "waiting_for_form"
     assert waiting.last_customer_comment_id == "m1"
-    classify.assert_not_awaited()
-    post_verdict.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -241,9 +230,6 @@ async def test_form_response_releases_waiting_form_and_allows_processing(
             last_comment_ts=datetime(2026, 7, 16, 4, 15, 22, tzinfo=timezone.utc),
         ),
     )
-    classify = AsyncMock(
-        return_value=SimpleNamespace(verdict=_substantial_verdict()),
-    )
     mcp = AsyncMock(return_value=_ticket_payload([
         _initial_issue_event(),
         _pending_answer_bot_form_event(),
@@ -256,20 +242,17 @@ async def test_form_response_releases_waiting_form_and_allows_processing(
             manager=MagicMock(),
             state=state,
             cfg=_cfg(),
-            env=SimpleNamespace(openai_api_key="sk-test"),
             log_path=tmp_path / "trigger.jsonl",
-            classify_ticket_messages_fn=classify,
-            post_verdict_dispatch_fn=post_verdict_dispatch_action,
-            escalate_fn=AsyncMock(),
+            human_takeover_fn=AsyncMock(),
             detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
         )
 
-    assert result.action == "verdict_dispatched"
-    classify.assert_awaited_once()
+    assert result.action == "casework_queued"
     resumed = state.get(_TICKET_ID)
     assert resumed is not None
     assert resumed.state == "in_silence_window"
     assert resumed.last_customer_comment_id == "m2"
+    assert resumed.last_verdict == "casework_ready"
 
 
 def test_fields_only_form_response_preserves_structured_profile_data() -> None:

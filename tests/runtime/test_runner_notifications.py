@@ -7,53 +7,33 @@ from zd_agent.session.agent_session import AgentSession, SessionStatus
 
 
 @pytest.mark.asyncio
-async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypatch):
+async def test_v2_runner_notifies_after_confirmed_direct_reply(monkeypatch):
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
     cfg.agent.guardrails = MagicMock()
-    cfg.llm.model = "test-model"
-    cfg.sandbox.cleanup_on_success = False
-    cfg.sandbox.cleanup_on_failure = False
-    monkeypatch.setattr(runner, "get_config", lambda: cfg)
+    cfg.casework.mode.value = "casework"
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
-    monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
-
-    class FakeSandbox:
-        async def create(self, ticket_id):
-            return f"/tmp/{ticket_id}"
-
-        async def cleanup(self):
-            raise AssertionError("cleanup should be disabled in this test")
-
-    async def fake_tool_loop(session, *_args, **_kwargs):
-        session.status = SessionStatus.COMPLETED
-        session.reply_sent = True
-
     notify = AsyncMock()
     archive = MagicMock()
-    monkeypatch.setattr(runner, "create_sandbox", lambda: FakeSandbox())
-    monkeypatch.setattr(runner, "create_tool_registry", lambda: MagicMock())
-    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock())
+    monkeypatch.setattr(runner, "create_casework_tool_registry", MagicMock())
+    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock(_provider=object()))
     monkeypatch.setattr(runner, "Guardrails", lambda config: MagicMock(elapsed_seconds=0))
-    monkeypatch.setattr(runner, "run_tool_loop", fake_tool_loop)
+    monkeypatch.setattr(runner, "execute_casework_v2", AsyncMock(return_value=object()))
+    monkeypatch.setattr(
+        runner,
+        "apply_casework_execution_to_session",
+        lambda session, execution: (
+            setattr(session, "status", SessionStatus.COMPLETED),
+            setattr(session, "reply_sent", True),
+            setattr(session, "casework_ownership_action", "none"),
+        ),
+    )
     monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
     monkeypatch.setattr(runner, "ensure_archive", archive, raising=False)
-    monkeypatch.setattr(
-        "zd_agent.runtime.customer_profile.prefetch_customer_profile",
-        AsyncMock(return_value={}),
-    )
-    monkeypatch.setattr(
-        "zd_agent.tools.saas_version.resolve_deployed_version",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "zd_agent.runtime.prompt_loader.build_static_system_prompt",
-        lambda: "system",
-    )
 
     session = AgentSession(ticket_id=2809)
-    await runner.run_agent(session)
+    await runner._run_casework_agent(session, cfg)
 
     notify.assert_awaited_once_with(session)
     archive.assert_called_once()
@@ -61,123 +41,67 @@ async def test_run_agent_falls_back_to_ticket_done_when_reply_was_sent(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_run_agent_does_not_send_ticket_done_for_handoff(monkeypatch):
+async def test_v2_runner_does_not_notify_when_ownership_is_required(monkeypatch):
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
     cfg.agent.guardrails = MagicMock()
-    cfg.llm.model = "test-model"
-    cfg.sandbox.cleanup_on_success = False
-    cfg.sandbox.cleanup_on_failure = False
-    monkeypatch.setattr(runner, "get_config", lambda: cfg)
+    cfg.casework.mode.value = "casework"
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
-    monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
-
-    class FakeSandbox:
-        async def create(self, ticket_id):
-            return f"/tmp/{ticket_id}"
-
-        async def cleanup(self):
-            raise AssertionError("cleanup should be disabled in this test")
-
-    async def fake_tool_loop(session, *_args, **_kwargs):
-        session.status = SessionStatus.COMPLETED
-        session.reply_sent = True
-        session.public_reply_type = "handoff"
-
     notify = AsyncMock()
-    monkeypatch.setattr(runner, "create_sandbox", lambda: FakeSandbox())
-    monkeypatch.setattr(runner, "create_tool_registry", lambda: MagicMock())
-    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock())
+    monkeypatch.setattr(runner, "create_casework_tool_registry", MagicMock())
+    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock(_provider=object()))
     monkeypatch.setattr(
         runner,
         "Guardrails",
         lambda config: MagicMock(elapsed_seconds=0),
     )
-    monkeypatch.setattr(runner, "run_tool_loop", fake_tool_loop)
+    monkeypatch.setattr(runner, "execute_casework_v2", AsyncMock(return_value=object()))
+    monkeypatch.setattr(
+        runner,
+        "apply_casework_execution_to_session",
+        lambda session, execution: (
+            setattr(session, "status", SessionStatus.COMPLETED),
+            setattr(session, "reply_sent", True),
+            setattr(session, "casework_ownership_action", "billing"),
+        ),
+    )
     monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
-    monkeypatch.setattr(
-        "zd_agent.runtime.customer_profile.prefetch_customer_profile",
-        AsyncMock(return_value={}),
-    )
-    monkeypatch.setattr(
-        "zd_agent.tools.saas_version.resolve_deployed_version",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "zd_agent.runtime.prompt_loader.build_static_system_prompt",
-        lambda: "system",
-    )
+    monkeypatch.setattr(runner, "ensure_archive", MagicMock())
 
-    await runner.run_agent(AgentSession(ticket_id=2810))
+    await runner._run_casework_agent(AgentSession(ticket_id=2810), cfg)
 
     notify.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_run_agent_writes_failure_note_when_tool_loop_times_out(monkeypatch):
+async def test_v2_runner_failure_never_writes_legacy_customer_handoff(monkeypatch):
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
     cfg.agent.guardrails = MagicMock()
-    cfg.llm.model = "test-model"
-    cfg.sandbox.cleanup_on_success = False
-    cfg.sandbox.cleanup_on_failure = False
-    monkeypatch.setattr(runner, "get_config", lambda: cfg)
+    cfg.casework.mode.value = "casework"
     monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
-    send_error_note = AsyncMock()
-    monkeypatch.setattr(runner, "_send_error_note", send_error_note)
-    notify_failure = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "create_casework_tool_registry", MagicMock())
+    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock(_provider=object()))
+    monkeypatch.setattr(runner, "Guardrails", lambda config: MagicMock(elapsed_seconds=0))
     monkeypatch.setattr(
         runner,
-        "send_feishu_escalation_best_effort",
-        notify_failure,
-        raising=False,
+        "execute_casework_v2",
+        AsyncMock(side_effect=TimeoutError("provider timeout")),
     )
-    monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
-
-    class FakeSandbox:
-        async def create(self, ticket_id):
-            return f"/tmp/{ticket_id}"
-
-        async def cleanup(self):
-            raise AssertionError("cleanup should be disabled in this test")
-
-    async def fake_tool_loop(session, *_args, **_kwargs):
-        session.status = SessionStatus.TIMEOUT
-        session.error_message = "processing timeout after 600 seconds"
-
-    monkeypatch.setattr(runner, "create_sandbox", lambda: FakeSandbox())
-    monkeypatch.setattr(runner, "create_tool_registry", lambda: MagicMock())
-    monkeypatch.setattr(runner, "LLMClient", lambda: MagicMock())
-    monkeypatch.setattr(runner, "Guardrails", lambda config: MagicMock(elapsed_seconds=0))
-    monkeypatch.setattr(runner, "run_tool_loop", fake_tool_loop)
-    monkeypatch.setattr(
-        "zd_agent.runtime.customer_profile.prefetch_customer_profile",
-        AsyncMock(return_value={}),
-    )
-    monkeypatch.setattr(
-        "zd_agent.tools.saas_version.resolve_deployed_version",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        "zd_agent.runtime.prompt_loader.build_static_system_prompt",
-        lambda: "system",
-    )
+    monkeypatch.setattr(runner, "ensure_archive", MagicMock())
+    notify = AsyncMock()
+    monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
 
     session = AgentSession(ticket_id=3436)
-    await runner.run_agent(session)
+    await runner._run_casework_agent(session, cfg)
 
-    send_error_note.assert_awaited_once_with(
-        3436,
-        "processing timeout after 600 seconds",
-    )
-    notify_failure.assert_awaited_once_with(
-        ticket_id=3436,
-        reason="processing timeout after 600 seconds",
-        source="agent_session_failure",
-        handoff_reply_sent=False,
-    )
+    assert session.status is SessionStatus.FAILED
+    assert session.reply_sent is False
+    assert not hasattr(runner, "_send_error_note")
+    assert not hasattr(runner, "send_feishu_escalation_best_effort")
+    notify.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -187,6 +187,12 @@ def test_build_agent_tools_manifest_includes_metadata() -> None:
         "migration_status",
         "migration_target",
     } <= set(first["metadata"]["tool_service"])
+    assert all(
+        tool["metadata"]["risk_level"] == "read"
+        and tool["metadata"]["is_write_operation"] is False
+        and tool["metadata"]["requires_sandbox"] is False
+        for tool in manifest["tools"]
+    )
 
 
 @pytest.mark.asyncio

@@ -94,7 +94,12 @@ def handle_trigger_entry_gate(
 
     if (
         existing_state is not None
-        and existing_state.state in {"escalated_to_human", "owned"}
+        and existing_state.state in {
+            "escalated_to_human",
+            "owned",
+            "externally_owned",
+            "out_of_scope",
+        }
         and source != "mention"
     ):
         logger.info(

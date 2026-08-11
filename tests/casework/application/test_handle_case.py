@@ -131,7 +131,7 @@ def _context_builder(
     )
 
 
-async def test_shadow_orchestrator_runs_complete_no_write_decision_path() -> None:
+async def test_orchestrator_defaults_to_casework_mode() -> None:
     target = TargetReference(kind="tenant_id", value=TENANT)
     claim = Claim(
         claim_id="claim-plan",
@@ -186,7 +186,7 @@ async def test_shadow_orchestrator_runs_complete_no_write_decision_path() -> Non
         billing_required=True,
     )
 
-    assert run.execution_mode is ExecutionMode.SHADOW
+    assert run.execution_mode is ExecutionMode.CASEWORK
     assert run.context.identity.selected_tenant_id == TENANT
     assert run.decision.disposition is Disposition.RESOLVED
     assert run.reply_draft is not None
@@ -195,7 +195,7 @@ async def test_shadow_orchestrator_runs_complete_no_write_decision_path() -> Non
     assert writer.calls == 1
 
 
-async def test_retry_pending_shadow_run_does_not_compose_or_deliver_reply() -> None:
+async def test_retry_pending_run_does_not_compose_a_reply() -> None:
     writer = FakeWriter()
     failed_lookup = WorkspaceMembershipLookup(
         email="owner@example.com",

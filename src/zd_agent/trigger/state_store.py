@@ -18,6 +18,7 @@ logger = get_logger(module="trigger.state_store")
 VALID_STATES = {
     "waiting_for_issue",    # LLM judged greeting/insufficient, waiting for customer
     "waiting_for_form",     # Answer Bot blocking form is not submitted yet
+    "awaiting_customer",    # v2 sent a confirmed ask and awaits new evidence
     "in_silence_window",    # LLM judged substantial issue, within silence period
     "processing",           # AgentSession running
     "processed",            # done (first pass or followup)
@@ -25,6 +26,8 @@ VALID_STATES = {
     "abandoned",            # customer gone too long
     "escalated_to_human",   # 已转人工：agent 完全退出此工单，4 个 entry 入口 skip
     "owned",                # v2 typed owner command is durable; agent exits
+    "externally_owned",     # a real human owns the ticket; automation exits
+    "out_of_scope",         # Zendesk lifecycle/status is no longer automatable
 }
 
 

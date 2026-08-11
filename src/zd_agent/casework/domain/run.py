@@ -23,13 +23,11 @@ class CaseworkRun(FrozenModel):
     delivery_attempted: bool = False
 
     @model_validator(mode="after")
-    def _validate_shadow_run(self) -> CaseworkRun:
+    def _validate_run(self) -> CaseworkRun:
         if self.started_at.tzinfo is None or self.finished_at.tzinfo is None:
             raise ValueError("casework run timestamps must be timezone-aware")
         if self.finished_at < self.started_at:
             raise ValueError("casework run cannot finish before it starts")
-        if self.execution_mode is ExecutionMode.SHADOW and self.delivery_attempted:
-            raise ValueError("shadow run cannot attempt delivery")
         if self.decision.reply_kind is ReplyKind.NONE and self.reply_draft is not None:
             raise ValueError("no-reply decision cannot carry a reply draft")
         if self.decision.reply_kind is not ReplyKind.NONE and self.reply_draft is None:

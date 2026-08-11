@@ -1,6 +1,6 @@
 """Waiting Poller: 60s scan to discover new customer messages on messaging
 tickets that Zendesk's Tickets webhook misses, plus drive timeouts on
-``waiting_for_issue`` state.
+v2 ``awaiting_customer`` state (plus legacy states during migration).
 
 Why this exists
 ---------------
@@ -36,7 +36,8 @@ from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.log import get_logger
 from zd_agent.services.assignee import is_human_assignee
 from zd_agent.services.trigger_state_machine import (
-    apply_waiting_poller_abandoned,
+    apply_human_takeover,
+    apply_waiting_poller_out_of_scope,
     apply_waiting_poller_timeouts,
 )
 from zd_agent.services.ticket_tags import AGENT_ASKED_TAG
@@ -44,7 +45,12 @@ from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 logger = get_logger(module="services.waiting_poller")
 
-_TARGET_STATES = ("in_silence_window", "waiting_for_issue", "waiting_for_form")
+_TARGET_STATES = (
+    "in_silence_window",
+    "awaiting_customer",
+    "waiting_for_issue",
+    "waiting_for_form",
+)
 # 默认只关注新建状态的工单。一旦 Zendesk status 变成 open/pending/solved
 # poller 立刻让位停扫；唯一例外是带 AGENT_ASKED_TAG 的工单——表示 agent
 # 主动给客户发了 public ask 导致 status 自动翻 open，此时仍需继续追踪
@@ -108,7 +114,7 @@ async def _process_one(
         status == "open" and AGENT_ASKED_TAG in tags
     )
     if not in_scope:
-        transition = apply_waiting_poller_abandoned(
+        transition = apply_waiting_poller_out_of_scope(
             state,
             ticket_id,
             reason="status_out_of_scope",
@@ -127,17 +133,22 @@ async def _process_one(
         agent_user_id=my_uid,
         non_human_assignee_ids=cfg_zd.non_human_assignee_ids,
     ):
-        transition = apply_waiting_poller_abandoned(
+        apply_human_takeover(
             state,
             ticket_id,
+            existing=rec,
+            latest_cid=rec.last_customer_comment_id,
+            latest_ts=rec.last_comment_ts,
+            now=_now(),
             reason="human_assignee",
         )
-        if transition is not None:
-            logger.info(
-                "waiting_poller_human_assignee",
-                ticket_id=ticket_id, assignee_id=assignee_id, my_uid=my_uid,
-                prev_state=transition.prev_state,
-            )
+        logger.info(
+            "waiting_poller_human_assignee",
+            ticket_id=ticket_id,
+            assignee_id=assignee_id,
+            my_uid=my_uid,
+            prev_state=rec.state,
+        )
         return
 
     # Step 3: did the customer send a new message since last evaluation?
@@ -168,7 +179,7 @@ async def _process_one(
             })
             return
 
-    # Step 4: no new message — apply timeouts only on waiting_for_issue.
+    # Step 4: no new message — apply bounded customer-wait timeouts.
     transition = apply_waiting_poller_timeouts(
         state,
         ticket_id,
@@ -181,11 +192,16 @@ async def _process_one(
 
     if transition.kind == "abandoned":
         if transition.should_alert:
+            wait_summary = (
+                "AI 已请求补充必要信息，但客户尚未回应。"
+                if transition.prev_state == "awaiting_customer"
+                else "客户未发送可处理的问题信息。"
+            )
             await _alert_feishu(
                 title=f"Ticket #{ticket_id} 已 24h 无客户回应",
                 message=(
                     f"工单 #{ticket_id} 自创建后 {abandoned_hours} 小时内"
-                    f"客户未发送任何 actionable 信息（last_verdict={transition.last_verdict}）。"
+                    f"{wait_summary}（last_verdict={transition.last_verdict}）。"
                     "已标记为 abandoned，agent 不再处理。需要人工 follow-up。"
                 ),
                 urgent=False,

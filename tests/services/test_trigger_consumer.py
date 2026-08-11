@@ -15,11 +15,7 @@ from zd_agent.casework.domain.enums import (
 from zd_agent.services.casework_runtime_failures import (
     RuntimeFailureOwnershipReceipt,
 )
-from zd_agent.services.trigger_actions import (
-    handle_silence_expired_ask_action,
-    post_verdict_dispatch_action,
-    set_escalated_to_human_action,
-)
+from zd_agent.services.external_ownership import record_human_takeover
 from zd_agent.services.trigger_consumer import (
     reconcile_dead_lettered_triggers,
     run_saas_trigger_consumer,
@@ -45,7 +41,7 @@ async def test_run_trigger_consumer_delegates_queue_messages(tmp_path) -> None:
     manager = MagicMock()
     state = MagicMock()
     cfg = MagicMock()
-    env = MagicMock()
+    human_takeover = MagicMock()
     log_path = tmp_path / "trigger_log.jsonl"
     handled = asyncio.Event()
     calls: list[dict] = []
@@ -61,12 +57,9 @@ async def test_run_trigger_consumer_delegates_queue_messages(tmp_path) -> None:
             manager,
             state,
             cfg=cfg,
-            env=env,
             log_path=log_path,
             handle_message_fn=fake_handle_message,
-            silence_expired_ask_fn=MagicMock(),
-            post_verdict_dispatch_fn=MagicMock(),
-            escalate_fn=MagicMock(),
+            human_takeover_fn=human_takeover,
         )
     )
 
@@ -79,8 +72,8 @@ async def test_run_trigger_consumer_delegates_queue_messages(tmp_path) -> None:
     assert calls[0]["manager"] is manager
     assert calls[0]["state"] is state
     assert calls[0]["cfg"] is cfg
-    assert calls[0]["env"] is env
     assert calls[0]["log_path"] == log_path
+    assert calls[0]["human_takeover_fn"] is human_takeover
 
 
 @pytest.mark.asyncio
@@ -89,7 +82,6 @@ async def test_run_trigger_consumer_waits_for_delayed_message(tmp_path, monkeypa
     manager = MagicMock()
     state = MagicMock()
     cfg = MagicMock()
-    env = MagicMock()
     log_path = tmp_path / "trigger_log.jsonl"
     handled = asyncio.Event()
     wait = AsyncMock()
@@ -112,12 +104,9 @@ async def test_run_trigger_consumer_waits_for_delayed_message(tmp_path, monkeypa
             manager,
             state,
             cfg=cfg,
-            env=env,
             log_path=log_path,
             handle_message_fn=fake_handle_message,
-            silence_expired_ask_fn=MagicMock(),
-            post_verdict_dispatch_fn=MagicMock(),
-            escalate_fn=MagicMock(),
+            human_takeover_fn=MagicMock(),
         )
     )
 
@@ -150,15 +139,7 @@ async def test_run_saas_trigger_consumer_injects_default_actions(monkeypatch) ->
 
     assert calls[0]["args"] == (queue, manager, state)
     assert calls[0]["kwargs"]["cfg"] is cfg
-    assert (
-        calls[0]["kwargs"]["silence_expired_ask_fn"]
-        is handle_silence_expired_ask_action
-    )
-    assert (
-        calls[0]["kwargs"]["post_verdict_dispatch_fn"]
-        is post_verdict_dispatch_action
-    )
-    assert calls[0]["kwargs"]["escalate_fn"] is set_escalated_to_human_action
+    assert calls[0]["kwargs"]["human_takeover_fn"] is record_human_takeover
 
 
 @pytest.mark.asyncio
@@ -193,12 +174,9 @@ async def test_run_trigger_consumer_retries_failed_durable_message(tmp_path) -> 
             MagicMock(),
             MagicMock(),
             cfg=MagicMock(),
-            env=MagicMock(),
             log_path=tmp_path / "trigger_log.jsonl",
             handle_message_fn=fail_message,
-            silence_expired_ask_fn=MagicMock(),
-            post_verdict_dispatch_fn=MagicMock(),
-            escalate_fn=MagicMock(),
+            human_takeover_fn=MagicMock(),
         )
     )
 
@@ -250,12 +228,9 @@ async def test_run_trigger_consumer_releases_cancelled_durable_message(tmp_path)
             MagicMock(),
             MagicMock(),
             cfg=MagicMock(),
-            env=MagicMock(),
             log_path=tmp_path / "trigger_log.jsonl",
             handle_message_fn=block_until_cancelled,
-            silence_expired_ask_fn=MagicMock(),
-            post_verdict_dispatch_fn=MagicMock(),
-            escalate_fn=MagicMock(),
+            human_takeover_fn=MagicMock(),
         )
     )
 
@@ -298,12 +273,9 @@ async def test_deferred_durable_message_remains_pending_without_retry_consumptio
             MagicMock(),
             MagicMock(),
             cfg=MagicMock(),
-            env=MagicMock(),
             log_path=tmp_path / "trigger_log.jsonl",
             handle_message_fn=defer_message,
-            silence_expired_ask_fn=MagicMock(),
-            post_verdict_dispatch_fn=MagicMock(),
-            escalate_fn=MagicMock(),
+            human_takeover_fn=MagicMock(),
         )
     )
 
@@ -372,12 +344,9 @@ async def test_dead_lettered_silence_event_creates_typed_v2_owner(tmp_path) -> N
             MagicMock(),
             state,
             cfg=MagicMock(),
-            env=MagicMock(),
             log_path=tmp_path / "trigger_log.jsonl",
             handle_message_fn=fail_message,
-            silence_expired_ask_fn=MagicMock(),
-            post_verdict_dispatch_fn=MagicMock(),
-            escalate_fn=AsyncMock(),
+            human_takeover_fn=AsyncMock(),
             runtime_failure_ownership_fn=own_failure,
         ),
     )
@@ -410,17 +379,13 @@ async def test_dead_letter_reconciliation_completes_crash_gap(tmp_path) -> None:
             assert limit == 100
             return [{"ticket_id": 12345, "source": "zendesk_webhook", "_queue_attempts": 3}]
 
-    escalated = AsyncMock()
     own_failure = AsyncMock(return_value=_runtime_failure_receipt())
     count = await reconcile_dead_lettered_triggers(
         queue=Queue(),
         state=state,
-        log_path=tmp_path / "trigger.jsonl",
-        escalate_fn=escalated,
         runtime_failure_ownership_fn=own_failure,
     )
     assert count == 1
-    escalated.assert_not_awaited()
     own_failure.assert_awaited_once()
     persisted = state.get(12345)
     assert persisted is not None and persisted.state == "owned"

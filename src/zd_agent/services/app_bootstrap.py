@@ -28,6 +28,7 @@ from zd_agent.services.public_reply_handoff_effects import (
     reconcile_pending_post_public_handoff_effects,
 )
 from zd_agent.services.webhook_dedup import WebhookDedup
+from zd_agent.services.v2_state_migration import migrate_ticket_state_to_v2
 from zd_agent.trigger.state_store import TicketStateTracker
 
 if TYPE_CHECKING:
@@ -74,6 +75,13 @@ def prepare_saas_app_runtime(
 
     trigger_queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
     state = TicketStateTracker(state_dir / "tickets.json")
+    migration = migrate_ticket_state_to_v2(state)
+    if migration.migrated:
+        logger.warning(
+            "ticket_state_migrated_to_v2",
+            migrated=migration.migrated,
+            backup_path=str(migration.backup_path),
+        )
     recovered_ticket_ids: list[int] = []
     for ticket_id in state.list_by_state("processing"):
         try:
@@ -118,19 +126,13 @@ def prepare_saas_app_runtime(
     async def _reconcile_dead_letters(_app: web.Application) -> None:
         del _app
         try:
-            from zd_agent.services.trigger_actions import (
-                set_escalated_to_human_action,
-            )
             from zd_agent.services.trigger_consumer import (
-                default_trigger_log_path,
                 reconcile_dead_lettered_triggers,
             )
 
             reconciled = await reconcile_dead_lettered_triggers(
                 queue=trigger_queue,
                 state=state,
-                log_path=default_trigger_log_path(cfg),
-                escalate_fn=set_escalated_to_human_action,
             )
             if reconciled:
                 logger.warning("trigger_dead_letters_startup_reconciled", count=reconciled)

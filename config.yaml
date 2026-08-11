@@ -78,9 +78,8 @@ public_reply:
   freshness_callback_url: https://zendesk.smlershou.top/webhook/relay-pre-send-freshness
   browser_relay_timeout_seconds: 90
 casework:
-  # 新决策核心默认不运行；shadow 仅生成并归档对比结果，绝不发送或转交。
-  mode: legacy
-  shadow_archive_dir: casework-shadow
+  # v2 是唯一生产决策路径；canary 模式仅暂缓未列入白名单的工单。
+  mode: casework
 sandbox:
   type: local
   base_dir: /opt/zd-agent/resources/sandbox

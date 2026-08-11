@@ -155,7 +155,9 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
     # This is the last check before the relay clicks Zendesk Send. Use the
     # complete readiness gate rather than a message-only comparison: a new
     # Answer Bot blocking form is a system event and otherwise remains unseen.
-    from zd_agent.tools.zendesk_public_reply import _check_public_reply_readiness
+    from zd_agent.services.reliable_public_reply import (
+        _check_public_reply_readiness,
+    )
 
     check = await _check_public_reply_readiness(
         ticket_id=ticket_id,

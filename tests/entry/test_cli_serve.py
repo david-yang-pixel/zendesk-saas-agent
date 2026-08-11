@@ -1,5 +1,9 @@
 from unittest.mock import MagicMock, patch
 
+import typer
+from click import Group
+from typer.testing import CliRunner
+
 from zd_agent.config import AppConfig
 from zd_agent.entry import cli
 
@@ -56,23 +60,13 @@ def test_serve_applies_saved_config_before_session_manager() -> None:
     run_app.assert_called_once_with(manager)
 
 
-def test_webhook_uses_configured_session_manager() -> None:
-    cfg = AppConfig()
-    cfg.repos.auto_fetch = False
-    manager = MagicMock()
-    configured_manager = MagicMock(return_value=manager)
+def test_top_level_help_exposes_only_the_durable_http_server_command() -> None:
+    command = typer.main.get_command(cli.app)
+    assert isinstance(command, Group)
+    assert {"run", "batch", "serve"} <= set(command.commands)
+    assert "webhook" not in command.commands
 
-    def close_coroutine(coro) -> None:
-        coro.close()
+    result = CliRunner().invoke(cli.app, ["--help"])
 
-    with (
-        patch.object(cli, "get_config", return_value=cfg),
-        patch(
-            "zd_agent.services.app_bootstrap.create_configured_session_manager",
-            configured_manager,
-        ),
-        patch.object(cli.asyncio, "run", side_effect=close_coroutine),
-    ):
-        cli.webhook(host="127.0.0.1", port=18082)
-
-    configured_manager.assert_called_once_with(cfg)
+    assert result.exit_code == 0
+    assert "serve" in result.output

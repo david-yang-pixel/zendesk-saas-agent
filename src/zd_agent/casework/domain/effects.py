@@ -5,7 +5,6 @@ from pydantic import model_validator
 from zd_agent.casework.domain.base import FrozenModel
 from zd_agent.casework.domain.enums import (
     DeliveryState,
-    ExecutionMode,
     OwnershipAction,
     OwnershipState,
     ReplyKind,
@@ -39,11 +38,6 @@ class CaseworkExecution(FrozenModel):
     def _validate_effects(self) -> CaseworkExecution:
         decision = self.run.decision
         receipt = self.effect_receipt
-        if self.run.execution_mode is ExecutionMode.SHADOW:
-            if receipt.delivery_state is not DeliveryState.NOT_ATTEMPTED:
-                raise ValueError("shadow execution cannot produce delivery effects")
-            if receipt.ownership_state is not OwnershipState.NOT_REQUIRED:
-                raise ValueError("shadow execution cannot produce ownership effects")
         if decision.reply_kind is ReplyKind.NONE:
             if receipt.delivery_state is not DeliveryState.NOT_REQUIRED:
                 raise ValueError("no-reply decision cannot produce a delivery")

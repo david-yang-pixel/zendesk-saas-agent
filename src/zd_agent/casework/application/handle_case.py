@@ -37,10 +37,8 @@ class CaseworkOrchestrator:
         billing_required: bool,
         automation_attempt: int = 1,
         visual_observations: tuple[VisualObservation, ...] = (),
-        execution_mode: ExecutionMode = ExecutionMode.SHADOW,
+        execution_mode: ExecutionMode = ExecutionMode.CASEWORK,
     ) -> CaseworkRun:
-        if execution_mode is ExecutionMode.LEGACY:
-            raise ValueError("legacy is not a casework execution mode")
         started_at = self._clock.now()
         context = await self._context_builder.build(
             ticket,

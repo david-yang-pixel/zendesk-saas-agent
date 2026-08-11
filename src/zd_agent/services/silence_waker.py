@@ -37,7 +37,13 @@ async def scan_once(
         source = (
             "silence_waker"
             if record.last_verdict
-            in {"substantial_issue", "agent_deferred", "agent_retry"}
+            in {
+                "casework_ready",
+                "substantial_issue",
+                "agent_deferred",
+                "agent_retry",
+                "ownership_retry",
+            }
             else "silence_expired_ask"
         )
         message = {
@@ -177,21 +183,15 @@ async def _reconcile_dead_lettered_triggers(
     state: TicketStateTracker,
     trigger_queue: Any,
 ) -> None:
-    """Periodically complete dead-letter escalation after a consumer crash."""
+    """Periodically complete typed v2 ownership after a consumer crash."""
     try:
-        from zd_agent.config import get_config
-        from zd_agent.services.trigger_actions import set_escalated_to_human_action
         from zd_agent.services.trigger_consumer import (
-            default_trigger_log_path,
             reconcile_dead_lettered_triggers,
         )
 
-        cfg = get_config()
         await reconcile_dead_lettered_triggers(
             queue=trigger_queue,
             state=state,
-            log_path=default_trigger_log_path(cfg),
-            escalate_fn=set_escalated_to_human_action,
         )
     except Exception as exc:  # noqa: BLE001 - next periodic pass retries.
         logger.warning(

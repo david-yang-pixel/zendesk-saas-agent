@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, cast
 
 from zd_agent.casework.adapters.audit import (
     render_casework_audit,
@@ -22,13 +22,29 @@ from zd_agent.services.casework_effect_store import (
 from zd_agent.services.casework_ownership_effects import (
     ensure_casework_ownership_effects,
 )
-from zd_agent.tools.zendesk_public_reply import (
-    DirectPublicReplyResult,
-    send_public_reply_with_freshness,
+from zd_agent.services.reliable_public_reply import (
+    ReliablePublicReplyResult,
+    send_casework_public_reply_with_freshness,
 )
 
 
-PublicReplySender = Callable[..., Awaitable[DirectPublicReplyResult]]
+CaseworkPublicReplyType = Literal["ask", "solution", "closed"]
+
+
+class PublicReplySender(Protocol):
+    def __call__(
+        self,
+        *,
+        ticket_id: int,
+        body: str,
+        reply_type: CaseworkPublicReplyType,
+        snapshot_customer_message_count: int | None,
+        snapshot_customer_last_message_id: str | None,
+        delivery_attempt_id: str,
+        internal_analysis: str,
+    ) -> Awaitable[ReliablePublicReplyResult]: ...
+
+
 OwnershipSender = Callable[..., Awaitable[bool]]
 _AI_DISCLOSURE = "This reply was sent by Dify AI Support."
 
@@ -55,7 +71,7 @@ class CaseworkEffectStorePort(Protocol):
     def confirm_public_delivery(self, reference: str) -> bool: ...
 
 
-_REPLY_TYPE = {
+_REPLY_TYPE: dict[ReplyKind, CaseworkPublicReplyType] = {
     ReplyKind.ASK: "ask",
     ReplyKind.ANSWER: "solution",
     ReplyKind.PROGRESS: "solution",
@@ -72,7 +88,10 @@ def _transport_body(body: str) -> str:
 
 def _failed_delivery_state(message: str) -> DeliveryState:
     lowered = message.casefold()
-    if any(value in lowered for value in ("freshness", "stale", "pending form")):
+    if any(
+        value in lowered
+        for value in ("freshness", "stale", "pending form", "form is pending")
+    ):
         return DeliveryState.DEFERRED
     if any(value in lowered for value in ("ambiguous", "unknown delivery")):
         return DeliveryState.AMBIGUOUS
@@ -86,7 +105,9 @@ class ZendeskCaseworkEffects:
         store: CaseworkEffectStorePort,
         snapshot_customer_message_count: int | None,
         snapshot_customer_last_message_id: str,
-        public_reply_sender: PublicReplySender = send_public_reply_with_freshness,
+        public_reply_sender: PublicReplySender = (
+            send_casework_public_reply_with_freshness
+        ),
         ownership_sender: OwnershipSender = ensure_casework_ownership_effects,
     ) -> None:
         self._store = store
@@ -139,11 +160,16 @@ class ZendeskCaseworkEffects:
     async def _deliver(
         self,
         effect: PendingCaseworkEffect,
-    ) -> DirectPublicReplyResult:
+    ) -> ReliablePublicReplyResult:
+        if effect.reply_type not in {"ask", "solution", "closed"}:
+            return ReliablePublicReplyResult(
+                False,
+                f"invalid casework reply_type: {effect.reply_type!r}",
+            )
         return await self._public_reply_sender(
             ticket_id=effect.ticket_id,
             body=effect.body,
-            reply_type=effect.reply_type,
+            reply_type=cast(CaseworkPublicReplyType, effect.reply_type),
             snapshot_customer_message_count=(
                 effect.snapshot_customer_message_count
             ),

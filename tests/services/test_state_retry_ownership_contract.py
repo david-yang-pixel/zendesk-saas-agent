@@ -47,7 +47,7 @@ def test_every_owned_no_reply_outcome_consumes_retry_budget(
     tmp_path,
     status: SessionStatus,
 ) -> None:
-    """A third no-delivery outcome must stop the persistent retry loop."""
+    """A third no-delivery outcome retries typed ownership, not legacy handoff."""
     tracker = TicketStateTracker(tmp_path / f"{status.value}.json")
     tracker.set(
         3461,
@@ -69,11 +69,42 @@ def test_every_owned_no_reply_outcome_consumes_retry_budget(
     persisted = TicketStateTracker(tracker.path).get(3461)
     assert changed is True
     assert persisted is not None
-    assert persisted.state == "escalated_to_human"
-    assert persisted.escalated_reason == "agent_retry_exhausted"
+    assert persisted.state == "in_silence_window"
+    assert persisted.last_verdict == "ownership_retry"
+    assert persisted.silence_window_end == _NOW + timedelta(minutes=5)
     assert persisted.consecutive_agent_failures == 3
     assert persisted.active_session_id == ""
     assert persisted.delivery_attempt_id == "delivery-stable"
+
+
+def test_confirmed_v2_ask_projects_to_awaiting_customer(tmp_path) -> None:
+    tracker = TicketStateTracker(tmp_path / "awaiting.json")
+    tracker.set(
+        3461,
+        TicketState(
+            state="processing",
+            first_seen=_NOW - timedelta(minutes=10),
+            active_session_id="session-current",
+            delivery_attempt_id="delivery-stable",
+        ),
+    )
+    session = _owned_session(
+        3461,
+        status=SessionStatus.COMPLETED,
+        reply_sent=True,
+    )
+    session.casework_disposition = "awaiting_customer"
+    session.customer_msgs_snapshot_captured = True
+    session.customer_msgs_snapshot_last_id = "customer-1"
+
+    assert apply_session_finished(tracker, session, now=_NOW) is True
+
+    persisted = TicketStateTracker(tracker.path).get(3461)
+    assert persisted is not None
+    assert persisted.state == "awaiting_customer"
+    assert persisted.last_verdict == "awaiting_customer"
+    assert persisted.last_customer_comment_id == "customer-1"
+    assert persisted.last_agent_finish_ts == _NOW
 
 
 def test_durable_v2_ownership_terminalizes_without_a_public_reply(tmp_path) -> None:

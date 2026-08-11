@@ -10,12 +10,12 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 from zd_agent.config import AppConfig, EnvSettings
 from zd_agent.runtime.openai_reasoning import (
     supported_reasoning_efforts,
     validate_reasoning_effort,
 )
-from zd_agent.tools.registry import create_tool_registry
 from zd_agent.tools.service_boundary import (
     get_tool_service_boundary,
     summarize_tool_service_boundaries,
@@ -457,7 +457,7 @@ def _risk_level(tool: Any) -> str:
 
 def build_agent_tools_manifest() -> dict[str, Any]:
     """Return registered tool schemas plus metadata for hc-client display."""
-    registry = create_tool_registry()
+    registry = create_casework_tool_registry()
     tools = []
     for tool in registry.list_tools():
         schema = tool.to_openai_schema().get("function", {})

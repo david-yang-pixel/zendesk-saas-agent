@@ -34,6 +34,24 @@ async def test_scan_once_dispatches_substantial_on_expiry(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_dispatches_v2_casework_ready_on_expiry(tmp_path):
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    queue: asyncio.Queue = asyncio.Queue()
+    state.set(
+        "1",
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now() - timedelta(minutes=10),
+            silence_window_end=_now() - timedelta(seconds=1),
+            last_verdict="casework_ready",
+        ),
+    )
+
+    assert await scan_once(state=state, trigger_queue=queue) == 1
+    assert queue.get_nowait()["source"] == "silence_waker"
+
+
+@pytest.mark.asyncio
 async def test_scan_once_asks_when_not_substantial_on_expiry(tmp_path):
     """A non-substantial ticket queues an ask without claiming ownership."""
     for verdict in ("greeting", "insufficient_info", ""):

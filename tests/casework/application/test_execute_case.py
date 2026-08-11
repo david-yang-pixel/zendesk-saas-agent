@@ -162,18 +162,17 @@ async def test_casework_executor_delivers_v2_run_through_effect_port() -> None:
     assert result.effect_receipt.delivery_state is DeliveryState.CONFIRMED
 
 
-async def test_shadow_execution_never_invokes_effect_port() -> None:
+async def test_dry_run_invokes_effect_port_without_marking_delivery_attempted() -> None:
     run = _run(
-        mode=ExecutionMode.SHADOW,
+        mode=ExecutionMode.CASEWORK,
         decision=_ask_decision(),
         reply=_ask_reply(),
     )
     orchestrator = FakeOrchestrator(run)
     effects = FakeEffects(
         CaseworkEffectReceipt(
-            delivery_state=DeliveryState.CONFIRMED,
+            delivery_state=DeliveryState.DRAFTED,
             ownership_state=OwnershipState.NOT_REQUIRED,
-            delivery_reference="unused-delivery",
         ),
     )
     executor = CaseworkExecutor(orchestrator=orchestrator, effects=effects)
@@ -181,14 +180,15 @@ async def test_shadow_execution_never_invokes_effect_port() -> None:
     result = await executor.execute(
         ticket=run.context.ticket,
         billing_required=False,
-        execution_mode=ExecutionMode.SHADOW,
-        delivery_attempt_id="attempt-shadow",
-        dry_run=False,
+        execution_mode=ExecutionMode.CASEWORK,
+        delivery_attempt_id="attempt-dry-run",
+        dry_run=True,
     )
 
-    assert effects.calls == []
+    assert len(effects.calls) == 1
+    assert effects.calls[0][1:] == ("attempt-dry-run", True)
     assert result.run.delivery_attempted is False
-    assert result.effect_receipt.delivery_state is DeliveryState.NOT_ATTEMPTED
+    assert result.effect_receipt.delivery_state is DeliveryState.DRAFTED
 
 
 async def test_internal_retry_does_not_invoke_delivery_or_ownership() -> None:

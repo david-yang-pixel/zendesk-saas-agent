@@ -223,7 +223,7 @@ async def test_pre_send_freshness_blocks_a_form_added_after_initial_tool_gate(
         ),
     ))
     monkeypatch.setattr(
-        "zd_agent.tools.zendesk_public_reply._check_public_reply_readiness",
+        "zd_agent.services.reliable_public_reply._check_public_reply_readiness",
         readiness,
     )
     request = _Request(
@@ -269,7 +269,7 @@ async def test_pre_send_freshness_allows_form_only_handoff_callback(monkeypatch)
         reason="no_snapshot_required",
     ))
     monkeypatch.setattr(
-        "zd_agent.tools.zendesk_public_reply._check_public_reply_readiness",
+        "zd_agent.services.reliable_public_reply._check_public_reply_readiness",
         readiness,
     )
 
@@ -311,7 +311,7 @@ async def test_pre_send_freshness_rejects_late_non_substantive_message(
         new_messages_count=1,
     ))
     monkeypatch.setattr(
-        "zd_agent.tools.zendesk_public_reply._check_public_reply_readiness",
+        "zd_agent.services.reliable_public_reply._check_public_reply_readiness",
         readiness,
     )
 

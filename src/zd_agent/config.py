@@ -410,16 +410,32 @@ class LoggingConfig(BaseModel):
     log_dir: str = "/opt/zd-agent/logs"
 
 
+def _reject_removed_casework_mode(value: object) -> object:
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"legacy", "shadow"}:
+            raise ValueError(
+                f"casework mode '{normalized}' is no longer supported; "
+                "use 'canary' or 'casework'",
+            )
+    return value
+
+
 class CaseworkConfig(BaseModel):
-    """New decision core rollout control; legacy is the safe default."""
+    """v2 decision-core rollout and bounded-investigation controls."""
 
     model_config = ConfigDict(validate_assignment=True)
 
-    mode: ExecutionMode = ExecutionMode.LEGACY
-    shadow_archive_dir: str = "casework-shadow"
+    mode: ExecutionMode = ExecutionMode.CASEWORK
     canary_ticket_ids: tuple[int, ...] = ()
     max_investigation_rounds: int = Field(default=10, ge=1, le=20)
     max_investigation_calls: int = Field(default=16, ge=1, le=40)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _reject_removed_mode(cls, value: object) -> object:
+        return _reject_removed_casework_mode(value)
+
 
 class AppConfig(BaseModel):
     """应用完整配置"""
@@ -517,6 +533,11 @@ class EnvSettings(BaseSettings):
     zendesk_webhook_secret: str = ""
     zendesk_messaging_webhook_secret: str = ""
 
+    @field_validator("zd_casework_mode", mode="before")
+    @classmethod
+    def _reject_removed_mode(cls, value: object) -> object:
+        return _reject_removed_casework_mode(value)
+
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     """加载配置：先读 YAML，再用环境变量覆盖
@@ -552,14 +573,6 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.repos.base_dir = _resolve(cfg.repos.base_dir)
     cfg.knowledge.docs_dir = _resolve(cfg.knowledge.docs_dir)
     cfg.knowledge.archive_dir = _resolve(cfg.knowledge.archive_dir)
-    shadow_archive_dir = Path(cfg.casework.shadow_archive_dir)
-    if not shadow_archive_dir.is_absolute():
-        shadow_archive_dir = (
-            Path(cfg.resources.base_dir)
-            / cfg.resources.state_dir
-            / shadow_archive_dir
-        )
-    cfg.casework.shadow_archive_dir = str(shadow_archive_dir.resolve())
 
     env = EnvSettings()
 

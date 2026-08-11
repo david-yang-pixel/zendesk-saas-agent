@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
-from zd_agent.services.trigger_actions import post_verdict_dispatch_action
 from zd_agent.services.trigger_message_handler import handle_trigger_message
-from zd_agent.trigger.decider import PreCheckVerdict
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -50,25 +47,11 @@ async def test_startup_recovery_reprocesses_matching_saved_comment(
             last_verdict="substantial_issue",
         ),
     )
-    classify = AsyncMock(return_value=SimpleNamespace(verdict=PreCheckVerdict(
-        verdict="self_resolved",
-        completeness=100,
-        reason="recovery classification completed",
-    )))
-    send_closed = AsyncMock(return_value=True)
-
-    async def dispatch_verdict(**kwargs) -> None:
-        await post_verdict_dispatch_action(
-            **kwargs,
-            send_closed_fn=send_closed,
-        )
-
     result = await handle_trigger_message(
         msg={"ticket_id": 3461, "source": "startup_recovery"},
         manager=MagicMock(),
         state=state,
         cfg=_config(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
         fetch_customer_messages_fn=AsyncMock(return_value=(
             [{
@@ -78,18 +61,15 @@ async def test_startup_recovery_reprocesses_matching_saved_comment(
             }],
             {"id": 3461},
         )),
-        classify_ticket_messages_fn=classify,
-        post_verdict_dispatch_fn=dispatch_verdict,
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
 
-    assert result.action == "verdict_dispatched"
-    classify.assert_awaited_once()
-    send_closed.assert_awaited_once()
+    assert result.action == "casework_queued"
     recovered = state.get(3461)
     assert recovered is not None
-    assert recovered.state == "processed"
+    assert recovered.state == "in_silence_window"
+    assert recovered.last_verdict == "casework_ready"
 
 
 @pytest.mark.asyncio

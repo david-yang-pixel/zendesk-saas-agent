@@ -150,30 +150,22 @@ def test_v2_retry_pending_defers_without_customer_reply() -> None:
     assert session.casework_delivery_state == "not_required"
 
 
-async def test_casework_mode_runner_never_enters_legacy_tool_loop(monkeypatch) -> None:
+async def test_runner_has_only_the_v2_casework_path(monkeypatch) -> None:
     from zd_agent.runtime import runner
 
     cfg = MagicMock()
     cfg.agent.guardrails = MagicMock()
-    cfg.llm.model = "test-model"
     cfg.casework.mode = ExecutionMode.CASEWORK
     monkeypatch.setattr(runner, "get_config", lambda: cfg)
-    monkeypatch.setattr(runner, "_capture_customer_message_snapshot", AsyncMock())
     casework = AsyncMock()
-    legacy = AsyncMock()
     monkeypatch.setattr(runner, "_run_casework_agent", casework)
-    monkeypatch.setattr(runner, "run_tool_loop", legacy)
-    monkeypatch.setattr(
-        runner,
-        "Guardrails",
-        lambda config: MagicMock(elapsed_seconds=0),
-    )
     session = AgentSession(ticket_id=4001, dry_run=True)
 
     await runner.run_agent(session)
 
     casework.assert_awaited_once_with(session, cfg)
-    legacy.assert_not_awaited()
+    assert not hasattr(runner, "run_tool_loop")
+    assert not hasattr(runner, "create_tool_registry")
 
 
 async def test_v2_runtime_failure_retries_before_creating_ownership(
@@ -236,3 +228,42 @@ async def test_v2_runtime_failure_exhaustion_persists_typed_ownership(
     assert session.casework_delivery_state == "not_required"
     assert session.casework_effect_reference == "casework-effect:runtime"
     persist.assert_awaited_once()
+
+
+async def test_ownership_persistence_retry_skips_the_model(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from zd_agent.runtime import runner
+
+    cfg = MagicMock()
+    cfg.agent.guardrails = MagicMock()
+    cfg.casework.mode.value = "casework"
+    cfg.resources.base_dir = str(tmp_path)
+    cfg.resources.state_dir = "state"
+    session = AgentSession(ticket_id=4001, casework_attempt=4)
+    registry = MagicMock()
+    llm = MagicMock()
+    execute = AsyncMock()
+    persist = AsyncMock(
+        return_value=RuntimeFailureOwnershipReceipt(
+            reference="casework-effect:runtime",
+            ownership_action=OwnershipAction.SUPPORT,
+            reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+            ownership_state=OwnershipState.CONFIRMED,
+        ),
+    )
+    monkeypatch.setattr(runner, "create_casework_tool_registry", registry)
+    monkeypatch.setattr(runner, "LLMClient", llm)
+    monkeypatch.setattr(runner, "execute_casework_v2", execute)
+    monkeypatch.setattr(runner, "persist_runtime_failure_ownership", persist)
+    monkeypatch.setattr(runner, "ensure_archive", MagicMock())
+
+    await runner._run_casework_agent(session, cfg)
+
+    registry.assert_not_called()
+    llm.assert_not_called()
+    execute.assert_not_awaited()
+    persist.assert_awaited_once()
+    assert session.status is SessionStatus.COMPLETED
+    assert session.casework_ownership_action == "support"

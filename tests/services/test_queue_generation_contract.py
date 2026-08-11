@@ -92,23 +92,17 @@ async def test_stale_silence_event_is_noop_after_state_generation_changes(
     current.last_customer_comment_id = "m2"
     tracker.set(TICKET_ID, current)
 
-    nudge = AsyncMock()
     manager = MagicMock(dispatch=AsyncMock())
     result = await handle_trigger_message(
         msg=message,
         manager=manager,
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
-        silence_expired_ask_fn=nudge,
         fetch_customer_messages_fn=AsyncMock(),
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=AsyncMock(),
     )
 
     assert result.action == "stale_queue_event"
-    nudge.assert_not_awaited()
     manager.dispatch.assert_not_awaited()
 
 
@@ -129,7 +123,6 @@ async def test_waker_with_no_customer_message_never_leaves_ownerless_processing(
         manager=manager,
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
         fetch_customer_messages_fn=AsyncMock(return_value=(
             [],
@@ -141,8 +134,7 @@ async def test_waker_with_no_customer_message_never_leaves_ownerless_processing(
                 "_zd_agent_conversation_events": [],
             },
         )),
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
     )
 
     assert result.action == "no_customer_message"
@@ -154,7 +146,7 @@ async def test_waker_with_no_customer_message_never_leaves_ownerless_processing(
 
 
 @pytest.mark.asyncio
-async def test_silence_expired_ask_reclassifies_new_customer_message_before_nudge(
+async def test_legacy_silence_ask_row_dispatches_v2_without_old_nudge(
     tmp_path,
 ) -> None:
     """A delayed ask cannot answer an older generation after new customer input."""
@@ -184,10 +176,7 @@ async def test_silence_expired_ask_reclassifies_new_customer_message_before_nudg
             "_zd_agent_conversation_events": [],
         },
     ))
-    classify = AsyncMock(return_value=SimpleNamespace(verdict=object()))
-    dispatch_verdict = AsyncMock()
-    scheduled_nudge = AsyncMock()
-
+    manager = MagicMock(dispatch=AsyncMock())
     result = await handle_trigger_message(
         msg={
             "ticket_id": TICKET_ID,
@@ -199,28 +188,22 @@ async def test_silence_expired_ask_reclassifies_new_customer_message_before_nudg
             ),
             "delivery_attempt_id": pending.delivery_attempt_id,
         },
-        manager=MagicMock(dispatch=AsyncMock()),
+        manager=manager,
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
-        silence_expired_ask_fn=scheduled_nudge,
         fetch_customer_messages_fn=fetch_latest,
-        classify_ticket_messages_fn=classify,
-        post_verdict_dispatch_fn=dispatch_verdict,
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
 
-    assert result.action == "verdict_dispatched"
-    scheduled_nudge.assert_not_awaited()
+    assert result.action == "direct_dispatch"
     fetch_latest.assert_awaited_once_with(TICKET_ID)
-    classify.assert_awaited_once()
-    assert dispatch_verdict.await_args.kwargs["latest_cid"] == "m2"
+    manager.dispatch.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_silence_event_stops_when_generation_changes_during_classification(
+async def test_silence_event_stops_when_generation_changes_during_ticket_refresh(
     tmp_path,
 ) -> None:
     """A delayed event cannot dispatch a verdict after losing its generation."""
@@ -228,32 +211,13 @@ async def test_silence_event_stops_when_generation_changes_during_classification
     pending = tracker.get(TICKET_ID)
     assert pending is not None
 
-    async def classify_and_supersede(**_kwargs):
+    async def fetch_and_supersede(_ticket_id: int):
         superseding = tracker.get(TICKET_ID)
         assert superseding is not None
         superseding.state = "processed"
         superseding.last_customer_comment_id = "m2"
         tracker.set(TICKET_ID, superseding)
-        return SimpleNamespace(verdict=object())
-
-    dispatch_verdict = AsyncMock()
-    result = await handle_trigger_message(
-        msg={
-            "ticket_id": TICKET_ID,
-            "source": "silence_expired_ask",
-            "expected_state_revision": pending.state_revision,
-            "expected_silence_window_end": (
-                pending.silence_window_end.isoformat()
-                if pending.silence_window_end else ""
-            ),
-            "delivery_attempt_id": pending.delivery_attempt_id,
-        },
-        manager=MagicMock(dispatch=AsyncMock()),
-        state=tracker,
-        cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
-        log_path=tmp_path / "trigger.jsonl",
-        fetch_customer_messages_fn=AsyncMock(return_value=([
+        return ([
             {
                 "id": "m1",
                 "body": "The original report was incomplete.",
@@ -272,15 +236,29 @@ async def test_silence_event_stops_when_generation_changes_during_classification
             "assignee_id": None,
             "via": {"channel": "native_messaging"},
             "_zd_agent_conversation_events": [],
-        })),
-        classify_ticket_messages_fn=classify_and_supersede,
-        post_verdict_dispatch_fn=dispatch_verdict,
-        escalate_fn=AsyncMock(),
+        })
+
+    result = await handle_trigger_message(
+        msg={
+            "ticket_id": TICKET_ID,
+            "source": "silence_expired_ask",
+            "expected_state_revision": pending.state_revision,
+            "expected_silence_window_end": (
+                pending.silence_window_end.isoformat()
+                if pending.silence_window_end else ""
+            ),
+            "delivery_attempt_id": pending.delivery_attempt_id,
+        },
+        manager=MagicMock(dispatch=AsyncMock()),
+        state=tracker,
+        cfg=_cfg(),
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=fetch_and_supersede,
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
 
     assert result.action == "stale_queue_event"
-    dispatch_verdict.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -291,8 +269,7 @@ async def test_silence_expired_ask_honors_human_takeover_before_nudge(
     tracker = _expired_state(tmp_path, verdict="insufficient_info")
     pending = tracker.get(TICKET_ID)
     assert pending is not None
-    scheduled_nudge = AsyncMock()
-    escalate = AsyncMock()
+    human_takeover = AsyncMock()
 
     result = await handle_trigger_message(
         msg={
@@ -307,9 +284,7 @@ async def test_silence_expired_ask_honors_human_takeover_before_nudge(
         manager=MagicMock(dispatch=AsyncMock()),
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
-        silence_expired_ask_fn=scheduled_nudge,
         fetch_customer_messages_fn=AsyncMock(return_value=(
             [
                 {
@@ -327,16 +302,14 @@ async def test_silence_expired_ask_honors_human_takeover_before_nudge(
                 "_zd_agent_conversation_events": [],
             },
         )),
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=escalate,
+        human_takeover_fn=human_takeover,
         detect_human_takeover_fn=AsyncMock(
             return_value=(True, "ticket assigned to a human agent"),
         ),
     )
 
     assert result.action == "human_takeover"
-    scheduled_nudge.assert_not_awaited()
-    escalate.assert_awaited_once()
+    human_takeover.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -347,7 +320,6 @@ async def test_silence_expired_ask_waits_for_pending_form_before_nudge(
     tracker = _expired_state(tmp_path, verdict="insufficient_info")
     pending = tracker.get(TICKET_ID)
     assert pending is not None
-    scheduled_nudge = AsyncMock()
 
     result = await handle_trigger_message(
         msg={
@@ -362,9 +334,7 @@ async def test_silence_expired_ask_waits_for_pending_form_before_nudge(
         manager=MagicMock(dispatch=AsyncMock()),
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
-        silence_expired_ask_fn=scheduled_nudge,
         fetch_customer_messages_fn=AsyncMock(return_value=(
             [
                 {
@@ -400,34 +370,26 @@ async def test_silence_expired_ask_waits_for_pending_form_before_nudge(
                 ],
             },
         )),
-        classify_ticket_messages_fn=AsyncMock(),
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
 
     assert result.action == "waiting_for_form"
-    scheduled_nudge.assert_not_awaited()
     persisted = TicketStateTracker(tracker.path).get(TICKET_ID)
     assert persisted is not None
     assert persisted.state == "waiting_for_form"
 
 
 @pytest.mark.asyncio
-async def test_silence_expired_ask_claims_generation_until_send_finishes(
+async def test_legacy_silence_ask_never_creates_a_new_legacy_intent(
     tmp_path,
 ) -> None:
-    """The final public side effect has a durable owner and CAS finalization."""
+    """Historical delayed rows are upgraded to v2 before any customer write."""
     tracker = _expired_state(tmp_path, verdict="insufficient_info")
     pending = tracker.get(TICKET_ID)
     assert pending is not None
 
-    async def send_nudge(**_kwargs):
-        claimed = tracker.get(TICKET_ID)
-        assert claimed is not None
-        assert claimed.state == "processing"
-        assert claimed.active_session_id.startswith("operation:silence_expired_ask:")
-        return SimpleNamespace(action="public_nudge_sent")
+    manager = MagicMock(dispatch=AsyncMock())
 
     result = await handle_trigger_message(
         msg={
@@ -438,12 +400,10 @@ async def test_silence_expired_ask_claims_generation_until_send_finishes(
             "delivery_attempt_id": pending.delivery_attempt_id,
             "_queue_key": "silence-ask-generation-1",
         },
-        manager=MagicMock(dispatch=AsyncMock()),
+        manager=manager,
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
-        silence_expired_ask_fn=send_nudge,
         fetch_customer_messages_fn=AsyncMock(return_value=([
             {
                 "id": "m1",
@@ -458,73 +418,12 @@ async def test_silence_expired_ask_claims_generation_until_send_finishes(
             "via": {"channel": "native_messaging"},
             "_zd_agent_conversation_events": [],
         })),
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     )
 
-    assert result.action == "silence_expired_ask"
-    finalized = tracker.get(TICKET_ID)
-    assert finalized is not None
-    assert finalized.state == "waiting_for_issue"
-    assert finalized.active_session_id == ""
-    assert finalized.nudge_sent_at is not None
-
-
-@pytest.mark.asyncio
-async def test_silence_expired_ask_failure_releases_claim_with_backoff(
-    tmp_path,
-) -> None:
-    tracker = _expired_state(tmp_path, verdict="insufficient_info")
-    pending = tracker.get(TICKET_ID)
-    assert pending is not None
-
-    async def fail_nudge(**_kwargs):
-        claimed = tracker.get(TICKET_ID)
-        assert claimed is not None
-        assert claimed.state == "processing"
-        raise RuntimeError("relay unavailable")
-
-    with pytest.raises(RuntimeError, match="relay unavailable"):
-        await handle_trigger_message(
-            msg={
-                "ticket_id": TICKET_ID,
-                "source": "silence_expired_ask",
-                "expected_state_revision": pending.state_revision,
-                "expected_silence_window_end": pending.silence_window_end.isoformat(),
-                "delivery_attempt_id": pending.delivery_attempt_id,
-                "_queue_key": "silence-ask-generation-1",
-            },
-            manager=MagicMock(dispatch=AsyncMock()),
-            state=tracker,
-            cfg=_cfg(),
-            env=SimpleNamespace(openai_api_key="sk-test"),
-            log_path=tmp_path / "trigger.jsonl",
-            silence_expired_ask_fn=fail_nudge,
-            fetch_customer_messages_fn=AsyncMock(return_value=([
-                {
-                    "id": "m1",
-                    "body": "The original report was incomplete.",
-                    "created_at": "2026-07-16T07:55:00Z",
-                    "content_type": "text",
-                },
-            ], {
-                "id": TICKET_ID,
-                "status": "new",
-                "assignee_id": None,
-                "via": {"channel": "native_messaging"},
-                "_zd_agent_conversation_events": [],
-            })),
-            post_verdict_dispatch_fn=AsyncMock(),
-            escalate_fn=AsyncMock(),
-            detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
-        )
-
-    retryable = tracker.get(TICKET_ID)
-    assert retryable is not None
-    assert retryable.state == "in_silence_window"
-    assert retryable.active_session_id == ""
-    assert retryable.silence_window_end > NOW
+    assert result.action == "direct_dispatch"
+    manager.dispatch.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -553,7 +452,6 @@ async def test_startup_recovery_empty_messages_clear_dead_session_owner(
         manager=MagicMock(dispatch=AsyncMock()),
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
         fetch_customer_messages_fn=AsyncMock(return_value=([], {
             "id": TICKET_ID,
@@ -562,8 +460,7 @@ async def test_startup_recovery_empty_messages_clear_dead_session_owner(
             "via": {"channel": "native_messaging"},
             "_zd_agent_conversation_events": [],
         })),
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
     )
 
     assert result.action == "startup_recovery_waiting"
@@ -626,11 +523,9 @@ async def test_silence_waker_revalidates_generation_after_live_fetch(
         manager=manager,
         state=tracker,
         cfg=_cfg(),
-        env=SimpleNamespace(openai_api_key="sk-test"),
         log_path=tmp_path / "trigger.jsonl",
         fetch_customer_messages_fn=fetch_latest,
-        post_verdict_dispatch_fn=AsyncMock(),
-        escalate_fn=AsyncMock(),
+        human_takeover_fn=AsyncMock(),
         detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
     ))
 

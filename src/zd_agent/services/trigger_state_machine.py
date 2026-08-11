@@ -54,6 +54,45 @@ class EscalationTransition:
     escalated_at: datetime
 
 
+def apply_human_takeover(
+    state: TicketStateTracker,
+    ticket_id: str | int,
+    *,
+    existing: TicketState | None,
+    latest_cid: str | None,
+    latest_ts: datetime | None,
+    now: datetime,
+    reason: str,
+) -> None:
+    """Stop automation after a real human reply without creating side effects."""
+    state.set(
+        ticket_id,
+        TicketState(
+            state="externally_owned",
+            first_seen=existing.first_seen if existing else now,
+            last_customer_comment_id=latest_cid,
+            last_comment_ts=latest_ts,
+            last_eval_at=now,
+            last_verdict=reason,
+            ask_count=existing.ask_count if existing else 0,
+            nudge_sent_at=existing.nudge_sent_at if existing else None,
+            alert_sent_at=existing.alert_sent_at if existing else None,
+            abandoned_alert_sent_at=(
+                existing.abandoned_alert_sent_at if existing else None
+            ),
+            last_agent_finish_ts=(
+                existing.last_agent_finish_ts if existing else None
+            ),
+            delivery_attempt_id=(existing.delivery_attempt_id if existing else ""),
+            consecutive_agent_failures=(
+                existing.consecutive_agent_failures if existing else 0
+            ),
+            ownership_action="support",
+            ownership_reason=reason,
+        ),
+    )
+
+
 def apply_waiting_for_form(
     state: TicketStateTracker,
     ticket_id: str | int,
@@ -321,6 +360,9 @@ def apply_session_finished(
     has_durable_casework_ownership = bool(
         casework_owner not in {"", "none"} and casework_effect_reference
     )
+    casework_disposition = str(
+        getattr(session, "casework_disposition", "") or "",
+    )
     if reply_sent and not active_session_id:
         # Old state files may contain an ownerless ``processing`` record.  A
         # no-reply failure can safely release that zombie for retry, but a
@@ -359,12 +401,14 @@ def apply_session_finished(
             session_status=session.status.value,
         )
         has_casework_ownership = has_durable_casework_ownership
-        is_handoff = (
-            has_casework_ownership
-            or getattr(session, "public_reply_type", "") == "handoff"
-        )
-        ticket_state.state = "owned" if has_casework_ownership else (
-            "escalated_to_human" if is_handoff else "processed"
+        ticket_state.state = (
+            "owned"
+            if has_casework_ownership
+            else (
+                "awaiting_customer"
+                if casework_disposition == "awaiting_customer"
+                else "processed"
+            )
         )
         ticket_state.active_session_id = ""
         ticket_state.last_agent_finish_ts = finished_at
@@ -386,13 +430,10 @@ def apply_session_finished(
             ticket_state.ownership_reason = ownership_reason
             ticket_state.ownership_effect_reference = casework_effect_reference
             ticket_state.last_verdict = ownership_reason
-        elif is_handoff:
-            ownership_reason = str(
-                getattr(session, "casework_reason_code", "") or "agent_handoff",
-            )
-            ticket_state.escalated_at = finished_at
-            ticket_state.escalated_reason = ownership_reason
-            ticket_state.last_verdict = ownership_reason
+        elif ticket_state.state == "awaiting_customer":
+            ticket_state.last_verdict = "awaiting_customer"
+        else:
+            ticket_state.last_verdict = "resolved"
         state.set(session.ticket_id, ticket_state)
         return True
 
@@ -421,14 +462,11 @@ def apply_session_finished(
         # otherwise repeated stale-context deferrals can wake forever.
         ticket_state.consecutive_agent_failures += 1
 
-        retry_exhausted = (
+        ownership_persistence_retry = (
             ticket_state.consecutive_agent_failures
             >= _MAX_CONSECUTIVE_AGENT_FAILURES
         )
-        if retry_exhausted:
-            new_state = "escalated_to_human"
-        else:
-            new_state = "in_silence_window"
+        new_state = "in_silence_window"
         logger.info(
             "session_finished_state_reset",
             ticket_id=session.ticket_id,
@@ -437,15 +475,17 @@ def apply_session_finished(
             session_status=session.status.value,
             reply_sent=reply_sent,
             consecutive_agent_failures=ticket_state.consecutive_agent_failures,
-            retry_exhausted=retry_exhausted,
+            ownership_persistence_retry=ownership_persistence_retry,
         )
         ticket_state.state = new_state
         ticket_state.active_session_id = ""
-        if retry_exhausted:
-            ticket_state.silence_window_end = None
-            ticket_state.escalated_at = finished_at
-            ticket_state.escalated_reason = "agent_retry_exhausted"
-            ticket_state.last_verdict = "agent_retry_exhausted"
+        if ownership_persistence_retry:
+            # The runner must create a typed durable ownership command before
+            # this lifecycle can become terminal.  If the effect store itself
+            # is unavailable, retry only that operational step; never synthesize
+            # a legacy handoff or customer message from state alone.
+            ticket_state.silence_window_end = finished_at + timedelta(minutes=5)
+            ticket_state.last_verdict = "ownership_retry"
         else:
             delay_seconds = 60 if deferred_from_processing else 0
             ticket_state.silence_window_end = finished_at + timedelta(
@@ -487,6 +527,7 @@ def apply_silence_window_expired(
         "substantial_issue",
         "agent_deferred",
         "agent_retry",
+        "ownership_retry",
     }:
         rec.state = "processing"
         queue_source = "silence_waker"
@@ -526,6 +567,31 @@ def apply_waiting_poller_abandoned(
     )
 
 
+def apply_waiting_poller_out_of_scope(
+    state: TicketStateTracker,
+    ticket_id: str | int,
+    *,
+    reason: str,
+) -> WaitingPollerTransition | None:
+    """Stop polling when Zendesk lifecycle moved outside automation scope."""
+    rec = state.get(ticket_id)
+    if rec is None or rec.state == "out_of_scope":
+        return None
+
+    prev_state = rec.state
+    rec.state = "out_of_scope"
+    rec.last_verdict = reason
+    rec.silence_window_end = None
+    state.set(ticket_id, rec)
+    return WaitingPollerTransition(
+        ticket_id=int(ticket_id),
+        kind="out_of_scope",
+        prev_state=prev_state,
+        last_verdict=reason,
+        ask_count=rec.ask_count,
+    )
+
+
 def apply_waiting_poller_timeouts(
     state: TicketStateTracker,
     ticket_id: str | int,
@@ -536,11 +602,19 @@ def apply_waiting_poller_timeouts(
 ) -> WaitingPollerTransition | None:
     """Apply bounded waiting timeouts and one-shot alert markers."""
     rec = state.get(ticket_id)
-    if rec is None or rec.state not in {"waiting_for_issue", "waiting_for_form"}:
+    if rec is None or rec.state not in {
+        "awaiting_customer",
+        "waiting_for_issue",
+        "waiting_for_form",
+    }:
         return None
 
     current_time = now or datetime.now(timezone.utc)
-    first_seen = rec.first_seen
+    first_seen = (
+        rec.last_agent_finish_ts
+        if rec.state == "awaiting_customer" and rec.last_agent_finish_ts is not None
+        else rec.first_seen
+    )
     if first_seen.tzinfo is None:
         first_seen = first_seen.replace(tzinfo=timezone.utc)
     age_seconds = (current_time - first_seen).total_seconds()

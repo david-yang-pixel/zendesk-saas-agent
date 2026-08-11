@@ -41,11 +41,7 @@ from zd_agent.integrations.zendesk_browser_relay import (
 )
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
-from zd_agent.runtime.pre_send_check import (
-    FreshnessRecovery,
-    FreshnessRecoveryAction,
-    FreshnessResult,
-)
+from zd_agent.runtime.pre_send_check import FreshnessResult
 from zd_agent.runtime.billing_plan_gate import (
     billing_plan_claim_block_reason,
     resolved_target_tenant_id,
@@ -65,6 +61,11 @@ from zd_agent.services.messaging_context import get_messaging_context
 from zd_agent.services.public_reply_internal_note import (
     PostPublicInternalNoteStore,
     ensure_post_public_internal_note,
+)
+from zd_agent.services.reliable_public_reply import (
+    _check_public_reply_readiness as _shared_public_reply_readiness,
+    deliver_prepared_public_reply,
+    prepare_reliable_public_reply,
 )
 from zd_agent.services.public_reply_delivery_store import (
     PublicReplyDeliveryStore,
@@ -383,73 +384,20 @@ async def _check_public_reply_readiness(
     skip_llm: bool,
     cfg: Any | None = None,
 ) -> FreshnessResult:
-    """Fetch once, then verify customer freshness and blocking-form readiness."""
-    from zd_agent.config import EnvSettings
-    from zd_agent.runtime.pre_send_check import pre_send_check_or_abort
-    from zd_agent.services.ticket_message_parsing import (
-        conversation_has_pending_form,
+    """Compatibility facade over the shared reliable readiness primitive."""
+    resolved_cfg = cfg
+    if resolved_cfg is None and snapshot_count is not None:
+        resolved_cfg = get_config()
+    return await _shared_public_reply_readiness(
+        ticket_id=ticket_id,
+        snapshot_count=snapshot_count,
+        snapshot_last_id=snapshot_last_id,
+        skip_llm=skip_llm,
+        cfg=resolved_cfg,
     )
-    from zd_agent.services.ticket_messages import _fetch_customer_messages
-
-    latest_ticket: dict[str, Any] | None = None
-
-    async def _fetch() -> list[dict]:
-        nonlocal latest_ticket
-        messages, ticket = await _fetch_customer_messages(ticket_id)
-        if ticket is None:
-            raise RuntimeError(f"ticket fetch failed for #{ticket_id}")
-        latest_ticket = ticket
-        return messages
-
-    if snapshot_count is None:
-        try:
-            await _fetch()
-        except Exception as error:  # noqa: BLE001 - public writes fail closed.
-            reason = f"fetch_error: {type(error).__name__}"
-            return FreshnessResult(
-                continue_send=False,
-                reason=reason,
-                recovery=FreshnessRecovery(
-                    action=FreshnessRecoveryAction.RETRY_FETCH,
-                    reason=reason,
-                ),
-            )
-        check = FreshnessResult(continue_send=True, reason="no_snapshot_required")
-    else:
-        cfg = cfg or get_config()
-        env = EnvSettings()
-        check = await pre_send_check_or_abort(
-            ticket_id=ticket_id,
-            snapshot_count=snapshot_count,
-            snapshot_last_id=snapshot_last_id,
-            fetch_messages_fn=_fetch,
-            model=cfg.trigger_decider.llm_model,
-            api_key=env.openai_api_key,
-            reasoning_effort=cfg.trigger_decider.reasoning_effort,
-            base_url=cfg.llm.base_url,
-            skip_llm=skip_llm,
-        )
-    if not check.continue_send:
-        return check
-
-    conversation_events = (
-        latest_ticket.get("_zd_agent_conversation_events")
-        if latest_ticket
-        else []
-    )
-    if conversation_has_pending_form(conversation_events or []):
-        return FreshnessResult(
-            continue_send=False,
-            reason="pending_blocking_form",
-            recovery=FreshnessRecovery(
-                action=FreshnessRecoveryAction.DEFER,
-                reason="pending_blocking_form",
-            ),
-        )
-    return check
 
 
-async def send_public_reply_with_freshness(
+async def _send_legacy_public_reply_with_freshness(
     *,
     ticket_id: int,
     body: str,
@@ -702,6 +650,78 @@ async def send_public_reply_with_freshness(
             exc_info=True,
         )
         return DirectPublicReplyResult(False, f"{type(e).__name__}: {e}")
+
+
+async def send_public_reply_with_freshness(
+    *,
+    ticket_id: int,
+    body: str,
+    reply_type: str,
+    dry_run: bool = False,
+    conversation_id: str | None = None,
+    messaging_app_id: str | None = None,
+    snapshot_customer_message_count: int | None = None,
+    snapshot_customer_last_message_id: str | None = None,
+    delivery_attempt_id: str | None = None,
+    internal_analysis: str = "",
+    handoff_reason: str = "agent_handoff",
+    handoff_source: str = "direct_public_reply",
+    handoff_customer_phrase: str = "",
+) -> DirectPublicReplyResult:
+    """Compatibility facade over v2 delivery plus legacy handoff delivery."""
+    if dry_run or reply_type == "handoff":
+        return await _send_legacy_public_reply_with_freshness(
+            ticket_id=ticket_id,
+            body=body,
+            reply_type=reply_type,
+            dry_run=dry_run,
+            conversation_id=conversation_id,
+            messaging_app_id=messaging_app_id,
+            snapshot_customer_message_count=snapshot_customer_message_count,
+            snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+            delivery_attempt_id=delivery_attempt_id,
+            internal_analysis=internal_analysis,
+            handoff_reason=handoff_reason,
+            handoff_source=handoff_source,
+            handoff_customer_phrase=handoff_customer_phrase,
+        )
+    try:
+        prepared = await prepare_reliable_public_reply(
+            ticket_id=ticket_id,
+            body=body,
+            reply_type=reply_type,
+            conversation_id=conversation_id,
+            messaging_app_id=messaging_app_id,
+            snapshot_customer_message_count=snapshot_customer_message_count,
+            snapshot_customer_last_message_id=snapshot_customer_last_message_id,
+            delivery_attempt_id=(
+                delivery_attempt_id or f"direct:{ticket_id}:{uuid4().hex}"
+            ),
+            internal_analysis=internal_analysis,
+            cfg=get_config(),
+            context_getter=get_messaging_context,
+            readiness_checker=_check_freshness_before_relay,
+            delivery_store_factory=_delivery_store_for_config,
+        )
+    except Exception as error:  # noqa: BLE001 - compatibility result boundary.
+        message = (
+            str(error)
+            if isinstance(error, ValueError)
+            else f"{type(error).__name__}: {error}"
+        )
+        return DirectPublicReplyResult(False, message)
+    result = await deliver_prepared_public_reply(
+        prepared,
+        transport_sender=_send_public_reply_safely,
+        zendesk_tool_caller=call_zendesk_tool,
+        relay_sender=send_browser_relay_reply,
+    )
+    return DirectPublicReplyResult(
+        result.success,
+        result.message,
+        accepted_snapshot_count=result.accepted_snapshot_count,
+        accepted_snapshot_last_id=result.accepted_snapshot_last_id,
+    )
 
 
 async def send_public_reply(

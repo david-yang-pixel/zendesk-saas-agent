@@ -2,55 +2,60 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.config import AppConfig, CaseworkConfig, load_config
 
 
-def test_casework_defaults_to_legacy_and_cannot_change_production_behavior() -> None:
+def test_casework_defaults_to_v2_production_behavior() -> None:
     config = AppConfig()
 
-    assert config.casework.mode is ExecutionMode.LEGACY
-    assert config.casework.shadow_archive_dir == "casework-shadow"
+    assert config.casework.mode is ExecutionMode.CASEWORK
+    assert config.casework.canary_ticket_ids == ()
 
 
-def test_shadow_mode_and_archive_path_load_explicitly(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        "resources:\n"
-        f"  base_dir: {tmp_path / 'resources'}\n"
-        "  state_dir: .state\n"
-        "casework:\n"
-        "  mode: shadow\n"
-        "  shadow_archive_dir: decisions\n",
-    )
-
-    config = load_config(str(config_path))
-
-    assert config.casework.mode is ExecutionMode.SHADOW
-    assert config.casework.shadow_archive_dir == str(
-        tmp_path / "resources" / ".state" / "decisions",
-    )
-
-
-def test_casework_mode_can_be_enabled_by_explicit_environment_override(
+@pytest.mark.parametrize("mode", ["legacy", "shadow"])
+def test_removed_casework_modes_fail_fast_from_yaml(
+    mode: str,
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("casework:\n  mode: legacy\n")
-    monkeypatch.setenv("ZD_CASEWORK_MODE", "shadow")
+    config_path.write_text(
+        "casework:\n"
+        f"  mode: {mode}\n",
+    )
 
-    config = load_config(str(config_path))
+    with pytest.raises(
+        ValidationError,
+        match=rf"casework mode '{mode}' is no longer supported",
+    ):
+        load_config(str(config_path))
 
-    assert config.casework.mode is ExecutionMode.SHADOW
+
+@pytest.mark.parametrize("mode", ["legacy", "shadow"])
+def test_removed_casework_modes_fail_fast_from_environment(
+    mode: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("casework:\n  mode: casework\n")
+    monkeypatch.setenv("ZD_CASEWORK_MODE", mode)
+
+    with pytest.raises(
+        ValidationError,
+        match=rf"casework mode '{mode}' is no longer supported",
+    ):
+        load_config(str(config_path))
 
 
-def test_repository_config_keeps_casework_on_legacy_path() -> None:
+def test_repository_config_uses_the_v2_casework_path() -> None:
     config_path = Path(__file__).resolve().parents[2] / "config.yaml"
     raw = yaml.safe_load(config_path.read_text())
 
-    assert raw["casework"]["mode"] == "legacy"
+    assert raw["casework"]["mode"] == "casework"
+    assert "shadow_archive_dir" not in raw["casework"]
 
 
 @pytest.mark.parametrize("mode", [ExecutionMode.CANARY, ExecutionMode.CASEWORK])
@@ -65,7 +70,7 @@ def test_casework_environment_mode_loads_explicitly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("casework:\n  mode: legacy\n")
+    config_path.write_text("casework:\n  mode: canary\n")
     monkeypatch.setenv("ZD_CASEWORK_MODE", "casework")
 
     config = load_config(str(config_path))
@@ -78,7 +83,7 @@ def test_canary_ticket_ids_load_from_environment_without_widening_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("casework:\n  mode: legacy\n")
+    config_path.write_text("casework:\n  mode: casework\n")
     monkeypatch.setenv("ZD_CASEWORK_MODE", "canary")
     monkeypatch.setenv("ZD_CASEWORK_CANARY_TICKET_IDS", "3821, 3846,3821")
 

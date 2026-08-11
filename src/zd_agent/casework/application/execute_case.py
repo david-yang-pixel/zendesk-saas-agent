@@ -46,12 +46,7 @@ class CaseworkExecutor:
             visual_observations=visual_observations,
             execution_mode=execution_mode,
         )
-        if execution_mode is ExecutionMode.SHADOW:
-            receipt = CaseworkEffectReceipt(
-                delivery_state=DeliveryState.NOT_ATTEMPTED,
-                ownership_state=OwnershipState.NOT_REQUIRED,
-            )
-        elif run.decision.reply_kind is ReplyKind.NONE:
+        if run.decision.reply_kind is ReplyKind.NONE:
             receipt = CaseworkEffectReceipt(
                 delivery_state=DeliveryState.NOT_REQUIRED,
                 ownership_state=OwnershipState.NOT_REQUIRED,

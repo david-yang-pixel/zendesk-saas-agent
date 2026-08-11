@@ -41,9 +41,9 @@ class ToolSchemaResult:
 
 
 def _default_registry_factory() -> _CliToolRegistry:
-    from zd_agent.tools.registry import create_tool_registry
+    from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 
-    return create_tool_registry()
+    return create_casework_tool_registry()
 
 
 def collect_tool_list(
