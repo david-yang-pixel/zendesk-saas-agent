@@ -21,6 +21,7 @@ from zd_agent.casework.domain.models import (
     CaseContext,
     Claim,
     DispositionDecision,
+    EvidenceItem,
     InvestigationResult,
     ReplyCandidate,
 )
@@ -62,6 +63,10 @@ class _ModelAssessment(FrozenModel):
     proposed_claims: tuple[_ModelClaim, ...] = ()
     proposed_customer_fields: tuple[str, ...] = ()
     action_proposal: ActionProposal | None = None
+
+
+def investigation_output_schema() -> dict[str, Any]:
+    return _ModelAssessment.model_json_schema()
 
 
 _ModelType = TypeVar("_ModelType", bound=BaseModel)
@@ -177,6 +182,62 @@ def _investigation_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def build_investigation_result(
+    *,
+    context: CaseContext,
+    evidence: tuple[EvidenceItem, ...],
+    model_result: _ModelAssessment,
+) -> InvestigationResult:
+    """Convert a validated model proposal without granting it policy authority."""
+    claims = tuple(
+        claim.to_claim(index)
+        for index, claim in enumerate(model_result.proposed_claims, start=1)
+    )
+    evidence_ids = tuple(
+        dict.fromkeys(
+            evidence_id
+            for claim in claims
+            for evidence_id in (
+                *claim.supporting_evidence_ids,
+                *claim.contradicting_evidence_ids,
+            )
+        ),
+    )
+    if model_result.action_proposal is not None:
+        evidence_ids = tuple(
+            dict.fromkeys((*evidence_ids, *model_result.action_proposal.evidence_ids)),
+        )
+    proposal = AssessmentProposal(
+        question=context.ticket.questions[-1],
+        answer_status=model_result.answer_status,
+        proposed_claims=claims,
+        proposed_customer_fields=model_result.proposed_customer_fields,
+        action_proposal=model_result.action_proposal,
+        evidence_ids=evidence_ids,
+    )
+    return InvestigationResult(proposal=proposal, evidence=evidence)
+
+
+def investigation_result_from_content(
+    *,
+    context: CaseContext,
+    evidence: tuple[EvidenceItem, ...],
+    content: str,
+) -> InvestigationResult:
+    """Parse the terminal JSON emitted by the bounded investigation loop."""
+    try:
+        model_result = _ModelAssessment.model_validate_json(_json_object(content))
+    except (ValueError, ValidationError) as error:
+        raise ModelOutputError(
+            f"model returned invalid structured output: {str(error)[:1000]}",
+        ) from error
+    return build_investigation_result(
+        context=context,
+        evidence=evidence,
+        model_result=model_result,
+    )
+
+
 class LlmCaseInvestigator:
     def __init__(
         self,
@@ -204,33 +265,11 @@ class LlmCaseInvestigator:
             user=_investigation_prompt(context, self._material),
             model_type=_ModelAssessment,
         )
-        claims = tuple(
-            claim.to_claim(index)
-            for index, claim in enumerate(model_result.proposed_claims, start=1)
+        return build_investigation_result(
+            context=context,
+            evidence=self._material.evidence,
+            model_result=model_result,
         )
-        evidence_ids = tuple(
-            dict.fromkeys(
-                evidence_id
-                for claim in claims
-                for evidence_id in (
-                    *claim.supporting_evidence_ids,
-                    *claim.contradicting_evidence_ids,
-                )
-            ),
-        )
-        if model_result.action_proposal is not None:
-            evidence_ids = tuple(
-                dict.fromkeys((*evidence_ids, *model_result.action_proposal.evidence_ids)),
-            )
-        proposal = AssessmentProposal(
-            question=context.ticket.questions[-1],
-            answer_status=model_result.answer_status,
-            proposed_claims=claims,
-            proposed_customer_fields=model_result.proposed_customer_fields,
-            action_proposal=model_result.action_proposal,
-            evidence_ids=evidence_ids,
-        )
-        return InvestigationResult(proposal=proposal, evidence=self._material.evidence)
 
 
 _FIELD_QUESTIONS = {
