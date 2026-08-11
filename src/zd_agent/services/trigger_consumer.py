@@ -84,8 +84,9 @@ async def _escalate_dead_lettered_trigger(
     state: Any,
     log_path: Path,
     escalate_fn: HandleMessageFn | None,
-) -> None:
-    """Transfer terminal trigger failures instead of stranding queue state."""
+    runtime_failure_ownership_fn: HandleMessageFn | None = None,
+) -> bool:
+    """Persist typed v2 ownership for one terminal queue failure."""
     try:
         ticket_id = int(message["ticket_id"])
     except (KeyError, TypeError, ValueError):
@@ -96,14 +97,15 @@ async def _escalate_dead_lettered_trigger(
             ticket_id=message.get("ticket_id"),
             source=message.get("source"),
         )
-        return
+        return True
     existing = state.get(ticket_id)
     if existing is not None and existing.state in {
         "processed",
         "escalated_to_human",
+        "owned",
         "abandoned",
     }:
-        return
+        return True
 
     expected_revision = message.get("expected_state_revision")
     if (
@@ -119,50 +121,60 @@ async def _escalate_dead_lettered_trigger(
             current_revision=existing.state_revision,
             current_state=existing.state,
         )
-        return
+        return True
 
     now = datetime.now(timezone.utc)
-    if escalate_fn is not None:
-        try:
-            await escalate_fn(
-                ticket_id=ticket_id,
-                reason="trigger_retry_exhausted",
-                existing=existing,
-                state=state,
-                log_path=log_path,
-                source=str(message.get("source") or "trigger_dead_letter"),
-                now=now,
-                verdict_str="trigger_retry_exhausted",
-                latest_cid=(
-                    existing.last_customer_comment_id if existing else None
-                ),
-                latest_ts=(existing.last_comment_ts if existing else None),
-                completeness=0,
-                customer_msgs=[],
-                extra_log={"queue_attempts": message.get("_queue_attempts")},
-            )
-            return
-        except Exception as exc:  # noqa: BLE001 - state fallback is mandatory.
-            logger.exception(
-                "trigger_dead_letter_escalation_failed",
-                ticket_id=ticket_id,
-                error=str(exc)[:200],
-            )
+    del escalate_fn
+    if runtime_failure_ownership_fn is None:
+        from zd_agent.services.casework_runtime_failures import (
+            persist_runtime_failure_ownership,
+        )
 
-    # Generic/test consumers may not provide the production escalation
-    # adapter. Persist human ownership even when notifications are unavailable.
-    from zd_agent.services.trigger_state_machine import apply_escalated_to_human
-
-    apply_escalated_to_human(
-        state,
-        ticket_id,
-        existing=existing,
-        latest_cid=(existing.last_customer_comment_id if existing else None),
-        latest_ts=(existing.last_comment_ts if existing else None),
-        now=now,
-        verdict_str="trigger_retry_exhausted",
-        reason="trigger_retry_exhausted",
+        runtime_failure_ownership_fn = persist_runtime_failure_ownership
+    attempts = max(3, int(message.get("_queue_attempts") or 3))
+    delivery_attempt_id = str(
+        message.get("delivery_attempt_id")
+        or (existing.delivery_attempt_id if existing else "")
+        or message.get("_queue_key")
+        or f"trigger-dead-letter:{ticket_id}"
     )
+    try:
+        receipt = await runtime_failure_ownership_fn(
+            state_dir=Path(state.path).parent,
+            ticket_id=ticket_id,
+            delivery_attempt_id=delivery_attempt_id,
+            generation=(existing.state_revision if existing else 0),
+            source_event_id=(
+                existing.last_customer_comment_id if existing else ""
+            ) or "",
+            snapshot_customer_message_count=None,
+            snapshot_customer_last_message_id=(
+                existing.last_customer_comment_id if existing else ""
+            ) or "",
+            automation_attempt=attempts,
+            failure_type="TriggerQueueExhausted",
+        )
+    except Exception as error:  # noqa: BLE001 - dead letter remains replayable.
+        logger.exception(
+            "trigger_dead_letter_ownership_failed",
+            ticket_id=ticket_id,
+            error_type=type(error).__name__,
+        )
+        return False
+    from zd_agent.trigger.state_store import TicketState
+
+    owned = existing or TicketState(state="owned", first_seen=now)
+    owned.state = "owned"
+    owned.active_session_id = ""
+    owned.silence_window_end = None
+    owned.delivery_attempt_id = delivery_attempt_id
+    owned.consecutive_agent_failures = attempts
+    owned.ownership_action = receipt.ownership_action.value
+    owned.ownership_reason = receipt.reason_code.value
+    owned.ownership_effect_reference = receipt.reference
+    owned.last_verdict = receipt.reason_code.value
+    state.set(ticket_id, owned)
+    return True
 
 
 async def reconcile_dead_lettered_triggers(
@@ -171,6 +183,7 @@ async def reconcile_dead_lettered_triggers(
     state: Any,
     log_path: Path,
     escalate_fn: HandleMessageFn | None,
+    runtime_failure_ownership_fn: HandleMessageFn | None = None,
     limit: int = 100,
 ) -> int:
     """Finish the state compensation for dead letters left by a crash.
@@ -185,13 +198,14 @@ async def reconcile_dead_lettered_triggers(
         return 0
     reconciled = 0
     for message in await list_dead_letters(limit=limit):
-        await _escalate_dead_lettered_trigger(
+        resolved = await _escalate_dead_lettered_trigger(
             message=message,
             state=state,
             log_path=log_path,
             escalate_fn=escalate_fn,
+            runtime_failure_ownership_fn=runtime_failure_ownership_fn,
         )
-        reconciled += 1
+        reconciled += int(resolved)
     return reconciled
 
 
@@ -216,6 +230,7 @@ async def run_trigger_consumer(
     silence_expired_ask_fn: HandleMessageFn | None = None,
     post_verdict_dispatch_fn: HandleMessageFn | None = None,
     escalate_fn: HandleMessageFn | None = None,
+    runtime_failure_ownership_fn: HandleMessageFn | None = None,
 ) -> None:
     """Consume trigger queue messages and delegate one-message handling."""
     cfg = cfg or get_config()
@@ -255,6 +270,7 @@ async def run_trigger_consumer(
                     state=state,
                     log_path=log_path,
                     escalate_fn=escalate_fn,
+                    runtime_failure_ownership_fn=runtime_failure_ownership_fn,
                 )
         except asyncio.CancelledError:
             released = await asyncio.shield(_release_message(queue, msg))
@@ -282,6 +298,7 @@ async def run_trigger_consumer(
                     state=state,
                     log_path=log_path,
                     escalate_fn=escalate_fn,
+                    runtime_failure_ownership_fn=runtime_failure_ownership_fn,
                 )
         else:
             await _ack_message(queue, msg)

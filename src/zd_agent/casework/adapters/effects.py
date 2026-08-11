@@ -49,6 +49,7 @@ class CaseworkEffectStorePort(Protocol):
         ownership_action: str,
         reason_code: str,
         ownership_packet: str,
+        delivery_required: bool = True,
     ) -> PendingCaseworkEffect: ...
 
     def confirm_public_delivery(self, reference: str) -> bool: ...

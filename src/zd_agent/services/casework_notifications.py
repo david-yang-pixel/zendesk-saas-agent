@@ -35,10 +35,14 @@ def _card_content(
         f"**目标团队**\n{action.value}",
         f"**原因代码**\n{reason.value}",
         f"**可执行处理包**\n{ownership_packet.strip()}",
-        "**客户通知状态**\n✅ 客户回复已确认投递",
     ]
     if reply := customer_reply.strip():
+        sections.append("**客户通知状态**\n✅ 客户回复已确认投递")
         sections.append(f"**已发送给客户的回复**\n{reply}")
+    else:
+        sections.append(
+            "**客户通知状态**\n未发送自动回复；所有者需完成调查并回复客户",
+        )
     return "\n\n".join(sections)
 
 

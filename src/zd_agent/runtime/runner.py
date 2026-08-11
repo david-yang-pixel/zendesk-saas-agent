@@ -23,6 +23,9 @@ from zd_agent.services.escalation_notifications import (
     send_feishu_escalation_best_effort,
 )
 from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
+from zd_agent.services.casework_runtime_failures import (
+    persist_runtime_failure_ownership,
+)
 from zd_agent.runtime.tool_loop import run_tool_loop
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.session.sandbox import create_sandbox
@@ -132,6 +135,59 @@ async def _report_agent_failure(session: AgentSession, reason: str) -> None:
     )
 
 
+async def _handle_casework_runtime_failure(
+    session: AgentSession,
+    cfg: AppConfig,
+    error: Exception,
+) -> None:
+    """Retry transient v2 crashes, then persist one typed owner command."""
+    session.status = SessionStatus.FAILED
+    session.error_message = str(error)
+    if session.dry_run or session.casework_attempt < 3:
+        return
+    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
+    try:
+        receipt = await persist_runtime_failure_ownership(
+            state_dir=state_dir,
+            ticket_id=session.ticket_id,
+            delivery_attempt_id=(
+                session.delivery_attempt_id or session.session_id
+            ),
+            generation=session.customer_context_generation,
+            source_event_id=session.customer_msgs_snapshot_last_id,
+            snapshot_customer_message_count=(
+                session.customer_msgs_snapshot_count
+                if session.customer_msgs_snapshot_captured
+                else None
+            ),
+            snapshot_customer_last_message_id=(
+                session.customer_msgs_snapshot_last_id
+            ),
+            automation_attempt=session.casework_attempt,
+            failure_type=type(error).__name__,
+        )
+    except Exception as ownership_error:  # noqa: BLE001 - preserve retry state.
+        logger.error(
+            "casework_runtime_ownership_failed",
+            ticket_id=session.ticket_id,
+            session_id=session.session_id,
+            error_type=type(ownership_error).__name__,
+            exc_info=True,
+        )
+        return
+    session.casework_disposition = "human_action_required"
+    session.casework_ownership_action = receipt.ownership_action.value
+    session.casework_reason_code = receipt.reason_code.value
+    session.casework_delivery_state = "not_required"
+    session.casework_ownership_state = receipt.ownership_state.value
+    session.casework_effect_reference = receipt.reference
+    session.analysis = (
+        "v2 automatic retry budget exhausted; a typed support ownership "
+        f"command was persisted as {receipt.reference}"
+    )
+    session.status = SessionStatus.COMPLETED
+
+
 async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
     """Run the v2-only decision and effect path without the legacy tool loop."""
     guardrails = Guardrails(config=cfg.agent.guardrails)
@@ -162,10 +218,7 @@ async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
             error=str(error),
             exc_info=True,
         )
-        session.status = SessionStatus.FAILED
-        session.error_message = str(error)
-        if not session.dry_run:
-            await _report_agent_failure(session, str(error))
+        await _handle_casework_runtime_failure(session, cfg, error)
     if (
         session.status is SessionStatus.COMPLETED
         and session.reply_sent

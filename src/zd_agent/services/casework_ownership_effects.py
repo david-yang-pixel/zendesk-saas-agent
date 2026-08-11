@@ -41,7 +41,7 @@ async def ensure_casework_ownership_effects(
         raise RuntimeError("casework ownership command is missing")
     if not current.ownership_required:
         return True
-    if not current.public_delivery_confirmed:
+    if not current.ownership_ready:
         return False
     if current.ownership_complete:
         return True

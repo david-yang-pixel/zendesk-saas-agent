@@ -41,6 +41,7 @@ async def handle_direct_dispatch_source(
     cfg: Any,
     now: datetime | None = None,
     escalate_fn: Any | None = None,
+    runtime_failure_ownership_fn: Any | None = None,
 ) -> DirectDispatchResult:
     """Handle mention/silence_waker sources that directly dispatch sessions."""
     source = msg.get("source", "unknown")
@@ -208,66 +209,40 @@ async def handle_direct_dispatch_source(
         if source == "silence_waker" and previous_state is not None:
             previous_state.consecutive_agent_failures += 1
             previous_state.delivery_attempt_id = delivery_attempt_id
-            if (
-                previous_state.consecutive_agent_failures
-                >= _MAX_DIRECT_DISPATCH_FAILURES
-            ):
-                try:
-                    if escalate_fn is not None:
-                        await escalate_fn(
-                            ticket_id=ticket_id,
-                            reason="agent_dispatch_retry_exhausted",
-                            existing=previous_state,
-                            state=state,
-                            log_path=log_path,
-                            source=source,
-                            now=now,
-                            verdict_str="agent_dispatch_retry_exhausted",
-                            latest_cid=previous_state.last_customer_comment_id,
-                            latest_ts=previous_state.last_comment_ts,
-                            completeness=0,
-                            customer_msgs=[],
-                            extra_log={
-                                "dispatch_failures": (
-                                    previous_state.consecutive_agent_failures
-                                ),
-                            },
-                        )
-                    else:
-                        from zd_agent.services.trigger_state_machine import (
-                            apply_escalated_to_human,
-                        )
-
-                        apply_escalated_to_human(
-                            state,
-                            ticket_id,
-                            existing=previous_state,
-                            latest_cid=previous_state.last_customer_comment_id,
-                            latest_ts=previous_state.last_comment_ts,
-                            now=now,
-                            verdict_str="agent_dispatch_retry_exhausted",
-                            reason="agent_dispatch_retry_exhausted",
-                        )
-                except Exception as escalation_error:  # noqa: BLE001
-                    logger.exception(
-                        "trigger_dispatch_exhaustion_escalation_failed",
-                        ticket_id=ticket_id,
-                        error=str(escalation_error)[:200],
-                    )
-                    from zd_agent.services.trigger_state_machine import (
-                        apply_escalated_to_human,
+            if previous_state.consecutive_agent_failures >= _MAX_DIRECT_DISPATCH_FAILURES:
+                if runtime_failure_ownership_fn is None:
+                    from zd_agent.services.casework_runtime_failures import (
+                        persist_runtime_failure_ownership,
                     )
 
-                    apply_escalated_to_human(
-                        state,
-                        ticket_id,
-                        existing=previous_state,
-                        latest_cid=previous_state.last_customer_comment_id,
-                        latest_ts=previous_state.last_comment_ts,
-                        now=now,
-                        verdict_str="agent_dispatch_retry_exhausted",
-                        reason="agent_dispatch_retry_exhausted",
-                    )
+                    runtime_failure_ownership_fn = persist_runtime_failure_ownership
+                receipt = await runtime_failure_ownership_fn(
+                    state_dir=(
+                        Path(cfg.resources.base_dir) / cfg.resources.state_dir
+                    ),
+                    ticket_id=ticket_id,
+                    delivery_attempt_id=delivery_attempt_id,
+                    generation=previous_state.state_revision,
+                    source_event_id=(
+                        previous_state.last_customer_comment_id or ""
+                    ),
+                    snapshot_customer_message_count=None,
+                    snapshot_customer_last_message_id=(
+                        previous_state.last_customer_comment_id or ""
+                    ),
+                    automation_attempt=(
+                        previous_state.consecutive_agent_failures
+                    ),
+                    failure_type="AgentDispatchUnavailable",
+                )
+                previous_state.state = "owned"
+                previous_state.active_session_id = ""
+                previous_state.silence_window_end = None
+                previous_state.ownership_action = receipt.ownership_action.value
+                previous_state.ownership_reason = receipt.reason_code.value
+                previous_state.ownership_effect_reference = receipt.reference
+                previous_state.last_verdict = receipt.reason_code.value
+                state.set(ticket_id, previous_state)
                 logger.error(
                     "trigger_dispatch_retry_exhausted",
                     ticket_id=ticket_id,
@@ -276,7 +251,7 @@ async def handle_direct_dispatch_source(
                 )
                 return DirectDispatchResult(
                     handled=True,
-                    action="escalated_dispatch_retry_exhausted",
+                    action="owned_dispatch_retry_exhausted",
                 )
 
             previous_state.state = "in_silence_window"

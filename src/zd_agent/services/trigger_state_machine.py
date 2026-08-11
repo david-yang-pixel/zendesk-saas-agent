@@ -312,6 +312,15 @@ def apply_session_finished(
 
     finished_at = now or datetime.now(timezone.utc)
     reply_sent = bool(getattr(session, "reply_sent", False))
+    casework_owner = str(
+        getattr(session, "casework_ownership_action", "") or "",
+    )
+    casework_effect_reference = str(
+        getattr(session, "casework_effect_reference", "") or "",
+    )
+    has_durable_casework_ownership = bool(
+        casework_owner not in {"", "none"} and casework_effect_reference
+    )
     if reply_sent and not active_session_id:
         # Old state files may contain an ownerless ``processing`` record.  A
         # no-reply failure can safely release that zombie for retry, but a
@@ -324,6 +333,21 @@ def apply_session_finished(
         )
         return True
 
+    if has_durable_casework_ownership and not reply_sent:
+        ticket_state.state = "owned"
+        ticket_state.active_session_id = ""
+        ticket_state.last_agent_finish_ts = finished_at
+        ticket_state.silence_window_end = None
+        ticket_state.consecutive_agent_failures = 0
+        ticket_state.ownership_action = casework_owner
+        ticket_state.ownership_reason = str(
+            getattr(session, "casework_reason_code", "") or "",
+        )
+        ticket_state.ownership_effect_reference = casework_effect_reference
+        ticket_state.last_verdict = ticket_state.ownership_reason
+        state.set(session.ticket_id, ticket_state)
+        return True
+
     if reply_sent:
         # A confirmed customer-visible delivery is the terminal business fact.
         # Cleanup/notification failures may subsequently mark the in-memory
@@ -334,15 +358,12 @@ def apply_session_finished(
             from_state=ticket_state.state,
             session_status=session.status.value,
         )
-        casework_owner = str(
-            getattr(session, "casework_ownership_action", "") or "",
-        )
-        has_casework_ownership = casework_owner not in {"", "none"}
+        has_casework_ownership = has_durable_casework_ownership
         is_handoff = (
             has_casework_ownership
             or getattr(session, "public_reply_type", "") == "handoff"
         )
-        ticket_state.state = (
+        ticket_state.state = "owned" if has_casework_ownership else (
             "escalated_to_human" if is_handoff else "processed"
         )
         ticket_state.active_session_id = ""
@@ -357,7 +378,15 @@ def apply_session_finished(
                 session.customer_msgs_snapshot_last_id,
             )
             ticket_state.last_eval_at = finished_at
-        if is_handoff:
+        if has_casework_ownership:
+            ownership_reason = str(
+                getattr(session, "casework_reason_code", "") or "",
+            )
+            ticket_state.ownership_action = casework_owner
+            ticket_state.ownership_reason = ownership_reason
+            ticket_state.ownership_effect_reference = casework_effect_reference
+            ticket_state.last_verdict = ownership_reason
+        elif is_handoff:
             ownership_reason = str(
                 getattr(session, "casework_reason_code", "") or "agent_handoff",
             )

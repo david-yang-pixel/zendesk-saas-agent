@@ -7,7 +7,15 @@ from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
+from zd_agent.casework.domain.enums import (
+    OwnershipAction,
+    OwnershipState,
+    ReasonCode,
+)
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
+from zd_agent.services.casework_runtime_failures import (
+    RuntimeFailureOwnershipReceipt,
+)
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -19,6 +27,8 @@ def _now() -> datetime:
 def _cfg(*, cooldown_seconds: int = 180) -> MagicMock:
     cfg = MagicMock()
     cfg.trigger_decider.post_agent_cooldown_seconds = cooldown_seconds
+    cfg.resources.base_dir = "/tmp/zd-agent-test"
+    cfg.resources.state_dir = "state"
     return cfg
 
 
@@ -250,6 +260,14 @@ async def test_repeated_waker_dispatch_failures_have_durable_terminal_budget(
         ),
     )
     manager = MagicMock(dispatch=AsyncMock(side_effect=RuntimeError("no worker")))
+    own_failure = AsyncMock(
+        return_value=RuntimeFailureOwnershipReceipt(
+            reference="casework-effect:dispatch",
+            ownership_action=OwnershipAction.SUPPORT,
+            reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+            ownership_state=OwnershipState.CONFIRMED,
+        ),
+    )
 
     for attempt in range(1, 4):
         state = TicketStateTracker(state_path)
@@ -274,6 +292,7 @@ async def test_repeated_waker_dispatch_failures_have_durable_terminal_budget(
                     log_path=tmp_path / "trigger.jsonl",
                     cfg=_cfg(cooldown_seconds=0),
                     now=_now() + timedelta(minutes=attempt),
+                    runtime_failure_ownership_fn=own_failure,
                 )
             retry = TicketStateTracker(state_path).get(3436)
             assert retry is not None
@@ -292,11 +311,15 @@ async def test_repeated_waker_dispatch_failures_have_durable_terminal_budget(
                 log_path=tmp_path / "trigger.jsonl",
                 cfg=_cfg(cooldown_seconds=0),
                 now=_now() + timedelta(minutes=attempt),
+                runtime_failure_ownership_fn=own_failure,
             )
-            assert result.action == "escalated_dispatch_retry_exhausted"
+            assert result.action == "owned_dispatch_retry_exhausted"
 
     terminal = TicketStateTracker(state_path).get(3436)
     assert terminal is not None
-    assert terminal.state == "escalated_to_human"
-    assert terminal.escalated_reason == "agent_dispatch_retry_exhausted"
+    assert terminal.state == "owned"
+    assert terminal.ownership_action == "support"
+    assert terminal.ownership_reason == "automation_retry_exhausted"
+    assert terminal.ownership_effect_reference == "casework-effect:dispatch"
     assert terminal.delivery_attempt_id == "delivery-stable"
+    own_failure.assert_awaited_once()

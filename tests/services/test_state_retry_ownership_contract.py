@@ -76,6 +76,35 @@ def test_every_owned_no_reply_outcome_consumes_retry_budget(
     assert persisted.delivery_attempt_id == "delivery-stable"
 
 
+def test_durable_v2_ownership_terminalizes_without_a_public_reply(tmp_path) -> None:
+    tracker = TicketStateTracker(tmp_path / "owned.json")
+    tracker.set(
+        3461,
+        TicketState(
+            state="processing",
+            first_seen=_NOW - timedelta(minutes=10),
+            active_session_id="session-current",
+            consecutive_agent_failures=2,
+        ),
+    )
+    session = _owned_session(3461, status=SessionStatus.COMPLETED)
+    session.casework_ownership_action = "support"
+    session.casework_reason_code = "automation_retry_exhausted"
+    session.casework_ownership_state = "confirmed"
+    session.casework_effect_reference = "casework-effect:runtime"
+
+    changed = apply_session_finished(tracker, session, now=_NOW)
+
+    persisted = TicketStateTracker(tracker.path).get(3461)
+    assert changed is True
+    assert persisted is not None
+    assert persisted.state == "owned"
+    assert persisted.ownership_action == "support"
+    assert persisted.ownership_reason == "automation_retry_exhausted"
+    assert persisted.consecutive_agent_failures == 0
+    assert persisted.active_session_id == ""
+
+
 def test_deferred_retry_consumes_budget_and_keeps_backoff_before_exhaustion(
     tmp_path,
 ) -> None:
@@ -287,11 +316,13 @@ def test_v2_typed_ownership_terminalizes_without_handoff_reply_type(tmp_path) ->
     )
     session.casework_ownership_action = "engineering"
     session.casework_reason_code = "confirmed_platform_defect"
+    session.casework_effect_reference = "casework-effect:engineering"
 
     apply_session_finished(tracker, session, now=_NOW)
 
     persisted = TicketStateTracker(tracker.path).get(4001)
     assert persisted is not None
-    assert persisted.state == "escalated_to_human"
-    assert persisted.escalated_reason == "confirmed_platform_defect"
+    assert persisted.state == "owned"
+    assert persisted.ownership_action == "engineering"
+    assert persisted.ownership_reason == "confirmed_platform_defect"
     assert persisted.last_verdict == "confirmed_platform_defect"

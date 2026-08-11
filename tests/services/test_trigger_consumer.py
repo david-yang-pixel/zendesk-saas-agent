@@ -7,6 +7,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from zd_agent.casework.domain.enums import (
+    OwnershipAction,
+    OwnershipState,
+    ReasonCode,
+)
+from zd_agent.services.casework_runtime_failures import (
+    RuntimeFailureOwnershipReceipt,
+)
 from zd_agent.services.trigger_actions import (
     handle_silence_expired_ask_action,
     post_verdict_dispatch_action,
@@ -19,8 +27,16 @@ from zd_agent.services.trigger_consumer import (
 )
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.trigger_errors import TriggerDeferredError
-from zd_agent.services.trigger_state_machine import apply_escalated_to_human
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
+
+
+def _runtime_failure_receipt() -> RuntimeFailureOwnershipReceipt:
+    return RuntimeFailureOwnershipReceipt(
+        reference="casework-effect:queue",
+        ownership_action=OwnershipAction.SUPPORT,
+        reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+        ownership_state=OwnershipState.CONFIRMED,
+    )
 
 
 @pytest.mark.asyncio
@@ -304,7 +320,7 @@ async def test_deferred_durable_message_remains_pending_without_retry_consumptio
 
 
 @pytest.mark.asyncio
-async def test_dead_lettered_silence_event_transfers_to_human_owner(tmp_path) -> None:
+async def test_dead_lettered_silence_event_creates_typed_v2_owner(tmp_path) -> None:
     """A terminal queue failure cannot strand an expired ticket forever."""
     terminal = asyncio.Event()
     now = datetime(2026, 7, 16, 8, 30, tzinfo=timezone.utc)
@@ -343,18 +359,9 @@ async def test_dead_lettered_silence_event_transfers_to_human_owner(tmp_path) ->
         async def ack(self, _message: dict) -> None:
             raise AssertionError("failed messages must not be acknowledged")
 
-    async def escalate(**kwargs) -> None:
-        apply_escalated_to_human(
-            kwargs["state"],
-            kwargs["ticket_id"],
-            existing=kwargs["existing"],
-            latest_cid=kwargs["latest_cid"],
-            latest_ts=kwargs["latest_ts"],
-            now=kwargs["now"],
-            verdict_str=kwargs["verdict_str"],
-            reason=kwargs["reason"],
-        )
+    async def own_failure(**_kwargs) -> RuntimeFailureOwnershipReceipt:
         terminal.set()
+        return _runtime_failure_receipt()
 
     async def fail_message(**_kwargs) -> None:
         raise RuntimeError("permanent trigger failure")
@@ -370,7 +377,8 @@ async def test_dead_lettered_silence_event_transfers_to_human_owner(tmp_path) ->
             handle_message_fn=fail_message,
             silence_expired_ask_fn=MagicMock(),
             post_verdict_dispatch_fn=MagicMock(),
-            escalate_fn=escalate,
+            escalate_fn=AsyncMock(),
+            runtime_failure_ownership_fn=own_failure,
         ),
     )
 
@@ -381,8 +389,10 @@ async def test_dead_lettered_silence_event_transfers_to_human_owner(tmp_path) ->
 
     persisted = TicketStateTracker(state.path).get(3461)
     assert persisted is not None
-    assert persisted.state == "escalated_to_human"
-    assert persisted.escalated_reason == "trigger_retry_exhausted"
+    assert persisted.state == "owned"
+    assert persisted.ownership_action == "support"
+    assert persisted.ownership_reason == "automation_retry_exhausted"
+    assert persisted.ownership_effect_reference == "casework-effect:queue"
     assert persisted.delivery_attempt_id == "delivery-stable"
 
 
@@ -401,11 +411,16 @@ async def test_dead_letter_reconciliation_completes_crash_gap(tmp_path) -> None:
             return [{"ticket_id": 12345, "source": "zendesk_webhook", "_queue_attempts": 3}]
 
     escalated = AsyncMock()
+    own_failure = AsyncMock(return_value=_runtime_failure_receipt())
     count = await reconcile_dead_lettered_triggers(
         queue=Queue(),
         state=state,
         log_path=tmp_path / "trigger.jsonl",
         escalate_fn=escalated,
+        runtime_failure_ownership_fn=own_failure,
     )
     assert count == 1
-    escalated.assert_awaited_once()
+    escalated.assert_not_awaited()
+    own_failure.assert_awaited_once()
+    persisted = state.get(12345)
+    assert persisted is not None and persisted.state == "owned"

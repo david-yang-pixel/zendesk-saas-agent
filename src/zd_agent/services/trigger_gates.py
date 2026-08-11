@@ -94,11 +94,11 @@ def handle_trigger_entry_gate(
 
     if (
         existing_state is not None
-        and existing_state.state == "escalated_to_human"
+        and existing_state.state in {"escalated_to_human", "owned"}
         and source != "mention"
     ):
         logger.info(
-            "trigger_skip_escalated",
+            "trigger_skip_owned",
             ticket_id=ticket_id,
             source=source,
             escalated_reason=existing_state.escalated_reason,
@@ -110,13 +110,13 @@ def handle_trigger_entry_gate(
         decision_log.log_decision(
             log_path=log_path,
             ticket_id=ticket_id,
-            verdict="escalated_to_human",
+            verdict=existing_state.state,
             action="skip",
             extra={
                 "source": source,
                 "escalated_reason": existing_state.escalated_reason,
             },
         )
-        return TriggerGateResult(handled=True, action="escalated_to_human")
+        return TriggerGateResult(handled=True, action=existing_state.state)
 
     return TriggerGateResult(handled=False)

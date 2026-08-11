@@ -37,11 +37,16 @@ class PendingCaseworkEffect:
     notification_sent: bool
     notification_ambiguous: bool
     zendesk_tag_sent: bool
+    delivery_required: bool = True
     created_at: float = 0.0
 
     @property
     def ownership_required(self) -> bool:
         return self.ownership_action != "none"
+
+    @property
+    def ownership_ready(self) -> bool:
+        return not self.delivery_required or self.public_delivery_confirmed
 
     @property
     def ownership_complete(self) -> bool:
@@ -51,7 +56,7 @@ class PendingCaseworkEffect:
 
     @property
     def complete(self) -> bool:
-        return self.public_delivery_confirmed and self.ownership_complete
+        return self.ownership_ready and self.ownership_complete
 
 
 class CaseworkEffectStore:
@@ -78,6 +83,7 @@ class CaseworkEffectStore:
                 "snapshot_customer_last_message_id TEXT NOT NULL,"
                 "ownership_action TEXT NOT NULL,reason_code TEXT NOT NULL,"
                 "ownership_packet TEXT NOT NULL,"
+                "delivery_required INTEGER NOT NULL DEFAULT 1,"
                 "public_delivery_confirmed INTEGER NOT NULL DEFAULT 0,"
                 "notification_sent INTEGER NOT NULL DEFAULT 0,"
                 "notification_ambiguous INTEGER NOT NULL DEFAULT 0,"
@@ -85,6 +91,17 @@ class CaseworkEffectStore:
                 "created_at REAL NOT NULL,claim_token TEXT NOT NULL DEFAULT '',"
                 "lease_until REAL NOT NULL DEFAULT 0)"
             )
+            columns = {
+                str(row[1])
+                for row in connection.execute(
+                    "PRAGMA table_info(casework_effects)",
+                ).fetchall()
+            }
+            if "delivery_required" not in columns:
+                connection.execute(
+                    "ALTER TABLE casework_effects ADD COLUMN "
+                    "delivery_required INTEGER NOT NULL DEFAULT 1",
+                )
         self.path.chmod(0o600)
 
     def _connect(self) -> sqlite3.Connection:
@@ -107,6 +124,7 @@ class CaseworkEffectStore:
         ownership_action: str,
         reason_code: str,
         ownership_packet: str,
+        delivery_required: bool = True,
     ) -> PendingCaseworkEffect:
         reference = _effect_reference(ticket_id, delivery_attempt_id)
         with self._connect() as connection:
@@ -116,8 +134,9 @@ class CaseworkEffectStore:
                 "source_event_id,reply_type,body,internal_analysis,"
                 "snapshot_customer_message_count,"
                 "snapshot_customer_last_message_id,ownership_action,"
-                "reason_code,ownership_packet,notification_sent,"
-                "zendesk_tag_sent,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "reason_code,ownership_packet,delivery_required,"
+                "notification_sent,zendesk_tag_sent,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     reference,
                     ticket_id,
@@ -132,6 +151,7 @@ class CaseworkEffectStore:
                     ownership_action,
                     reason_code,
                     ownership_packet,
+                    int(delivery_required),
                     int(ownership_action == "none"),
                     int(ownership_action == "none"),
                     self._now(),
@@ -166,7 +186,7 @@ class CaseworkEffectStore:
         with self._connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM casework_effects "
-                "WHERE public_delivery_confirmed = 1 "
+                "WHERE (delivery_required = 0 OR public_delivery_confirmed = 1) "
                 "AND ownership_action != 'none' "
                 "AND (notification_sent = 0 OR zendesk_tag_sent = 0) "
                 "ORDER BY created_at LIMIT ?",
@@ -181,7 +201,8 @@ class CaseworkEffectStore:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 "UPDATE casework_effects SET claim_token = ?, lease_until = ? "
-                "WHERE reference = ? AND public_delivery_confirmed = 1 "
+                "WHERE reference = ? "
+                "AND (delivery_required = 0 OR public_delivery_confirmed = 1) "
                 "AND ownership_action != 'none' "
                 "AND (notification_sent = 0 OR zendesk_tag_sent = 0) "
                 "AND (claim_token = '' OR lease_until <= ?)",
@@ -266,6 +287,7 @@ def _from_row(row: sqlite3.Row) -> PendingCaseworkEffect:
         ownership_action=str(row["ownership_action"]),
         reason_code=str(row["reason_code"]),
         ownership_packet=str(row["ownership_packet"]),
+        delivery_required=bool(row["delivery_required"]),
         public_delivery_confirmed=bool(row["public_delivery_confirmed"]),
         notification_sent=bool(row["notification_sent"]),
         notification_ambiguous=bool(row["notification_ambiguous"]),

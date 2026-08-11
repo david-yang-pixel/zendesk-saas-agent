@@ -125,3 +125,44 @@ async def test_startup_reconciliation_processes_confirmed_pending_ownership(
 
     assert count == 1
     assert store.pending_ownership() == []
+
+
+async def test_ownership_only_command_does_not_require_a_customer_reply(
+    tmp_path: Path,
+) -> None:
+    store = CaseworkEffectStore(tmp_path / "effects.sqlite3")
+    effect = store.prepare(
+        ticket_id=4001,
+        delivery_attempt_id="attempt-1:runtime-failure",
+        generation=4,
+        source_event_id="event-4",
+        reply_type="none",
+        body="",
+        internal_analysis="v2 runtime retry exhausted",
+        snapshot_customer_message_count=5,
+        snapshot_customer_last_message_id="event-4",
+        ownership_action="support",
+        reason_code="automation_retry_exhausted",
+        ownership_packet="Support must finish the investigation.",
+        delivery_required=False,
+    )
+    notifications = []
+
+    async def notify(**kwargs) -> bool:
+        notifications.append(kwargs)
+        return True
+
+    async def tag(**kwargs) -> bool:
+        return True
+
+    completed = await ensure_casework_ownership_effects(
+        effect=effect,
+        store=store,
+        notification_sender=notify,
+        tag_sender=tag,
+    )
+
+    assert completed is True
+    assert notifications[0]["customer_reply"] == ""
+    persisted = store.get(effect.reference)
+    assert persisted is not None and persisted.complete is True

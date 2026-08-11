@@ -24,6 +24,7 @@ VALID_STATES = {
     "waiting_for_auth",     # Teleport down, suspended
     "abandoned",            # customer gone too long
     "escalated_to_human",   # 已转人工：agent 完全退出此工单，4 个 entry 入口 skip
+    "owned",                # v2 typed owner command is durable; agent exits
 }
 
 
@@ -85,6 +86,11 @@ class TicketState:
     #   - agent_error             agent 自身出错（异常 / 工具失败 / token 超额等）
     #   - manual                  人工通过 mention 主动接手（兼容旧路径）
     escalated_reason: str = ""
+    # v2 ownership is independent from customer reply wording.  These fields
+    # are populated only after a typed durable command exists.
+    ownership_action: str = ""
+    ownership_reason: str = ""
+    ownership_effect_reference: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)

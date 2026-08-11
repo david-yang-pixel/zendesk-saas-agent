@@ -59,3 +59,31 @@ def test_ownership_cannot_be_claimed_until_public_delivery_is_confirmed(
     completed = store.get(pending.reference)
     assert completed is not None
     assert completed.complete is True
+
+
+def test_ownership_only_command_is_durable_without_customer_delivery(
+    tmp_path: Path,
+) -> None:
+    store = CaseworkEffectStore(tmp_path / "effects.sqlite3")
+
+    pending = store.prepare(
+        ticket_id=4001,
+        delivery_attempt_id="attempt-1:runtime-failure",
+        generation=4,
+        source_event_id="event-4",
+        reply_type="none",
+        body="",
+        internal_analysis="v2 runtime retry exhausted",
+        snapshot_customer_message_count=5,
+        snapshot_customer_last_message_id="event-4",
+        ownership_action="support",
+        reason_code="automation_retry_exhausted",
+        ownership_packet="Support must finish the investigation.",
+        delivery_required=False,
+    )
+
+    assert pending.delivery_required is False
+    assert pending.public_delivery_confirmed is False
+    assert pending.ownership_ready is True
+    assert store.pending_ownership() == [pending]
+    assert store.claim_ownership(pending.reference)

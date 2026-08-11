@@ -31,6 +31,9 @@ from zd_agent.casework.domain.models import (
     TicketSnapshot,
 )
 from zd_agent.runtime.casework_v2 import apply_casework_execution_to_session
+from zd_agent.services.casework_runtime_failures import (
+    RuntimeFailureOwnershipReceipt,
+)
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 
 
@@ -171,3 +174,65 @@ async def test_casework_mode_runner_never_enters_legacy_tool_loop(monkeypatch) -
 
     casework.assert_awaited_once_with(session, cfg)
     legacy.assert_not_awaited()
+
+
+async def test_v2_runtime_failure_retries_before_creating_ownership(
+    monkeypatch,
+) -> None:
+    from zd_agent.runtime import runner
+
+    persist = AsyncMock()
+    monkeypatch.setattr(runner, "persist_runtime_failure_ownership", persist)
+    session = AgentSession(ticket_id=4001, casework_attempt=2)
+    cfg = MagicMock()
+
+    await runner._handle_casework_runtime_failure(
+        session,
+        cfg,
+        TimeoutError("provider timed out"),
+    )
+
+    assert session.status is SessionStatus.FAILED
+    assert session.casework_ownership_action == ""
+    persist.assert_not_awaited()
+
+
+async def test_v2_runtime_failure_exhaustion_persists_typed_ownership(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from zd_agent.runtime import runner
+
+    persist = AsyncMock(
+        return_value=RuntimeFailureOwnershipReceipt(
+            reference="casework-effect:runtime",
+            ownership_action=OwnershipAction.SUPPORT,
+            reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+            ownership_state=OwnershipState.CONFIRMED,
+        ),
+    )
+    monkeypatch.setattr(runner, "persist_runtime_failure_ownership", persist)
+    session = AgentSession(
+        ticket_id=4001,
+        delivery_attempt_id="delivery-1",
+        casework_attempt=3,
+    )
+    session.customer_msgs_snapshot_count = 2
+    session.customer_msgs_snapshot_last_id = "event-2"
+    cfg = MagicMock()
+    cfg.resources.base_dir = str(tmp_path)
+    cfg.resources.state_dir = "state"
+
+    await runner._handle_casework_runtime_failure(
+        session,
+        cfg,
+        TimeoutError("provider timed out"),
+    )
+
+    assert session.status is SessionStatus.COMPLETED
+    assert session.reply_sent is False
+    assert session.casework_ownership_action == "support"
+    assert session.casework_reason_code == "automation_retry_exhausted"
+    assert session.casework_delivery_state == "not_required"
+    assert session.casework_effect_reference == "casework-effect:runtime"
+    persist.assert_awaited_once()
