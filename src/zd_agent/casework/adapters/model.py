@@ -13,6 +13,7 @@ from zd_agent.casework.domain.enums import (
     ClaimRole,
     ClaimStatus,
     OwnershipAction,
+    ReasonCode,
 )
 from zd_agent.casework.domain.models import (
     ActionProposal,
@@ -292,6 +293,33 @@ _OWNER_LABELS = {
     OwnershipAction.SRE: "site reliability team",
     OwnershipAction.SECURITY: "security team",
 }
+_OWNERSHIP_PARAGRAPHS = {
+    ReasonCode.CUSTOMER_REQUESTED_HUMAN: (
+        "You asked to continue with a support specialist. They will follow up in "
+        "this ticket."
+    ),
+    ReasonCode.BUSINESS_APPROVAL_REQUIRED: (
+        "The refund decision requires review by our billing specialist. They will "
+        "record the decision and follow up in this ticket."
+    ),
+    ReasonCode.SENSITIVE_ACCOUNT_MUTATION_REQUIRED: (
+        "This request requires a protected account action. A support specialist "
+        "will review it and follow up in this ticket."
+    ),
+    ReasonCode.SECURITY_OR_PRIVACY_REVIEW_REQUIRED: (
+        "This request requires a security or privacy review. Our security team will "
+        "follow up in this ticket."
+    ),
+    ReasonCode.POLICY_COMMITMENT_REQUIRED: (
+        "The requested commitment requires review by a support specialist. They "
+        "will follow up in this ticket."
+    ),
+    ReasonCode.AUTOMATION_RETRY_EXHAUSTED: (
+        "We couldn't complete the verification needed to answer this safely after "
+        "retrying. A support specialist will continue the review and follow up in "
+        "this ticket."
+    ),
+}
 _AI_DISCLOSURE = "This reply was sent by Dify AI Support."
 
 
@@ -313,7 +341,11 @@ class PolicyReplyWriter:
         if decision.ownership_action is not OwnershipAction.NONE:
             owner = _OWNER_LABELS[decision.ownership_action]
             paragraphs.append(
-                f"The remaining action requires our {owner}. They will follow up in this ticket.",
+                _OWNERSHIP_PARAGRAPHS.get(
+                    decision.reason_code,
+                    f"The remaining action requires our {owner}. "
+                    "They will follow up in this ticket.",
+                ),
             )
         if not paragraphs:
             raise ValueError("reply decision has no admitted customer-safe content")
@@ -330,7 +362,7 @@ class PolicyReplyWriter:
 
 
 class NoOpReplyReviewer:
-    """The shadow path cannot introduce facts during a wording-only pass."""
+    """Keep admitted v2 wording unchanged until revision is mechanically provable."""
 
     async def revise_wording(
         self,

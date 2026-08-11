@@ -112,6 +112,7 @@ class AgentSession:
     casework_delivery_state: str = ""
     casework_ownership_state: str = ""
     casework_effect_reference: str = ""
+    casework_attempt: int = 1
     archived: bool = False
     error_message: str = ""
 

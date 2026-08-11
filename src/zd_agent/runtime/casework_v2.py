@@ -113,6 +113,7 @@ async def execute_casework_v2(
             ticket,
             ticket_type=session.ticket_type,
         ),
+        automation_attempt=session.casework_attempt,
         visual_observations=observations,
         execution_mode=mode,
         delivery_attempt_id=session.delivery_attempt_id or session.session_id,

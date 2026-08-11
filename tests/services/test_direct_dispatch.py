@@ -101,6 +101,50 @@ async def test_direct_source_dispatches_with_hint(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_silence_retry_binds_the_durable_attempt_to_v2_session(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        12345,
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now() - timedelta(minutes=10),
+            silence_window_end=_now() - timedelta(seconds=1),
+            last_verdict="agent_retry",
+            consecutive_agent_failures=2,
+        ),
+    )
+    current = state.get(12345)
+    assert current is not None
+    sessions: list[AgentSession] = []
+    manager = MagicMock()
+
+    async def dispatch(ticket_id: int, **kwargs):
+        session = AgentSession(ticket_id=ticket_id, session_id="session-created")
+        kwargs["on_session_created"](session)
+        sessions.append(session)
+        return session
+
+    manager.dispatch = AsyncMock(side_effect=dispatch)
+
+    result = await handle_direct_dispatch_source(
+        ticket_id=12345,
+        msg={
+            "source": "silence_waker",
+            "expected_state_revision": current.state_revision,
+            "expected_silence_window_end": current.silence_window_end.isoformat(),
+        },
+        manager=manager,
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(cooldown_seconds=0),
+        now=_now(),
+    )
+
+    assert result.dispatched is True
+    assert sessions[0].casework_attempt == 3
+
+
+@pytest.mark.asyncio
 async def test_direct_source_cooldown_skips_dispatch_and_logs_decision(tmp_path) -> None:
     state = TicketStateTracker(tmp_path / "tickets.json")
     state.set(

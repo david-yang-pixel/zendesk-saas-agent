@@ -417,6 +417,7 @@ class CaseworkConfig(BaseModel):
 
     mode: ExecutionMode = ExecutionMode.LEGACY
     shadow_archive_dir: str = "casework-shadow"
+    canary_ticket_ids: tuple[int, ...] = ()
     max_investigation_rounds: int = Field(default=10, ge=1, le=20)
     max_investigation_calls: int = Field(default=16, ge=1, le=40)
 
@@ -483,6 +484,7 @@ class EnvSettings(BaseSettings):
     anthropic_api_key: str = ""
     zd_log_level: str = "INFO"  # DEBUG / INFO / WARNING / ERROR
     zd_casework_mode: ExecutionMode | None = None
+    zd_casework_canary_ticket_ids: str = ""
     zd_admin_initial_password: str = ""
     hc_client_url: str = ""  # zendesk-hc-client API 地址（如 http://localhost:8000）
     hc_client_api_key: str = ""  # 对应 hc-client 的 AGENT_INNER_API_KEY
@@ -574,6 +576,17 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         cfg.llm.provider = env.zd_llm_provider
     if env.zd_casework_mode is not None:
         cfg.casework.mode = env.zd_casework_mode
+    if env.zd_casework_canary_ticket_ids.strip():
+        ticket_ids = tuple(
+            dict.fromkeys(
+                int(value.strip())
+                for value in env.zd_casework_canary_ticket_ids.split(",")
+                if value.strip()
+            ),
+        )
+        if any(ticket_id <= 0 for ticket_id in ticket_ids):
+            raise ValueError("casework canary ticket IDs must be positive")
+        cfg.casework.canary_ticket_ids = ticket_ids
     if env.zd_model is not None:
         model_override = env.zd_model.strip()
         if model_override:

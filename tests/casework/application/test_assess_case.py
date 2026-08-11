@@ -315,6 +315,38 @@ def test_failed_identity_lookup_becomes_internal_retry_not_customer_ask() -> Non
     assert decision.reason_code is ReasonCode.INTERNAL_RETRY_PENDING
 
 
+def test_exhausted_identity_retry_creates_typed_support_ownership_packet() -> None:
+    identity = IdentityResolution(
+        contact_email="owner@example.com",
+        target_identity="owner@example.com",
+        status=ResolutionStatus.LOOKUP_FAILED,
+        error_code=AdapterErrorCode.TIMEOUT,
+        evidence_ids=("ev-timeout",),
+        detail="support-side lookup timed out",
+    )
+    context = _context(identity).model_copy(update={"automation_attempt": 3})
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="Which workspace is affected?",
+            answer_status=AnswerStatus.INSUFFICIENT,
+            proposed_customer_fields=("workspace_id",),
+        ),
+        evidence=(),
+        as_of=NOW,
+    )
+    decision = decide_disposition(result.assessment)
+
+    assert result.assessment.blocking_failure is None
+    assert result.assessment.customer_only_fields == ()
+    assert result.assessment.human_action is not None
+    assert result.assessment.human_action.ownership_action is OwnershipAction.SUPPORT
+    assert result.assessment.human_action.reason_code is ReasonCode.AUTOMATION_RETRY_EXHAUSTED
+    assert decision.ownership_action is OwnershipAction.SUPPORT
+    assert decision.reason_code is ReasonCode.AUTOMATION_RETRY_EXHAUSTED
+
+
 def test_true_identity_ambiguity_allows_only_minimum_workspace_choice() -> None:
     identity = IdentityResolution(
         contact_email="owner@example.com",

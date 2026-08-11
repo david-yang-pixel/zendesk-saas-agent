@@ -235,6 +235,7 @@ class CaseContext(FrozenModel):
     ticket: TicketSnapshot
     built_at: datetime
     identity: IdentityResolution
+    automation_attempt: int = Field(default=1, ge=1)
     billing_required: bool = False
     billing: BillingBinding | None = None
     visual_observations: tuple[VisualObservation, ...] = ()

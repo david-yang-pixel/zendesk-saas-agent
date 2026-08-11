@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from zd_agent.casework.policies.rollout import casework_controls_ticket
 from zd_agent.log import get_logger
 from zd_agent.services.customer_activity import handle_customer_activity_gate
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
@@ -435,6 +436,46 @@ async def handle_trigger_message(
         or msg.get("_queue_key")
         or f"{source}:{ticket_id}:{customer_activity.latest_cid or customer_activity.latest_ts}"
     )
+    if casework_controls_ticket(
+        mode=cfg.casework.mode,
+        canary_ticket_ids=cfg.casework.canary_ticket_ids,
+        ticket_id=ticket_id,
+    ):
+        from zd_agent.services.trigger_state_machine import apply_verdict_enter_silence
+        from zd_agent.trigger.decision_log import log_decision
+
+        silence_minutes = cfg.trigger_decider.silence_minutes_default
+        transition = apply_verdict_enter_silence(
+            state,
+            ticket_id,
+            existing=customer_activity.existing,
+            latest_cid=customer_activity.latest_cid,
+            latest_ts=customer_activity.latest_ts,
+            now=customer_activity.now,
+            verdict_str="casework_ready",
+            ask_count_now=(
+                customer_activity.existing.ask_count
+                if customer_activity.existing
+                else 0
+            ),
+            silence_minutes=silence_minutes,
+            delivery_attempt_id=delivery_attempt_id,
+        )
+        log_decision(
+            log_path=log_path,
+            ticket_id=ticket_id,
+            verdict="casework_ready",
+            action="enter_silence",
+            silence_min=silence_minutes,
+            extra={"source": source, "execution_mode": cfg.casework.mode.value},
+        )
+        logger.info(
+            "casework_intake_queued",
+            ticket_id=ticket_id,
+            source=source,
+            window_end=transition.silence_window_end.isoformat(),
+        )
+        return TriggerMessageResult(True, "casework_queued", ticket_id, source)
     verdict_claim = _claim_verdict_operation(
         state=state,
         ticket_id=ticket_id,

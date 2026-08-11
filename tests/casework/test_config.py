@@ -71,3 +71,18 @@ def test_casework_environment_mode_loads_explicitly(
     config = load_config(str(config_path))
 
     assert config.casework.mode is ExecutionMode.CASEWORK
+
+
+def test_canary_ticket_ids_load_from_environment_without_widening_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("casework:\n  mode: legacy\n")
+    monkeypatch.setenv("ZD_CASEWORK_MODE", "canary")
+    monkeypatch.setenv("ZD_CASEWORK_CANARY_TICKET_IDS", "3821, 3846,3821")
+
+    config = load_config(str(config_path))
+
+    assert config.casework.mode is ExecutionMode.CANARY
+    assert config.casework.canary_ticket_ids == (3821, 3846)

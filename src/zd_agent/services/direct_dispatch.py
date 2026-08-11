@@ -120,6 +120,10 @@ async def handle_direct_dispatch_source(
         session_id = str(getattr(session, "session_id", "") or "")
         if not session_id:
             raise RuntimeError("dispatched session is missing session_id")
+        session.casework_attempt = (
+            (previous_state.consecutive_agent_failures if previous_state else 0)
+            + 1
+        )
 
         def _claim_generation(current: TicketState | None) -> TicketState:
             processing_state = (

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
+from zd_agent.casework.policies.rollout import casework_controls_ticket
 from zd_agent.config import AppConfig, get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
@@ -237,7 +238,11 @@ async def run_agent(session: AgentSession) -> None:
         )
         return
 
-    if cfg.casework.mode in {ExecutionMode.CANARY, ExecutionMode.CASEWORK}:
+    if casework_controls_ticket(
+        mode=cfg.casework.mode,
+        canary_ticket_ids=cfg.casework.canary_ticket_ids,
+        ticket_id=session.ticket_id,
+    ):
         await _run_casework_agent(session, cfg)
         return
 

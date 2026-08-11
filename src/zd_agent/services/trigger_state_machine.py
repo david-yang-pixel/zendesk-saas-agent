@@ -453,7 +453,12 @@ def apply_silence_window_expired(
         return None
 
     verdict = rec.last_verdict or ""
-    if verdict in {"substantial_issue", "agent_deferred", "agent_retry"}:
+    if verdict in {
+        "casework_ready",
+        "substantial_issue",
+        "agent_deferred",
+        "agent_retry",
+    }:
         rec.state = "processing"
         queue_source = "silence_waker"
     else:

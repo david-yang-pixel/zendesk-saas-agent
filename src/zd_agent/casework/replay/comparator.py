@@ -37,6 +37,9 @@ def compare_replay_outcome(
             "forbidden customer fields: " + ", ".join(sorted(invalid_fields)),
         )
     reply = outcome.reply_body.casefold()
+    for phrase in expected.required_reply_phrases:
+        if phrase.casefold() not in reply:
+            mismatches.append(f"missing required reply phrase: {phrase!r}")
     for phrase in expected.forbidden_reply_phrases:
         if phrase.casefold() in reply:
             mismatches.append(f"forbidden reply phrase: {phrase!r}")

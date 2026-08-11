@@ -35,6 +35,7 @@ class CaseworkOrchestrator:
         *,
         ticket: TicketSnapshot,
         billing_required: bool,
+        automation_attempt: int = 1,
         visual_observations: tuple[VisualObservation, ...] = (),
         execution_mode: ExecutionMode = ExecutionMode.SHADOW,
     ) -> CaseworkRun:
@@ -44,6 +45,7 @@ class CaseworkOrchestrator:
         context = await self._context_builder.build(
             ticket,
             billing_required=billing_required,
+            automation_attempt=automation_attempt,
             visual_observations=visual_observations,
         )
         investigation = await self._investigator.investigate(context)

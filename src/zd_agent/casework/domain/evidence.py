@@ -127,6 +127,9 @@ class AdapterFailure(FrozenModel):
     def can_retry(self) -> bool:
         return self.code in _RETRYABLE_ERROR_CODES and self.attempt < self.max_attempts
 
+    def retry_exhausted(self) -> bool:
+        return self.code in _RETRYABLE_ERROR_CODES and self.attempt >= self.max_attempts
+
 
 class HumanActionRequest(FrozenModel):
     ownership_action: OwnershipAction

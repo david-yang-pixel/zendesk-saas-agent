@@ -33,6 +33,7 @@ class CaseworkExecutor:
         *,
         ticket: TicketSnapshot,
         billing_required: bool,
+        automation_attempt: int = 1,
         execution_mode: ExecutionMode,
         delivery_attempt_id: str,
         dry_run: bool,
@@ -41,6 +42,7 @@ class CaseworkExecutor:
         run = await self._orchestrator.run(
             ticket=ticket,
             billing_required=billing_required,
+            automation_attempt=automation_attempt,
             visual_observations=visual_observations,
             execution_mode=execution_mode,
         )

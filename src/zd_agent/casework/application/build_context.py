@@ -100,6 +100,7 @@ class CaseContextBuilder:
         ticket: TicketSnapshot,
         *,
         billing_required: bool,
+        automation_attempt: int = 1,
         visual_observations: tuple[VisualObservation, ...] = (),
     ) -> CaseContext:
         identity = await self._resolve_identity(ticket)
@@ -108,6 +109,7 @@ class CaseContextBuilder:
             ticket=ticket,
             built_at=self._clock.now(),
             identity=identity,
+            automation_attempt=automation_attempt,
             billing_required=billing_required,
             billing=billing,
             visual_observations=visual_observations,

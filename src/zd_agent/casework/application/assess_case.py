@@ -7,6 +7,8 @@ from zd_agent.casework.domain.enums import (
     AnswerStatus,
     BillingBindingStatus,
     ClaimRole,
+    OwnershipAction,
+    ReasonCode,
     ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
@@ -130,7 +132,7 @@ def _identity_context_failure(
     return AdapterFailure(
         operation="identity.lookup",
         code=code or AdapterErrorCode.PERMANENT_FAILURE,
-        attempt=1,
+        attempt=min(context.automation_attempt, 3),
         max_attempts=3,
         retry_after_seconds=2,
         evidence_id=(context.identity.evidence_ids[-1] if context.identity.evidence_ids else ""),
@@ -155,7 +157,7 @@ def _billing_context_failure(context: CaseContext) -> AdapterFailure | None:
     return AdapterFailure(
         operation="billing.lookup",
         code=code,
-        attempt=1,
+        attempt=min(context.automation_attempt, 3),
         max_attempts=3,
         retry_after_seconds=2,
         evidence_id=(billing.evidence_ids[-1] if billing.evidence_ids else ""),
@@ -176,6 +178,37 @@ def _blocking_failure(
     return _identity_context_failure(
         context=context,
     ) or _billing_context_failure(context)
+
+
+def _retry_exhausted_action(
+    failure: AdapterFailure | None,
+) -> HumanActionRequest | None:
+    if (
+        failure is None
+        or not failure.retry_exhausted()
+        or not failure.evidence_id
+    ):
+        return None
+    return HumanActionRequest(
+        ownership_action=OwnershipAction.SUPPORT,
+        reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+        summary=(
+            f"Support-side verification remained unavailable after "
+            f"{failure.attempt} attempts."
+        ),
+        customer_impact="The customer's latest question cannot yet be answered safely.",
+        completed_checks=(
+            f"Retried {failure.operation} {failure.attempt} times.",
+        ),
+        unresolved_action=(
+            f"Complete {failure.operation} and answer the latest customer question."
+        ),
+        acceptance_criteria=(
+            "The target facts are verified from an authoritative source.",
+            "The customer receives an evidence-grounded answer.",
+        ),
+        evidence_ids=(failure.evidence_id,),
+    )
 
 
 def _answer_status(
@@ -210,6 +243,28 @@ def _action(
     )
 
 
+def _action_and_failure(
+    *,
+    context: CaseContext,
+    proposal: AssessmentProposal,
+    admitted_claims: tuple[Claim, ...],
+    answer_status: AnswerStatus,
+) -> tuple[HumanActionRequest | None, AdapterFailure | None, str]:
+    action, rejection = _action(
+        context=context,
+        proposal=proposal,
+        admitted_claims=admitted_claims,
+    )
+    failure = _blocking_failure(
+        context=context,
+        proposal=proposal,
+        answer_status=answer_status,
+    )
+    if action is None and (exhausted := _retry_exhausted_action(failure)) is not None:
+        return exhausted, None, rejection
+    return action, failure, rejection
+
+
 def build_case_assessment(
     *,
     context: CaseContext,
@@ -229,21 +284,18 @@ def build_case_assessment(
         context=context,
         proposal=proposal,
     )
-    human_action, rejected_action_reason = _action(
+    human_action, blocking_failure, rejected_action_reason = _action_and_failure(
         context=context,
         proposal=proposal,
         admitted_claims=admitted_claims,
+        answer_status=answer_status,
     )
     assessment = CaseAssessment(
         question=proposal.question,
         answer_status=answer_status,
         admitted_claims=admitted_claims,
         customer_only_fields=customer_fields,
-        blocking_failure=_blocking_failure(
-            context=context,
-            proposal=proposal,
-            answer_status=answer_status,
-        ),
+        blocking_failure=blocking_failure,
         human_action=human_action,
         evidence_ids=tuple(
             dict.fromkeys(

@@ -28,6 +28,7 @@ class ReplayExpected(FrozenModel):
     reason_code: ReasonCode
     required_customer_fields: tuple[str, ...] = ()
     admitted_claim_ids: tuple[str, ...] = ()
+    required_reply_phrases: tuple[str, ...] = ()
     forbidden_customer_fields: tuple[str, ...] = ()
     forbidden_reply_phrases: tuple[str, ...] = ()
 

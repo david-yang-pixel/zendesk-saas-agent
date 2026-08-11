@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from zd_agent.config import AppConfig, PublicReplyConfig, TriggerDeciderConfig, ZendeskConfig
+from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.services.trigger_errors import TriggerDeferredError
 from zd_agent.services.trigger_message_handler import handle_trigger_message
 from zd_agent.trigger.decider import PreCheckVerdict
@@ -173,6 +174,42 @@ async def test_customer_message_classifies_and_dispatches_verdict(tmp_path) -> N
     assert kwargs["verdict"] is verdict
     assert kwargs["latest_cid"] == "cid-1"
     assert kwargs["source"] == "zendesk_webhook"
+
+
+@pytest.mark.asyncio
+async def test_casework_mode_queues_v2_without_legacy_verdict_or_public_template(
+    tmp_path,
+) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    cfg = _cfg()
+    cfg.casework.mode = ExecutionMode.CASEWORK
+    classify = AsyncMock()
+    post_verdict = AsyncMock()
+
+    result = await handle_trigger_message(
+        msg={"ticket_id": 12345, "source": "zendesk_webhook"},
+        manager=MagicMock(),
+        state=state,
+        cfg=cfg,
+        env=SimpleNamespace(openai_api_key="sk-test"),
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=AsyncMock(return_value=(
+            [{"id": "cid-1", "body": "hello", "created_at": "2026-06-05T06:00:00Z"}],
+            {"id": 12345},
+        )),
+        classify_ticket_messages_fn=classify,
+        post_verdict_dispatch_fn=post_verdict,
+        escalate_fn=AsyncMock(),
+        detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+    )
+
+    assert result.action == "casework_queued"
+    queued = state.get(12345)
+    assert queued is not None
+    assert queued.state == "in_silence_window"
+    assert queued.last_verdict == "casework_ready"
+    classify.assert_not_awaited()
+    post_verdict.assert_not_awaited()
 
 
 @pytest.mark.asyncio
