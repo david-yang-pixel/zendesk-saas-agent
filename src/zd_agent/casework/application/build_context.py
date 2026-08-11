@@ -4,8 +4,10 @@ import asyncio
 
 from zd_agent.casework.domain.enums import AdapterErrorCode, LookupStatus, ResolutionStatus
 from zd_agent.casework.domain.models import (
+    BillingBinding,
     BillingLookup,
     CaseContext,
+    IdentityResolution,
     TicketSnapshot,
     VisualObservation,
     WorkspaceMembershipLookup,
@@ -53,13 +55,7 @@ class CaseContextBuilder:
                 error_code=AdapterErrorCode.PERMANENT_FAILURE,
             )
 
-    async def build(
-        self,
-        ticket: TicketSnapshot,
-        *,
-        billing_required: bool,
-        visual_observations: tuple[VisualObservation, ...] = (),
-    ) -> CaseContext:
+    async def _resolve_identity(self, ticket: TicketSnapshot) -> IdentityResolution:
         form = ticket.form_identity
         emails = identity_lookup_emails(
             form_email=form.email,
@@ -69,35 +65,45 @@ class CaseContextBuilder:
         lookups = tuple(
             await asyncio.gather(*(self._read_identity(email) for email in emails)),
         )
-        form_evidence_id = (
-            f"ticket:{ticket.ticket_id}:generation:{ticket.generation}:form"
-        )
-        identity = resolve_workspace_identity(
+        return resolve_workspace_identity(
             form_email=form.email,
             form_workspace_id=form.workspace_id,
             requester_email=ticket.requester_email,
             lookups=lookups,
-            form_evidence_id=form_evidence_id,
+            form_evidence_id=(
+                f"ticket:{ticket.ticket_id}:generation:{ticket.generation}:form"
+            ),
         )
 
-        billing = None
-        if billing_required:
-            billing_lookup = None
-            if identity.status is ResolutionStatus.RESOLVED:
-                billing_lookup = await self._read_billing(identity.selected_tenant_id)
-            billing = bind_billing_snapshot(
-                identity=identity,
-                lookup=billing_lookup,
-            )
+    async def _bind_billing(
+        self,
+        identity: IdentityResolution,
+    ) -> BillingBinding:
+        lookup = None
+        if identity.status is ResolutionStatus.RESOLVED:
+            lookup = await self._read_billing(identity.selected_tenant_id)
+        return bind_billing_snapshot(identity=identity, lookup=lookup)
 
-        warnings = tuple(
+    @staticmethod
+    def _warnings(
+        identity: IdentityResolution,
+        billing: BillingBinding | None,
+    ) -> tuple[str, ...]:
+        return tuple(
             detail
-            for detail in (
-                identity.detail,
-                billing.detail if billing is not None else "",
-            )
+            for detail in (identity.detail, billing.detail if billing else "")
             if detail
         )
+
+    async def build(
+        self,
+        ticket: TicketSnapshot,
+        *,
+        billing_required: bool,
+        visual_observations: tuple[VisualObservation, ...] = (),
+    ) -> CaseContext:
+        identity = await self._resolve_identity(ticket)
+        billing = await self._bind_billing(identity) if billing_required else None
         return CaseContext(
             ticket=ticket,
             built_at=self._clock.now(),
@@ -105,5 +111,5 @@ class CaseContextBuilder:
             billing_required=billing_required,
             billing=billing,
             visual_observations=visual_observations,
-            warnings=warnings,
+            warnings=self._warnings(identity, billing),
         )

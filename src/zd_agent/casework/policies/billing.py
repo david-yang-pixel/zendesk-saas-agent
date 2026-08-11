@@ -13,6 +13,39 @@ from zd_agent.casework.domain.models import (
 )
 
 
+def _evidence_ids(
+    identity: IdentityResolution,
+    lookup: BillingLookup,
+) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*identity.evidence_ids, lookup.evidence_id)))
+
+
+def _resolved_binding(
+    identity: IdentityResolution,
+    lookup: BillingLookup,
+    *,
+    evidence_ids: tuple[str, ...],
+) -> BillingBinding:
+    snapshot = BillingSnapshot(
+        tenant_id=lookup.tenant_id,
+        identity_tenant_id=identity.selected_tenant_id,
+        plan=lookup.plan,
+        subscription_status=lookup.subscription_status,
+        interval=lookup.interval,
+        stripe_status=lookup.stripe_status,
+        entitlement_status=lookup.entitlement_status,
+        cancellation_status=lookup.cancellation_status,
+        renewal_status=lookup.renewal_status,
+        observed_at=lookup.observed_at,
+        evidence_ids=evidence_ids,
+    )
+    return BillingBinding(
+        status=BillingBindingStatus.RESOLVED,
+        snapshot=snapshot,
+        evidence_ids=evidence_ids,
+    )
+
+
 def bind_billing_snapshot(
     *,
     identity: IdentityResolution,
@@ -31,9 +64,7 @@ def bind_billing_snapshot(
             evidence_ids=identity.evidence_ids,
             detail="tenant-scoped Billing lookup pending",
         )
-    evidence_ids = tuple(
-        dict.fromkeys((*identity.evidence_ids, lookup.evidence_id)),
-    )
+    evidence_ids = _evidence_ids(identity, lookup)
     if lookup.tenant_id != identity.selected_tenant_id:
         return BillingBinding(
             status=BillingBindingStatus.TARGET_MISMATCH,
@@ -47,21 +78,8 @@ def bind_billing_snapshot(
             evidence_ids=evidence_ids,
             detail="tenant-scoped Billing lookup failed",
         )
-    snapshot = BillingSnapshot(
-        tenant_id=lookup.tenant_id,
-        identity_tenant_id=identity.selected_tenant_id,
-        plan=lookup.plan,
-        subscription_status=lookup.subscription_status,
-        interval=lookup.interval,
-        stripe_status=lookup.stripe_status,
-        entitlement_status=lookup.entitlement_status,
-        cancellation_status=lookup.cancellation_status,
-        renewal_status=lookup.renewal_status,
-        observed_at=lookup.observed_at,
-        evidence_ids=evidence_ids,
-    )
-    return BillingBinding(
-        status=BillingBindingStatus.RESOLVED,
-        snapshot=snapshot,
+    return _resolved_binding(
+        identity,
+        lookup,
         evidence_ids=evidence_ids,
     )
