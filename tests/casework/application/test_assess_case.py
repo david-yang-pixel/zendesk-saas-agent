@@ -23,6 +23,7 @@ from zd_agent.casework.domain.enums import (
 from zd_agent.casework.domain.models import (
     ActionProposal,
     AssessmentProposal,
+    AttachmentRef,
     BillingBinding,
     BillingSnapshot,
     CaseContext,
@@ -32,6 +33,7 @@ from zd_agent.casework.domain.models import (
     IdentityResolution,
     TargetReference,
     TicketSnapshot,
+    VisualObservation,
     WorkspaceCandidate,
 )
 from zd_agent.casework.policies.disposition import decide_disposition
@@ -246,6 +248,43 @@ def test_model_cannot_invent_an_unapproved_customer_question() -> None:
 
     assert result.assessment.customer_only_fields == ()
     assert result.rejected_customer_fields == ("database_password",)
+
+
+def test_available_attachment_cannot_be_requested_again() -> None:
+    attachment = AttachmentRef(
+        attachment_id="attachment-1",
+        filename="error.png",
+        content_type="image/png",
+        download_url="https://example.test/error.png",
+    )
+    context = _context(_resolved_identity()).model_copy(
+        update={
+            "ticket": _ticket().model_copy(update={"attachments": (attachment,)}),
+            "visual_observations": (
+                VisualObservation(
+                    attachment_id="attachment-1",
+                    evidence_id="visual:attachment-1",
+                    visible_text="Quota exceeded",
+                    ui_state="error dialog",
+                    untrusted=True,
+                ),
+            ),
+        },
+    )
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="What does the screenshot show?",
+            answer_status=AnswerStatus.INSUFFICIENT,
+            proposed_customer_fields=("attachment_resend",),
+        ),
+        evidence=(),
+        as_of=NOW,
+    )
+
+    assert result.assessment.customer_only_fields == ()
+    assert result.rejected_customer_fields == ("attachment_resend",)
 
 
 def test_failed_identity_lookup_becomes_internal_retry_not_customer_ask() -> None:

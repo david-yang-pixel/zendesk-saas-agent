@@ -102,6 +102,16 @@ def _customer_fields(
     return admit_customer_fields(
         proposed_fields=proposal.proposed_customer_fields,
         identity_status=context.identity.status,
+        attachment_resend_allowed=_attachment_resend_allowed(context),
+    )
+
+
+def _attachment_resend_allowed(context: CaseContext) -> bool:
+    if not context.ticket.attachments:
+        return True
+    return any(
+        "could not be retrieved" in observation.uncertainty.casefold()
+        for observation in context.visual_observations
     )
 
 
