@@ -36,7 +36,10 @@ class CaseworkOrchestrator:
         ticket: TicketSnapshot,
         billing_required: bool,
         visual_observations: tuple[VisualObservation, ...] = (),
+        execution_mode: ExecutionMode = ExecutionMode.SHADOW,
     ) -> CaseworkRun:
+        if execution_mode is ExecutionMode.LEGACY:
+            raise ValueError("legacy is not a casework execution mode")
         started_at = self._clock.now()
         context = await self._context_builder.build(
             ticket,
@@ -58,7 +61,7 @@ class CaseworkOrchestrator:
                 decision=decision,
             )
         return CaseworkRun(
-            execution_mode=ExecutionMode.SHADOW,
+            execution_mode=execution_mode,
             started_at=started_at,
             finished_at=self._clock.now(),
             context=context,

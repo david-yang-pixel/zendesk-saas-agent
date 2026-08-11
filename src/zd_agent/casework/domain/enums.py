@@ -10,6 +10,24 @@ class ExecutionMode(str, Enum):
     CASEWORK = "casework"
 
 
+class DeliveryState(str, Enum):
+    NOT_ATTEMPTED = "not_attempted"
+    NOT_REQUIRED = "not_required"
+    DRAFTED = "drafted"
+    CONFIRMED = "confirmed"
+    DEFERRED = "deferred"
+    AMBIGUOUS = "ambiguous"
+    FAILED = "failed"
+
+
+class OwnershipState(str, Enum):
+    NOT_REQUIRED = "not_required"
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    AMBIGUOUS = "ambiguous"
+    FAILED = "failed"
+
+
 class Disposition(str, Enum):
     RESOLVED = "resolved"
     AWAITING_CUSTOMER = "awaiting_customer"

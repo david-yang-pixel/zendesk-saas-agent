@@ -33,6 +33,7 @@ from zd_agent.casework.domain.evidence import (
     HumanActionRequest,
     InvestigationResult,
 )
+from zd_agent.casework.domain.effects import CaseworkEffectReceipt, CaseworkExecution
 from zd_agent.casework.domain.run import CaseworkRun
 
 __all__ = [
@@ -47,6 +48,8 @@ __all__ = [
     "CaseAssessment",
     "CaseContext",
     "CaseworkRun",
+    "CaseworkEffectReceipt",
+    "CaseworkExecution",
     "Claim",
     "ClaimAdmission",
     "DispositionDecision",
