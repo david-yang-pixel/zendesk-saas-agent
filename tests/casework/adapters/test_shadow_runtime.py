@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from zd_agent.casework.adapters.archive import JsonlShadowArchive
-from zd_agent.casework.adapters.shadow import ShadowRuntime
+from zd_agent.casework.adapters.legacy_ticket import build_ticket_snapshot
+from zd_agent.casework.adapters.shadow import ShadowRuntime, billing_context_required
 from zd_agent.casework.adapters.legacy_tools import SystemClock
 from zd_agent.casework.domain.enums import (
     Disposition,
@@ -211,3 +212,24 @@ async def test_shadow_runtime_archives_failure_without_affecting_legacy_session(
     assert session.status is SessionStatus.COMPLETED
     assert session.reply_sent is True
     assert record.delivery_attempted is False
+
+
+def test_billing_detection_uses_terms_not_arbitrary_substrings() -> None:
+    session = AgentSession(ticket_id=4001)
+    ticket = build_ticket_snapshot(
+        session=session,
+        customer_messages=[
+            {
+                "id": "event-1",
+                "created_at": "2026-08-11T12:00:00Z",
+                "body": "I plan to debug invalid credentials.",
+            },
+        ],
+        ticket={"status": "open"},
+    )
+
+    assert billing_context_required(ticket, session) is False
+    assert billing_context_required(
+        ticket.model_copy(update={"questions": ("What plan is active?",)}),
+        session,
+    ) is True

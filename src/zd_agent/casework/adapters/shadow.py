@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Literal, Protocol, cast
 
 from zd_agent.casework.adapters.archive import JsonlShadowArchive
@@ -100,26 +101,14 @@ _READ_TOOL_PREFIXES = (
     "zendesk_get_",
     "zendesk_search",
 )
-_BILLING_TERMS = (
-    "billing",
-    "charge",
-    "credit",
-    "document limit",
-    "invoice",
-    "payment",
-    "plan",
-    "pricing",
-    "quota",
-    "refund",
-    "renewal",
-    "subscription",
-    "套餐",
-    "扣费",
-    "支付",
-    "账单",
-    "续费",
-    "退款",
-    "配额",
+_BILLING_RE = re.compile(
+    r"\b(?:billing|charge|credits?|document limit|invoice|payment|pricing|quota|"
+    r"refund|renewal|subscription)\b|"
+    r"\b(?:what|which|current|active|paid|free|basic|team|professional|enterprise)"
+    r"\b.{0,20}\bplan\b|"
+    r"\bplan\b.{0,20}\b(?:active|using|subscription|upgrade|downgrade|billing)\b|"
+    r"套餐|扣费|支付|账单|续费|退款|配额",
+    re.IGNORECASE,
 )
 _LEGACY_REPLY_TYPES = frozenset({"ask", "solution", "handoff", "closed"})
 
@@ -138,8 +127,8 @@ def _read_tool_names(registry: ToolRegistry) -> frozenset[str]:
 def billing_context_required(ticket: TicketSnapshot, session: AgentSession) -> bool:
     if session.ticket_type.casefold() in {"billing", "refund"}:
         return True
-    question = "\n".join(ticket.questions).casefold()
-    return any(term in question for term in _BILLING_TERMS)
+    question = "\n".join(ticket.questions)
+    return bool(_BILLING_RE.search(question))
 
 
 def _legacy_reply_type(
