@@ -38,7 +38,11 @@ from zd_agent.casework.domain.models import (
     TicketSnapshot,
     WorkspaceCandidate,
 )
-from zd_agent.casework.domain.shadow import build_shadow_record
+from zd_agent.casework.domain.shadow import (
+    LegacyOutcomeSummary,
+    ShadowFailureRecord,
+    build_shadow_record,
+)
 
 
 NOW = datetime(2026, 8, 11, 8, 0, tzinfo=timezone.utc)
@@ -172,3 +176,46 @@ def test_jsonl_shadow_archive_appends_complete_redacted_records(tmp_path) -> Non
     assert [item["ticket_id"] for item in parsed] == [4003, 4003]
     assert all("contact_email" not in item for item in parsed)
     assert all("reply_body" not in item for item in parsed)
+
+
+def test_shadow_record_compares_legacy_handoff_with_new_bounded_answer() -> None:
+    record = build_shadow_record(
+        _run(),
+        recorded_at=NOW,
+        legacy=LegacyOutcomeSummary(
+            status="completed",
+            reply_type="handoff",
+            reply_sent=True,
+        ),
+    )
+
+    assert record.legacy_reply_type == "handoff"
+    assert record.legacy_reply_kind is ReplyKind.PROGRESS
+    assert record.legacy_ownership_action is OwnershipAction.SUPPORT
+    assert record.reply_kind_disagrees is True
+    assert record.ownership_disagrees is True
+    assert record.decision_disagrees is True
+
+
+def test_shadow_failure_archive_contains_only_error_fingerprint(tmp_path) -> None:
+    archive = JsonlShadowArchive(tmp_path)
+    record = ShadowFailureRecord.from_error(
+        recorded_at=NOW,
+        ticket_id=4003,
+        generation=4,
+        stage="model_synthesis",
+        error=RuntimeError("private-owner@example.test token=secret-value"),
+        legacy_status="completed",
+        legacy_reply_type="solution",
+        legacy_reply_sent=True,
+    )
+
+    path = archive.append(record)
+    raw = path.read_text()
+    payload = json.loads(raw)
+
+    assert payload["run_status"] == "failed"
+    assert payload["error_type"] == "RuntimeError"
+    assert len(payload["error_fingerprint"]) == 20
+    assert "private-owner" not in raw
+    assert "secret-value" not in raw

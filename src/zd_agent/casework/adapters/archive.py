@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from zd_agent.casework.domain.shadow import ShadowRecord
+from zd_agent.casework.domain.shadow import ShadowArchiveRecord
 
 
 class JsonlShadowArchive:
@@ -12,7 +12,7 @@ class JsonlShadowArchive:
     def __init__(self, archive_dir: Path) -> None:
         self._archive_dir = archive_dir
 
-    def append(self, record: ShadowRecord) -> Path:
+    def append(self, record: ShadowArchiveRecord) -> Path:
         self._archive_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = self._archive_dir / "shadow-decisions.jsonl"
         payload = (record.model_dump_json() + "\n").encode("utf-8")
