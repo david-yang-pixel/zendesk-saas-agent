@@ -130,3 +130,32 @@ async def test_visual_analyzer_skips_model_when_ticket_has_no_images() -> None:
 
     assert observations == ()
     assert provider.calls == []
+
+
+async def test_visual_analyzer_bounds_attachment_downloads_and_model_cost() -> None:
+    attachments = tuple(
+        AttachmentRef(
+            attachment_id=f"attachment-{index}",
+            filename=f"screenshot-{index}.png",
+            content_type="image/png",
+            download_url=f"https://example.test/image-{index}",
+        )
+        for index in range(8)
+    )
+    provider = FakeProvider([json.dumps({"observations": []})])
+    loader = FakeImageLoader(
+        {
+            attachment.download_url: "data:image/png;base64,AAAA"
+            for attachment in attachments
+        },
+    )
+
+    observations = await LlmVisualAnalyzer(
+        provider=provider,
+        image_loader=loader,
+    ).analyze(_ticket(*attachments))
+
+    assert loader.calls == [item.download_url for item in attachments[:6]]
+    assert len(provider.calls) == 1
+    assert len(observations) == 8
+    assert all("limit" in item.uncertainty for item in observations[-2:])

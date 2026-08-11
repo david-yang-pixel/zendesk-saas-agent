@@ -9,12 +9,14 @@ from zd_agent.casework.domain.enums import (
     ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
+    AttachmentRef,
     BillingBinding,
     BillingSnapshot,
     CaseContext,
     FormIdentity,
     IdentityResolution,
     TicketSnapshot,
+    VisualObservation,
     WorkspaceCandidate,
 )
 from zd_agent.session.agent_session import AgentSession
@@ -174,3 +176,52 @@ def test_failed_or_non_read_calls_never_become_evidence() -> None:
     assert material.legacy_reply_type == "handoff"
     assert material.legacy_reply_body == "Public body"
     assert material.legacy_analysis == "Legacy internal analysis"
+
+
+def test_visual_observation_becomes_typed_untrusted_supporting_evidence() -> None:
+    context = _context().model_copy(
+        update={
+            "ticket": _context().ticket.model_copy(
+                update={
+                    "attachments": (
+                        AttachmentRef(
+                            attachment_id="attachment-1",
+                            filename="error.png",
+                            content_type="image/png",
+                            download_url="https://example.test/error.png",
+                        ),
+                    ),
+                },
+            ),
+            "visual_observations": (
+                VisualObservation(
+                    attachment_id="attachment-1",
+                    evidence_id="visual:attachment-1",
+                    visible_text="Quota exceeded",
+                    ui_state="error dialog",
+                    uncertainty="",
+                    untrusted=True,
+                ),
+            ),
+        },
+    )
+
+    material = build_legacy_case_material(
+        session=AgentSession(ticket_id=4001),
+        context=context,
+        read_tool_names=frozenset(),
+        observed_at=NOW,
+    )
+
+    item = next(
+        value for value in material.evidence if value.evidence_id == "visual:attachment-1"
+    )
+    assert item.source == "case_context.visual"
+    assert item.authority is EvidenceAuthority.CURRENT_SUPPORTING
+    assert item.payload == {
+        "visible_text": "Quota exceeded",
+        "ui_state": "error dialog",
+        "uncertainty": "",
+        "untrusted": True,
+    }
+    assert item.target_value("tenant_id") is None

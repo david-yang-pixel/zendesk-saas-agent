@@ -210,6 +210,26 @@ def _context_evidence(context: CaseContext) -> tuple[EvidenceItem, ...]:
                     "renewal_status": billing.renewal_status,
                 },
             )
+    ticket_target = (
+        TargetReference(kind="ticket_id", value=str(context.ticket.ticket_id)),
+    )
+    for observation in context.visual_observations:
+        items[observation.evidence_id] = EvidenceItem(
+            evidence_id=observation.evidence_id,
+            call_id=observation.evidence_id,
+            source="case_context.visual",
+            authority=EvidenceAuthority.CURRENT_SUPPORTING,
+            result_status=EvidenceResultStatus.SUCCESS,
+            targets=ticket_target,
+            observed_at=context.built_at,
+            supports_roles=(ClaimRole.PRODUCT_FACT, ClaimRole.LIMITATION),
+            payload={
+                "visible_text": observation.visible_text,
+                "ui_state": observation.ui_state,
+                "uncertainty": observation.uncertainty,
+                "untrusted": True,
+            },
+        )
     return tuple(items.values())
 
 

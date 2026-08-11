@@ -15,6 +15,8 @@ from zd_agent.casework.domain.models import (
 )
 from zd_agent.runtime.llm.types import LLMProvider
 
+_MAX_VISUAL_ATTACHMENTS = 6
+
 
 class ImageLoader(Protocol):
     async def load(self, url: str) -> str | None: ...
@@ -48,6 +50,15 @@ def _unavailable(attachment: AttachmentRef) -> VisualObservation:
         attachment_id=attachment.attachment_id,
         evidence_id=f"visual:{attachment.attachment_id}",
         uncertainty="attachment could not be retrieved for visual analysis",
+        untrusted=True,
+    )
+
+
+def _omitted(attachment: AttachmentRef) -> VisualObservation:
+    return VisualObservation(
+        attachment_id=attachment.attachment_id,
+        evidence_id=f"visual:{attachment.attachment_id}",
+        uncertainty="attachment omitted because the visual analysis limit was reached",
         untrusted=True,
     )
 
@@ -104,21 +115,23 @@ class LlmVisualAnalyzer:
     async def analyze(self, ticket: TicketSnapshot) -> tuple[VisualObservation, ...]:
         if not ticket.attachments:
             return ()
+        selected = ticket.attachments[:_MAX_VISUAL_ATTACHMENTS]
+        omitted = tuple(_omitted(item) for item in ticket.attachments[_MAX_VISUAL_ATTACHMENTS:])
         loaded_values = await asyncio.gather(
-            *(self._image_loader.load(item.download_url) for item in ticket.attachments),
+            *(self._image_loader.load(item.download_url) for item in selected),
         )
         loaded = tuple(
             (attachment, data_url)
-            for attachment, data_url in zip(ticket.attachments, loaded_values)
+            for attachment, data_url in zip(selected, loaded_values)
             if data_url
         )
         unavailable = tuple(
             _unavailable(attachment)
-            for attachment, data_url in zip(ticket.attachments, loaded_values)
+            for attachment, data_url in zip(selected, loaded_values)
             if not data_url
         )
         if not loaded:
-            return unavailable
+            return (*unavailable, *omitted)
         result = await read_structured_output(
             provider=self._provider,
             system=(
@@ -146,4 +159,4 @@ class LlmVisualAnalyzer:
                     untrusted=True,
                 ),
             )
-        return (*observations, *unavailable)
+        return (*observations, *unavailable, *omitted)
