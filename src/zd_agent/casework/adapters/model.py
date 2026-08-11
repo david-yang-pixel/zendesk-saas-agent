@@ -253,6 +253,7 @@ _OWNER_LABELS = {
     OwnershipAction.SRE: "site reliability team",
     OwnershipAction.SECURITY: "security team",
 }
+_AI_DISCLOSURE = "This reply was sent by Dify AI Support."
 
 
 class PolicyReplyWriter:
@@ -277,6 +278,7 @@ class PolicyReplyWriter:
             )
         if not paragraphs:
             raise ValueError("reply decision has no admitted customer-safe content")
+        paragraphs.append(_AI_DISCLOSURE)
         return ReplyCandidate(
             body="\n\n".join(paragraphs),
             reply_kind=decision.reply_kind,

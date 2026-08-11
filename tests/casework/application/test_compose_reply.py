@@ -71,7 +71,7 @@ class FakeReviewer:
         return self._revised_body
 
 
-async def test_composer_preserves_claim_and_decision_metadata_during_review() -> None:
+async def test_composer_rejects_unverifiable_wording_changes() -> None:
     candidate = ReplyCandidate(
         body="Your Professional subscription is active.",
         language="en",
@@ -85,12 +85,35 @@ async def test_composer_preserves_claim_and_decision_metadata_during_review() ->
         ),
     )
 
+    try:
+        await composer.compose(
+            assessment=_assessment(),
+            decision=_decision(),
+        )
+    except ReplyQualityError as error:
+        assert "fact-preserving" in str(error)
+    else:
+        raise AssertionError("unverified wording changes must fail closed")
+
+
+async def test_noop_review_preserves_claim_and_decision_metadata() -> None:
+    candidate = ReplyCandidate(
+        body="Your Professional subscription is active.",
+        language="en",
+        reply_kind=ReplyKind.ANSWER,
+        used_claim_ids=("claim-current",),
+    )
+    composer = ReplyComposer(
+        writer=FakeWriter(candidate),
+        reviewer=FakeReviewer(candidate.body),
+    )
+
     draft = await composer.compose(
         assessment=_assessment(),
         decision=_decision(),
     )
 
-    assert draft.body.startswith("Your workspace")
+    assert draft.body == candidate.body
     assert draft.used_claim_ids == ("claim-current",)
     assert draft.reply_kind is ReplyKind.ANSWER
     assert draft.reviewed is True

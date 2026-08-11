@@ -60,6 +60,10 @@ class ReplyComposer:
             assessment=assessment,
             decision=decision,
         )
+        if reviewed.body != candidate.body:
+            raise ReplyQualityError(
+                "wording revision is disabled until it can be proven fact-preserving",
+            )
         return ReplyDraft(
             body=reviewed.body,
             language=reviewed.language,
