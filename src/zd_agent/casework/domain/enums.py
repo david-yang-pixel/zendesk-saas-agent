@@ -37,6 +37,16 @@ class OwnershipAction(str, Enum):
     SECURITY = "security"
 
 
+class ActionRequirement(str, Enum):
+    CUSTOMER_REQUESTED_HUMAN = "customer_requested_human"
+    BUSINESS_APPROVAL = "business_approval"
+    SENSITIVE_ACCOUNT_MUTATION = "sensitive_account_mutation"
+    CONFIRMED_PLATFORM_DEFECT = "confirmed_platform_defect"
+    CONFIRMED_SERVICE_INCIDENT = "confirmed_service_incident"
+    SECURITY_OR_PRIVACY_REVIEW = "security_or_privacy_review"
+    POLICY_COMMITMENT = "policy_commitment"
+
+
 class ReasonCode(str, Enum):
     RESOLVED_WITH_EVIDENCE = "resolved_with_evidence"
     BOUNDED_AUTHORITATIVE_ANSWER = "bounded_authoritative_answer"

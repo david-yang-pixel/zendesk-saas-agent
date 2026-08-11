@@ -6,6 +6,7 @@ from pydantic import Field, JsonValue, model_validator
 
 from zd_agent.casework.domain.base import FrozenModel, TargetReference
 from zd_agent.casework.domain.enums import (
+    ActionRequirement,
     AdapterErrorCode,
     AnswerStatus,
     ClaimRejectionCode,
@@ -144,6 +145,18 @@ class HumanActionRequest(FrozenModel):
         return self
 
 
+class ActionProposal(FrozenModel):
+    """Model-observed action need without authority to select an owner."""
+
+    requirement: ActionRequirement
+    summary: str = Field(min_length=1)
+    customer_impact: str = Field(min_length=1)
+    completed_checks: tuple[str, ...] = Field(min_length=1)
+    unresolved_action: str = Field(min_length=1)
+    acceptance_criteria: tuple[str, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
+
+
 class CaseAssessment(FrozenModel):
     question: str = Field(min_length=1)
     answer_status: AnswerStatus
@@ -172,7 +185,7 @@ class AssessmentProposal(FrozenModel):
     proposed_claims: tuple[Claim, ...] = ()
     proposed_customer_fields: tuple[str, ...] = ()
     blocking_failure: AdapterFailure | None = None
-    human_action: HumanActionRequest | None = None
+    action_proposal: ActionProposal | None = None
     evidence_ids: tuple[str, ...] = ()
     close_after_reply: bool = False
 
@@ -181,6 +194,7 @@ class AssessmentBuild(FrozenModel):
     assessment: CaseAssessment
     admissions: tuple[ClaimAdmission, ...] = ()
     rejected_customer_fields: tuple[str, ...] = ()
+    rejected_action_reason: str = ""
 
 
 class InvestigationResult(FrozenModel):

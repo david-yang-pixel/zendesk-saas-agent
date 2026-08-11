@@ -22,6 +22,7 @@ from zd_agent.casework.domain.decision import (
     RetryDirective,
 )
 from zd_agent.casework.domain.evidence import (
+    ActionProposal,
     AdapterFailure,
     AssessmentBuild,
     AssessmentProposal,
@@ -35,6 +36,7 @@ from zd_agent.casework.domain.evidence import (
 from zd_agent.casework.domain.run import CaseworkRun
 
 __all__ = [
+    "ActionProposal",
     "AdapterFailure",
     "AssessmentBuild",
     "AssessmentProposal",

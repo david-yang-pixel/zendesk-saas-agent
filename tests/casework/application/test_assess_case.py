@@ -1,20 +1,29 @@
 from datetime import datetime, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from zd_agent.casework.application.assess_case import build_case_assessment
 from zd_agent.casework.domain.enums import (
+    ActionRequirement,
     AdapterErrorCode,
     AnswerStatus,
+    BillingBindingStatus,
     ClaimRole,
     ClaimStatus,
     Disposition,
     EvidenceAuthority,
     EvidenceResultStatus,
+    OwnershipAction,
     ReasonCode,
     ResolutionMethod,
     ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
+    ActionProposal,
     AssessmentProposal,
+    BillingBinding,
+    BillingSnapshot,
     CaseContext,
     Claim,
     EvidenceItem,
@@ -219,3 +228,162 @@ def test_pending_identity_lookup_uses_retry_even_without_model_requested_field()
 
     assert result.assessment.blocking_failure is not None
     assert result.assessment.blocking_failure.code is AdapterErrorCode.TRANSPORT_UNAVAILABLE
+
+
+def test_model_proposal_cannot_choose_ownership_directly() -> None:
+    with pytest.raises(ValidationError, match="human_action"):
+        AssessmentProposal.model_validate(
+            {
+                "question": "Please approve a refund.",
+                "answer_status": "insufficient",
+                "human_action": {
+                    "ownership_action": "billing",
+                    "reason_code": "business_approval_required",
+                    "summary": "Refund approval remains.",
+                    "customer_impact": "The customer is waiting.",
+                    "completed_checks": ["Checked request"],
+                    "unresolved_action": "Approve it.",
+                    "acceptance_criteria": ["Decision recorded"],
+                    "evidence_ids": ["ev-current"],
+                },
+            },
+        )
+
+
+def _action_proposal(requirement: ActionRequirement) -> ActionProposal:
+    return ActionProposal(
+        requirement=requirement,
+        summary="A concrete internal action remains.",
+        customer_impact="The customer path remains blocked.",
+        completed_checks=("Checked current evidence",),
+        unresolved_action="Complete the authorized action.",
+        acceptance_criteria=("Customer path is verified",),
+        evidence_ids=("ev-current",),
+    )
+
+
+def test_unproven_defect_action_is_rejected_instead_of_transferring_ownership() -> None:
+    result = build_case_assessment(
+        context=_context(_resolved_identity()),
+        proposal=AssessmentProposal(
+            question="Why did this fail?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(_claim(),),
+            action_proposal=_action_proposal(ActionRequirement.CONFIRMED_PLATFORM_DEFECT),
+        ),
+        evidence=(_evidence(),),
+        as_of=NOW,
+    )
+
+    assert result.assessment.human_action is None
+    assert result.rejected_action_reason == "confirmed defect requires admitted boundary and root-cause claims"
+    assert decide_disposition(result.assessment).ownership_action is OwnershipAction.NONE
+
+
+def test_confirmed_defect_action_maps_to_engineering_in_code() -> None:
+    boundary = Claim(
+        claim_id="claim-boundary",
+        statement="The current request fails at the retrieval boundary.",
+        role=ClaimRole.FAILING_BOUNDARY,
+        status=ClaimStatus.CONFIRMED,
+        supporting_evidence_ids=("ev-boundary",),
+        targets=(TARGET,),
+        public_allowed=True,
+    )
+    cause = Claim(
+        claim_id="claim-cause",
+        statement="The collection binding points to a missing collection.",
+        role=ClaimRole.ROOT_CAUSE,
+        status=ClaimStatus.CONFIRMED,
+        supporting_evidence_ids=("ev-boundary", "ev-cause"),
+        targets=(TARGET,),
+        public_allowed=True,
+    )
+    evidence = (
+        EvidenceItem(
+            evidence_id="ev-boundary",
+            call_id="call-boundary",
+            source="runtime",
+            authority=EvidenceAuthority.CURRENT_AUTHORITATIVE,
+            result_status=EvidenceResultStatus.SUCCESS,
+            targets=(TARGET,),
+            observed_at=NOW,
+            supports_roles=(ClaimRole.FAILING_BOUNDARY,),
+            payload={"failed": True},
+        ),
+        EvidenceItem(
+            evidence_id="ev-cause",
+            call_id="call-cause",
+            source="source",
+            authority=EvidenceAuthority.CURRENT_SUPPORTING,
+            result_status=EvidenceResultStatus.SUCCESS,
+            targets=(TARGET,),
+            observed_at=NOW,
+            supports_roles=(ClaimRole.ROOT_CAUSE,),
+            payload={"mechanism": "missing collection binding"},
+        ),
+    )
+    action = _action_proposal(ActionRequirement.CONFIRMED_PLATFORM_DEFECT).model_copy(
+        update={"evidence_ids": ("ev-boundary", "ev-cause")},
+    )
+
+    result = build_case_assessment(
+        context=_context(_resolved_identity()),
+        proposal=AssessmentProposal(
+            question="Why did retrieval fail?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(boundary, cause),
+            action_proposal=action,
+        ),
+        evidence=evidence,
+        as_of=NOW,
+    )
+    decision = decide_disposition(result.assessment)
+
+    assert result.rejected_action_reason == ""
+    assert result.assessment.human_action is not None
+    assert decision.ownership_action is OwnershipAction.ENGINEERING
+    assert decision.reason_code is ReasonCode.CONFIRMED_PLATFORM_DEFECT
+
+
+def test_explicit_refund_request_with_bound_billing_maps_to_billing() -> None:
+    identity = _resolved_identity()
+    snapshot = BillingSnapshot(
+        tenant_id=TENANT_1,
+        identity_tenant_id=TENANT_1,
+        plan="professional",
+        subscription_status="active",
+        observed_at=NOW,
+        evidence_ids=("ev-identity", "ev-billing"),
+    )
+    context = CaseContext(
+        ticket=_ticket().model_copy(
+            update={"questions": ("Please approve a refund for this renewal.",)},
+        ),
+        built_at=NOW,
+        identity=identity,
+        billing_required=True,
+        billing=BillingBinding(
+            status=BillingBindingStatus.RESOLVED,
+            snapshot=snapshot,
+            evidence_ids=snapshot.evidence_ids,
+        ),
+    )
+    action = _action_proposal(ActionRequirement.BUSINESS_APPROVAL).model_copy(
+        update={"evidence_ids": ("ev-billing",)},
+    )
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="Please approve a refund for this renewal.",
+            answer_status=AnswerStatus.INSUFFICIENT,
+            action_proposal=action,
+        ),
+        evidence=(),
+        as_of=NOW,
+    )
+    decision = decide_disposition(result.assessment)
+
+    assert decision.ownership_action is OwnershipAction.BILLING
+    assert decision.reason_code is ReasonCode.BUSINESS_APPROVAL_REQUIRED

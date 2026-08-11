@@ -16,8 +16,10 @@ from zd_agent.casework.domain.models import (
     Claim,
     ClaimAdmission,
     EvidenceItem,
+    HumanActionRequest,
 )
 from zd_agent.casework.policies.evidence import admit_claim
+from zd_agent.casework.policies.ownership import admit_action_proposal
 
 
 _IDENTITY_FIELDS = {
@@ -102,6 +104,38 @@ def _identity_failure(
     )
 
 
+def _answer_status(
+    proposal: AssessmentProposal,
+    admissions: tuple[ClaimAdmission, ...],
+) -> AnswerStatus:
+    rejected_material = any(
+        not admission.accepted and claim.material
+        for claim, admission in zip(proposal.proposed_claims, admissions)
+    )
+    return AnswerStatus.INSUFFICIENT if rejected_material else proposal.answer_status
+
+
+def _action(
+    *,
+    context: CaseContext,
+    proposal: AssessmentProposal,
+    admitted_claims: tuple[Claim, ...],
+) -> tuple[HumanActionRequest | None, str]:
+    eligible = frozenset(
+        evidence_id
+        for claim in admitted_claims
+        for evidence_id in claim.supporting_evidence_ids
+    ) | frozenset(context.identity.evidence_ids)
+    if context.billing is not None:
+        eligible |= frozenset(context.billing.evidence_ids)
+    return admit_action_proposal(
+        context=context,
+        proposal=proposal.action_proposal,
+        admitted_claims=admitted_claims,
+        eligible_evidence_ids=eligible,
+    )
+
+
 def build_case_assessment(
     *,
     context: CaseContext,
@@ -115,18 +149,15 @@ def build_case_assessment(
         evidence=evidence,
         as_of=as_of,
     )
-    rejected_material_claim = any(
-        not admission.accepted and claim.material
-        for claim, admission in zip(proposal.proposed_claims, admissions)
-    )
-    answer_status = (
-        AnswerStatus.INSUFFICIENT
-        if rejected_material_claim
-        else proposal.answer_status
-    )
+    answer_status = _answer_status(proposal, admissions)
     customer_fields, rejected_fields = _customer_fields(
         context=context,
         proposal=proposal,
+    )
+    human_action, rejected_action_reason = _action(
+        context=context,
+        proposal=proposal,
+        admitted_claims=admitted_claims,
     )
     assessment = CaseAssessment(
         question=proposal.question,
@@ -138,7 +169,7 @@ def build_case_assessment(
             proposal=proposal,
             answer_status=answer_status,
         ),
-        human_action=proposal.human_action,
+        human_action=human_action,
         evidence_ids=tuple(
             dict.fromkeys(
                 (*proposal.evidence_ids, *context.identity.evidence_ids),
@@ -150,4 +181,5 @@ def build_case_assessment(
         assessment=assessment,
         admissions=admissions,
         rejected_customer_fields=rejected_fields,
+        rejected_action_reason=rejected_action_reason,
     )
