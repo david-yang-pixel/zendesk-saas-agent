@@ -37,6 +37,24 @@ def _workspace_name(value: str) -> str:
     return " ".join(normalized.split()).casefold()
 
 
+def identity_lookup_emails(
+    *,
+    form_email: str,
+    form_workspace_id: str,
+    requester_email: str,
+) -> tuple[str, ...]:
+    """Return every support-side membership lookup required by form precedence."""
+    contact_email = _email(form_email) or _email(requester_email)
+    workspace_email = _email(form_workspace_id)
+    return tuple(
+        dict.fromkeys(
+            email
+            for email in (workspace_email or contact_email, contact_email)
+            if email
+        ),
+    )
+
+
 def _evidence_ids(
     *,
     form_evidence_id: str,

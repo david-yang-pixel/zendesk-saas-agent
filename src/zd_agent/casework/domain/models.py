@@ -39,6 +39,58 @@ class TargetReference(FrozenModel):
     value: str = Field(min_length=1)
 
 
+class FormIdentity(FrozenModel):
+    email: str = ""
+    workspace_id: str = ""
+
+
+class AttachmentRef(FrozenModel):
+    attachment_id: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+    content_type: str = ""
+    download_url: str = ""
+
+
+class VisualObservation(FrozenModel):
+    attachment_id: str = Field(min_length=1)
+    evidence_id: str = Field(min_length=1)
+    visible_text: str = ""
+    ui_state: str = ""
+    uncertainty: str = ""
+    untrusted: bool = True
+
+    @model_validator(mode="after")
+    def _require_untrusted_boundary(self) -> VisualObservation:
+        if not self.untrusted:
+            raise ValueError("visual observations must remain untrusted evidence")
+        return self
+
+
+class TicketSnapshot(FrozenModel):
+    ticket_id: int = Field(gt=0)
+    generation: int = Field(ge=0)
+    status: str = Field(min_length=1)
+    channel: str = ""
+    locale: str = ""
+    latest_event_id: str = Field(min_length=1)
+    latest_event_at: datetime
+    questions: tuple[str, ...] = Field(min_length=1)
+    form_identity: FormIdentity = Field(default_factory=FormIdentity)
+    requester_email: str = ""
+    attachments: tuple[AttachmentRef, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_snapshot(self) -> TicketSnapshot:
+        if self.latest_event_at.tzinfo is None:
+            raise ValueError("ticket event time must be timezone-aware")
+        if any(not question.strip() for question in self.questions):
+            raise ValueError("ticket questions cannot be blank")
+        attachment_ids = [attachment.attachment_id for attachment in self.attachments]
+        if len(attachment_ids) != len(set(attachment_ids)):
+            raise ValueError("ticket snapshot cannot contain duplicate attachments")
+        return self
+
+
 class WorkspaceCandidate(FrozenModel):
     tenant_id: str = Field(min_length=1)
     workspace_name: str = ""
@@ -197,6 +249,35 @@ class BillingBinding(FrozenModel):
             raise ValueError("unresolved billing binding cannot carry a snapshot")
         if self.status is BillingBindingStatus.LOOKUP_FAILED and self.error_code is None:
             raise ValueError("failed billing binding requires an error code")
+        return self
+
+
+class CaseContext(FrozenModel):
+    ticket: TicketSnapshot
+    built_at: datetime
+    identity: IdentityResolution
+    billing_required: bool = False
+    billing: BillingBinding | None = None
+    visual_observations: tuple[VisualObservation, ...] = ()
+    warnings: tuple[str, ...] = ()
+    customer_required_fields: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_context(self) -> CaseContext:
+        if self.built_at.tzinfo is None:
+            raise ValueError("case context build time must be timezone-aware")
+        if self.billing_required and self.billing is None:
+            raise ValueError("billing-required context needs a billing binding")
+        if not self.billing_required and self.billing is not None:
+            raise ValueError("non-billing context cannot carry a billing binding")
+        attachment_ids = {
+            attachment.attachment_id for attachment in self.ticket.attachments
+        }
+        if any(
+            observation.attachment_id not in attachment_ids
+            for observation in self.visual_observations
+        ):
+            raise ValueError("visual observation must belong to a ticket attachment")
         return self
 
 

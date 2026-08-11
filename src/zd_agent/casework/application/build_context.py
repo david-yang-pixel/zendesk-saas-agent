@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import asyncio
+
+from zd_agent.casework.domain.enums import AdapterErrorCode, LookupStatus, ResolutionStatus
+from zd_agent.casework.domain.models import (
+    BillingLookup,
+    CaseContext,
+    TicketSnapshot,
+    VisualObservation,
+    WorkspaceMembershipLookup,
+)
+from zd_agent.casework.policies.billing import bind_billing_snapshot
+from zd_agent.casework.policies.identity import (
+    identity_lookup_emails,
+    resolve_workspace_identity,
+)
+from zd_agent.casework.ports.readers import BillingReader, Clock, IdentityReader
+
+
+class CaseContextBuilder:
+    def __init__(
+        self,
+        *,
+        identity_reader: IdentityReader,
+        billing_reader: BillingReader,
+        clock: Clock,
+    ) -> None:
+        self._identity_reader = identity_reader
+        self._billing_reader = billing_reader
+        self._clock = clock
+
+    async def _read_identity(self, email: str) -> WorkspaceMembershipLookup:
+        try:
+            return await self._identity_reader.find_workspaces(email)
+        except Exception:
+            return WorkspaceMembershipLookup(
+                email=email,
+                status=LookupStatus.FAILED,
+                evidence_id=f"identity-error:{email}",
+                error_code=AdapterErrorCode.PERMANENT_FAILURE,
+            )
+
+    async def _read_billing(self, tenant_id: str) -> BillingLookup:
+        try:
+            return await self._billing_reader.read_billing(tenant_id)
+        except Exception:
+            return BillingLookup(
+                tenant_id=tenant_id,
+                status=LookupStatus.FAILED,
+                observed_at=self._clock.now(),
+                evidence_id=f"billing-error:{tenant_id}",
+                error_code=AdapterErrorCode.PERMANENT_FAILURE,
+            )
+
+    async def build(
+        self,
+        ticket: TicketSnapshot,
+        *,
+        billing_required: bool,
+        visual_observations: tuple[VisualObservation, ...] = (),
+    ) -> CaseContext:
+        form = ticket.form_identity
+        emails = identity_lookup_emails(
+            form_email=form.email,
+            form_workspace_id=form.workspace_id,
+            requester_email=ticket.requester_email,
+        )
+        lookups = tuple(
+            await asyncio.gather(*(self._read_identity(email) for email in emails)),
+        )
+        form_evidence_id = (
+            f"ticket:{ticket.ticket_id}:generation:{ticket.generation}:form"
+        )
+        identity = resolve_workspace_identity(
+            form_email=form.email,
+            form_workspace_id=form.workspace_id,
+            requester_email=ticket.requester_email,
+            lookups=lookups,
+            form_evidence_id=form_evidence_id,
+        )
+
+        billing = None
+        if billing_required:
+            billing_lookup = None
+            if identity.status is ResolutionStatus.RESOLVED:
+                billing_lookup = await self._read_billing(identity.selected_tenant_id)
+            billing = bind_billing_snapshot(
+                identity=identity,
+                lookup=billing_lookup,
+            )
+
+        warnings = tuple(
+            detail
+            for detail in (
+                identity.detail,
+                billing.detail if billing is not None else "",
+            )
+            if detail
+        )
+        return CaseContext(
+            ticket=ticket,
+            built_at=self._clock.now(),
+            identity=identity,
+            billing_required=billing_required,
+            billing=billing,
+            visual_observations=visual_observations,
+            warnings=warnings,
+        )
