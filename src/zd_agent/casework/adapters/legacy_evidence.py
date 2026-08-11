@@ -167,7 +167,7 @@ def _context_targets(context: CaseContext) -> tuple[TargetReference, ...]:
     return tuple(targets)
 
 
-def _context_evidence(context: CaseContext) -> tuple[EvidenceItem, ...]:
+def build_case_context_evidence(context: CaseContext) -> tuple[EvidenceItem, ...]:
     targets = _context_targets(context)
     items = {
         evidence_id: EvidenceItem(
@@ -261,7 +261,9 @@ def build_legacy_case_material(
         read_tool_names=read_tool_names,
         observed_at=observed_at,
     )
-    combined = {item.evidence_id: item for item in _context_evidence(context)}
+    combined = {
+        item.evidence_id: item for item in build_case_context_evidence(context)
+    }
     combined.update({item.evidence_id: item for item in tool_evidence})
     body, reply_type = _legacy_reply(session)
     return LegacyCaseMaterial(

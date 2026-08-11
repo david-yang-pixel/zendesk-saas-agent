@@ -11,17 +11,18 @@ from zd_agent.casework.replay.runner import run_replay
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "casework_golden.json"
 
 
-def test_all_redacted_golden_cases_match_expected_casework_outcome() -> None:
+async def test_all_redacted_golden_cases_match_expected_casework_outcome() -> None:
     payload = json.loads(FIXTURE_PATH.read_text())
     scenarios = tuple(ReplayScenario.model_validate(item) for item in payload)
 
-    comparisons = tuple(
-        compare_replay_outcome(
-            scenario=scenario,
-            outcome=run_replay(scenario),
+    comparisons = []
+    for scenario in scenarios:
+        comparisons.append(
+            compare_replay_outcome(
+                scenario=scenario,
+                outcome=await run_replay(scenario),
+            ),
         )
-        for scenario in scenarios
-    )
 
     assert {item.scenario_id for item in comparisons} == {
         "ticket-3798-quota",
@@ -30,6 +31,7 @@ def test_all_redacted_golden_cases_match_expected_casework_outcome() -> None:
         "ticket-3846-exact-workspace-name",
         "ticket-3861-no-published-timeline",
         "transient-identity-timeout",
+        "confirmed-platform-defect",
     }
     failures = {
         item.scenario_id: item.mismatches
