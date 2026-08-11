@@ -106,6 +106,7 @@ _RETRYABLE_ERROR_CODES = {
     AdapterErrorCode.TRANSPORT_UNAVAILABLE,
     AdapterErrorCode.RATE_LIMITED,
     AdapterErrorCode.AUTH_EXPIRED,
+    AdapterErrorCode.MALFORMED_RESPONSE,
 }
 
 

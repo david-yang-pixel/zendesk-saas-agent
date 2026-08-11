@@ -265,6 +265,80 @@ def _action_and_failure(
     return action, failure, rejection
 
 
+def _invalid_proposal_failure(
+    *,
+    context: CaseContext,
+    admissions: tuple[ClaimAdmission, ...],
+) -> AdapterFailure:
+    rejected = tuple(
+        admission.rejection_code.value
+        for admission in admissions
+        if not admission.accepted
+    )
+    evidence_id = (
+        context.identity.evidence_ids[-1]
+        if context.identity.evidence_ids
+        else f"ticket:{context.ticket.ticket_id}:generation:{context.ticket.generation}"
+    )
+    return AdapterFailure(
+        operation="assessment.claim_admission",
+        code=AdapterErrorCode.MALFORMED_RESPONSE,
+        attempt=min(context.automation_attempt, 3),
+        max_attempts=3,
+        retry_after_seconds=2,
+        evidence_id=evidence_id,
+        detail=(
+            "model proposal had no safe disposition"
+            + (f"; rejected claims: {', '.join(rejected)}" if rejected else "")
+        ),
+    )
+
+
+def _ensure_safe_outcome(
+    *,
+    context: CaseContext,
+    admissions: tuple[ClaimAdmission, ...],
+    answer_status: AnswerStatus,
+    admitted_claims: tuple[Claim, ...],
+    customer_fields: tuple[str, ...],
+    human_action: HumanActionRequest | None,
+    blocking_failure: AdapterFailure | None,
+) -> tuple[HumanActionRequest | None, AdapterFailure | None]:
+    answerable = bool(
+        admitted_claims
+        and answer_status in {AnswerStatus.SUPPORTED, AnswerStatus.BOUNDED}
+    )
+    if answerable or customer_fields or human_action or blocking_failure:
+        return human_action, blocking_failure
+    failure = _invalid_proposal_failure(context=context, admissions=admissions)
+    exhausted = _retry_exhausted_action(failure)
+    return (exhausted, None) if exhausted is not None else (None, failure)
+
+
+def _case_assessment(
+    *,
+    context: CaseContext,
+    proposal: AssessmentProposal,
+    answer_status: AnswerStatus,
+    admitted_claims: tuple[Claim, ...],
+    customer_fields: tuple[str, ...],
+    human_action: HumanActionRequest | None,
+    blocking_failure: AdapterFailure | None,
+) -> CaseAssessment:
+    return CaseAssessment(
+        question=proposal.question,
+        answer_status=answer_status,
+        admitted_claims=admitted_claims,
+        customer_only_fields=customer_fields,
+        blocking_failure=blocking_failure,
+        human_action=human_action,
+        evidence_ids=tuple(
+            dict.fromkeys((*proposal.evidence_ids, *context.identity.evidence_ids)),
+        ),
+        close_after_reply=proposal.close_after_reply,
+    )
+
+
 def build_case_assessment(
     *,
     context: CaseContext,
@@ -290,19 +364,23 @@ def build_case_assessment(
         admitted_claims=admitted_claims,
         answer_status=answer_status,
     )
-    assessment = CaseAssessment(
-        question=proposal.question,
+    human_action, blocking_failure = _ensure_safe_outcome(
+        context=context,
+        admissions=admissions,
         answer_status=answer_status,
         admitted_claims=admitted_claims,
-        customer_only_fields=customer_fields,
-        blocking_failure=blocking_failure,
+        customer_fields=customer_fields,
         human_action=human_action,
-        evidence_ids=tuple(
-            dict.fromkeys(
-                (*proposal.evidence_ids, *context.identity.evidence_ids),
-            ),
-        ),
-        close_after_reply=proposal.close_after_reply,
+        blocking_failure=blocking_failure,
+    )
+    assessment = _case_assessment(
+        context=context,
+        proposal=proposal,
+        answer_status=answer_status,
+        admitted_claims=admitted_claims,
+        customer_fields=customer_fields,
+        human_action=human_action,
+        blocking_failure=blocking_failure,
     )
     return AssessmentBuild(
         assessment=assessment,

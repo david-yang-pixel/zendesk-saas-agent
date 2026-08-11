@@ -120,7 +120,7 @@ def test_exhausted_failure_cannot_create_ownership_without_action_packet() -> No
         decide_disposition(assessment)
 
 
-def test_nonretryable_read_failure_fails_closed_without_ownership() -> None:
+def test_malformed_read_output_is_retried_without_ownership() -> None:
     assessment = CaseAssessment(
         question="What is my subscription?",
         answer_status=AnswerStatus.INSUFFICIENT,
@@ -133,8 +133,10 @@ def test_nonretryable_read_failure_fails_closed_without_ownership() -> None:
         ),
     )
 
-    with pytest.raises(ValueError, match="domain-specific policy"):
-        decide_disposition(assessment)
+    decision = decide_disposition(assessment)
+
+    assert decision.disposition is Disposition.RETRY_PENDING
+    assert decision.ownership_action is OwnershipAction.NONE
 
 
 def test_ambiguous_write_is_never_retried() -> None:

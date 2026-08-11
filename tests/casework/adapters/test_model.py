@@ -149,7 +149,7 @@ async def test_investigator_returns_typed_claims_over_the_frozen_evidence_set() 
     assert result.proposal.question == "Why is the API request failing?"
     assert result.proposal.answer_status is AnswerStatus.SUPPORTED
     assert result.proposal.proposed_claims[0].public_allowed is True
-    assert result.proposal.evidence_ids == ("ev-runtime",)
+    assert result.proposal.evidence_ids == ("ev-runtime", "ev-identity")
     prompt = str(provider.calls[0][-1]["content"])
     assert "navigation only" in prompt
     assert "cannot prove a claim" in prompt

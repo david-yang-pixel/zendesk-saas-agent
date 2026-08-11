@@ -10,10 +10,12 @@ from zd_agent.casework.adapters.legacy_evidence import LegacyCaseMaterial
 from zd_agent.casework.domain.base import FrozenModel, TargetReference
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
+    BillingBindingStatus,
     ClaimRole,
     ClaimStatus,
     OwnershipAction,
     ReasonCode,
+    ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
     ActionProposal,
@@ -191,7 +193,7 @@ def build_investigation_result(
 ) -> InvestigationResult:
     """Convert a validated model proposal without granting it policy authority."""
     claims = tuple(
-        claim.to_claim(index)
+        _bind_claim_to_context(context, claim.to_claim(index))
         for index, claim in enumerate(model_result.proposed_claims, start=1)
     )
     evidence_ids = tuple(
@@ -236,6 +238,46 @@ def investigation_result_from_content(
         context=context,
         evidence=evidence,
         model_result=model_result,
+    )
+
+
+_TENANT_BOUND_CLAIM_ROLES = {
+    ClaimRole.CURRENT_STATE,
+    ClaimRole.FAILING_BOUNDARY,
+    ClaimRole.ROOT_CAUSE,
+    ClaimRole.IMPACT,
+    ClaimRole.RECOVERY,
+}
+
+
+def _bind_claim_to_context(context: CaseContext, claim: Claim) -> Claim:
+    """Attach code-resolved target and binding evidence without changing prose."""
+    if (
+        context.identity.status is not ResolutionStatus.RESOLVED
+        or claim.role not in _TENANT_BOUND_CLAIM_ROLES
+    ):
+        return claim
+    targets = claim.targets
+    if not any(target.kind == "tenant_id" for target in targets):
+        targets = (
+            *targets,
+            TargetReference(
+                kind="tenant_id",
+                value=context.identity.selected_tenant_id,
+            ),
+        )
+    evidence_ids = [*claim.supporting_evidence_ids, *context.identity.evidence_ids]
+    if (
+        claim.role is ClaimRole.CURRENT_STATE
+        and context.billing is not None
+        and context.billing.status is BillingBindingStatus.RESOLVED
+    ):
+        evidence_ids.extend(context.billing.evidence_ids)
+    return claim.model_copy(
+        update={
+            "targets": targets,
+            "supporting_evidence_ids": tuple(dict.fromkeys(evidence_ids)),
+        },
     )
 
 

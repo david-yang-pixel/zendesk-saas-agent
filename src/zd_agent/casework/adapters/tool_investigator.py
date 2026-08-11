@@ -160,7 +160,10 @@ def _system_prompt() -> str:
         "evidence and evidence_supported only for a bounded inference. Unknown facts "
         "must not be phrased as facts. Propose customer fields only when the fact is "
         "customer-controlled and unavailable to Support. An action_proposal states a "
-        "proven action requirement; it never chooses the team."
+        "proven action requirement; it never chooses the team. The controller will "
+        "bind tenant-scoped claims to the already resolved tenant and add the "
+        "identity/Billing binding evidence; never invent or substitute another "
+        "tenant target."
     )
 
 

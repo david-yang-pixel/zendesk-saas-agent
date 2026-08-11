@@ -139,6 +139,16 @@ def test_rejected_material_claim_downgrades_answer_to_insufficient() -> None:
     assert result.assessment.answer_status is AnswerStatus.INSUFFICIENT
     assert result.assessment.admitted_claims == ()
     assert result.admissions[0].accepted is False
+    assert result.assessment.blocking_failure is not None
+    assert (
+        result.assessment.blocking_failure.operation
+        == "assessment.claim_admission"
+    )
+    assert (
+        result.assessment.blocking_failure.code
+        is AdapterErrorCode.MALFORMED_RESPONSE
+    )
+    assert decide_disposition(result.assessment).disposition is Disposition.RETRY_PENDING
 
 
 def test_claim_for_another_tenant_is_rejected_even_when_evidence_matches_it() -> None:

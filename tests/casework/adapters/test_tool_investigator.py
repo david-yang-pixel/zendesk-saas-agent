@@ -11,14 +11,18 @@ from zd_agent.casework.adapters.tool_investigator import (
     InvestigationProtocolError,
     approved_read_tools,
 )
+from zd_agent.casework.adapters.model import investigation_result_from_content
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
+    BillingBindingStatus,
     ClaimRole,
     EvidenceResultStatus,
     ResolutionMethod,
     ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
+    BillingBinding,
+    BillingSnapshot,
     CaseContext,
     FormIdentity,
     IdentityResolution,
@@ -166,6 +170,44 @@ def _final_assessment(evidence_id: str) -> str:
             "proposed_customer_fields": [],
             "action_proposal": None,
         },
+    )
+
+
+def test_terminal_claims_are_deterministically_bound_to_resolved_context() -> None:
+    context = _context().model_copy(
+        update={
+            "billing_required": True,
+            "billing": BillingBinding(
+                status=BillingBindingStatus.RESOLVED,
+                snapshot=BillingSnapshot(
+                    tenant_id=TENANT,
+                    identity_tenant_id=TENANT,
+                    plan="professional",
+                    observed_at=NOW,
+                    evidence_ids=("ev-identity", "ev-billing"),
+                ),
+                evidence_ids=("ev-identity", "ev-billing"),
+            ),
+        },
+    )
+    raw = json.loads(_final_assessment("ev-runtime"))
+    raw["proposed_claims"][0]["role"] = "current_state"
+    raw["proposed_claims"][0]["targets"] = []
+
+    result = investigation_result_from_content(
+        context=context,
+        evidence=(),
+        content=json.dumps(raw),
+    )
+
+    [claim] = result.proposal.proposed_claims
+    assert tuple(target.model_dump() for target in claim.targets) == (
+        {"kind": "tenant_id", "value": TENANT},
+    )
+    assert claim.supporting_evidence_ids == (
+        "ev-runtime",
+        "ev-identity",
+        "ev-billing",
     )
 
 
