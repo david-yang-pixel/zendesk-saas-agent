@@ -13,6 +13,7 @@ from pydantic import (
 
 from zd_agent.casework.domain.enums import (
     AdapterErrorCode,
+    BillingBindingStatus,
     Disposition,
     EvidenceAuthority,
     EvidenceResultStatus,
@@ -128,6 +129,70 @@ class BillingSnapshot(FrozenModel):
             raise ValueError("billing observation time must be timezone-aware")
         if not self.evidence_ids:
             raise ValueError("billing snapshot requires evidence")
+        return self
+
+
+class BillingLookup(FrozenModel):
+    tenant_id: str = Field(min_length=1)
+    status: LookupStatus
+    observed_at: datetime
+    evidence_id: str = ""
+    error_code: AdapterErrorCode | None = None
+    plan: str = ""
+    subscription_status: str = ""
+    interval: str = ""
+    stripe_status: str = ""
+    entitlement_status: str = ""
+    cancellation_status: str = ""
+    renewal_status: str = ""
+
+    @model_validator(mode="after")
+    def _validate_lookup(self) -> BillingLookup:
+        if self.observed_at.tzinfo is None:
+            raise ValueError("billing lookup time must be timezone-aware")
+        if self.status is LookupStatus.SUCCESS:
+            if not self.evidence_id:
+                raise ValueError("successful billing lookup requires evidence")
+            if self.error_code is not None:
+                raise ValueError("successful billing lookup cannot carry an error")
+        elif self.status is LookupStatus.FAILED:
+            if self.error_code is None:
+                raise ValueError("failed billing lookup requires an error code")
+            if any(
+                (
+                    self.plan,
+                    self.subscription_status,
+                    self.interval,
+                    self.stripe_status,
+                    self.entitlement_status,
+                    self.cancellation_status,
+                    self.renewal_status,
+                ),
+            ):
+                raise ValueError("failed billing lookup cannot carry subscription facts")
+        elif self.error_code is not None:
+            raise ValueError("pending billing lookup cannot carry an error")
+        return self
+
+
+class BillingBinding(FrozenModel):
+    status: BillingBindingStatus
+    snapshot: BillingSnapshot | None = None
+    error_code: AdapterErrorCode | None = None
+    evidence_ids: tuple[str, ...] = ()
+    detail: str = ""
+
+    @model_validator(mode="after")
+    def _validate_binding(self) -> BillingBinding:
+        if self.status is BillingBindingStatus.RESOLVED:
+            if self.snapshot is None:
+                raise ValueError("resolved billing binding requires a snapshot")
+            if self.error_code is not None:
+                raise ValueError("resolved billing binding cannot carry an error")
+        elif self.snapshot is not None:
+            raise ValueError("unresolved billing binding cannot carry a snapshot")
+        if self.status is BillingBindingStatus.LOOKUP_FAILED and self.error_code is None:
+            raise ValueError("failed billing binding requires an error code")
         return self
 
 

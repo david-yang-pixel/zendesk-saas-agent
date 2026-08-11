@@ -75,6 +75,14 @@ class LookupStatus(str, Enum):
     FAILED = "failed"
 
 
+class BillingBindingStatus(str, Enum):
+    RESOLVED = "resolved"
+    IDENTITY_UNRESOLVED = "identity_unresolved"
+    LOOKUP_PENDING = "lookup_pending"
+    LOOKUP_FAILED = "lookup_failed"
+    TARGET_MISMATCH = "target_mismatch"
+
+
 class EvidenceAuthority(str, Enum):
     CURRENT_AUTHORITATIVE = "current_authoritative"
     CURRENT_SUPPORTING = "current_supporting"
