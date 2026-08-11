@@ -69,6 +69,12 @@ class ResolutionMethod(str, Enum):
     CUSTOMER_CONFIRMED = "customer_confirmed"
 
 
+class LookupStatus(str, Enum):
+    SUCCESS = "success"
+    PENDING = "pending"
+    FAILED = "failed"
+
+
 class EvidenceAuthority(str, Enum):
     CURRENT_AUTHORITATIVE = "current_authoritative"
     CURRENT_SUPPORTING = "current_supporting"
@@ -111,4 +117,3 @@ class AdapterErrorCode(str, Enum):
     MALFORMED_RESPONSE = "malformed_response"
     AMBIGUOUS_WRITE = "ambiguous_write"
     PERMANENT_FAILURE = "permanent_failure"
-

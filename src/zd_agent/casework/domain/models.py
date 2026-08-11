@@ -12,9 +12,11 @@ from pydantic import (
 )
 
 from zd_agent.casework.domain.enums import (
+    AdapterErrorCode,
     Disposition,
     EvidenceAuthority,
     EvidenceResultStatus,
+    LookupStatus,
     OwnershipAction,
     ReasonCode,
     ReplyKind,
@@ -36,6 +38,38 @@ class WorkspaceCandidate(FrozenModel):
     tenant_id: str = Field(min_length=1)
     workspace_name: str = ""
     role: str = ""
+
+
+class WorkspaceMembershipLookup(FrozenModel):
+    email: str = Field(min_length=3)
+    status: LookupStatus
+    candidates: tuple[WorkspaceCandidate, ...] = ()
+    evidence_id: str = ""
+    error_code: AdapterErrorCode | None = None
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        return value.strip().casefold()
+
+    @model_validator(mode="after")
+    def _validate_lookup(self) -> WorkspaceMembershipLookup:
+        candidate_ids = [candidate.tenant_id for candidate in self.candidates]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("workspace lookup cannot contain duplicate tenant IDs")
+        if self.status is LookupStatus.SUCCESS:
+            if not self.evidence_id:
+                raise ValueError("successful workspace lookup requires evidence")
+            if self.error_code is not None:
+                raise ValueError("successful workspace lookup cannot carry an error")
+        elif self.status is LookupStatus.FAILED:
+            if self.error_code is None:
+                raise ValueError("failed workspace lookup requires an error code")
+            if self.candidates:
+                raise ValueError("failed workspace lookup cannot carry candidates")
+        elif self.candidates or self.error_code is not None:
+            raise ValueError("pending workspace lookup cannot carry results")
+        return self
 
 
 class IdentityResolution(FrozenModel):
