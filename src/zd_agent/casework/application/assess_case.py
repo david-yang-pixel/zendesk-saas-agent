@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from zd_agent.casework.domain.enums import (
-    AdapterErrorCode,
-    AnswerStatus,
-    ResolutionStatus,
-)
+from zd_agent.casework.domain.enums import AdapterErrorCode, AnswerStatus, ResolutionStatus
 from zd_agent.casework.domain.models import (
     AdapterFailure,
     AssessmentBuild,
@@ -19,18 +15,8 @@ from zd_agent.casework.domain.models import (
     HumanActionRequest,
 )
 from zd_agent.casework.policies.evidence import admit_claim
+from zd_agent.casework.policies.customer_input import admit_customer_fields
 from zd_agent.casework.policies.ownership import admit_action_proposal
-
-
-_IDENTITY_FIELDS = {
-    "email",
-    "owner",
-    "plan",
-    "workspace_id",
-    "workspace_name",
-    "target_workspace_choice",
-    "target_workspace_identity",
-}
 
 
 def _admit_claims(
@@ -57,22 +43,10 @@ def _customer_fields(
     context: CaseContext,
     proposal: AssessmentProposal,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    proposed = tuple(dict.fromkeys(proposal.proposed_customer_fields))
-    identity_fields = tuple(field for field in proposed if field in _IDENTITY_FIELDS)
-    other_fields = tuple(field for field in proposed if field not in _IDENTITY_FIELDS)
-    status = context.identity.status
-    if not identity_fields:
-        return proposed, ()
-    if status is ResolutionStatus.RESOLVED:
-        return other_fields, identity_fields
-    if status in {ResolutionStatus.LOOKUP_PENDING, ResolutionStatus.LOOKUP_FAILED}:
-        return other_fields, identity_fields
-    minimum = (
-        "target_workspace_identity"
-        if status is ResolutionStatus.NO_MEMBERSHIP
-        else "target_workspace_choice"
+    return admit_customer_fields(
+        proposed_fields=proposal.proposed_customer_fields,
+        identity_status=context.identity.status,
     )
-    return tuple(dict.fromkeys((*other_fields, minimum))), identity_fields
 
 
 def _identity_failure(

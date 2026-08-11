@@ -153,6 +153,22 @@ def test_resolved_identity_removes_redundant_workspace_id_request() -> None:
     assert "workspace_id" in result.rejected_customer_fields
 
 
+def test_model_cannot_invent_an_unapproved_customer_question() -> None:
+    result = build_case_assessment(
+        context=_context(_resolved_identity()),
+        proposal=AssessmentProposal(
+            question="Why did this fail?",
+            answer_status=AnswerStatus.INSUFFICIENT,
+            proposed_customer_fields=("database_password",),
+        ),
+        evidence=(),
+        as_of=NOW,
+    )
+
+    assert result.assessment.customer_only_fields == ()
+    assert result.rejected_customer_fields == ("database_password",)
+
+
 def test_failed_identity_lookup_becomes_internal_retry_not_customer_ask() -> None:
     identity = IdentityResolution(
         contact_email="owner@example.com",
