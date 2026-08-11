@@ -128,6 +128,12 @@ class ClaimRejectionCode(str, Enum):
     ROOT_CAUSE_INCOMPLETE = "root_cause_incomplete"
 
 
+class AnswerStatus(str, Enum):
+    SUPPORTED = "supported"
+    BOUNDED = "bounded"
+    INSUFFICIENT = "insufficient"
+
+
 class AdapterErrorCode(str, Enum):
     TIMEOUT = "timeout"
     TRANSPORT_UNAVAILABLE = "transport_unavailable"

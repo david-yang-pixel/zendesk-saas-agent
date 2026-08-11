@@ -13,6 +13,7 @@ from pydantic import (
 
 from zd_agent.casework.domain.enums import (
     AdapterErrorCode,
+    AnswerStatus,
     BillingBindingStatus,
     ClaimRejectionCode,
     ClaimRole,
@@ -278,6 +279,72 @@ class ClaimAdmission(FrozenModel):
             raise ValueError("accepted claim cannot carry a rejection code")
         if not self.accepted and self.rejection_code is ClaimRejectionCode.NONE:
             raise ValueError("rejected claim requires a rejection code")
+        return self
+
+
+_RETRYABLE_ERROR_CODES = {
+    AdapterErrorCode.TIMEOUT,
+    AdapterErrorCode.TRANSPORT_UNAVAILABLE,
+    AdapterErrorCode.RATE_LIMITED,
+    AdapterErrorCode.AUTH_EXPIRED,
+}
+
+
+class AdapterFailure(FrozenModel):
+    operation: str = Field(min_length=1)
+    code: AdapterErrorCode
+    attempt: int = Field(ge=1)
+    max_attempts: int = Field(ge=1)
+    retry_after_seconds: float = Field(default=0, ge=0)
+    evidence_id: str = ""
+    detail: str = ""
+
+    @model_validator(mode="after")
+    def _validate_attempts(self) -> AdapterFailure:
+        if self.attempt > self.max_attempts:
+            raise ValueError("adapter failure attempt cannot exceed max attempts")
+        return self
+
+    def can_retry(self) -> bool:
+        return self.code in _RETRYABLE_ERROR_CODES and self.attempt < self.max_attempts
+
+
+class HumanActionRequest(FrozenModel):
+    ownership_action: OwnershipAction
+    reason_code: ReasonCode
+    summary: str = Field(min_length=1)
+    customer_impact: str = Field(min_length=1)
+    completed_checks: tuple[str, ...] = Field(min_length=1)
+    unresolved_action: str = Field(min_length=1)
+    acceptance_criteria: tuple[str, ...] = Field(min_length=1)
+    evidence_ids: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_ownership(self) -> HumanActionRequest:
+        if self.ownership_action is OwnershipAction.NONE:
+            raise ValueError("human action request requires a target team")
+        return self
+
+
+class CaseAssessment(FrozenModel):
+    question: str = Field(min_length=1)
+    answer_status: AnswerStatus
+    admitted_claims: tuple[Claim, ...] = ()
+    customer_only_fields: tuple[str, ...] = ()
+    blocking_failure: AdapterFailure | None = None
+    human_action: HumanActionRequest | None = None
+    evidence_ids: tuple[str, ...] = ()
+    close_after_reply: bool = False
+
+    @model_validator(mode="after")
+    def _validate_answer(self) -> CaseAssessment:
+        if self.answer_status in {AnswerStatus.SUPPORTED, AnswerStatus.BOUNDED}:
+            if not self.admitted_claims:
+                raise ValueError("answerable assessment requires admitted claims")
+            if self.customer_only_fields:
+                raise ValueError("answerable assessment cannot require customer fields")
+        if any(not claim.public_allowed for claim in self.admitted_claims):
+            raise ValueError("assessment cannot admit internal-only claims")
         return self
 
 
