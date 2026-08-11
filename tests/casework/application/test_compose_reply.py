@@ -1,5 +1,6 @@
 import pytest
 
+from zd_agent.casework.adapters.model import NoOpReplyReviewer, PolicyReplyWriter
 from zd_agent.casework.application.compose_reply import ReplyComposer, ReplyQualityError
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
@@ -247,6 +248,50 @@ async def test_customer_ask_fields_must_exactly_match_decision() -> None:
         assert "customer fields" in str(error)
     else:
         raise AssertionError("extra customer field must fail")
+
+
+@pytest.mark.parametrize(
+    ("field", "expected_text", "forbidden_text"),
+    (
+        (
+            "target_workspace_identity",
+            "email associated with the affected workspace",
+            "listed workspaces",
+        ),
+        (
+            "target_workspace_choice",
+            "name of the affected workspace",
+            "listed workspaces",
+        ),
+    ),
+)
+async def test_policy_writer_can_ask_approved_workspace_clarification(
+    field: str,
+    expected_text: str,
+    forbidden_text: str,
+) -> None:
+    assessment = CaseAssessment(
+        question="Which workspace is affected?",
+        answer_status=AnswerStatus.INSUFFICIENT,
+        customer_only_fields=(field,),
+        evidence_ids=("ev-memberships",),
+    )
+    decision = DispositionDecision(
+        disposition=Disposition.AWAITING_CUSTOMER,
+        reply_kind=ReplyKind.ASK,
+        reason_code=ReasonCode.CUSTOMER_INPUT_REQUIRED,
+        evidence_ids=("ev-memberships",),
+        required_customer_fields=(field,),
+    )
+    composer = ReplyComposer(
+        writer=PolicyReplyWriter(),
+        reviewer=NoOpReplyReviewer(),
+    )
+
+    draft = await composer.compose(assessment=assessment, decision=decision)
+
+    assert expected_text in draft.body
+    assert forbidden_text not in draft.body
 
 
 async def test_internal_evidence_terms_are_rejected_after_review() -> None:

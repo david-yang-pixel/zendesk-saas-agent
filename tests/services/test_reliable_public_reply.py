@@ -116,6 +116,50 @@ async def test_casework_rejects_requested_handoff_before_context_or_outbox(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    (
+        "请提供错误信息。",
+        "Confirmamos que su suscripción está activa.",
+    ),
+)
+async def test_non_english_reply_is_blocked_before_context_or_outbox(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+) -> None:
+    cfg = _config(tmp_path)
+    context = MagicMock(side_effect=AssertionError("context must not be read"))
+    store_factory = MagicMock(side_effect=AssertionError("outbox must not open"))
+    monkeypatch.setattr(
+        "zd_agent.services.reliable_public_reply.get_messaging_context",
+        context,
+    )
+    monkeypatch.setattr(
+        "zd_agent.services.reliable_public_reply._delivery_store_for_config",
+        store_factory,
+    )
+    relay, _ = _patch_safe_boundaries(monkeypatch, cfg=cfg)
+
+    result = await send_casework_public_reply_with_freshness(
+        ticket_id=TICKET_ID,
+        body=body,
+        reply_type="ask",
+        conversation_id=None,
+        snapshot_customer_message_count=1,
+        snapshot_customer_last_message_id="m1",
+        delivery_attempt_id=ATTEMPT_ID,
+        internal_analysis="The model returned non-English customer text.",
+    )
+
+    assert result.success is False
+    assert "English" in result.message
+    context.assert_not_called()
+    store_factory.assert_not_called()
+    relay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_kill_switch_returns_typed_paused_without_delivery_side_effects(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

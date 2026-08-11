@@ -202,7 +202,7 @@ async def test_policy_reply_writer_cannot_add_facts_or_unapproved_questions() ->
     )
 
     assert candidate.body.startswith(claim.statement)
-    assert candidate.body.endswith("This reply was sent by Dify AI Support.")
+    assert candidate.body.endswith("This reply was sent by Dify AI Agent.")
     assert candidate.used_claim_ids == ("claim-current",)
     assert candidate.requested_customer_fields == ()
     assert "workspace" not in candidate.body.casefold()

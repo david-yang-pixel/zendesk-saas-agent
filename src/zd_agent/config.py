@@ -158,7 +158,7 @@ class IntakeConfig(BaseModel):
 
 
 class SilenceWakerConfig(BaseModel):
-    scan_interval_seconds: int = 30
+    scan_interval_seconds: int = 1
 
 
 class WaitingPollerConfig(BaseModel):
@@ -285,11 +285,12 @@ class PublicReplyConfig(BaseModel):
     # prevents Browser Relay delivery; it does not invoke a legacy fallback.
     enabled: bool = False
 
-    # 工单刚创建后 agent 启动前的观察期。等客户首批 burst 消息到达。
-    silent_initial_wait_seconds: int = 60
+    # SaaS 工单创建后立即读取完整表单/会话；缺少问题描述时立刻询问。
+    silent_initial_wait_seconds: int = 0
 
-    # 客户每次回复后 agent 启动前的合并窗。避免 agent 在客户连发 burst 时被打断。
-    silence_window_seconds: int = 30
+    # 客户补充消息立即进入新一轮分析。发送边界仍会重新拉取完整工单，
+    # 若客户在分析期间继续补充，则废弃旧草稿并基于最新上下文重跑。
+    silence_window_seconds: int = 0
 
     # SaaS native messaging 工单的客户可见回复不再走 Conversations API。
     # browser relay 使用已登录的 Zendesk Agent 前台会话提交消息，确保客户 widget 可见。

@@ -15,6 +15,14 @@ def test_casework_defaults_to_v2_production_behavior() -> None:
     assert config.casework.canary_ticket_ids == ()
 
 
+def test_saas_intake_defaults_start_immediately() -> None:
+    config = AppConfig()
+
+    assert config.public_reply.silent_initial_wait_seconds == 0
+    assert config.public_reply.silence_window_seconds == 0
+    assert config.silence_waker.scan_interval_seconds == 1
+
+
 @pytest.mark.parametrize("mode", ["legacy", "shadow"])
 def test_removed_casework_modes_fail_fast_from_yaml(
     mode: str,
@@ -55,6 +63,15 @@ def test_repository_config_uses_the_v2_casework_path() -> None:
 
     assert raw["casework"]["mode"] == "casework"
     assert "shadow_archive_dir" not in raw["casework"]
+
+
+def test_repository_config_starts_saas_intake_immediately() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text())
+
+    assert raw["public_reply"]["silent_initial_wait_seconds"] == 0
+    assert raw["public_reply"]["silence_window_seconds"] == 0
+    assert raw["silence_waker"]["scan_interval_seconds"] == 1
 
 
 @pytest.mark.parametrize("mode", [ExecutionMode.CANARY, ExecutionMode.CASEWORK])

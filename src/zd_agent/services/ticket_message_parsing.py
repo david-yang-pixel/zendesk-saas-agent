@@ -109,6 +109,27 @@ def _is_requester_system_field(field: dict[str, Any]) -> bool:
     return name.startswith("datacapture.systemfield.requester.")
 
 
+_ISSUE_FORM_FIELD_RE = re.compile(
+    r"\b(?:issue|problem|description|details?|error|question|impact|"
+    r"expected|actual|reproduction|steps? to reproduce)\b|"
+    r"问题|故障|描述|详情|报错|错误|影响|预期|实际|复现",
+    re.IGNORECASE,
+)
+_FREE_TEXT_FORM_FIELD_TYPES = frozenset(
+    {"text", "textarea", "text_area", "multiline", "multi_line"}
+)
+
+
+def _is_issue_form_field(field: dict[str, Any]) -> bool:
+    """Recognize explicit problem fields without treating routing metadata as prose."""
+    field_type = str(field.get("type") or "").strip().casefold()
+    if field_type not in _FREE_TEXT_FORM_FIELD_TYPES:
+        return False
+    label = str(field.get("label") or "").strip()
+    name = str(field.get("name") or "").strip()
+    return bool(_ISSUE_FORM_FIELD_RE.search(f"{label} {name}"))
+
+
 def _form_data(fields: list[dict[str, Any]]) -> dict[str, str]:
     out: dict[str, str] = {}
     for field in fields:
@@ -125,7 +146,8 @@ def _form_issue_body(fields: list[dict[str, Any]]) -> str:
         f"{field.get('label') or field.get('name')}: "
         f"{_form_field_value(field)}".rstrip()
         for field in fields
-        if not _profile_form_key(field)
+        if _is_issue_form_field(field)
+        and not _profile_form_key(field)
         and not _is_requester_system_field(field)
         and (field.get("label") or field.get("name"))
         and _form_field_value(field)

@@ -39,6 +39,9 @@ from typing import Awaitable, Callable
 
 import httpx
 
+from zd_agent.casework.policies.customer_message import (
+    is_definitely_non_substantive_message,
+)
 from zd_agent.log import get_logger
 from zd_agent.runtime.openai_compat import chat_completions_url
 from zd_agent.runtime.openai_reasoning import (
@@ -91,52 +94,6 @@ class FreshnessResult:
 # Heuristic：硬规则覆盖 80% 场景
 # ---------------------------------------------------------------------------
 
-# 客户的"非实质"短消息：寒暄 / 确认 / 催促 / 表情符
-# 这些不应该让 agent abort 重新分析（continue_send=True）
-_IGNORE_LIST: frozenset[str] = frozenset(
-    {
-        # 中文
-        "谢谢",
-        "谢谢了",
-        "thx",
-        "好的",
-        "好",
-        "嗯",
-        "嗯嗯",
-        "ok",
-        "在吗",
-        "急",
-        "急急急",
-        "请问还在吗",
-        "您还在吗",
-        "不用了",
-        "算了",
-        # English
-        "thanks",
-        "thank you",
-        "ty",
-        "thx",
-        "got it",
-        "ok",
-        "okay",
-        "k",
-        "alright",
-        "any update",
-        "any update?",
-        "still there?",
-        "you there?",
-        "hello?",
-        "hi?",
-        # 表情符 / 单字
-        "👍",
-        "👌",
-        "✅",
-        "🥲",
-        "🙏",
-        "😅",
-    }
-)
-
 # 视为"实质性"的硬规则匹配模式
 _UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
@@ -174,8 +131,7 @@ def is_substantive_heuristic(msg: dict) -> bool | None:
         return False
 
     # 2. IGNORE_LIST 精确命中 → 非实质
-    body_normalized = body.strip().strip(".!?,。！？，").lower()
-    if body_normalized in _IGNORE_LIST:
+    if is_definitely_non_substantive_message(body):
         return False
 
     # 3. 含 UUID → 实质（workspace_id / app_id / run_id 等）

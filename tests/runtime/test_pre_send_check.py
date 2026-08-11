@@ -86,6 +86,12 @@ class TestHeuristicFalseRules:
             "谢谢",
             "thanks",
             "Thanks",
+            "Thanks a lot!",
+            "Much appreciated.",
+            "Hello there!",
+            "Sounds good.",
+            "Good morning",
+            "Greetings",
             "thx",
             "OK",
             "ok",
@@ -352,6 +358,25 @@ class TestPreSendCheckOrAbort:
         assert result.recovery is not None
         assert result.recovery.next_snapshot_count == 2
         assert result.recovery.next_snapshot_last_id == "m2"
+
+    @pytest.mark.parametrize("body", ("不用了", "算了"))
+    @pytest.mark.asyncio
+    async def test_customer_cancellation_aborts_stale_reply(self, body: str) -> None:
+        msgs = [
+            {"id": "m1", "body": "original problem"},
+            {"id": "m2", "body": body},
+        ]
+
+        result = await pre_send_check_or_abort(
+            ticket_id=1,
+            snapshot_count=1,
+            snapshot_last_id="m1",
+            fetch_messages_fn=_make_fetcher(msgs),
+            skip_llm=True,
+        )
+
+        assert result.continue_send is False
+        assert result.reason == "substantive_llm_skipped"
 
     @pytest.mark.asyncio
     async def test_multiple_new_msgs_abort_on_first_substantive(self) -> None:

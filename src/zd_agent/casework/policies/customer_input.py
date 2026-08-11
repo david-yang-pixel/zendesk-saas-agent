@@ -14,6 +14,7 @@ _IDENTITY_FIELDS = frozenset(
 )
 _CUSTOMER_ONLY_FIELDS = frozenset(
     {
+        "issue_description",
         "reproduction_steps",
         "request_timestamp",
         "affected_object_id",

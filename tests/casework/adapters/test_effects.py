@@ -121,7 +121,7 @@ def _run(
         evidence_ids=("ev-boundary", "ev-cause") if ownership else (),
     )
     reply = ReplyDraft(
-        body=(f"{reply_body}\n\nThis reply was sent by Dify AI Support."),
+        body=(f"{reply_body}\n\nThis reply was sent by Dify AI Agent."),
         reply_kind=ReplyKind.ANSWER,
         disposition=disposition,
         ownership_action=owner,

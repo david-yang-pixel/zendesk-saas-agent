@@ -82,6 +82,61 @@ def test_deferred_retry_is_bounded_and_backed_off(tmp_path):
     assert record.consecutive_agent_failures == 1
 
 
+def test_repeated_customer_supplements_do_not_consume_failure_budget(tmp_path):
+    tracker = TicketStateTracker(tmp_path / "customer-refresh.json")
+    tracker.set(
+        3461,
+        TicketState(
+            state="processing",
+            first_seen=NOW,
+            active_session_id="session-0",
+            consecutive_agent_failures=2,
+        ),
+    )
+
+    for attempt in range(3):
+        current = tracker.get(3461)
+        assert current is not None
+        current.state = "processing"
+        current.active_session_id = f"session-{attempt}"
+        tracker.set(3461, current)
+        session = AgentSession(ticket_id=3461, session_id=f"session-{attempt}")
+        session.status = SessionStatus.DEFERRED
+        session.customer_context_dirty = True
+
+        apply_session_finished(tracker, session, now=NOW)
+
+        refreshed = tracker.get(3461)
+        assert refreshed is not None
+        assert refreshed.state == "in_silence_window"
+        assert refreshed.last_verdict == "customer_context_refresh"
+        assert refreshed.silence_window_end == NOW
+        assert refreshed.consecutive_agent_failures == 0
+
+
+def test_freshness_abort_without_webhook_signal_is_customer_refresh(tmp_path):
+    tracker = TicketStateTracker(tmp_path / "freshness-refresh.json")
+    tracker.set(
+        3461,
+        TicketState(
+            state="processing",
+            first_seen=NOW,
+            active_session_id="session-current",
+        ),
+    )
+    session = _session(3461, SessionStatus.DEFERRED)
+    session.error_message = (
+        "Pre-relay freshness check abort: customer added 1 new message(s)."
+    )
+
+    apply_session_finished(tracker, session, now=NOW)
+
+    refreshed = tracker.get(3461)
+    assert refreshed is not None
+    assert refreshed.last_verdict == "customer_context_refresh"
+    assert refreshed.consecutive_agent_failures == 0
+
+
 def test_typed_ownership_terminalizes_without_public_reply(tmp_path):
     tracker = TicketStateTracker(tmp_path / "owned.json")
     tracker.set(

@@ -233,7 +233,14 @@ def _bind_claim_to_context(context: CaseContext, claim: Claim) -> Claim:
 
 
 _FIELD_QUESTIONS = {
-    "target_workspace_choice": "Please tell us which of the listed workspaces is affected.",
+    "issue_description": (
+        "Hi, thanks for contacting Dify Support. Could you please describe the "
+        "issue you\u2019re experiencing?"
+    ),
+    "target_workspace_choice": (
+        "We found more than one workspace associated with the email. Please tell "
+        "us the name of the affected workspace."
+    ),
     "target_workspace_identity": "Please provide the email associated with the affected workspace.",
     "reproduction_steps": "Please share the exact steps that reproduce the issue.",
     "request_timestamp": "Please share the approximate time of the affected request, including your time zone.",
@@ -279,7 +286,7 @@ _OWNERSHIP_PARAGRAPHS = {
         "this ticket."
     ),
 }
-_AI_DISCLOSURE = "This reply was sent by Dify AI Support."
+_AI_DISCLOSURE = "This reply was sent by Dify AI Agent."
 
 
 class PolicyReplyWriter:

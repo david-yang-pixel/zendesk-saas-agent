@@ -239,20 +239,6 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
         skip_llm=True,
         cfg=cfg,
     )
-    # The caller cannot persist a cursor learned only by this remote final
-    # callback.  Do not let a harmless late "thanks" through here: aborting
-    # forces the owning path to fetch it itself and durably advance its cursor.
-    # This is intentionally stricter than the initial local freshness gate.
-    if check.continue_send and check.new_messages_count > 0:
-        return web.json_response(
-            {
-                "ok": True,
-                "status": "stale_context",
-                "continue_send": False,
-                "reason": "new_customer_message_at_relay",
-                "new_messages_count": check.new_messages_count,
-            }
-        )
     status = "fresh" if check.continue_send else "stale_context"
     logger.info(
         "pre_send_freshness_checked",
@@ -261,15 +247,17 @@ async def handle_pre_send_freshness(request: web.Request) -> web.Response:
         reason=check.reason,
         new_messages_count=check.new_messages_count,
     )
-    return web.json_response(
-        {
-            "ok": True,
-            "status": status,
-            "continue_send": check.continue_send,
-            "reason": check.reason,
-            "new_messages_count": check.new_messages_count,
-        }
-    )
+    payload = {
+        "ok": True,
+        "status": status,
+        "continue_send": check.continue_send,
+        "reason": check.reason,
+        "new_messages_count": check.new_messages_count,
+    }
+    if check.continue_send and check.recovery is not None:
+        payload["accepted_snapshot_count"] = check.recovery.next_snapshot_count
+        payload["accepted_snapshot_last_id"] = check.recovery.next_snapshot_last_id
+    return web.json_response(payload)
 
 
 def register_saas_routes(*, app: web.Application, cfg: Any) -> None:

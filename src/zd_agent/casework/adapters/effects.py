@@ -52,7 +52,10 @@ class PublicReplySender(Protocol):
 
 
 OwnershipSender = Callable[..., Awaitable[bool]]
-_AI_DISCLOSURE = "This reply was sent by Dify AI Support."
+_AI_DISCLOSURES = (
+    "This reply was sent by Dify AI Agent.",
+    "This reply was sent by Dify AI Support.",
+)
 
 
 class CaseworkEffectStorePort(Protocol):
@@ -90,8 +93,10 @@ _REPLY_TYPE: dict[ReplyKind, CaseworkPublicReplyType] = {
 
 def _transport_body(body: str) -> str:
     normalized = body.strip()
-    if normalized.endswith(_AI_DISCLOSURE):
-        normalized = normalized[: -len(_AI_DISCLOSURE)].rstrip()
+    for disclosure in _AI_DISCLOSURES:
+        if normalized.endswith(disclosure):
+            normalized = normalized[: -len(disclosure)].rstrip()
+            break
     return normalized
 
 

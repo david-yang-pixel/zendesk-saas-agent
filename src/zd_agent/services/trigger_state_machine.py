@@ -149,7 +149,10 @@ def enter_casework_silence(
             abandoned_alert_sent_at=(
                 existing.abandoned_alert_sent_at if existing else None
             ),
-            last_agent_finish_ts=(existing.last_agent_finish_ts if existing else None),
+            # This transition is caused by a newly observed customer message.
+            # It starts a fresh analysis generation, so the previous agent
+            # reply must not throttle the matching silence-waker dispatch.
+            last_agent_finish_ts=None,
             delivery_attempt_id=(
                 delivery_attempt_id
                 or (existing.delivery_attempt_id if existing else "")
@@ -497,14 +500,37 @@ def apply_session_finished(
     deferred_from_processing = (
         ticket_state.state == "processing" and session.status == SessionStatus.DEFERRED
     )
+    deferred_for_customer_refresh = bool(
+        deferred_from_processing
+        and (
+            bool(getattr(session, "customer_context_dirty", False))
+            or any(
+                marker in str(getattr(session, "error_message", "") or "").casefold()
+                for marker in (
+                    "customer added",
+                    "stale_context",
+                    "newer customer message remains unanswered",
+                )
+            )
+        )
+    )
+    if deferred_for_customer_refresh:
+        # A customer supplement is new work, not an Agent failure. Release the
+        # stale run immediately and re-fetch the complete conversation.
+        ticket_state.state = "in_silence_window"
+        ticket_state.active_session_id = ""
+        ticket_state.silence_window_end = finished_at
+        ticket_state.consecutive_agent_failures = 0
+        ticket_state.last_verdict = "customer_context_refresh"
+        state.set(session.ticket_id, ticket_state)
+        return True
     if (
         completed_without_reply_from_processing
         or unsuccessful_from_processing
         or deferred_from_processing
     ):
-        # Every run that returns ownership without a confirmed public delivery
-        # consumes the same durable budget.  DEFERRED is intentionally bounded:
-        # otherwise repeated stale-context deferrals can wake forever.
+        # Operational delivery/model failures remain bounded. Customer-driven
+        # freshness invalidation was handled above and never reaches this budget.
         ticket_state.consecutive_agent_failures += 1
 
         ownership_persistence_retry = (

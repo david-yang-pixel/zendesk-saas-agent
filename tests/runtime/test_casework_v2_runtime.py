@@ -29,8 +29,12 @@ from zd_agent.casework.domain.models import (
     ReplyDraft,
     RetryDirective,
     TicketSnapshot,
+    VisualObservation,
 )
-from zd_agent.runtime.casework_v2 import apply_casework_execution_to_session
+from zd_agent.runtime.casework_v2 import (
+    _analyze_visuals_when_needed,
+    apply_casework_execution_to_session,
+)
 from zd_agent.services.casework_runtime_failures import (
     RuntimeFailureOwnershipReceipt,
 )
@@ -38,6 +42,59 @@ from zd_agent.session.agent_session import AgentSession, SessionStatus
 
 
 NOW = datetime(2026, 8, 11, 14, 0, tzinfo=timezone.utc)
+
+
+class _NeverVisualAnalyzer:
+    async def analyze(
+        self,
+        ticket: TicketSnapshot,
+    ) -> tuple[VisualObservation, ...]:
+        raise AssertionError("deterministic intake must not call vision")
+
+
+async def test_form_only_intake_skips_visual_analysis() -> None:
+    ticket = TicketSnapshot(
+        ticket_id=4001,
+        generation=1,
+        status="new",
+        latest_event_id="form-1",
+        latest_event_at=NOW,
+        questions=(),
+    )
+
+    observations = await _analyze_visuals_when_needed(
+        ticket=ticket,
+        visual_analyzer=_NeverVisualAnalyzer(),
+    )
+
+    assert observations == ()
+
+
+async def test_human_takeover_skips_visual_analysis_even_with_an_attachment() -> None:
+    from zd_agent.casework.domain.models import AttachmentRef
+
+    ticket = TicketSnapshot(
+        ticket_id=4001,
+        generation=1,
+        status="open",
+        latest_event_id="human-1",
+        latest_event_at=NOW,
+        questions=("human",),
+        attachments=(
+            AttachmentRef(
+                attachment_id="attachment-1",
+                filename="screen.png",
+                download_url="https://example.test/screen.png",
+            ),
+        ),
+    )
+
+    observations = await _analyze_visuals_when_needed(
+        ticket=ticket,
+        visual_analyzer=_NeverVisualAnalyzer(),
+    )
+
+    assert observations == ()
 
 
 def _execution(*, retry: bool = False) -> CaseworkExecution:

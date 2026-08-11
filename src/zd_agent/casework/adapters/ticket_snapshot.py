@@ -4,7 +4,15 @@ from datetime import datetime
 from hashlib import sha256
 from typing import Any, cast
 
-from zd_agent.casework.domain.models import AttachmentRef, FormIdentity, TicketSnapshot
+from zd_agent.casework.domain.models import (
+    AttachmentRef,
+    CustomerMessageEvent,
+    FormIdentity,
+    TicketSnapshot,
+)
+from zd_agent.casework.policies.customer_message import (
+    is_definitely_non_substantive_message,
+)
 from zd_agent.services.ticket_message_parsing import extract_form_data_from_msgs
 from zd_agent.session.agent_session import AgentSession
 
@@ -32,6 +40,11 @@ def _issue_text(message: dict[str, Any]) -> str:
     return body.strip() if isinstance(body, str) else ""
 
 
+def _is_non_issue_message(text: str) -> bool:
+    """Recognize only short, standalone greetings and acknowledgements."""
+    return is_definitely_non_substantive_message(text)
+
+
 def _questions(customer_messages: list[dict[str, Any]]) -> tuple[str, ...]:
     # Deduplicate from the tail so the last tuple item remains the customer's
     # latest actual issue (A -> B -> A must end in A, not B).
@@ -39,13 +52,31 @@ def _questions(customer_messages: list[dict[str, Any]]) -> tuple[str, ...]:
     reverse_unique: list[str] = []
     for message in reversed(customer_messages):
         text = _issue_text(message)
-        if text and text not in seen:
+        if text and not _is_non_issue_message(text) and text not in seen:
             seen.add(text)
             reverse_unique.append(text)
-    questions = tuple(reversed(reverse_unique))
-    if not questions:
-        raise ValueError("ticket snapshot requires customer issue text")
-    return questions
+    return tuple(reversed(reverse_unique))
+
+
+def _customer_message_events(
+    customer_messages: list[dict[str, Any]],
+) -> tuple[CustomerMessageEvent, ...]:
+    events: list[CustomerMessageEvent] = []
+    for message in customer_messages:
+        body = _issue_text(message)
+        if not body:
+            continue
+        event_id = str(message.get("id") or "").strip()
+        if not event_id:
+            raise ValueError("customer message requires an event ID")
+        events.append(
+            CustomerMessageEvent(
+                event_id=event_id,
+                occurred_at=_required_event_time(message.get("created_at")),
+                body=body,
+            ),
+        )
+    return tuple(events)
 
 
 def _attachment_refs(
@@ -117,6 +148,7 @@ def build_ticket_snapshot(
         latest_event_id=latest_id,
         latest_event_at=_required_event_time(latest.get("created_at")),
         questions=_questions(customer_messages),
+        customer_messages=_customer_message_events(customer_messages),
         form_identity=FormIdentity(
             email=form.get("email", ""),
             workspace_id=form.get("workspace_id", ""),

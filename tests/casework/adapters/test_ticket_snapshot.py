@@ -105,6 +105,94 @@ def test_profile_only_form_response_keeps_prior_issue_and_advances_cursor() -> N
     assert snapshot.form_identity.email == "owner@example.test"
 
 
+def test_saas_intake_form_without_problem_builds_an_empty_issue_snapshot() -> None:
+    """A completed pre-ticket form is a valid cursor even before an issue is sent."""
+    snapshot = build_ticket_snapshot(
+        session=AgentSession(ticket_id=4321),
+        customer_messages=[
+            {
+                "id": "form-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "content_type": "formResponse",
+                "body": (
+                    "Name: Renato\nEmail: renato@example.test\n"
+                    "Workspace ID: workspace-1\nPlan: Professional"
+                ),
+                "classification_body": "",
+                "form_data": {
+                    "email": "renato@example.test",
+                    "workspace_id": "workspace-1",
+                },
+            },
+        ],
+        ticket={"status": "new"},
+    )
+
+    assert snapshot.latest_event_id == "form-1"
+    assert snapshot.questions == ()
+    assert snapshot.form_identity.email == "renato@example.test"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Hi",
+        "Hello!",
+        "Thanks",
+        "Okay.",
+        "Good morning",
+        "Good afternoon!",
+        "Greetings",
+        "Hello everyone",
+    ],
+)
+def test_greeting_after_form_is_not_mistaken_for_an_issue(message: str) -> None:
+    snapshot = build_ticket_snapshot(
+        session=AgentSession(ticket_id=4321),
+        customer_messages=[
+            {
+                "id": "form-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "content_type": "formResponse",
+                "body": "Email: owner@example.test",
+                "form_data": {"email": "owner@example.test"},
+            },
+            {
+                "id": "message-2",
+                "created_at": "2026-08-11T07:01:00Z",
+                "content_type": "text",
+                "body": message,
+            },
+        ],
+        ticket={"status": "new"},
+    )
+
+    assert snapshot.questions == ()
+    assert snapshot.customer_messages[-1].body == message
+
+
+def test_late_ack_does_not_replace_the_latest_actual_issue() -> None:
+    snapshot = build_ticket_snapshot(
+        session=AgentSession(ticket_id=4321),
+        customer_messages=[
+            {
+                "id": "issue-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "body": "API requests return 429 after renewal.",
+            },
+            {
+                "id": "ack-2",
+                "created_at": "2026-08-11T07:01:00Z",
+                "body": "Thanks!",
+            },
+        ],
+        ticket={"status": "new"},
+    )
+
+    assert snapshot.latest_event_id == "ack-2"
+    assert snapshot.questions == ("API requests return 429 after renewal.",)
+
+
 def test_repeated_latest_issue_remains_the_last_question() -> None:
     snapshot = build_ticket_snapshot(
         session=AgentSession(ticket_id=4321),

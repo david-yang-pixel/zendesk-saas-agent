@@ -54,6 +54,42 @@ def handle_customer_activity_gate(
     )
     existing = state.get(ticket_id)
 
+    if _late_non_substantive_messages_are_covered(
+        existing=existing,
+        customer_msgs=customer_msgs,
+        latest_ts=latest_ts,
+    ):
+
+        def _advance_cursor(current: Any) -> Any:
+            if current is None:
+                raise RuntimeError("customer cursor advance requires ticket state")
+            current.last_customer_comment_id = str(latest_cid or "")
+            current.last_eval_at = latest_ts
+            current.last_verdict = "non_substantive_followup_covered"
+            return current
+
+        commit = state.update_if_revision(
+            ticket_id,
+            expected_revision=existing.state_revision,
+            expected_state=existing.state,
+            mutate=_advance_cursor,
+        )
+        if commit is not None:
+            logger.info(
+                "trigger_skip_non_substantive_followup_covered_by_reply",
+                ticket_id=ticket_id,
+                comment_id=latest_cid,
+            )
+            return CustomerActivityResult(
+                handled=True,
+                action="non_substantive_followup_covered",
+                latest=latest,
+                latest_cid=latest_cid,
+                latest_ts=latest_ts,
+                existing=commit.after,
+                now=now,
+            )
+
     # A startup recovery intentionally replays the last saved customer message.
     # Treating that message as a duplicate would ACK the only recovery event and
     # leave the durable ticket state stuck in ``processing`` forever.
@@ -136,3 +172,36 @@ def handle_customer_activity_gate(
         existing=existing,
         now=now,
     )
+
+
+def _late_non_substantive_messages_are_covered(
+    *,
+    existing: Any,
+    customer_msgs: list[dict],
+    latest_ts: datetime,
+) -> bool:
+    """Ignore only harmless messages that raced with the just-sent reply."""
+    if (
+        existing is None
+        or existing.state not in {"processed", "awaiting_customer"}
+        or existing.last_agent_finish_ts is None
+        or latest_ts > existing.last_agent_finish_ts
+        or not existing.last_customer_comment_id
+    ):
+        return False
+    prior_index = next(
+        (
+            index
+            for index, message in enumerate(customer_msgs)
+            if str(message.get("id") or "") == str(existing.last_customer_comment_id)
+        ),
+        None,
+    )
+    if prior_index is None:
+        return False
+    new_messages = customer_msgs[prior_index + 1 :]
+    if not new_messages:
+        return False
+    from zd_agent.runtime.pre_send_check import is_substantive_heuristic
+
+    return all(is_substantive_heuristic(message) is False for message in new_messages)

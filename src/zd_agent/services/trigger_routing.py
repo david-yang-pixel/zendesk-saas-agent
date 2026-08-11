@@ -73,6 +73,11 @@ def post_agent_cooldown(
     """Cooldown for customer messages that arrive right after agent completion."""
     if existing is None or existing.last_agent_finish_ts is None:
         return CooldownDecision(should_skip=False)
+    if existing.state in {"awaiting_customer", "waiting_for_form"}:
+        # This is the answer the agent/form explicitly requested. Delaying it
+        # behind the previous reply's cooldown makes the ticket look stuck and
+        # can postpone the resumed investigation for several minutes.
+        return CooldownDecision(should_skip=False)
 
     elapsed_seconds = (now - _aware(existing.last_agent_finish_ts)).total_seconds()
     return CooldownDecision(

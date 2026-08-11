@@ -18,7 +18,6 @@ from zd_agent.services.trigger_errors import TriggerDeferredError
 logger = get_logger(module="services.trigger_message_handler")
 
 _CUSTOMER_CONTEXT_SOURCES = {
-    "zendesk_webhook",
     "messaging_webhook",
     "poller_new_msg",
 }

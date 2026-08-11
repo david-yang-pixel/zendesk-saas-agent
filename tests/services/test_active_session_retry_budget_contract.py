@@ -45,11 +45,20 @@ def _cfg() -> AppConfig:
     return cfg
 
 
-@pytest.mark.parametrize("source", ["zendesk_webhook", "mention"])
+@pytest.mark.parametrize(
+    ("source", "is_customer_event"),
+    [
+        ("messaging_webhook", True),
+        ("poller_new_msg", True),
+        ("zendesk_webhook", False),
+        ("mention", False),
+    ],
+)
 @pytest.mark.asyncio
 async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
     tmp_path,
     source: str,
+    is_customer_event: bool,
 ) -> None:
     """The running session owns new customer context through its freshness gate."""
     state_path = tmp_path / "tickets.json"
@@ -100,11 +109,11 @@ async def test_new_webhook_does_not_reclassify_ticket_owned_by_active_session(
 
     assert exc_info.value.reason == "active_session_processing"
     manager.dispatch.assert_not_awaited()
-    if source == "zendesk_webhook":
+    if is_customer_event:
         manager.mark_customer_context_dirty.assert_called_once_with(
             _TICKET_ID,
             expected_session_id="session-current",
-            source="zendesk_webhook",
+            source=source,
             event_id="",
         )
     else:

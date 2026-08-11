@@ -193,7 +193,9 @@ async def test_classic_webhook_uses_initial_wait_window(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_classic_webhook_immediately_marks_active_session_context_dirty(tmp_path):
+async def test_classic_webhook_does_not_treat_untyped_event_as_customer_context(
+    tmp_path,
+):
     app = _build_app(tmp_path)
     manager = session_manager(app)
     manager.mark_customer_context_dirty.return_value = True
@@ -204,11 +206,7 @@ async def test_classic_webhook_immediately_marks_active_session_context_dirty(tm
     )
 
     assert response.status == 200
-    manager.mark_customer_context_dirty.assert_called_once_with(
-        3485,
-        source="zendesk_webhook",
-        event_id="comment-2",
-    )
+    manager.mark_customer_context_dirty.assert_not_called()
 
 
 @pytest.mark.asyncio

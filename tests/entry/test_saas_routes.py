@@ -478,10 +478,10 @@ async def test_pre_send_freshness_allows_form_only_handoff_callback(
 
 
 @pytest.mark.asyncio
-async def test_pre_send_freshness_rejects_late_non_substantive_message(
+async def test_pre_send_freshness_allows_late_non_substantive_message(
     monkeypatch,
 ) -> None:
-    """The relay cannot return an accepted cursor, so any late message aborts."""
+    """A harmless acknowledgement does not invalidate the prepared answer."""
     app = web.Application()
     cfg = MagicMock()
     cfg.public_reply.browser_relay_api_key = "relay-secret"
@@ -498,6 +498,12 @@ async def test_pre_send_freshness_rejects_late_non_substantive_message(
             continue_send=True,
             reason="all_new_msgs_non_substantive",
             new_messages_count=1,
+            recovery=FreshnessRecovery(
+                action=FreshnessRecoveryAction.REFRESH_CONTEXT,
+                next_snapshot_count=2,
+                next_snapshot_last_id="m2",
+                reason="all_new_msgs_non_substantive",
+            ),
         )
     )
     monkeypatch.setattr(
@@ -518,8 +524,10 @@ async def test_pre_send_freshness_rejects_late_non_substantive_message(
     )
     payload = json.loads(response.text)
 
-    assert payload["continue_send"] is False
-    assert payload["reason"] == "new_customer_message_at_relay"
+    assert payload["continue_send"] is True
+    assert payload["status"] == "fresh"
+    assert payload["accepted_snapshot_count"] == 2
+    assert payload["accepted_snapshot_last_id"] == "m2"
 
 
 @pytest.mark.asyncio

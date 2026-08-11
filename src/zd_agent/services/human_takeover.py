@@ -9,7 +9,11 @@ from zd_agent.services.assignee import is_human_assignee
 
 logger = get_logger(module="services.human_takeover")
 
-AGENT_REPLY_MARKER = "Dify SaaS Agent"
+AGENT_REPLY_MARKERS = (
+    "This reply was sent by Dify AI Agent.",
+    "This reply was sent by Dify AI Support.",
+    "Dify SaaS Agent",
+)
 
 
 async def detect_human_takeover(
@@ -74,7 +78,7 @@ async def detect_human_takeover(
         if (
             last_author
             and int(last_author) == int(agent_user_id)
-            and AGENT_REPLY_MARKER not in last_body
+            and not any(marker in last_body for marker in AGENT_REPLY_MARKERS)
         ):
             return True, (
                 "last public reply from agent_uid but missing agent footer "

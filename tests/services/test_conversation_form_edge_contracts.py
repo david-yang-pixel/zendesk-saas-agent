@@ -564,6 +564,83 @@ def test_all_requester_system_fields_are_excluded_from_issue_text() -> None:
     assert "+86-138" not in issue_text
 
 
+def test_saas_intake_routing_fields_are_not_customer_issue_text() -> None:
+    """The pre-ticket SaaS form identifies the account; it does not describe a bug."""
+    event = {
+        "id": "saas-intake-form-response",
+        "created_at": "2026-08-11T14:02:00Z",
+        "author": {"type": "end-user"},
+        "content": {
+            "type": "formResponse",
+            "fields": [
+                {
+                    "type": "TEXT",
+                    "name": "dataCapture.systemField.requester.name",
+                    "label": "Name",
+                    "text": "Renato Pinheiro",
+                },
+                {
+                    "type": "EMAIL",
+                    "name": "dataCapture.systemField.requester.email",
+                    "label": "Email",
+                    "email": "renato@example.test",
+                },
+                {
+                    "type": "TEXT",
+                    "name": "dataCapture.ticketField.41021162892948",
+                    "label": "Workspace ID",
+                    "text": "29a4df12-32b1-40ed-aa9c-ecf1769364af",
+                },
+                {
+                    "type": "SELECT",
+                    "name": "dataCapture.ticketField.plan",
+                    "label": "Plan",
+                    "select": [{"label": "Professional"}],
+                },
+                {
+                    "type": "SELECT",
+                    "name": "dataCapture.ticketField.request_type",
+                    "label": "Request type",
+                    "select": [{"label": "Technical"}],
+                },
+                {
+                    "type": "SELECT",
+                    "name": "dataCapture.ticketField.priority",
+                    "label": "Support request priority",
+                    "select": [{"label": "Normal"}],
+                },
+                {
+                    "type": "SELECT",
+                    "name": "dataCapture.ticketField.issue_type",
+                    "label": "Issue type",
+                    "select": [{"label": "Bug"}],
+                },
+                {
+                    "type": "SELECT",
+                    "name": "dataCapture.ticketField.problem_category",
+                    "label": "Problem category",
+                    "select": [{"label": "API"}],
+                },
+                {
+                    "type": "SELECT",
+                    "name": "dataCapture.ticketField.impact",
+                    "label": "Impact",
+                    "select": [{"label": "High"}],
+                },
+            ],
+        },
+    }
+
+    [message] = _messaging_customer_messages([event])
+
+    assert message["classification_body"] == ""
+    assert message["form_data"] == {
+        "name": "Renato Pinheiro",
+        "email": "renato@example.test",
+        "workspace_id": "29a4df12-32b1-40ed-aa9c-ecf1769364af",
+    }
+
+
 def test_language_hint_requires_explicit_messaging_event_type() -> None:
     """Generic user-shaped rows must not override a real Messaging message."""
     hint = _extract_reply_language_hint(

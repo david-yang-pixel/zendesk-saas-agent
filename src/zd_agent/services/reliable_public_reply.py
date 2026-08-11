@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
+from zd_agent.casework.adapters.language import public_reply_english_blockers
 from zd_agent.config import AppConfig, EnvSettings, get_config
 from zd_agent.integrations.zendesk_browser_relay import (
     BrowserRelayDefiniteUnsentError,
@@ -48,6 +49,7 @@ EffectivePublicReplyType = Literal["ask", "solution", "handoff", "closed"]
 _REQUESTED_REPLY_TYPES = frozenset({"ask", "solution", "closed"})
 _EFFECTIVE_REPLY_TYPES = frozenset({"ask", "solution", "handoff", "closed"})
 _AUTOMATION_PUBLIC_REPLY_MARKERS = (
+    "This reply was sent by Dify AI Agent.",
     "This reply was sent by Dify AI Support.",
     "Dify SaaS Agent",
 )
@@ -140,6 +142,12 @@ def _validated_request(
         )
     if not isinstance(body, str) or not body.strip():
         raise ReliablePublicReplyRejected("body is empty")
+    language_blockers = public_reply_english_blockers(body.strip())
+    if language_blockers:
+        raise ReliablePublicReplyRejected(
+            "Public reply English hard gate blocked this reply. "
+            "Regenerate the customer response in English before delivery."
+        )
     blockers = public_reply_privacy_blockers(body.strip())
     if blockers:
         raise ReliablePublicReplyRejected(

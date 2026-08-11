@@ -22,13 +22,20 @@ from zd_agent.casework.adapters.vision import LlmVisualAnalyzer, ZendeskImageLoa
 from zd_agent.casework.application.build_context import CaseContextBuilder
 from zd_agent.casework.application.compose_reply import ReplyComposer
 from zd_agent.casework.application.execute_case import CaseworkExecutor
-from zd_agent.casework.application.handle_case import CaseworkOrchestrator
+from zd_agent.casework.application.handle_case import (
+    CaseworkOrchestrator,
+    deterministic_intake_required,
+)
 from zd_agent.casework.domain.enums import (
     DeliveryState,
     Disposition,
     ExecutionMode,
 )
-from zd_agent.casework.domain.models import CaseworkExecution
+from zd_agent.casework.domain.models import (
+    CaseworkExecution,
+    TicketSnapshot,
+    VisualObservation,
+)
 from zd_agent.casework.policies.routing import billing_context_required
 from zd_agent.config import AppConfig
 from zd_agent.runtime.llm.types import LLMProvider
@@ -45,6 +52,17 @@ def _snapshot_session(
         str(customer_messages[-1].get("id") or "") if customer_messages else ""
     )
     session.customer_msgs_snapshot_captured = True
+
+
+async def _analyze_visuals_when_needed(
+    *,
+    ticket: TicketSnapshot,
+    visual_analyzer: VisualAnalyzer,
+) -> tuple[VisualObservation, ...]:
+    """Keep form-only and human takeover paths free of image/model reads."""
+    if deterministic_intake_required(ticket):
+        return ()
+    return await visual_analyzer.analyze(ticket)
 
 
 async def execute_casework_v2(
@@ -74,7 +92,10 @@ async def execute_casework_v2(
         if cfg.llm.enable_vision_input
         else NoVisualAnalyzer()
     )
-    observations = await visual_analyzer.analyze(ticket)
+    observations = await _analyze_visuals_when_needed(
+        ticket=ticket,
+        visual_analyzer=visual_analyzer,
+    )
     caller = ReadOnlySessionToolCaller(registry, session)
     context_builder = CaseContextBuilder(
         identity_reader=InspectorIdentityReader(caller),

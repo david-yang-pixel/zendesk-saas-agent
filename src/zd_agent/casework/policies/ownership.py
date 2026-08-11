@@ -40,13 +40,21 @@ _SECURITY_REVIEW_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
-_HUMAN_SUBJECT_RE = re.compile(
-    r"\b(?:human|person|representative|support engineer)\b|人工|客服",
-    re.IGNORECASE,
+_HUMAN_ROLE = (
+    r"(?:a\s+(?:human(?:\s+support\s+engineer)?|person|representative|"
+    r"support\s+(?:agent|engineer))|human\s+support|"
+    r"support\s+(?:agent|engineer)|representative)"
 )
-_HUMAN_REQUEST_RE = re.compile(
-    r"\b(?:speak|talk|connect|transfer|escalate|want|need|request)\b|"
-    r"转接|联系|需要|要求",
+_EXPLICIT_HUMAN_TAKEOVER_RE = re.compile(
+    rf"(?:\b(?:i|we)\s+(?:want|need|would\s+like)\s+(?:to\s+)?"
+    rf"(?:speak|talk)\s+(?:to|with)\s+{_HUMAN_ROLE}\b|"
+    rf"\b(?:i|we)\s+(?:want|need|would\s+like)\s+{_HUMAN_ROLE}\b|"
+    rf"\b(?:please\s+)?(?:connect|transfer|escalate)\s+"
+    rf"(?:me|us|this\s+ticket)\s+(?:to|with)\s+{_HUMAN_ROLE}\b|"
+    rf"\b(?:can|could|would)\s+you\s+(?:please\s+)?"
+    rf"(?:connect|transfer|escalate)\s+(?:me|us|this\s+ticket)\s+"
+    rf"(?:to|with)\s+{_HUMAN_ROLE}\b)|"
+    r"(?:请)?(?:转|转接|联系)(?:到)?(?:人工|人工客服|客服)",
     re.IGNORECASE,
 )
 _BUSINESS_SUBJECT_RE = re.compile(
@@ -66,6 +74,34 @@ _COMMITMENT_RE = re.compile(
 _NEGATED_INTENT_RE = re.compile(
     r"\b(?:do\s+not|don't|dont|did\s+not|didn't|never|not\s+want|"
     r"no\s+longer\s+want)\b|不想|不要|无需|不需要|没有要求",
+    re.IGNORECASE,
+)
+_DIRECT_HUMAN_COMMANDS = frozenset(
+    {
+        "human",
+        "human support",
+        "support agent",
+        "support engineer",
+        "representative",
+        "人工",
+        "转人工",
+        "人工客服",
+    },
+)
+_DIRECT_HUMAN_NEGATION_RE = re.compile(
+    rf"\b(?:i|we)\s+(?:do\s+not|don't|dont|no\s+longer)\s+"
+    rf"(?:want|need)\s+(?:to\s+(?:speak|talk)\s+(?:to|with)\s+)?{_HUMAN_ROLE}\b|"
+    rf"\b(?:please\s+)?(?:do\s+not|don't|dont)\s+"
+    rf"(?:connect|transfer|escalate)\s+(?:me|us|this\s+ticket)\s+"
+    rf"(?:to|with)\s+{_HUMAN_ROLE}\b|"
+    r"\b(?:no\s+)?(?:human|representative|support\s+(?:agent|engineer))\s+"
+    r"(?:is\s+)?(?:not\s+needed|not\s+required|needed|required)\b|"
+    r"(?:不要|不需要|无需).{0,8}(?:人工|人工客服|客服)",
+    re.IGNORECASE,
+)
+_HUMAN_ROLE_TOKEN_RE = re.compile(
+    r"\b(?:human|person|representative|support\s+(?:agent|engineer))\b|"
+    r"人工|客服",
     re.IGNORECASE,
 )
 
@@ -99,6 +135,42 @@ _ACTION_MAPPING = {
         ReasonCode.POLICY_COMMITMENT_REQUIRED,
     ),
 }
+
+
+def customer_requested_human(question: str) -> bool:
+    """Recognize the advertised command and explicit non-negated human requests."""
+    raw = " ".join(str(question or "").split()).strip()
+    if not raw or _DIRECT_HUMAN_NEGATION_RE.search(raw):
+        return False
+    normalized = raw.casefold().strip(" \t\r\n.!,?;:\"'\u2018\u2019\u201c\u201d")
+    if normalized in _DIRECT_HUMAN_COMMANDS:
+        return True
+    return bool(_EXPLICIT_HUMAN_TAKEOVER_RE.search(raw))
+
+
+def _customer_cancelled_human_request(message: str) -> bool:
+    if not _HUMAN_ROLE_TOKEN_RE.search(message):
+        return False
+    return bool(_DIRECT_HUMAN_NEGATION_RE.search(message))
+
+
+def customer_human_request_active(messages: tuple[str, ...]) -> bool:
+    """Fold ordered customer issue messages into sticky takeover intent."""
+    return active_human_request_index(messages) is not None
+
+
+def active_human_request_index(messages: tuple[str, ...]) -> int | None:
+    """Return the active command index, cleared only by explicit cancellation."""
+    requested = False
+    request_index: int | None = None
+    for index, message in enumerate(messages):
+        if customer_requested_human(message):
+            requested = True
+            request_index = index
+        elif _customer_cancelled_human_request(message):
+            requested = False
+            request_index = None
+    return request_index if requested else None
 
 
 def _required_claim_error(
@@ -150,9 +222,7 @@ def _question_establishes(requirement: ActionRequirement, question: str) -> bool
     if _NEGATED_INTENT_RE.search(question):
         return False
     if requirement is ActionRequirement.CUSTOMER_REQUESTED_HUMAN:
-        return bool(
-            _HUMAN_SUBJECT_RE.search(question) and _HUMAN_REQUEST_RE.search(question),
-        )
+        return customer_requested_human(question)
     if requirement is ActionRequirement.BUSINESS_APPROVAL:
         return bool(
             _BUSINESS_SUBJECT_RE.search(question)

@@ -45,8 +45,9 @@ public_reply:
   # 客户写入总开关。false 时 v2 仍调查并生成草稿，但不会调用 Browser Relay，
   # 也不会回落到旧 Internal Note / handoff 决策链。
   enabled: true
-  silent_initial_wait_seconds: 60
-  silence_window_seconds: 30
+  # SaaS 工单创建/客户补充后立即读取完整会话；最终发送前仍会再次刷新。
+  silent_initial_wait_seconds: 0
+  silence_window_seconds: 0
   browser_relay_url: https://zendesk.smlershou.top/zendesk-reply-mcp
   # Reuse the already-deployed /webhook/ reverse-proxy boundary. The aiohttp
   # route itself still requires the browser-relay Bearer token.
@@ -74,7 +75,7 @@ intake:
   silence_minutes_default: 0
   post_agent_cooldown_seconds: 180
 silence_waker:
-  scan_interval_seconds: 30
+  scan_interval_seconds: 1
 waiting_poller:
   # 60s → 300s：messaging webhook 接管客户消息检测后，poller 退化为低频兜底。
   # 真正的实时来源是 /webhook/zendesk-messaging（messaging_ticket.message_added）。

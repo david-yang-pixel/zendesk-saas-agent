@@ -28,6 +28,22 @@ class AttachmentRef(FrozenModel):
     download_url: str = ""
 
 
+class CustomerMessageEvent(FrozenModel):
+    """One ordered customer-authored message retained for intent provenance."""
+
+    event_id: str = Field(min_length=1)
+    occurred_at: datetime
+    body: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_event(self) -> CustomerMessageEvent:
+        if self.occurred_at.tzinfo is None:
+            raise ValueError("customer message time must be timezone-aware")
+        if not self.body.strip():
+            raise ValueError("customer message body cannot be blank")
+        return self
+
+
 class VisualObservation(FrozenModel):
     attachment_id: str = Field(min_length=1)
     evidence_id: str = Field(min_length=1)
@@ -75,7 +91,10 @@ class TicketSnapshot(FrozenModel):
     locale: str = ""
     latest_event_id: str = Field(min_length=1)
     latest_event_at: datetime
-    questions: tuple[str, ...] = Field(min_length=1)
+    # A completed SaaS intake form can create the ticket before the customer
+    # sends problem prose. The intake policy owns that empty-question state.
+    questions: tuple[str, ...] = ()
+    customer_messages: tuple[CustomerMessageEvent, ...] = ()
     form_identity: FormIdentity = Field(default_factory=FormIdentity)
     requester_email: str = ""
     attachments: tuple[AttachmentRef, ...] = ()

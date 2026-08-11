@@ -4,23 +4,16 @@ from datetime import datetime
 import re
 from zoneinfo import ZoneInfo
 
-_FOOTER_STANDARD = (
-    "\n\nThis reply was sent by Dify AI Support.\n"
-    'Reply "human" if you would like a support engineer to take over.'
-)
-_FOOTER_HANDOFF = (
-    "\n\nThis reply was sent by Dify AI Support.\n"
-    "A human support engineer will follow up in this ticket."
-)
-_FOOTER_CLOSED = (
-    "\n\nThis reply was sent by Dify AI Support.\n"
-    "Reply here or open a new ticket if the issue returns."
+_REQUIRED_AI_FOOTER = (
+    "This reply was sent by Dify AI Agent. If this does not resolve your issue, "
+    "reply \u201chuman\u201d. A human support engineer will respond as soon as possible "
+    "during support hours, 9:00 AM\u20136:00 PM Beijing Time (UTC+8)."
 )
 _FOOTER_BY_TYPE = {
-    "ask": _FOOTER_STANDARD,
-    "solution": _FOOTER_STANDARD,
-    "handoff": _FOOTER_HANDOFF,
-    "closed": _FOOTER_CLOSED,
+    "ask": _REQUIRED_AI_FOOTER,
+    "solution": _REQUIRED_AI_FOOTER,
+    "handoff": _REQUIRED_AI_FOOTER,
+    "closed": _REQUIRED_AI_FOOTER,
 }
 _VALID_REPLY_TYPES = frozenset(_FOOTER_BY_TYPE)
 _DOCS_MD_PATTERN = re.compile(r"(https?://docs\.dify\.ai/[^\s\)\]>]+?)\.md\b")
@@ -207,8 +200,8 @@ def _append_footer(
 ) -> str:
     body = _format_reply_body(_strip_docs_md_suffix(body))
     footer = _FOOTER_BY_TYPE[reply_type]
-    if body.rstrip().endswith(footer.rstrip()):
+    if body.rstrip().endswith(footer):
         return _preserve_visual_blank_lines_for_messaging(body)
-    if reply_type == "handoff" and _HUMAN_SUPPORT_HOURS not in body:
-        body = f"{body.rstrip()}\n\n{_handoff_availability_message(now)}"
-    return _preserve_visual_blank_lines_for_messaging(body.rstrip() + footer)
+    return _preserve_visual_blank_lines_for_messaging(
+        f"{body.rstrip()}\n\n{footer}",
+    )

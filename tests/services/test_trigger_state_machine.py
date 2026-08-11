@@ -412,6 +412,34 @@ def test_casework_intake_enters_generation_bound_silence(tmp_path):
     assert record.delivery_attempt_id == "delivery-stable"
 
 
+def test_customer_answer_clears_previous_agent_cooldown(tmp_path):
+    tracker = _state(tmp_path)
+    existing = TicketState(
+        state="awaiting_customer",
+        first_seen=NOW - timedelta(hours=1),
+        last_agent_finish_ts=NOW - timedelta(seconds=2),
+        last_customer_comment_id="form-only-message",
+    )
+
+    enter_casework_silence(
+        tracker,
+        2814,
+        existing=existing,
+        latest_cid="issue-description",
+        latest_ts=NOW,
+        now=NOW,
+        intake_reason="casework_ready",
+        ask_count_now=1,
+        silence_minutes=0,
+        delivery_attempt_id="delivery-issue-description",
+    )
+
+    record = tracker.get(2814)
+    assert record is not None
+    assert record.state == "in_silence_window"
+    assert record.last_agent_finish_ts is None
+
+
 def test_waiting_for_form_preserves_retry_generation(tmp_path):
     tracker = _state(tmp_path)
     existing = TicketState(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from zd_agent.casework.domain.enums import OwnershipAction, ReplyKind
 from zd_agent.casework.domain.models import (
@@ -48,6 +49,14 @@ _WORKSPACE_IDENTITY_REQUEST_RE = re.compile(
 )
 
 
+def public_reply_language_blockers(body: str) -> tuple[str, ...]:
+    """Reject alphabetic scripts that cannot be part of an English reply."""
+    for character in body:
+        if character.isalpha() and "LATIN" not in unicodedata.name(character, ""):
+            return ("public reply contains non-English alphabetic text",)
+    return ()
+
+
 def _claim_reasons(
     candidate: ReplyCandidate,
     assessment: CaseAssessment,
@@ -84,6 +93,8 @@ def _customer_field_reasons(
     ):
         reasons.append("non-ask reply cannot request customer fields")
     if _WORKSPACE_IDENTITY_REQUEST_RE.search(candidate.body) and not {
+        "target_workspace_identity",
+        "target_workspace_choice",
         "workspace_id",
         "workspace_name",
     } & set(decision.required_customer_fields):
@@ -103,6 +114,7 @@ def _safety_reasons(
         reasons.append("reply promises human follow-up without durable ownership")
     if _INTERNAL_EVIDENCE_RE.search(candidate.body):
         reasons.append("reply exposes internal evidence or implementation details")
+    reasons.extend(public_reply_language_blockers(candidate.body))
     return tuple(reasons)
 
 

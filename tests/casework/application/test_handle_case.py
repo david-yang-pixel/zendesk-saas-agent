@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from zd_agent.casework.application.build_context import CaseContextBuilder
 from zd_agent.casework.application.compose_reply import ReplyComposer
 from zd_agent.casework.application.handle_case import CaseworkOrchestrator
+from zd_agent.casework.adapters.model import NoOpReplyReviewer, PolicyReplyWriter
 from zd_agent.casework.domain.enums import (
     AdapterErrorCode,
     AnswerStatus,
@@ -13,12 +14,15 @@ from zd_agent.casework.domain.enums import (
     EvidenceResultStatus,
     ExecutionMode,
     LookupStatus,
+    OwnershipAction,
+    ReasonCode,
     ReplyKind,
 )
 from zd_agent.casework.domain.models import (
     AssessmentProposal,
     BillingLookup,
     Claim,
+    CustomerMessageEvent,
     EvidenceItem,
     FormIdentity,
     InvestigationResult,
@@ -58,9 +62,20 @@ class FakeBillingReader:
 class FakeInvestigator:
     def __init__(self, result: InvestigationResult) -> None:
         self._result = result
+        self.calls = 0
 
     async def investigate(self, context) -> InvestigationResult:
+        self.calls += 1
         return self._result
+
+
+class NeverContextBuilder:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def build(self, *args, **kwargs):
+        self.calls += 1
+        raise AssertionError("deterministic intake must not call support readers")
 
 
 class FakeWriter:
@@ -129,6 +144,159 @@ def _context_builder(
         ),
         clock=FakeClock(),
     )
+
+
+async def test_missing_issue_asks_once_without_running_the_investigator() -> None:
+    investigator = FakeInvestigator(
+        InvestigationResult(
+            proposal=AssessmentProposal(
+                question="This result must never be used.",
+                answer_status=AnswerStatus.INSUFFICIENT,
+            ),
+        ),
+    )
+    context_builder = NeverContextBuilder()
+    orchestrator = CaseworkOrchestrator(
+        context_builder=context_builder,  # type: ignore[arg-type]
+        investigator=investigator,
+        reply_composer=ReplyComposer(
+            writer=PolicyReplyWriter(),
+            reviewer=NoOpReplyReviewer(),
+        ),
+        clock=FakeClock(),
+    )
+    ticket = TicketSnapshot(
+        ticket_id=4002,
+        generation=1,
+        status="new",
+        channel="messaging",
+        locale="en-US",
+        latest_event_id="form-1",
+        latest_event_at=NOW,
+        questions=(),
+        form_identity=FormIdentity(email="owner@example.com"),
+    )
+
+    run = await orchestrator.run(
+        ticket=ticket,
+        billing_required=True,
+        execution_mode=ExecutionMode.CASEWORK,
+    )
+
+    assert investigator.calls == 0
+    assert context_builder.calls == 0
+    assert run.decision.disposition is Disposition.AWAITING_CUSTOMER
+    assert run.decision.reply_kind is ReplyKind.ASK
+    assert run.decision.required_customer_fields == ("issue_description",)
+    assert run.reply_draft is not None
+    assert run.reply_draft.body.startswith(
+        "Hi, thanks for contacting Dify Support. Could you please describe the "
+        "issue you\u2019re experiencing?",
+    )
+
+
+async def test_exact_human_command_skips_investigation_and_requests_support() -> None:
+    investigator = FakeInvestigator(
+        InvestigationResult(
+            proposal=AssessmentProposal(
+                question="This result must never be used.",
+                answer_status=AnswerStatus.INSUFFICIENT,
+            ),
+        ),
+    )
+    context_builder = NeverContextBuilder()
+    orchestrator = CaseworkOrchestrator(
+        context_builder=context_builder,  # type: ignore[arg-type]
+        investigator=investigator,
+        reply_composer=ReplyComposer(
+            writer=PolicyReplyWriter(),
+            reviewer=NoOpReplyReviewer(),
+        ),
+        clock=FakeClock(),
+    )
+    ticket = TicketSnapshot(
+        ticket_id=4002,
+        generation=2,
+        status="open",
+        channel="messaging",
+        locale="en-US",
+        latest_event_id="event-human",
+        latest_event_at=NOW,
+        questions=("human",),
+        form_identity=FormIdentity(email="owner@example.com"),
+    )
+
+    run = await orchestrator.run(
+        ticket=ticket,
+        billing_required=True,
+        execution_mode=ExecutionMode.CASEWORK,
+    )
+
+    assert investigator.calls == 0
+    assert context_builder.calls == 0
+    assert run.decision.ownership_action is OwnershipAction.SUPPORT
+    assert run.decision.reason_code is ReasonCode.CUSTOMER_REQUESTED_HUMAN
+    assert run.reply_draft is not None
+    assert "support specialist" in run.reply_draft.body
+
+
+async def test_human_command_stays_active_when_customer_adds_detail() -> None:
+    investigator = FakeInvestigator(
+        InvestigationResult(
+            proposal=AssessmentProposal(
+                question="This result must never be used.",
+                answer_status=AnswerStatus.INSUFFICIENT,
+            ),
+        ),
+    )
+    context_builder = NeverContextBuilder()
+    orchestrator = CaseworkOrchestrator(
+        context_builder=context_builder,  # type: ignore[arg-type]
+        investigator=investigator,
+        reply_composer=ReplyComposer(
+            writer=PolicyReplyWriter(),
+            reviewer=NoOpReplyReviewer(),
+        ),
+        clock=FakeClock(),
+    )
+    ticket = TicketSnapshot(
+        ticket_id=4002,
+        generation=3,
+        status="open",
+        channel="messaging",
+        locale="en-US",
+        latest_event_id="event-detail",
+        latest_event_at=NOW,
+        questions=("human", "Here is another screenshot and request ID 42."),
+        customer_messages=(
+            CustomerMessageEvent(
+                event_id="event-human",
+                occurred_at=NOW,
+                body="human",
+            ),
+            CustomerMessageEvent(
+                event_id="event-detail",
+                occurred_at=NOW,
+                body="Here is another screenshot and request ID 42.",
+            ),
+        ),
+        form_identity=FormIdentity(email="owner@example.com"),
+    )
+
+    run = await orchestrator.run(
+        ticket=ticket,
+        billing_required=True,
+        execution_mode=ExecutionMode.CASEWORK,
+    )
+
+    assert investigator.calls == 0
+    assert context_builder.calls == 0
+    assert run.decision.ownership_action is OwnershipAction.SUPPORT
+    assert run.decision.reason_code is ReasonCode.CUSTOMER_REQUESTED_HUMAN
+    [evidence] = run.investigation.evidence
+    assert evidence.call_id == "zendesk-event:event-human"
+    assert "event:event-human:human-request" in evidence.evidence_id
+    assert run.assessment_build.assessment.question == "human"
 
 
 async def test_orchestrator_defaults_to_casework_mode() -> None:
