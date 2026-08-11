@@ -81,11 +81,11 @@ def _json_object(content: str) -> str:
     return stripped[start : end + 1]
 
 
-async def _read_structured(
+async def read_structured_output(
     *,
     provider: LLMProvider,
     system: str,
-    user: str,
+    user: str | list[dict[str, Any]],
     model_type: type[_ModelType],
 ) -> _ModelType:
     messages: list[dict[str, Any]] = [
@@ -188,7 +188,7 @@ class LlmCaseInvestigator:
         self._material = material
 
     async def investigate(self, context: CaseContext) -> InvestigationResult:
-        model_result = await _read_structured(
+        model_result = await read_structured_output(
             provider=self._provider,
             system=(
                 "You are the evidence synthesis lane of a support system. Return "
