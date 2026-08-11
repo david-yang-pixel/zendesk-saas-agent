@@ -14,6 +14,9 @@ from pydantic import (
 from zd_agent.casework.domain.enums import (
     AdapterErrorCode,
     BillingBindingStatus,
+    ClaimRejectionCode,
+    ClaimRole,
+    ClaimStatus,
     Disposition,
     EvidenceAuthority,
     EvidenceResultStatus,
@@ -206,6 +209,8 @@ class EvidenceItem(FrozenModel):
     observed_at: datetime
     time_window_start: datetime | None = None
     time_window_end: datetime | None = None
+    fresh_until: datetime | None = None
+    supports_roles: tuple[ClaimRole, ...] = ()
     payload: JsonValue | None = None
     payload_ref: str = ""
     redacted: bool = True
@@ -222,6 +227,8 @@ class EvidenceItem(FrozenModel):
             raise ValueError("evidence time-window start must be timezone-aware")
         if self.time_window_end and self.time_window_end.tzinfo is None:
             raise ValueError("evidence time-window end must be timezone-aware")
+        if self.fresh_until and self.fresh_until.tzinfo is None:
+            raise ValueError("evidence freshness time must be timezone-aware")
         if (
             self.time_window_start
             and self.time_window_end
@@ -232,6 +239,46 @@ class EvidenceItem(FrozenModel):
 
     def target_value(self, kind: str) -> str | None:
         return next((target.value for target in self.targets if target.kind == kind), None)
+
+
+class Claim(FrozenModel):
+    claim_id: str = Field(min_length=1)
+    statement: str = Field(min_length=1)
+    role: ClaimRole
+    status: ClaimStatus
+    material: bool = True
+    supporting_evidence_ids: tuple[str, ...] = ()
+    contradicting_evidence_ids: tuple[str, ...] = ()
+    targets: tuple[TargetReference, ...] = ()
+    public_allowed: bool = False
+
+    @model_validator(mode="after")
+    def _validate_claim(self) -> Claim:
+        if (
+            self.material
+            and self.status in {ClaimStatus.CONFIRMED, ClaimStatus.EVIDENCE_SUPPORTED}
+            and not self.supporting_evidence_ids
+        ):
+            raise ValueError("supported material claim requires evidence IDs")
+        if self.status is ClaimStatus.CONTRADICTED and not self.contradicting_evidence_ids:
+            raise ValueError("contradicted claim requires contradicting evidence IDs")
+        return self
+
+
+class ClaimAdmission(FrozenModel):
+    claim_id: str = Field(min_length=1)
+    accepted: bool
+    rejection_code: ClaimRejectionCode = ClaimRejectionCode.NONE
+    eligible_evidence_ids: tuple[str, ...] = ()
+    detail: str = ""
+
+    @model_validator(mode="after")
+    def _validate_admission(self) -> ClaimAdmission:
+        if self.accepted and self.rejection_code is not ClaimRejectionCode.NONE:
+            raise ValueError("accepted claim cannot carry a rejection code")
+        if not self.accepted and self.rejection_code is ClaimRejectionCode.NONE:
+            raise ValueError("rejected claim requires a rejection code")
+        return self
 
 
 class RetryDirective(FrozenModel):

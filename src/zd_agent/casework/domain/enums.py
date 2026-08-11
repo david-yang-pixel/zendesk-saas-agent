@@ -113,6 +113,21 @@ class ClaimStatus(str, Enum):
     CONTRADICTED = "contradicted"
 
 
+class ClaimRejectionCode(str, Enum):
+    NONE = "none"
+    NOT_PUBLIC = "not_public"
+    UNSUPPORTED_STATUS = "unsupported_status"
+    CONTRADICTED = "contradicted"
+    MISSING_EVIDENCE = "missing_evidence"
+    UNKNOWN_EVIDENCE = "unknown_evidence"
+    FAILED_EVIDENCE = "failed_evidence"
+    HISTORICAL_EVIDENCE = "historical_evidence"
+    STALE_EVIDENCE = "stale_evidence"
+    TARGET_MISMATCH = "target_mismatch"
+    ROLE_MISMATCH = "role_mismatch"
+    ROOT_CAUSE_INCOMPLETE = "root_cause_incomplete"
+
+
 class AdapterErrorCode(str, Enum):
     TIMEOUT = "timeout"
     TRANSPORT_UNAVAILABLE = "transport_unavailable"
