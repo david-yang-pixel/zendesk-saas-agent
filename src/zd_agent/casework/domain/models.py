@@ -30,7 +30,9 @@ from zd_agent.casework.domain.evidence import (
     ClaimAdmission,
     EvidenceItem,
     HumanActionRequest,
+    InvestigationResult,
 )
+from zd_agent.casework.domain.run import CaseworkRun
 
 __all__ = [
     "AdapterFailure",
@@ -42,6 +44,7 @@ __all__ = [
     "BillingSnapshot",
     "CaseAssessment",
     "CaseContext",
+    "CaseworkRun",
     "Claim",
     "ClaimAdmission",
     "DispositionDecision",
@@ -50,6 +53,7 @@ __all__ = [
     "FrozenModel",
     "HumanActionRequest",
     "IdentityResolution",
+    "InvestigationResult",
     "ReplyCandidate",
     "ReplyDraft",
     "ReplyQualityResult",

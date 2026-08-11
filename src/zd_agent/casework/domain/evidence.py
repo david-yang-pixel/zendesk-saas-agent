@@ -181,3 +181,8 @@ class AssessmentBuild(FrozenModel):
     assessment: CaseAssessment
     admissions: tuple[ClaimAdmission, ...] = ()
     rejected_customer_fields: tuple[str, ...] = ()
+
+
+class InvestigationResult(FrozenModel):
+    proposal: AssessmentProposal
+    evidence: tuple[EvidenceItem, ...] = ()
