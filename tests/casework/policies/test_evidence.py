@@ -169,3 +169,60 @@ def test_contradicted_claim_is_never_customer_visible() -> None:
     )
 
     assert result.rejection_code is ClaimRejectionCode.CONTRADICTED
+
+
+def test_required_case_target_cannot_be_omitted_from_material_claim() -> None:
+    result = admit_claim(
+        claim=_claim(targets=()),
+        evidence=(_evidence("ev-current"),),
+        as_of=NOW,
+        required_targets=(TENANT,),
+    )
+
+    assert result.rejection_code is ClaimRejectionCode.TARGET_MISMATCH
+
+
+def test_role_evidence_cannot_borrow_target_coverage_from_another_item() -> None:
+    other_tenant = TargetReference(kind="tenant_id", value="tenant-2")
+    result = admit_claim(
+        claim=_claim(supporting=("ev-role", "ev-target")),
+        evidence=(
+            _evidence("ev-role", targets=(other_tenant,)),
+            _evidence(
+                "ev-target",
+                targets=(TENANT,),
+                supports_roles=(ClaimRole.PRODUCT_FACT,),
+            ),
+        ),
+        as_of=NOW,
+    )
+
+    assert result.rejection_code is ClaimRejectionCode.ROLE_MISMATCH
+
+
+def test_current_contradicting_evidence_rejects_otherwise_supported_claim() -> None:
+    result = admit_claim(
+        claim=_claim(contradicting=("ev-contradiction",)),
+        evidence=(
+            _evidence("ev-current"),
+            _evidence("ev-contradiction"),
+        ),
+        as_of=NOW,
+    )
+
+    assert result.rejection_code is ClaimRejectionCode.CONTRADICTED
+
+
+def test_confirmed_current_state_requires_authoritative_evidence() -> None:
+    result = admit_claim(
+        claim=_claim(),
+        evidence=(
+            _evidence(
+                "ev-current",
+                authority=EvidenceAuthority.CURRENT_SUPPORTING,
+            ),
+        ),
+        as_of=NOW,
+    )
+
+    assert result.rejection_code is ClaimRejectionCode.INSUFFICIENT_AUTHORITY

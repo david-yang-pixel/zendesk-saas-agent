@@ -9,6 +9,7 @@ from zd_agent.casework.domain.enums import (
     AdapterErrorCode,
     AnswerStatus,
     BillingBindingStatus,
+    ClaimRejectionCode,
     ClaimRole,
     ClaimStatus,
     Disposition,
@@ -135,6 +136,83 @@ def test_rejected_material_claim_downgrades_answer_to_insufficient() -> None:
     assert result.assessment.answer_status is AnswerStatus.INSUFFICIENT
     assert result.assessment.admitted_claims == ()
     assert result.admissions[0].accepted is False
+
+
+def test_claim_for_another_tenant_is_rejected_even_when_evidence_matches_it() -> None:
+    other_target = TargetReference(kind="tenant_id", value=TENANT_2)
+    wrong_claim = _claim().model_copy(update={"targets": (other_target,)})
+    wrong_evidence = _evidence().model_copy(update={"targets": (other_target,)})
+
+    result = build_case_assessment(
+        context=_context(_resolved_identity()),
+        proposal=AssessmentProposal(
+            question="Is the workspace active?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(wrong_claim,),
+        ),
+        evidence=(wrong_evidence,),
+        as_of=NOW,
+    )
+
+    assert result.assessment.answer_status is AnswerStatus.INSUFFICIENT
+    assert result.admissions[0].rejection_code is ClaimRejectionCode.TARGET_MISMATCH
+
+
+def test_billing_claim_requires_identity_and_billing_evidence() -> None:
+    identity = _resolved_identity()
+    snapshot = BillingSnapshot(
+        tenant_id=TENANT_1,
+        identity_tenant_id=TENANT_1,
+        plan="professional",
+        subscription_status="active",
+        observed_at=NOW,
+        evidence_ids=("ev-identity", "ev-billing"),
+    )
+    context = CaseContext(
+        ticket=_ticket(),
+        built_at=NOW,
+        identity=identity,
+        billing_required=True,
+        billing=BillingBinding(
+            status=BillingBindingStatus.RESOLVED,
+            snapshot=snapshot,
+            evidence_ids=snapshot.evidence_ids,
+        ),
+    )
+    identity_evidence = _evidence().model_copy(
+        update={"evidence_id": "ev-identity", "call_id": "ev-identity"},
+    )
+    billing_evidence = _evidence().model_copy(
+        update={"evidence_id": "ev-billing", "call_id": "ev-billing"},
+    )
+    billing_claim = _claim("ev-billing")
+
+    missing_identity = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="What plan is active?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(billing_claim,),
+        ),
+        evidence=(identity_evidence, billing_evidence),
+        as_of=NOW,
+    )
+    complete_claim = billing_claim.model_copy(
+        update={"supporting_evidence_ids": ("ev-identity", "ev-billing")},
+    )
+    complete = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="What plan is active?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(complete_claim,),
+        ),
+        evidence=(identity_evidence, billing_evidence),
+        as_of=NOW,
+    )
+
+    assert missing_identity.admissions[0].rejection_code is ClaimRejectionCode.MISSING_EVIDENCE
+    assert complete.admissions[0].accepted is True
 
 
 def test_resolved_identity_removes_redundant_workspace_id_request() -> None:

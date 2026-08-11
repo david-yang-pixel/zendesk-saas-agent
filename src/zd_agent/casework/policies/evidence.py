@@ -9,7 +9,12 @@ from zd_agent.casework.domain.enums import (
     EvidenceAuthority,
     EvidenceResultStatus,
 )
-from zd_agent.casework.domain.models import Claim, ClaimAdmission, EvidenceItem
+from zd_agent.casework.domain.models import (
+    Claim,
+    ClaimAdmission,
+    EvidenceItem,
+    TargetReference,
+)
 
 
 def _reject(
@@ -113,24 +118,133 @@ def _target_coverage_error(
     )
 
 
+def _target_pairs(targets: tuple[TargetReference, ...]) -> set[tuple[str, str]]:
+    return {(target.kind, target.value) for target in targets}
+
+
+def _item_covers_claim(item: EvidenceItem, claim: Claim) -> bool:
+    required = {(target.kind, target.value) for target in claim.targets}
+    covered = {(target.kind, target.value) for target in item.targets}
+    return required.issubset(covered)
+
+
+def _required_target_error(
+    claim: Claim,
+    required_targets: tuple[TargetReference, ...],
+) -> tuple[ClaimRejectionCode, str] | None:
+    if _target_pairs(required_targets).issubset(_target_pairs(claim.targets)):
+        return None
+    return (
+        ClaimRejectionCode.TARGET_MISMATCH,
+        "claim is not bound to the resolved case target",
+    )
+
+
+def _required_evidence_error(
+    claim: Claim,
+    required_groups: tuple[frozenset[str], ...],
+) -> tuple[ClaimRejectionCode, str] | None:
+    cited = set(claim.supporting_evidence_ids)
+    if all(cited & group for group in required_groups):
+        return None
+    return (
+        ClaimRejectionCode.MISSING_EVIDENCE,
+        "claim omits a required case-context evidence class",
+    )
+
+
 def _role_coverage_error(
     claim: Claim,
     supporting: tuple[EvidenceItem, ...],
 ) -> tuple[ClaimRejectionCode, str] | None:
-    supported = {role for item in supporting for role in item.supports_roles}
     if claim.role is ClaimRole.ROOT_CAUSE:
         required = {ClaimRole.FAILING_BOUNDARY, ClaimRole.ROOT_CAUSE}
-        if not required.issubset(supported):
+        covered_roles = {
+            role
+            for role in required
+            if any(
+                role in item.supports_roles and _item_covers_claim(item, claim)
+                for item in supporting
+            )
+        }
+        if not required.issubset(covered_roles):
             return (
                 ClaimRejectionCode.ROOT_CAUSE_INCOMPLETE,
                 "root cause requires both failing-boundary and mechanism evidence",
             )
-    elif claim.role not in supported:
+    elif not any(
+        claim.role in item.supports_roles and _item_covers_claim(item, claim)
+        for item in supporting
+    ):
         return (
             ClaimRejectionCode.ROLE_MISMATCH,
-            "supporting evidence does not cover the claim role",
+            "one evidence item must cover both the claim role and target",
         )
     return None
+
+
+_AUTHORITATIVE_ROLES = {
+    ClaimRole.CURRENT_STATE,
+    ClaimRole.FAILING_BOUNDARY,
+    ClaimRole.IMPACT,
+    ClaimRole.RECOVERY,
+}
+
+
+def _authority_error(
+    claim: Claim,
+    supporting: tuple[EvidenceItem, ...],
+) -> tuple[ClaimRejectionCode, str] | None:
+    if claim.status is not ClaimStatus.CONFIRMED:
+        return None
+    role = (
+        ClaimRole.FAILING_BOUNDARY
+        if claim.role is ClaimRole.ROOT_CAUSE
+        else claim.role
+    )
+    if role not in _AUTHORITATIVE_ROLES:
+        return None
+    authoritative = any(
+        item.authority is EvidenceAuthority.CURRENT_AUTHORITATIVE
+        and role in item.supports_roles
+        and _item_covers_claim(item, claim)
+        for item in supporting
+    )
+    if authoritative:
+        return None
+    return (
+        ClaimRejectionCode.INSUFFICIENT_AUTHORITY,
+        "confirmed current-state claims require authoritative current evidence",
+    )
+
+
+def _contradiction_error(
+    claim: Claim,
+    evidence: tuple[EvidenceItem, ...],
+    *,
+    as_of: datetime,
+) -> tuple[ClaimRejectionCode, str] | None:
+    if not claim.contradicting_evidence_ids:
+        return None
+    by_id = {item.evidence_id: item for item in evidence}
+    if any(value not in by_id for value in claim.contradicting_evidence_ids):
+        return (
+            ClaimRejectionCode.UNKNOWN_EVIDENCE,
+            "claim cites unknown contradicting evidence",
+        )
+    current = tuple(by_id[value] for value in claim.contradicting_evidence_ids)
+    eligible = any(
+        item.result_status is EvidenceResultStatus.SUCCESS
+        and item.authority is not EvidenceAuthority.HISTORICAL_GUIDANCE
+        and (item.fresh_until is None or item.fresh_until >= as_of)
+        for item in current
+    )
+    if not eligible:
+        return None
+    return (
+        ClaimRejectionCode.CONTRADICTED,
+        "current eligible evidence contradicts the claim",
+    )
 
 
 def admit_claim(
@@ -138,6 +252,8 @@ def admit_claim(
     claim: Claim,
     evidence: tuple[EvidenceItem, ...],
     as_of: datetime,
+    required_targets: tuple[TargetReference, ...] = (),
+    required_evidence_groups: tuple[frozenset[str], ...] = (),
 ) -> ClaimAdmission:
     """Admit one customer-visible claim only from current eligible evidence."""
     if as_of.tzinfo is None:
@@ -148,9 +264,13 @@ def admit_claim(
     if rejection is not None:
         return rejection
     checks = (
+        _contradiction_error(claim, evidence, as_of=as_of),
         _evidence_eligibility_error(supporting, as_of=as_of),
+        _required_target_error(claim, required_targets),
+        _required_evidence_error(claim, required_evidence_groups),
         _target_coverage_error(claim, supporting),
         _role_coverage_error(claim, supporting),
+        _authority_error(claim, supporting),
     )
     if error := next((value for value in checks if value is not None), None):
         return _reject(claim, *error)

@@ -106,6 +106,11 @@ class PromptAwareProvider(LLMProvider):
             content = "not-json"
         else:
             prompt = json.loads(str(messages[-1]["content"]))
+            identity = next(
+                item
+                for item in prompt["eligible_evidence"]
+                if item["source"] == "case_context.identity"
+            )
             billing = next(
                 item
                 for item in prompt["eligible_evidence"]
@@ -119,7 +124,10 @@ class PromptAwareProvider(LLMProvider):
                             "statement": "The workspace currently has an active Professional subscription.",
                             "role": "current_state",
                             "status": "confirmed",
-                            "supporting_evidence_ids": [billing["evidence_id"]],
+                            "supporting_evidence_ids": [
+                                identity["evidence_id"],
+                                billing["evidence_id"],
+                            ],
                             "targets": [{"kind": "tenant_id", "value": TENANT}],
                         },
                     ],

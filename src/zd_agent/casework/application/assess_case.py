@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from zd_agent.casework.domain.enums import AdapterErrorCode, AnswerStatus, ResolutionStatus
+from zd_agent.casework.domain.enums import (
+    AdapterErrorCode,
+    AnswerStatus,
+    BillingBindingStatus,
+    ClaimRole,
+    ResolutionStatus,
+)
 from zd_agent.casework.domain.models import (
     AdapterFailure,
     AssessmentBuild,
@@ -13,6 +19,7 @@ from zd_agent.casework.domain.models import (
     ClaimAdmission,
     EvidenceItem,
     HumanActionRequest,
+    TargetReference,
 )
 from zd_agent.casework.policies.evidence import admit_claim
 from zd_agent.casework.policies.customer_input import admit_customer_fields
@@ -21,12 +28,19 @@ from zd_agent.casework.policies.ownership import admit_action_proposal
 
 def _admit_claims(
     *,
+    context: CaseContext,
     proposal: AssessmentProposal,
     evidence: tuple[EvidenceItem, ...],
     as_of: datetime,
 ) -> tuple[tuple[ClaimAdmission, ...], tuple[Claim, ...]]:
     admissions = tuple(
-        admit_claim(claim=claim, evidence=evidence, as_of=as_of)
+        admit_claim(
+            claim=claim,
+            evidence=evidence,
+            as_of=as_of,
+            required_targets=_required_targets(context, claim),
+            required_evidence_groups=_required_evidence_groups(context, claim),
+        )
         for claim in proposal.proposed_claims
     )
     accepted_ids = {
@@ -36,6 +50,48 @@ def _admit_claims(
         claim for claim in proposal.proposed_claims if claim.claim_id in accepted_ids
     )
     return admissions, claims
+
+
+_TENANT_BOUND_ROLES = {
+    ClaimRole.CURRENT_STATE,
+    ClaimRole.FAILING_BOUNDARY,
+    ClaimRole.ROOT_CAUSE,
+    ClaimRole.IMPACT,
+    ClaimRole.RECOVERY,
+}
+
+
+def _required_targets(
+    context: CaseContext,
+    claim: Claim,
+) -> tuple[TargetReference, ...]:
+    if (
+        context.identity.status is ResolutionStatus.RESOLVED
+        and claim.role in _TENANT_BOUND_ROLES
+    ):
+        return (
+            TargetReference(
+                kind="tenant_id",
+                value=context.identity.selected_tenant_id,
+            ),
+        )
+    return ()
+
+
+def _required_evidence_groups(
+    context: CaseContext,
+    claim: Claim,
+) -> tuple[frozenset[str], ...]:
+    billing = context.billing
+    if (
+        claim.role is not ClaimRole.CURRENT_STATE
+        or billing is None
+        or billing.status is not BillingBindingStatus.RESOLVED
+    ):
+        return ()
+    identity_ids = frozenset(context.identity.evidence_ids)
+    billing_ids = frozenset(billing.evidence_ids) - identity_ids
+    return (identity_ids, billing_ids) if identity_ids and billing_ids else ()
 
 
 def _customer_fields(
@@ -119,6 +175,7 @@ def build_case_assessment(
 ) -> AssessmentBuild:
     """Convert a model proposal into policy-admitted support assessment."""
     admissions, admitted_claims = _admit_claims(
+        context=context,
         proposal=proposal,
         evidence=evidence,
         as_of=as_of,

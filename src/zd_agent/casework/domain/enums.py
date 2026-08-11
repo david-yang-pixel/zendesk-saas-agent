@@ -136,6 +136,7 @@ class ClaimRejectionCode(str, Enum):
     TARGET_MISMATCH = "target_mismatch"
     ROLE_MISMATCH = "role_mismatch"
     ROOT_CAUSE_INCOMPLETE = "root_cause_incomplete"
+    INSUFFICIENT_AUTHORITY = "insufficient_authority"
 
 
 class AnswerStatus(str, Enum):

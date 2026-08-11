@@ -138,11 +138,22 @@ async def test_shadow_orchestrator_runs_complete_no_write_decision_path() -> Non
         statement="The workspace has an active Professional subscription.",
         role=ClaimRole.CURRENT_STATE,
         status=ClaimStatus.CONFIRMED,
-        supporting_evidence_ids=("ev-billing",),
+        supporting_evidence_ids=("ev-identity", "ev-billing"),
         targets=(target,),
         public_allowed=True,
     )
-    evidence = EvidenceItem(
+    identity_evidence = EvidenceItem(
+        evidence_id="ev-identity",
+        call_id="call-identity",
+        source="identity-reader",
+        authority=EvidenceAuthority.CURRENT_AUTHORITATIVE,
+        result_status=EvidenceResultStatus.SUCCESS,
+        targets=(target,),
+        observed_at=NOW,
+        supports_roles=(ClaimRole.CURRENT_STATE,),
+        payload={"resolved": True},
+    )
+    billing_evidence = EvidenceItem(
         evidence_id="ev-billing",
         call_id="call-billing",
         source="billing-reader",
@@ -158,7 +169,7 @@ async def test_shadow_orchestrator_runs_complete_no_write_decision_path() -> Non
         context_builder=_context_builder(),
         investigator=FakeInvestigator(
             InvestigationResult(
-                evidence=(evidence,),
+                evidence=(identity_evidence, billing_evidence),
                 proposal=AssessmentProposal(
                     question="What subscription is active?",
                     answer_status=AnswerStatus.SUPPORTED,

@@ -198,6 +198,8 @@ class LlmCaseInvestigator:
                 "for a bounded inference. Do not invent a workspace, plan, recovery, "
                 "root cause, customer field, action, or commitment. Claims must be "
                 "concise customer-safe English. You cannot choose an owner or handoff."
+                " A tenant Billing claim must cite both case_context.identity and "
+                "case_context.billing evidence and target the selected tenant."
             ),
             user=_investigation_prompt(context, self._material),
             model_type=_ModelAssessment,
