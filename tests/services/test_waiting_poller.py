@@ -97,7 +97,7 @@ async def test_unchanged_customer_context_within_window_is_noop(state, queue):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", ["open", "pending", "solved"])
+@pytest.mark.parametrize("status", ["pending", "solved"])
 async def test_out_of_scope_zendesk_status_stops_automation(state, queue, status):
     state.set(
         1,
@@ -120,6 +120,45 @@ async def test_out_of_scope_zendesk_status_stops_automation(state, queue, status
 
 
 @pytest.mark.asyncio
+async def test_stale_status_read_cannot_overwrite_a_new_processing_generation(
+    state,
+    queue,
+):
+    state.set(
+        1,
+        TicketState(
+            state="awaiting_customer",
+            first_seen=_now(),
+            last_customer_comment_id="same",
+        ),
+    )
+
+    async def fetch(_ticket_id, *, log_success):
+        assert log_success is False
+        current = state.get(1)
+        assert current is not None
+        current.state = "processing"
+        current.active_session_id = "new-session"
+        state.set(1, current)
+        return ([{"id": "same", "body": "waiting"}], _ticket(status="pending"))
+
+    with patch(
+        "zd_agent.services.ticket_messages._fetch_customer_messages",
+        side_effect=fetch,
+    ):
+        await scan_once(
+            state=state,
+            trigger_queue=queue,
+            customer_wait_timeout_hours=24,
+        )
+
+    record = state.get(1)
+    assert record is not None
+    assert record.state == "processing"
+    assert record.active_session_id == "new-session"
+
+
+@pytest.mark.asyncio
 async def test_agent_asked_open_ticket_remains_recoverable(state, queue):
     state.set(
         1,
@@ -135,6 +174,31 @@ async def test_agent_asked_open_ticket_remains_recoverable(state, queue):
         queue,
         messages=[{"id": "new", "body": "More evidence"}],
         ticket=_ticket(status="open", tags=[AGENT_ASKED_TAG]),
+    )
+
+    assert queue.get_nowait()["source"] == "poller_new_msg"
+    assert state.get(1).state == "awaiting_customer"
+
+
+@pytest.mark.asyncio
+async def test_open_awaiting_customer_remains_recoverable_without_legacy_tag(
+    state,
+    queue,
+):
+    state.set(
+        1,
+        TicketState(
+            state="awaiting_customer",
+            first_seen=_now(),
+            last_customer_comment_id="old",
+        ),
+    )
+
+    await _scan(
+        state,
+        queue,
+        messages=[{"id": "new", "body": "Workspace One"}],
+        ticket=_ticket(status="open", tags=[]),
     )
 
     assert queue.get_nowait()["source"] == "poller_new_msg"
@@ -267,6 +331,36 @@ async def test_in_silence_window_is_scanned_only_for_missed_message(state, queue
     )
 
     assert queue.get_nowait()["source"] == "poller_new_msg"
+
+
+@pytest.mark.asyncio
+async def test_open_ticket_does_not_cancel_an_in_silence_retry(state, queue):
+    """An operational retry remains owned by the silence waker, not status polling."""
+    window_end = _now() + timedelta(minutes=2)
+    state.set(
+        1,
+        TicketState(
+            state="in_silence_window",
+            first_seen=_now(),
+            last_customer_comment_id="same",
+            silence_window_end=window_end,
+            last_verdict="agent_deferred",
+            consecutive_agent_failures=1,
+        ),
+    )
+
+    await _scan(
+        state,
+        queue,
+        messages=[{"id": "same", "body": "quota issue"}],
+        ticket=_ticket(status="open"),
+    )
+
+    record = state.get(1)
+    assert record.state == "in_silence_window"
+    assert record.last_verdict == "agent_deferred"
+    assert record.silence_window_end == window_end
+    assert queue.empty()
 
 
 @pytest.mark.asyncio

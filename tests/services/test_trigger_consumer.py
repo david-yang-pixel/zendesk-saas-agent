@@ -43,6 +43,7 @@ async def test_run_trigger_consumer_delegates_queue_messages(tmp_path) -> None:
     state = MagicMock()
     cfg = MagicMock()
     human_takeover = MagicMock()
+    mention_tracker = MagicMock()
     log_path = tmp_path / "trigger_log.jsonl"
     handled = asyncio.Event()
     calls: list[dict] = []
@@ -61,6 +62,7 @@ async def test_run_trigger_consumer_delegates_queue_messages(tmp_path) -> None:
             log_path=log_path,
             handle_message_fn=fake_handle_message,
             human_takeover_fn=human_takeover,
+            mention_tracker=mention_tracker,
         )
     )
 
@@ -75,6 +77,7 @@ async def test_run_trigger_consumer_delegates_queue_messages(tmp_path) -> None:
     assert calls[0]["cfg"] is cfg
     assert calls[0]["log_path"] == log_path
     assert calls[0]["human_takeover_fn"] is human_takeover
+    assert calls[0]["mention_tracker"] is mention_tracker
 
 
 @pytest.mark.asyncio
@@ -181,12 +184,20 @@ async def test_run_saas_trigger_consumer_injects_default_actions(monkeypatch) ->
     manager = MagicMock()
     state = MagicMock()
     cfg = MagicMock()
+    mention_tracker = MagicMock()
 
-    await run_saas_trigger_consumer(queue, manager, state, cfg=cfg)
+    await run_saas_trigger_consumer(
+        queue,
+        manager,
+        state,
+        cfg=cfg,
+        mention_tracker=mention_tracker,
+    )
 
     assert calls[0]["args"] == (queue, manager, state)
     assert calls[0]["kwargs"]["cfg"] is cfg
     assert calls[0]["kwargs"]["human_takeover_fn"] is record_human_takeover
+    assert calls[0]["kwargs"]["mention_tracker"] is mention_tracker
 
 
 @pytest.mark.asyncio
@@ -798,6 +809,60 @@ async def test_dead_letter_reconciliation_completes_crash_gap(tmp_path) -> None:
     own_failure.assert_awaited_once()
     persisted = state.get(12345)
     assert persisted is not None and persisted.state == "owned"
+
+
+@pytest.mark.asyncio
+async def test_dead_lettered_mention_candidate_never_creates_human_ownership(
+    tmp_path,
+) -> None:
+    """A signed candidate is a discovery hint, not a failed support promise."""
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    queue = DurableTriggerQueue(
+        tmp_path / "trigger_queue.sqlite3",
+        max_materialization_defers=1,
+        retry_base_seconds=0,
+    )
+    message = {
+        "ticket_id": 3726,
+        "source": "mention_candidate",
+        "comment_id": "missing-comment",
+        "_queue_key": "mention:missing-comment",
+    }
+    assert await queue.put(message) is True
+    claimed = await queue.get()
+    assert (
+        await queue.defer(
+            claimed,
+            delay_seconds=0,
+            reason="ticket_not_materialized",
+        )
+        is False
+    )
+    assert await queue.dead_letter_count() == 1
+    own_failure = AsyncMock(return_value=_runtime_failure_receipt())
+
+    count = await reconcile_dead_lettered_triggers(
+        queue=queue,
+        state=state,
+        runtime_failure_ownership_fn=own_failure,
+    )
+
+    assert count == 1
+    assert await queue.dead_letter_count() == 0
+    own_failure.assert_not_awaited()
+    assert state.get(3726) is None
+    assert (
+        await queue.put(
+            {
+                "ticket_id": 3726,
+                "source": "mention",
+                "comment_id": "missing-comment",
+                "_queue_key": "mention:missing-comment",
+            }
+        )
+        is True
+    )
+    assert await queue.pending_count() == 1
 
 
 @pytest.mark.asyncio

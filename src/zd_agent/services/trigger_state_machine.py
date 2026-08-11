@@ -51,11 +51,13 @@ def apply_human_takeover(
     latest_ts: datetime | None,
     now: datetime,
     reason: str,
-) -> None:
+    expected_revision: int | None = None,
+    expected_state: str | None = None,
+) -> bool:
     """Stop automation after a real human reply without creating side effects."""
-    state.set(
-        ticket_id,
-        TicketState(
+
+    def _takeover(_current: TicketState | None) -> TicketState:
+        return TicketState(
             state="externally_owned",
             first_seen=existing.first_seen if existing else now,
             last_customer_comment_id=latest_cid,
@@ -73,10 +75,24 @@ def apply_human_takeover(
             consecutive_agent_failures=(
                 existing.consecutive_agent_failures if existing else 0
             ),
+            pending_customer_fields=(),
+            pending_issue_question="",
             ownership_action="support",
             ownership_reason=reason,
-        ),
-    )
+        )
+
+    if expected_revision is not None:
+        return (
+            state.update_if_revision(
+                ticket_id,
+                expected_revision=expected_revision,
+                expected_state=expected_state,
+                mutate=_takeover,
+            )
+            is not None
+        )
+    state.set(ticket_id, _takeover(existing))
+    return True
 
 
 def apply_waiting_for_form(
@@ -114,6 +130,13 @@ def apply_waiting_for_form(
             consecutive_agent_failures=(
                 existing.consecutive_agent_failures if existing else 0
             ),
+            pending_customer_fields=(
+                existing.pending_customer_fields if existing else ()
+            ),
+            pending_issue_question=(
+                existing.pending_issue_question if existing else ""
+            ),
+            pending_trigger_hint=(existing.pending_trigger_hint if existing else ""),
         ),
     )
 
@@ -160,6 +183,13 @@ def enter_casework_silence(
             consecutive_agent_failures=(
                 existing.consecutive_agent_failures if existing else 0
             ),
+            pending_customer_fields=(
+                existing.pending_customer_fields if existing else ()
+            ),
+            pending_issue_question=(
+                existing.pending_issue_question if existing else ""
+            ),
+            pending_trigger_hint=(existing.pending_trigger_hint if existing else ""),
         ),
     )
     return CaseworkIntakeTransition(
@@ -323,6 +353,7 @@ def apply_session_finished(
         ticket_state.ownership_action = ""
         ticket_state.ownership_reason = ""
         ticket_state.ownership_effect_reference = ""
+        ticket_state.pending_trigger_hint = ""
         ticket_state.last_verdict = "dry_run_drafted"
         if bool(getattr(session, "customer_msgs_snapshot_captured", False)) and getattr(
             session,
@@ -354,6 +385,7 @@ def apply_session_finished(
         ticket_state.ownership_action = typed_owner.value
         ticket_state.ownership_reason = typed_reason.value
         ticket_state.ownership_effect_reference = casework_effect_reference
+        ticket_state.pending_trigger_hint = ""
         ticket_state.last_verdict = "ownership_effect_pending"
         if bool(getattr(session, "customer_msgs_snapshot_captured", False)) and getattr(
             session,
@@ -381,6 +413,7 @@ def apply_session_finished(
         ticket_state.ownership_action = casework_owner
         ticket_state.ownership_reason = typed_reason.value
         ticket_state.ownership_effect_reference = casework_effect_reference
+        ticket_state.pending_trigger_hint = ""
         ticket_state.last_verdict = ticket_state.ownership_reason
         state.set(session.ticket_id, ticket_state)
         return True
@@ -397,6 +430,7 @@ def apply_session_finished(
         ticket_state.ownership_action = ""
         ticket_state.ownership_reason = ""
         ticket_state.ownership_effect_reference = ""
+        ticket_state.pending_trigger_hint = ""
         ticket_state.last_verdict = "public_reply_paused"
         if bool(getattr(session, "customer_msgs_snapshot_captured", False)) and getattr(
             session,
@@ -442,6 +476,9 @@ def apply_session_finished(
             ticket_state.ownership_reason = typed_reason.value
             ticket_state.ownership_effect_reference = casework_effect_reference
             ticket_state.last_verdict = "ownership_effect_pending"
+            ticket_state.pending_customer_fields = ()
+            ticket_state.pending_issue_question = ""
+            ticket_state.pending_trigger_hint = ""
             if bool(
                 getattr(session, "customer_msgs_snapshot_captured", False)
             ) and getattr(session, "customer_msgs_snapshot_last_id", ""):
@@ -479,10 +516,21 @@ def apply_session_finished(
             ticket_state.ownership_reason = ownership_reason
             ticket_state.ownership_effect_reference = casework_effect_reference
             ticket_state.last_verdict = ownership_reason
+            ticket_state.pending_customer_fields = ()
+            ticket_state.pending_issue_question = ""
         elif ticket_state.state == "awaiting_customer":
             ticket_state.last_verdict = "awaiting_customer"
+            ticket_state.pending_customer_fields = tuple(
+                getattr(session, "casework_required_customer_fields", ()) or (),
+            )
+            ticket_state.pending_issue_question = str(
+                getattr(session, "casework_question", "") or "",
+            )
         else:
             ticket_state.last_verdict = "resolved"
+            ticket_state.pending_customer_fields = ()
+            ticket_state.pending_issue_question = ""
+        ticket_state.pending_trigger_hint = ""
         state.set(session.ticket_id, ticket_state)
         return True
 
@@ -578,23 +626,39 @@ def apply_waiting_poller_out_of_scope(
     ticket_id: str | int,
     *,
     reason: str,
+    expected_revision: int | None = None,
+    expected_state: str | None = None,
 ) -> WaitingPollerTransition | None:
     """Stop polling when Zendesk lifecycle moved outside automation scope."""
     rec = state.get(ticket_id)
     if rec is None or rec.state == "out_of_scope":
         return None
 
-    prev_state = rec.state
-    rec.state = "out_of_scope"
-    rec.last_verdict = reason
-    rec.silence_window_end = None
-    state.set(ticket_id, rec)
+    revision = rec.state_revision if expected_revision is None else expected_revision
+    required_state = rec.state if expected_state is None else expected_state
+
+    def _retire(current: TicketState | None) -> TicketState:
+        if current is None:
+            raise RuntimeError("waiting poller state disappeared")
+        current.state = "out_of_scope"
+        current.last_verdict = reason
+        current.silence_window_end = None
+        return current
+
+    commit = state.update_if_revision(
+        ticket_id,
+        expected_revision=revision,
+        expected_state=required_state,
+        mutate=_retire,
+    )
+    if commit is None or commit.before is None:
+        return None
     return WaitingPollerTransition(
         ticket_id=int(ticket_id),
         kind="out_of_scope",
-        prev_state=prev_state,
+        prev_state=commit.before.state,
         last_verdict=reason,
-        ask_count=rec.ask_count,
+        ask_count=commit.after.ask_count,
     )
 
 
@@ -604,6 +668,8 @@ def apply_waiting_poller_timeouts(
     *,
     customer_wait_timeout_hours: int,
     now: datetime | None = None,
+    expected_revision: int | None = None,
+    expected_state: str | None = None,
 ) -> WaitingPollerTransition | None:
     """Stop v2 customer waits after their bounded response window.
 
@@ -627,21 +693,39 @@ def apply_waiting_poller_timeouts(
 
     if age_seconds >= customer_wait_timeout_hours * 3600:
         prev_state = rec.state
-        rec.state = "out_of_scope"
-        rec.last_verdict = (
+        reason = (
             "customer_response_timeout"
             if prev_state == "awaiting_customer"
             else "form_submission_timeout"
         )
-        rec.silence_window_end = None
-        state.set(ticket_id, rec)
+        revision = (
+            rec.state_revision if expected_revision is None else expected_revision
+        )
+        required_state = rec.state if expected_state is None else expected_state
+
+        def _expire(current: TicketState | None) -> TicketState:
+            if current is None:
+                raise RuntimeError("waiting poller state disappeared")
+            current.state = "out_of_scope"
+            current.last_verdict = reason
+            current.silence_window_end = None
+            return current
+
+        commit = state.update_if_revision(
+            ticket_id,
+            expected_revision=revision,
+            expected_state=required_state,
+            mutate=_expire,
+        )
+        if commit is None:
+            return None
         return WaitingPollerTransition(
             ticket_id=int(ticket_id),
             kind="out_of_scope",
             prev_state=prev_state,
             age_seconds=age_seconds,
-            last_verdict=rec.last_verdict,
-            ask_count=rec.ask_count,
+            last_verdict=reason,
+            ask_count=commit.after.ask_count,
         )
 
     return None

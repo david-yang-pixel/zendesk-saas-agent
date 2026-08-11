@@ -47,11 +47,10 @@ _TARGET_STATES = (
     "awaiting_customer",
     "waiting_for_form",
 )
-# 默认只关注新建状态的工单。一旦 Zendesk status 变成 open/pending/solved
-# poller 立刻让位停扫；唯一例外是带 AGENT_ASKED_TAG 的工单——表示 agent
-# 主动给客户发了 public ask 导致 status 自动翻 open，此时仍需继续追踪
-# 客户是否回应。
-_OPEN_STATUSES = ("new",)
+# New and open are both active Messaging lifecycle states.  The durable v2
+# state is the source of truth for whether automation is analysing or waiting;
+# pending/solved/closed remain outside its scope.
+_OPEN_STATUSES = ("new", "open")
 
 
 def _now() -> datetime:
@@ -83,14 +82,17 @@ async def _process_one(
     # Guard 1: ticket no longer in scope.
     # 默认只看 status=new。但 agent 主动 ask 客户后 status 会自动翻 open —
     # 我们之前给工单打了 AGENT_ASKED_TAG 表示这种情况，这种 open 仍要继续扫。
-    in_scope = status in _OPEN_STATUSES or (
-        status == "open" and AGENT_ASKED_TAG in tags
-    )
+    # A Messaging ticket normally becomes ``open`` after customer activity or
+    # after the Agent asks a clarification.  Durable v2 state already proves
+    # why we are analysing/waiting; the old remote ask tag is only diagnostic.
+    in_scope = status in _OPEN_STATUSES
     if not in_scope:
         transition = apply_waiting_poller_out_of_scope(
             state,
             ticket_id,
             reason="status_out_of_scope",
+            expected_revision=rec.state_revision,
+            expected_state=rec.state,
         )
         if transition is not None:
             logger.info(
@@ -108,7 +110,7 @@ async def _process_one(
         agent_user_id=my_uid,
         non_human_assignee_ids=cfg_zd.non_human_assignee_ids,
     ):
-        apply_human_takeover(
+        applied = apply_human_takeover(
             state,
             ticket_id,
             existing=rec,
@@ -116,14 +118,17 @@ async def _process_one(
             latest_ts=rec.last_comment_ts,
             now=_now(),
             reason="human_assignee",
+            expected_revision=rec.state_revision,
+            expected_state=rec.state,
         )
-        logger.info(
-            "waiting_poller_human_assignee",
-            ticket_id=ticket_id,
-            assignee_id=assignee_id,
-            my_uid=my_uid,
-            prev_state=rec.state,
-        )
+        if applied:
+            logger.info(
+                "waiting_poller_human_assignee",
+                ticket_id=ticket_id,
+                assignee_id=assignee_id,
+                my_uid=my_uid,
+                prev_state=rec.state,
+            )
         return
 
     # Step 3: did the customer send a new message since last evaluation?
@@ -163,6 +168,8 @@ async def _process_one(
         ticket_id,
         customer_wait_timeout_hours=customer_wait_timeout_hours,
         now=_now(),
+        expected_revision=rec.state_revision,
+        expected_state=rec.state,
     )
     if transition is None:
         return

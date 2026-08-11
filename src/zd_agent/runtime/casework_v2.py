@@ -161,6 +161,8 @@ def apply_casework_execution_to_session(
     session.casework_effect_reference = (
         receipt.ownership_reference or receipt.delivery_reference
     )
+    session.casework_required_customer_fields = run.decision.required_customer_fields
+    session.casework_question = run.investigation.proposal.question
     if receipt.accepted_snapshot_last_id:
         session.customer_msgs_snapshot_count = receipt.accepted_snapshot_count or 0
         session.customer_msgs_snapshot_last_id = receipt.accepted_snapshot_last_id

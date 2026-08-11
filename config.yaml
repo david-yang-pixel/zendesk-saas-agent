@@ -27,7 +27,7 @@ zendesk:
   mention_trigger: '@saas-agent'
   mention_aliases:
     - '@yonggang'
-  mention_poll_interval_seconds: 60
+  mention_poll_interval_seconds: 5
   # Agent 使用的 Zendesk user_id；自动公开回复也用它作为作者标记。
   # 部署时替换成你的 Zendesk agent 账号 ID。
   agent_user_id: 0

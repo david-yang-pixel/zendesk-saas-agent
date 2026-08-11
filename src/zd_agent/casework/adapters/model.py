@@ -154,7 +154,7 @@ def build_investigation_result(
             dict.fromkeys((*evidence_ids, *model_result.action_proposal.evidence_ids)),
         )
     proposal = AssessmentProposal(
-        question=context.ticket.questions[-1],
+        question=context.ticket.active_question or context.ticket.questions[-1],
         answer_status=model_result.answer_status,
         proposed_claims=claims,
         proposed_customer_fields=model_result.proposed_customer_fields,

@@ -23,8 +23,10 @@ from zd_agent.casework.domain.models import (
     HumanActionRequest,
     TargetReference,
 )
+from zd_agent.casework.application.customer_clarification import (
+    admit_case_customer_fields,
+)
 from zd_agent.casework.policies.evidence import admit_claim
-from zd_agent.casework.policies.customer_input import admit_customer_fields
 from zd_agent.casework.policies.ownership import admit_action_proposal
 
 
@@ -101,27 +103,6 @@ def _required_evidence_groups(
     identity_ids = frozenset(context.identity.evidence_ids)
     billing_ids = frozenset(billing.evidence_ids) - identity_ids
     return (identity_ids, billing_ids) if identity_ids and billing_ids else ()
-
-
-def _customer_fields(
-    *,
-    context: CaseContext,
-    proposal: AssessmentProposal,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    return admit_customer_fields(
-        proposed_fields=proposal.proposed_customer_fields,
-        identity_status=context.identity.status,
-        attachment_resend_allowed=_attachment_resend_allowed(context),
-    )
-
-
-def _attachment_resend_allowed(context: CaseContext) -> bool:
-    if not context.ticket.attachments:
-        return False
-    return any(
-        "could not be retrieved" in observation.uncertainty.casefold()
-        for observation in context.visual_observations
-    )
 
 
 def _identity_context_failure(
@@ -358,21 +339,21 @@ def build_case_assessment(
     as_of: datetime,
 ) -> AssessmentBuild:
     admissions, admitted_claims = _admit_claims(
-        context=context,
-        proposal=proposal,
-        evidence=evidence,
-        as_of=as_of,
+        context=context, proposal=proposal, evidence=evidence, as_of=as_of
     )
     answer_status = _answer_status(proposal, admissions)
-    customer_fields, rejected_fields = _customer_fields(
-        context=context,
-        proposal=proposal,
-    )
     human_action, blocking_failure, rejected_action_reason = _action_and_failure(
         context=context,
         proposal=proposal,
         admitted_claims=admitted_claims,
         answer_status=answer_status,
+    )
+    customer_fields, rejected_fields = admit_case_customer_fields(
+        context=context,
+        proposal=proposal,
+        answer_status=answer_status,
+        human_action=human_action,
+        blocking_failure=blocking_failure,
     )
     human_action, blocking_failure = _ensure_safe_outcome(
         context=context,

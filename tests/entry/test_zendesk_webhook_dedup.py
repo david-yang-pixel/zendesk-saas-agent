@@ -193,6 +193,47 @@ async def test_classic_webhook_uses_initial_wait_window(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_signed_mention_candidate_enqueues_immediately_with_comment_key(tmp_path):
+    app = _build_app(tmp_path)
+
+    with patch("zd_agent.services.zendesk_webhook.time.time", return_value=1000.0):
+        response = await _post(
+            app,
+            {
+                "event": "agent_mention_candidate",
+                "ticket_id": 2278,
+                "latest_comment_id": 48640250132756,
+            },
+            timestamp="1000",
+        )
+
+    assert response.status == 200 and response.text == "ok"
+    queued = trigger_queue(app).get_nowait()
+    assert queued["source"] == "mention_candidate"
+    assert queued["ticket_id"] == "2278"
+    assert queued["comment_id"] == "48640250132756"
+    assert queued["_queue_key"] == "mention:48640250132756"
+    assert "available_at" not in queued
+
+
+@pytest.mark.asyncio
+async def test_mention_candidate_without_latest_comment_id_is_rejected(tmp_path):
+    app = _build_app(tmp_path)
+
+    response = await _post(
+        app,
+        {
+            "event": "agent_mention_candidate",
+            "ticket_id": 2278,
+        },
+    )
+
+    assert response.status == 400
+    assert response.text == "missing latest_comment_id"
+    assert trigger_queue(app).empty()
+
+
+@pytest.mark.asyncio
 async def test_classic_webhook_does_not_treat_untyped_event_as_customer_context(
     tmp_path,
 ):

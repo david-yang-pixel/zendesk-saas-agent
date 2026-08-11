@@ -93,6 +93,14 @@ class TicketState:
     ownership_action: str = ""
     ownership_reason: str = ""
     ownership_effect_reference: str = ""
+    # When v2 sent a confirmed ASK, retain what it requested and the original
+    # issue so the next customer field answer does not replace problem intent.
+    pending_customer_fields: tuple[str, ...] = ()
+    pending_issue_question: str = ""
+    # A committed mention dispatch may be ACKed before its AgentSession
+    # completes. Keep the bounded internal instruction until the resulting
+    # business outcome is durable so crash recovery can retry with context.
+    pending_trigger_hint: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -104,6 +112,11 @@ class TicketState:
     @classmethod
     def from_dict(cls, d: dict) -> "TicketState":
         data = dict(d)
+        pending_fields = data.get("pending_customer_fields")
+        if isinstance(pending_fields, list):
+            data["pending_customer_fields"] = tuple(
+                str(value) for value in pending_fields if str(value)
+            )
         for k in (
             "first_seen",
             "last_comment_ts",

@@ -46,6 +46,8 @@ async def scan_once(
                 f"silence:{ticket_id}:{source}:{record.silence_window_end.isoformat()}"
             ),
         }
+        if record.pending_trigger_hint:
+            message["hint"] = record.pending_trigger_hint
         recoverable_method = getattr(type(trigger_queue), "put_recoverable", None)
         if callable(recoverable_method):
             inserted = await trigger_queue.put_recoverable(message)

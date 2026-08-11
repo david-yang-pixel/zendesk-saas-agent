@@ -11,6 +11,7 @@ from zd_agent.services.durable_trigger_queue_sql import (
     CREATE_READY_INDEX_SQL,
     CREATE_TABLE_SQL,
     DELETE_CLAIM_SQL,
+    DELETE_DEAD_LETTER_SQL,
     INSERT_SQL,
     MARK_CORRUPT_SQL,
     MARK_DEAD_LETTER_RECONCILED_SQL,
@@ -312,6 +313,12 @@ class DurableTriggerStore:
                 MARK_DEAD_LETTER_RECONCILED_SQL,
                 (self._now(), event_id),
             )
+            return cursor.rowcount == 1
+
+    def discard_dead_letter(self, event_id: int) -> bool:
+        """Remove a no-write discovery hint so its fallback can reuse the key."""
+        with self.connect() as connection:
+            cursor = connection.execute(DELETE_DEAD_LETTER_SQL, (event_id,))
             return cursor.rowcount == 1
 
 

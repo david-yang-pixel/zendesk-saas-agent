@@ -8,10 +8,13 @@ from typing import Any, Awaitable, Callable
 
 from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.casework.policies.rollout import casework_controls_ticket
+from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
+from zd_agent.mention.detector import configured_mention_triggers, is_any_mention
 from zd_agent.services.customer_activity import handle_customer_activity_gate
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
 from zd_agent.services.human_takeover_dispatch import handle_human_takeover_dispatch
+from zd_agent.services.mention_comments import fetch_recent_ticket_comments
 from zd_agent.services.trigger_gates import handle_trigger_entry_gate
 from zd_agent.services.trigger_errors import TriggerDeferredError
 
@@ -36,6 +39,22 @@ class TriggerMessageResult:
     source: str
 
 
+async def _fetch_mention_candidate_comment(
+    ticket_id: int,
+    comment_id: str,
+) -> dict | None:
+    """Read the exact candidate from the bounded newest comment window."""
+    comments = await fetch_recent_ticket_comments(
+        ticket_id,
+        call_fn=call_zendesk_tool,
+        target_comment_id=comment_id,
+    )
+    return next(
+        (comment for comment in comments if str(comment.get("id") or "") == comment_id),
+        None,
+    )
+
+
 async def handle_trigger_message(
     *,
     msg: dict,
@@ -46,6 +65,7 @@ async def handle_trigger_message(
     fetch_customer_messages_fn: FetchMessagesFn | None = None,
     human_takeover_fn: HumanTakeoverFn | None = None,
     detect_human_takeover_fn: DetectHumanTakeoverFn | None = None,
+    mention_tracker: Any | None = None,
 ) -> TriggerMessageResult:
     """Handle one trigger queue message and return the terminal action."""
     from zd_agent.services import ticket_messages
@@ -53,6 +73,104 @@ async def handle_trigger_message(
 
     ticket_id = int(msg["ticket_id"])
     source = msg.get("source", "unknown")
+    if source == "mention" and mention_tracker is not None:
+        raw_comment_id = str(msg.get("comment_id") or "").strip()
+        if raw_comment_id and mention_tracker.is_processed(raw_comment_id):
+            logger.info(
+                "mention_already_processed",
+                ticket_id=ticket_id,
+                comment_id=raw_comment_id,
+            )
+            return TriggerMessageResult(
+                True,
+                "mention_already_processed",
+                ticket_id,
+                source,
+            )
+    if source == "mention_candidate":
+        if mention_tracker is None:
+            raise RuntimeError("mention_tracker is required for mention candidates")
+        comment_id = str(
+            msg.get("comment_id") or msg.get("latest_comment_id") or ""
+        ).strip()
+        if not comment_id:
+            logger.warning(
+                "mention_candidate_missing_comment_id",
+                ticket_id=ticket_id,
+            )
+            return TriggerMessageResult(
+                True,
+                "mention_candidate_invalid",
+                ticket_id,
+                source,
+            )
+        if mention_tracker.is_processed(comment_id):
+            logger.info(
+                "mention_candidate_already_processed",
+                ticket_id=ticket_id,
+                comment_id=comment_id,
+            )
+            return TriggerMessageResult(
+                True,
+                "mention_already_processed",
+                ticket_id,
+                source,
+            )
+        try:
+            comment = await _fetch_mention_candidate_comment(ticket_id, comment_id)
+        except Exception as error:
+            logger.warning(
+                "mention_candidate_materialization_failed",
+                ticket_id=ticket_id,
+                comment_id=comment_id,
+                error_type=type(error).__name__,
+            )
+            raise TriggerDeferredError(
+                "ticket_not_materialized",
+                delay_seconds=30.0,
+            ) from error
+        if comment is None:
+            raise TriggerDeferredError(
+                "ticket_not_materialized",
+                delay_seconds=30.0,
+            )
+
+        matched_trigger = is_any_mention(
+            comment,
+            configured_mention_triggers(cfg.zendesk),
+        )
+        if not matched_trigger:
+            mention_tracker.mark_processed(comment_id)
+            logger.info(
+                "mention_candidate_invalid",
+                ticket_id=ticket_id,
+                comment_id=comment_id,
+            )
+            return TriggerMessageResult(
+                True,
+                "mention_candidate_invalid",
+                ticket_id,
+                source,
+            )
+
+        body = str(comment.get("body") or "")[:500]
+        # Keep the durable candidate payload immutable. If shutdown happens
+        # after dispatch but before ACK, the released row must replay through
+        # the candidate/tracker fence instead of becoming a second raw mention.
+        msg = {
+            **msg,
+            "source": "mention",
+            "comment_id": comment_id,
+            "hint": f"[来自 @mention 的请求]\n{body}",
+            "_queue_key": f"mention:{comment_id}",
+        }
+        source = "mention"
+        logger.info(
+            "mention_candidate_validated",
+            ticket_id=ticket_id,
+            comment_id=comment_id,
+            trigger=matched_trigger,
+        )
     if source == "silence_expired_ask":
         # Old durable rows are upgraded in place to the v2 wake path.  They
         # must never recreate a legacy generic ask after cutover.
@@ -182,6 +300,17 @@ async def handle_trigger_message(
                     "post_agent_cooldown",
                     delay_seconds=remaining_seconds,
                 )
+            if not direct_dispatch.dispatched:
+                # A stale-generation or active-session coalesce did not
+                # consume this mention. Keep the durable candidate retryable;
+                # marking its tracker here would lose the request forever.
+                raise TriggerDeferredError(
+                    "mention_dispatch_not_committed",
+                    delay_seconds=5.0,
+                )
+            comment_id = str(msg.get("comment_id") or "").strip()
+            if mention_tracker is not None and comment_id:
+                mention_tracker.mark_processed(comment_id)
             return TriggerMessageResult(
                 True,
                 "direct_dispatch",

@@ -30,6 +30,7 @@ def admit_customer_fields(
     *,
     proposed_fields: tuple[str, ...],
     identity_status: ResolutionStatus,
+    identity_has_candidates: bool = False,
     attachment_resend_allowed: bool = True,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     proposed = tuple(dict.fromkeys(proposed_fields))
@@ -49,8 +50,13 @@ def admit_customer_fields(
     if not identity_fields:
         return tuple(approved), tuple(rejected)
     rejected.extend(identity_fields)
-    if identity_status in {ResolutionStatus.AMBIGUOUS, ResolutionStatus.CONFLICT}:
+    if identity_status is ResolutionStatus.AMBIGUOUS or (
+        identity_status is ResolutionStatus.CONFLICT and identity_has_candidates
+    ):
         approved.append("target_workspace_choice")
-    elif identity_status is ResolutionStatus.NO_MEMBERSHIP:
+    elif identity_status in {
+        ResolutionStatus.CONFLICT,
+        ResolutionStatus.NO_MEMBERSHIP,
+    }:
         approved.append("target_workspace_identity")
     return tuple(dict.fromkeys(approved)), tuple(dict.fromkeys(rejected))

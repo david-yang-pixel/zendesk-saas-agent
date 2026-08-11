@@ -641,6 +641,81 @@ def test_true_identity_ambiguity_allows_only_minimum_workspace_choice() -> None:
     assert decision.required_customer_fields == ("target_workspace_choice",)
 
 
+def test_identity_ambiguity_forces_workspace_choice_when_model_omits_it() -> None:
+    """The safe clarification must not depend on the model proposing a field."""
+    identity = IdentityResolution(
+        contact_email="owner@example.com",
+        target_identity="owner@example.com",
+        status=ResolutionStatus.AMBIGUOUS,
+        candidates=(
+            WorkspaceCandidate(tenant_id=TENANT_1, workspace_name="One"),
+            WorkspaceCandidate(tenant_id=TENANT_2, workspace_name="Two"),
+        ),
+        evidence_ids=("ev-memberships",),
+    )
+
+    result = build_case_assessment(
+        context=_context(identity),
+        proposal=AssessmentProposal(
+            question="Why is my API quota 5,000?",
+            answer_status=AnswerStatus.INSUFFICIENT,
+        ),
+        evidence=(),
+        as_of=NOW,
+    )
+    decision = decide_disposition(result.assessment)
+
+    assert result.assessment.blocking_failure is None
+    assert result.assessment.customer_only_fields == ("target_workspace_choice",)
+    assert decision.disposition is Disposition.AWAITING_CUSTOMER
+    assert decision.required_customer_fields == ("target_workspace_choice",)
+
+
+def test_supported_general_answer_does_not_carry_workspace_clarification() -> None:
+    identity = IdentityResolution(
+        contact_email="owner@example.com",
+        target_identity="owner@example.com",
+        status=ResolutionStatus.AMBIGUOUS,
+        candidates=(
+            WorkspaceCandidate(tenant_id=TENANT_1, workspace_name="One"),
+            WorkspaceCandidate(tenant_id=TENANT_2, workspace_name="Two"),
+        ),
+        evidence_ids=("ev-memberships",),
+    )
+    claim = Claim(
+        claim_id="claim-docs",
+        statement="Dify supports API requests from published applications.",
+        role=ClaimRole.PRODUCT_FACT,
+        status=ClaimStatus.CONFIRMED,
+        supporting_evidence_ids=("ev-docs",),
+        public_allowed=True,
+    )
+    evidence = EvidenceItem(
+        evidence_id="ev-docs",
+        call_id="call-docs",
+        source="help-center",
+        authority=EvidenceAuthority.CURRENT_SUPPORTING,
+        result_status=EvidenceResultStatus.SUCCESS,
+        observed_at=NOW,
+        supports_roles=(ClaimRole.PRODUCT_FACT,),
+        payload={"fact": "published applications can receive API requests"},
+    )
+
+    result = build_case_assessment(
+        context=_context(identity),
+        proposal=AssessmentProposal(
+            question="Does Dify support API requests?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(claim,),
+        ),
+        evidence=(evidence,),
+        as_of=NOW,
+    )
+
+    assert result.assessment.answer_status is AnswerStatus.SUPPORTED
+    assert result.assessment.customer_only_fields == ()
+
+
 def test_pending_identity_lookup_uses_retry_even_without_model_requested_field() -> (
     None
 ):
@@ -834,7 +909,13 @@ def test_explicit_refund_request_with_bound_billing_maps_to_billing() -> None:
     )
     context = CaseContext(
         ticket=_ticket().model_copy(
-            update={"questions": ("Please approve a refund for this renewal.",)},
+            update={
+                "questions": (
+                    "Please approve a refund for this renewal.",
+                    "Workspace One",
+                ),
+                "active_question": "Please approve a refund for this renewal.",
+            },
         ),
         built_at=NOW,
         identity=identity,

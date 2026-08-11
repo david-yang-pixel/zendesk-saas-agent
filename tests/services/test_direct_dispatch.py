@@ -102,6 +102,7 @@ async def test_direct_source_dispatches_with_hint(tmp_path) -> None:
     assert result.dispatched is True
     assert result.action == "dispatch"
     assert state.get(12345).state == "processing"
+    assert state.get(12345).pending_trigger_hint == "please rerun"
     manager.dispatch.assert_awaited_once_with(
         12345,
         dry_run=False,
@@ -123,6 +124,8 @@ async def test_silence_retry_binds_the_durable_attempt_to_v2_session(tmp_path) -
             silence_window_end=_now() - timedelta(seconds=1),
             last_verdict="agent_retry",
             consecutive_agent_failures=2,
+            pending_customer_fields=("target_workspace_choice",),
+            pending_issue_question="Please approve a refund for this renewal.",
         ),
     )
     current = state.get(12345)
@@ -154,6 +157,10 @@ async def test_silence_retry_binds_the_durable_attempt_to_v2_session(tmp_path) -
 
     assert result.dispatched is True
     assert sessions[0].casework_attempt == 3
+    assert sessions[0].prior_customer_required_fields == ("target_workspace_choice",)
+    assert (
+        sessions[0].prior_issue_question == "Please approve a refund for this renewal."
+    )
 
 
 @pytest.mark.asyncio

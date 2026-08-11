@@ -109,8 +109,9 @@ async def test_scan_once_dispatches_mention(queue, tracker):
     assert msg["ticket_id"] == 2316
     assert msg["comment_id"] == "c2"
     assert "saas-agent" in msg["hint"]
-    # tracker should mark this comment processed
-    assert tracker.is_processed("c2")
+    # The consumer marks only after a committed dispatch. Marking at enqueue
+    # would race a signed webhook candidate and could cause duplicate sessions.
+    assert not tracker.is_processed("c2")
 
 
 @pytest.mark.asyncio
@@ -174,7 +175,7 @@ async def test_scan_once_skips_api_mention_when_agent_user_id_is_unconfigured(
 
 
 @pytest.mark.asyncio
-async def test_scan_once_marks_processed_only_after_durable_put(tracker):
+async def test_scan_once_does_not_mark_before_consumer_dispatch(tracker):
     class FailingQueue:
         async def put(self, _message):
             raise RuntimeError("queue unavailable")
@@ -206,6 +207,95 @@ async def test_scan_once_marks_processed_only_after_durable_put(tracker):
             )
 
     assert not tracker.is_processed("c-durable")
+
+
+@pytest.mark.asyncio
+async def test_scan_once_does_not_mark_when_webhook_candidate_owns_queue_key(tracker):
+    class DuplicateQueue:
+        async def put(self, _message):
+            return False
+
+    fake_call, _state = _mcp_call(
+        search_resp={"results": [_ticket(2316)]},
+        comments_by_ticket={
+            2316: {"comments": [_comment("c-webhook", "@saas-agent please check")]},
+        },
+    )
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+
+        dispatched, _ = await scan_once(
+            trigger_queue=DuplicateQueue(),
+            tracker=tracker,
+            last_poll_unix=time.time() - 600,
+        )
+
+    assert dispatched == 0
+    assert not tracker.is_processed("c-webhook")
+
+
+@pytest.mark.asyncio
+async def test_scan_once_retries_same_update_after_candidate_queue_conflict(tracker):
+    class CandidateRaceQueue:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def put(self, _message):
+            self.calls += 1
+            return self.calls > 1
+
+    ticket = {
+        **_ticket(2316),
+        "updated_at": "2026-08-12T00:00:00Z",
+    }
+    fake_call, _state = _mcp_call(
+        search_resp={"results": [ticket]},
+        comments_by_ticket={
+            2316: {"comments": [_comment("c-race", "@saas-agent please check")]},
+        },
+    )
+    update_cache: dict[int, str] = {}
+    queue = CandidateRaceQueue()
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+
+        first, cursor = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=time.time() - 600,
+            ticket_update_cache=update_cache,
+        )
+        second, _ = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=cursor,
+            ticket_update_cache=update_cache,
+        )
+
+    assert first == 0
+    assert second == 1
+    assert queue.calls == 2
+    assert not tracker.is_processed("c-race")
 
 
 @pytest.mark.asyncio
@@ -287,7 +377,7 @@ async def test_scan_once_finds_mentions_after_first_comment_page(queue, tracker)
     msg = queue.get_nowait()
     assert msg["ticket_id"] == 2861
     assert msg["comment_id"] == "c11"
-    assert tracker.is_processed("c11")
+    assert not tracker.is_processed("c11")
 
 
 @pytest.mark.asyncio
@@ -408,6 +498,137 @@ async def test_scan_once_searches_with_overlap_window(queue, tracker):
     )
     assert f"updated>{expected_since}" in query
     assert query.startswith("status<solved ")
+
+
+@pytest.mark.asyncio
+async def test_five_second_polling_does_not_refetch_unchanged_ticket_comments(
+    queue,
+    tracker,
+):
+    """The overlap window stays safe without multiplying comment API reads."""
+    ticket = {
+        **_ticket(3726),
+        "updated_at": "2026-08-11T16:43:10Z",
+    }
+    fake_call, state = _mcp_call(
+        search_resp={"results": [ticket]},
+        comments_by_ticket={3726: {"comments": []}},
+    )
+    update_cache: dict[int, str] = {}
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+
+        _, cursor = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=time.time() - 60,
+            ticket_update_cache=update_cache,
+        )
+        await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=cursor,
+            ticket_update_cache=update_cache,
+        )
+
+    assert len(state["search_args"]) == 2
+    assert state["comment_args"] == [
+        {"ticket_id": 3726, "page": 1, "per_page": 100},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_update_cache_forgets_tickets_outside_the_current_overlap_window(
+    queue,
+    tracker,
+):
+    ticket = {**_ticket(3726), "updated_at": "2026-08-11T16:43:10Z"}
+    fake_call, _state = _mcp_call(
+        search_resp={"results": [ticket]},
+        comments_by_ticket={3726: {"comments": []}},
+    )
+    update_cache = {9999: "2026-08-01T00:00:00Z"}
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+        await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=time.time() - 60,
+            ticket_update_cache=update_cache,
+        )
+
+    assert update_cache == {3726: "2026-08-11T16:43:10Z"}
+
+
+@pytest.mark.asyncio
+async def test_update_cache_does_not_hide_a_second_unprocessed_mention(queue, tracker):
+    ticket = {
+        **_ticket(3726),
+        "updated_at": "2026-08-11T16:43:10Z",
+    }
+    fake_call, _state = _mcp_call(
+        search_resp={"results": [ticket]},
+        comments_by_ticket={
+            3726: {
+                "comments": [
+                    _comment("c1", "@saas-agent first request"),
+                    _comment("c2", "@saas-agent second request"),
+                ]
+            }
+        },
+    )
+    update_cache: dict[int, str] = {}
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+
+        _, cursor = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=time.time() - 60,
+            ticket_update_cache=update_cache,
+        )
+        # The consumer owns the processed marker after its dispatch commits.
+        # Once c2 completes, the next scan must drain c1 despite an unchanged
+        # Zendesk updated_at value.
+        tracker.mark_processed("c2")
+        await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=cursor,
+            ticket_update_cache=update_cache,
+        )
+
+    assert [queue.get_nowait()["comment_id"] for _ in range(2)] == ["c2", "c1"]
 
 
 @pytest.mark.asyncio

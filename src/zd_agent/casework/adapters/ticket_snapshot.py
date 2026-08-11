@@ -139,6 +139,22 @@ def build_ticket_snapshot(
     if not latest_id:
         raise ValueError("latest customer message requires an event ID")
     form = extract_form_data_from_msgs(customer_messages)
+    questions = _questions(customer_messages)
+    identity_clarification_pending = bool(
+        {
+            "target_workspace_choice",
+            "target_workspace_identity",
+        }
+        & set(session.prior_customer_required_fields)
+    )
+    active_question = (
+        session.prior_issue_question
+        if identity_clarification_pending and session.prior_issue_question
+        else (questions[-1] if questions else "")
+    )
+    customer_workspace_hint = (
+        questions[-1] if identity_clarification_pending and questions else ""
+    )
     return TicketSnapshot(
         ticket_id=session.ticket_id,
         generation=session.customer_context_generation,
@@ -147,7 +163,9 @@ def build_ticket_snapshot(
         locale=str(ticket.get("locale") or ""),
         latest_event_id=latest_id,
         latest_event_at=_required_event_time(latest.get("created_at")),
-        questions=_questions(customer_messages),
+        questions=questions,
+        active_question=active_question,
+        customer_workspace_hint=customer_workspace_hint,
         customer_messages=_customer_message_events(customer_messages),
         form_identity=FormIdentity(
             email=form.get("email", ""),

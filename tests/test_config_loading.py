@@ -6,7 +6,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from zd_agent.config import IntakeConfig, LLMConfig, load_config
+from zd_agent.config import IntakeConfig, LLMConfig, ZendeskConfig, load_config
 
 
 SAAS_CONFIG_YAML = """
@@ -297,6 +297,19 @@ def test_config_loads_zendesk_mention_aliases(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.zendesk.mention_trigger == "@saas-bot"
     assert cfg.zendesk.mention_aliases == ["@yonggang"]
+
+
+def test_default_mention_polling_meets_interactive_latency_budget() -> None:
+    interval = ZendeskConfig().mention_poll_interval_seconds
+    assert 0 < interval <= 5
+
+
+def test_repository_config_meets_mention_latency_budget() -> None:
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    interval = raw["zendesk"]["mention_poll_interval_seconds"]
+    assert 0 < interval <= 5
 
 
 def test_config_resolves_repos_base_dir_under_resources(saas_env, saas_config_file):

@@ -21,6 +21,7 @@ from zd_agent.services.trigger_delay import with_trigger_delay
 
 logger = get_logger(module="services.zendesk_webhook")
 SIGNATURE_MAX_AGE_SECONDS = 300
+MENTION_CANDIDATE_EVENT = "agent_mention_candidate"
 
 
 def _signature_timestamp_seconds(timestamp: str) -> float:
@@ -84,24 +85,37 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     if not ticket_id:
         return web.Response(status=400, text="missing ticket_id")
 
-    body_hash = hashlib.sha256(body).hexdigest()
     comment_id = event.get("latest_comment_id")
+    is_mention_candidate = event.get("event") == MENTION_CANDIDATE_EVENT
+    if is_mention_candidate and not comment_id:
+        return web.Response(status=400, text="missing latest_comment_id")
+
+    body_hash = hashlib.sha256(body).hexdigest()
     key = f"{ticket_id}:{body_hash}"
     dedup = webhook_dedup(request.app)
     if dedup.seen(key):
         logger.info("zendesk_webhook_dup", key=key, comment_id=comment_id)
         return web.Response(status=200, text="dup")
     queue = trigger_queue(request.app)
-    message = with_trigger_delay(
-        {
-            "source": "zendesk_webhook",
+    if is_mention_candidate:
+        normalized_comment_id = str(comment_id)
+        message = {
+            "source": "mention_candidate",
             "ticket_id": ticket_id,
-            "event": event,
-            "_queue_key": f"zendesk:{key}",
-        },
-        delay_seconds=cfg.public_reply.silent_initial_wait_seconds,
-        now_fn=time.time,
-    )
+            "comment_id": normalized_comment_id,
+            "_queue_key": f"mention:{normalized_comment_id}",
+        }
+    else:
+        message = with_trigger_delay(
+            {
+                "source": "zendesk_webhook",
+                "ticket_id": ticket_id,
+                "event": event,
+                "_queue_key": f"zendesk:{key}",
+            },
+            delay_seconds=cfg.public_reply.silent_initial_wait_seconds,
+            now_fn=time.time,
+        )
     try:
         await queue.put(message)
     except Exception as error:

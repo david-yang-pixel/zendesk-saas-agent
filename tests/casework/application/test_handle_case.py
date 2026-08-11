@@ -395,3 +395,49 @@ async def test_retry_pending_run_does_not_compose_a_reply() -> None:
     assert run.reply_draft is None
     assert run.delivery_attempted is False
     assert writer.calls == 0
+
+
+async def test_ambiguous_form_email_asks_workspace_when_model_omits_field() -> None:
+    investigator = FakeInvestigator(
+        InvestigationResult(
+            proposal=AssessmentProposal(
+                question="Why is my API quota 5,000?",
+                answer_status=AnswerStatus.INSUFFICIENT,
+            ),
+        ),
+    )
+    ambiguous_lookup = WorkspaceMembershipLookup(
+        email="owner@example.com",
+        status=LookupStatus.SUCCESS,
+        candidates=(
+            WorkspaceCandidate(
+                tenant_id=TENANT,
+                workspace_name="Workspace One",
+                role="owner",
+            ),
+            WorkspaceCandidate(
+                tenant_id="22222222-2222-4222-8222-222222222222",
+                workspace_name="Workspace Two",
+                role="admin",
+            ),
+        ),
+        evidence_id="ev-memberships",
+    )
+    orchestrator = CaseworkOrchestrator(
+        context_builder=_context_builder(identity_lookup=ambiguous_lookup),
+        investigator=investigator,
+        reply_composer=ReplyComposer(
+            writer=PolicyReplyWriter(),
+            reviewer=NoOpReplyReviewer(),
+        ),
+        clock=FakeClock(),
+    )
+
+    run = await orchestrator.run(ticket=_ticket(), billing_required=True)
+
+    assert investigator.calls == 1
+    assert run.decision.disposition is Disposition.AWAITING_CUSTOMER
+    assert run.decision.required_customer_fields == ("target_workspace_choice",)
+    assert run.reply_draft is not None
+    assert "more than one workspace" in run.reply_draft.body
+    assert "name of the affected workspace" in run.reply_draft.body

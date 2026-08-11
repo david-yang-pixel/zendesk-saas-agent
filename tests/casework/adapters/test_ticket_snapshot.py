@@ -228,6 +228,33 @@ def test_repeated_latest_issue_remains_the_last_question() -> None:
     assert snapshot.questions[-1] == "Issue A"
 
 
+def test_workspace_clarification_keeps_the_original_issue_active() -> None:
+    session = AgentSession(ticket_id=4321)
+    session.prior_customer_required_fields = ("target_workspace_choice",)
+    session.prior_issue_question = "Please approve a refund for this renewal."
+
+    snapshot = build_ticket_snapshot(
+        session=session,
+        customer_messages=[
+            {
+                "id": "issue-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "body": "Please approve a refund for this renewal.",
+            },
+            {
+                "id": "workspace-2",
+                "created_at": "2026-08-11T07:01:00Z",
+                "body": "Workspace One",
+            },
+        ],
+        ticket={"status": "open"},
+    )
+
+    assert snapshot.questions[-1] == "Workspace One"
+    assert snapshot.active_question == "Please approve a refund for this renewal."
+    assert snapshot.customer_workspace_hint == "Workspace One"
+
+
 def test_ticket_snapshot_uses_only_current_ticket_requester_email() -> None:
     session = AgentSession(ticket_id=4321)
 

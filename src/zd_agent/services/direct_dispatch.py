@@ -136,6 +136,12 @@ async def handle_direct_dispatch_source(
         session.casework_attempt = (
             previous_state.consecutive_agent_failures if previous_state else 0
         ) + 1
+        session.prior_customer_required_fields = (
+            previous_state.pending_customer_fields if previous_state else ()
+        )
+        session.prior_issue_question = (
+            previous_state.pending_issue_question if previous_state else ""
+        )
 
         def _claim_generation(current: TicketState | None) -> TicketState:
             processing_state = (
@@ -146,6 +152,8 @@ async def handle_direct_dispatch_source(
             processing_state.state = "processing"
             processing_state.active_session_id = session_id
             processing_state.delivery_attempt_id = delivery_attempt_id
+            if source == "mention" and hint:
+                processing_state.pending_trigger_hint = str(hint)[:550]
             return processing_state
 
         commit = state.update_if_revision(

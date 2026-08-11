@@ -235,6 +235,14 @@ class DurableTriggerQueue:
         )
 
     async def resolve_dead_letter(self, message: dict[str, Any]) -> bool:
+        if message.get("source") == "mention_candidate":
+            # A candidate is only an untrusted discovery hint. Its independent
+            # poller fallback must be able to reuse ``mention:<comment_id>``
+            # after a bounded materialization failure.
+            return await asyncio.to_thread(
+                self._store.discard_dead_letter,
+                _event_id(message),
+            )
         return await asyncio.to_thread(
             self._store.resolve_dead_letter,
             _event_id(message),

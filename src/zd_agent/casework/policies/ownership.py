@@ -269,7 +269,10 @@ def admit_action_proposal(
         return None, ""
     errors = (
         _required_claim_error(proposal.requirement, admitted_claims),
-        _question_error(proposal.requirement, context.ticket.questions[-1]),
+        _question_error(
+            proposal.requirement,
+            context.ticket.active_question or context.ticket.questions[-1],
+        ),
         _billing_error(proposal.requirement, context),
     )
     if error := next((value for value in errors if value), ""):

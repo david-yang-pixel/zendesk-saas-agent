@@ -207,7 +207,24 @@ API key changes.
        "updated_at": "{{ticket.updated_at}}"
      }
      ```
-5. 为 Zendesk Messaging 的 `messaging_ticket.message_added` 事件创建独立 webhook：
+5. 为内部备注 `@mention` 创建独立的低延迟 Trigger（代码部署完成后再启用）：
+   - Conditions（ALL）：Tags contain `saas`；Comment is Private；Ticket is Updated
+   - 不要限制 `Status = New`，也不要在 Zendesk 中按 mention 文本过滤
+   - Action：Notify the same signed Tickets webhook
+   - Body (JSON)：
+     ```json
+     {
+       "event": "agent_mention_candidate",
+       "ticket_id": "{{ticket.id}}",
+       "latest_comment_id": "{{ticket.latest_comment.id}}",
+       "updated_at": "{{ticket.updated_at}}"
+     }
+     ```
+   - 该事件只是候选信号；Agent 会重新读取精确 comment，并复用 private-note、alias
+     和 self-loop 检查后才派发。候选与 5 秒轮询兜底共享 `mention:<comment_id>`
+     幂等键。
+   - Rollback：先停用这条专用 Trigger；轮询兜底继续运行。
+6. 为 Zendesk Messaging 的 `messaging_ticket.message_added` 事件创建独立 webhook：
    - Endpoint: `https://<agent-public-domain>/webhook/zendesk-messaging`
    - Secret: `ZENDESK_MESSAGING_WEBHOOK_SECRET`，不得复用 Tickets webhook secret
    - 这条入口负责客户实时追问；waiting poller 只作为 300 秒低频丢事件兜底

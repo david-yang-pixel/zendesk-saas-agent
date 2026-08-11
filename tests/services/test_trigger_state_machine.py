@@ -102,6 +102,8 @@ def test_confirmed_ask_projects_to_awaiting_customer(tmp_path):
     session.status = SessionStatus.COMPLETED
     session.reply_sent = True
     session.casework_disposition = "awaiting_customer"
+    session.casework_required_customer_fields = ("target_workspace_choice",)
+    session.casework_question = "Please approve a refund for this renewal."
     session.customer_msgs_snapshot_captured = True
     session.customer_msgs_snapshot_last_id = "customer-2"
 
@@ -112,6 +114,8 @@ def test_confirmed_ask_projects_to_awaiting_customer(tmp_path):
     assert record.state == "awaiting_customer"
     assert record.last_verdict == "awaiting_customer"
     assert record.last_customer_comment_id == "customer-2"
+    assert record.pending_customer_fields == ("target_workspace_choice",)
+    assert record.pending_issue_question == "Please approve a refund for this renewal."
 
 
 def test_confirmed_reply_with_pending_typed_owner_stays_generation_fenced(tmp_path):

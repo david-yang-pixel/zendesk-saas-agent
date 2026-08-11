@@ -129,7 +129,12 @@ def register_background_lifecycle(
             )
         )
         _app[TRIGGER_TASK_KEY] = create_task_fn(
-            trigger_consumer_fn(trigger_queue, manager, state),
+            trigger_consumer_fn(
+                trigger_queue,
+                manager,
+                state,
+                mention_tracker=mention_tracker,
+            ),
         )
         logger.info("saas_app_started", port=cfg.webhook.listen_port)
 

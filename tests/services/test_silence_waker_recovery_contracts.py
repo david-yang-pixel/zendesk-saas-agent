@@ -198,6 +198,7 @@ async def test_deferred_mention_always_wakes_agent_after_sixty_seconds(
             last_comment_ts=_NOW - timedelta(seconds=5),
             last_verdict=last_verdict,
             active_session_id=session.session_id,
+            pending_trigger_hint="[from mention] verify the paid quota",
         ),
     )
 
@@ -218,4 +219,5 @@ async def test_deferred_mention_always_wakes_agent_after_sixty_seconds(
     assert retry["source"] == "silence_waker"
     assert retry["ticket_id"] == _TICKET_ID
     assert retry["expected_state_revision"] == state.get(_TICKET_ID).state_revision
+    assert retry["hint"] == "[from mention] verify the paid quota"
     assert state.get(_TICKET_ID).state == "in_silence_window"

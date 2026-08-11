@@ -55,9 +55,17 @@ class AgentSession:
     casework_delivery_state: str = ""
     casework_ownership_state: str = ""
     casework_effect_reference: str = ""
+    casework_required_customer_fields: tuple[str, ...] = ()
+    casework_question: str = ""
     casework_attempt: int = 1
     archived: bool = False
     error_message: str = ""
+
+    # Durable clarification provenance inherited from the prior customer ask.
+    # The latest customer message may be a workspace answer, not a replacement
+    # for the original support question.
+    prior_customer_required_fields: tuple[str, ...] = ()
+    prior_issue_question: str = ""
 
     # 额外提示
     hint: str = ""

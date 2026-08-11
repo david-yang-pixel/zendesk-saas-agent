@@ -65,7 +65,7 @@ class ZendeskConfig(BaseModel):
     search_query: str = "status:new tags:saas"
     mention_trigger: str = "@saas-bot"
     mention_aliases: list[str] = Field(default_factory=list)
-    mention_poll_interval_seconds: int = 60
+    mention_poll_interval_seconds: int = 5
     # 我（agent）在 Zendesk 上的 user_id；用于区分评论作者是否为自动回复作者。
     agent_user_id: int = 0
     # Zendesk Messaging / 队列自动化身份，不算人工受托人。

@@ -197,6 +197,16 @@ async def _own_dead_lettered_trigger(
     runtime_failure_ownership_fn: HandleMessageFn | None = None,
 ) -> bool:
     """Persist typed v2 ownership for one terminal queue failure."""
+    if message.get("source") == "mention_candidate":
+        # A signed mention candidate is only a discovery hint. If Zendesk never
+        # materializes the referenced comment, resolve it without customer or
+        # ownership writes; the independent poller remains the fallback.
+        logger.warning(
+            "mention_candidate_dead_letter_ignored",
+            ticket_id=message.get("ticket_id"),
+            comment_id=message.get("comment_id"),
+        )
+        return True
     try:
         ticket_id = int(message["ticket_id"])
     except (KeyError, TypeError, ValueError):
@@ -437,6 +447,7 @@ async def run_trigger_consumer(
     handle_message_fn: HandleMessageFn = handle_trigger_message,
     human_takeover_fn: HandleMessageFn | None = None,
     runtime_failure_ownership_fn: HandleMessageFn | None = None,
+    mention_tracker: Any | None = None,
 ) -> None:
     """Consume trigger queue messages and delegate one-message handling."""
     cfg = cfg or get_config()
@@ -467,6 +478,7 @@ async def run_trigger_consumer(
                     cfg=cfg,
                     log_path=log_path,
                     human_takeover_fn=human_takeover_fn,
+                    mention_tracker=mention_tracker,
                 )
             except TriggerDeferredError as error:
                 deferred = await _defer_message(queue, msg, error)
@@ -533,6 +545,7 @@ async def run_saas_trigger_consumer(
     cfg: Any | None = None,
     log_path: Path | None = None,
     handle_message_fn: HandleMessageFn = handle_trigger_message,
+    mention_tracker: Any | None = None,
 ) -> None:
     """Run the SaaS trigger consumer with default action adapters."""
     from zd_agent.services.external_ownership import record_human_takeover
@@ -545,4 +558,5 @@ async def run_saas_trigger_consumer(
         log_path=log_path,
         handle_message_fn=handle_message_fn,
         human_takeover_fn=record_human_takeover,
+        mention_tracker=mention_tracker,
     )

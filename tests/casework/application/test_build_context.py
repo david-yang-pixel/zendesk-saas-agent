@@ -31,8 +31,10 @@ class FakeClock:
 class FakeIdentityReader:
     def __init__(self, lookups: dict[str, WorkspaceMembershipLookup]) -> None:
         self._lookups = lookups
+        self.seen_emails: list[str] = []
 
     async def find_workspaces(self, email: str) -> WorkspaceMembershipLookup:
+        self.seen_emails.append(email)
         return self._lookups[email]
 
 
@@ -65,6 +67,8 @@ def _ticket(
     *,
     email: str = "owner@example.com",
     workspace_id: str = "",
+    questions: tuple[str, ...] = ("Why is this failing?",),
+    customer_workspace_hint: str = "",
     attachments: tuple[AttachmentRef, ...] = (),
 ) -> TicketSnapshot:
     return TicketSnapshot(
@@ -75,7 +79,8 @@ def _ticket(
         locale="en-US",
         latest_event_id="event-3",
         latest_event_at=NOW,
-        questions=("Why is this failing?",),
+        questions=questions,
+        customer_workspace_hint=customer_workspace_hint,
         form_identity=FormIdentity(email=email, workspace_id=workspace_id),
         requester_email="requester@example.com",
         attachments=attachments,
@@ -157,6 +162,72 @@ async def test_workspace_email_target_and_form_contact_are_both_resolved() -> No
         f"ev-membership-{TENANT_2}",
     }
     assert billing_reader.seen_tenants == [TENANT_2]
+
+
+async def test_customer_supplied_workspace_email_is_looked_up_on_the_next_run() -> None:
+    identity_reader = FakeIdentityReader(
+        {
+            "owner@example.com": WorkspaceMembershipLookup(
+                email="owner@example.com",
+                status=LookupStatus.SUCCESS,
+                evidence_id="ev-owner-empty",
+            ),
+            "workspace-owner@example.com": _membership(
+                "workspace-owner@example.com",
+                TENANT_2,
+                "Target",
+            ),
+        },
+    )
+
+    context = await CaseContextBuilder(
+        identity_reader=identity_reader,
+        billing_reader=FakeBillingReader({}),
+        clock=FakeClock(),
+    ).build(
+        _ticket(
+            questions=("Original billing issue", "workspace-owner@example.com"),
+            customer_workspace_hint="workspace-owner@example.com",
+        ),
+        billing_required=False,
+    )
+
+    assert context.identity.status is ResolutionStatus.RESOLVED
+    assert context.identity.selected_tenant_id == TENANT_2
+
+
+async def test_ordinary_free_text_email_cannot_override_form_workspace() -> None:
+    identity_reader = FakeIdentityReader(
+        {
+            "owner@example.com": _membership(
+                "owner@example.com",
+                TENANT_1,
+                "Form workspace",
+            ),
+            "victim@example.com": _membership(
+                "victim@example.com",
+                TENANT_2,
+                "Unrelated workspace",
+            ),
+        },
+    )
+
+    context = await CaseContextBuilder(
+        identity_reader=identity_reader,
+        billing_reader=FakeBillingReader({}),
+        clock=FakeClock(),
+    ).build(
+        _ticket(
+            email="owner@example.com",
+            workspace_id=TENANT_1,
+            questions=("Please inspect victim@example.com",),
+        ),
+        billing_required=False,
+    )
+
+    assert context.identity.status is ResolutionStatus.RESOLVED
+    assert context.identity.selected_tenant_id == TENANT_1
+    assert identity_reader.seen_emails == ["owner@example.com"]
 
 
 async def test_identity_reader_failure_stays_internal_and_skips_billing() -> None:

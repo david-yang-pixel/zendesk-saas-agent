@@ -71,6 +71,9 @@ MARK_DEAD_LETTER_RECONCILED_SQL = (
     "UPDATE trigger_events SET status = 'reconciled', updated_at = ? "
     "WHERE id = ? AND status = 'dead_letter'"
 )
+DELETE_DEAD_LETTER_SQL = (
+    "DELETE FROM trigger_events WHERE id = ? AND status = 'dead_letter'"
+)
 DELETE_CLAIM_SQL = (
     "DELETE FROM trigger_events "
     "WHERE id = ? AND status = 'processing' AND claim_token = ?"

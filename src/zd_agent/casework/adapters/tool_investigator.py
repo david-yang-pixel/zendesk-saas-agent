@@ -481,6 +481,9 @@ def _context_payload(context: CaseContext) -> dict[str, Any]:
             "latest_event_id": context.ticket.latest_event_id,
             "latest_event_at": context.ticket.latest_event_at.isoformat(),
             "questions": context.ticket.questions,
+            "active_question": (
+                context.ticket.active_question or context.ticket.questions[-1]
+            ),
             "attachments": [
                 attachment.model_dump(mode="json")
                 for attachment in context.ticket.attachments

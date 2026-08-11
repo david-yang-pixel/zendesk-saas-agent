@@ -94,6 +94,31 @@ def test_model_identity_evidence_is_only_a_target_binding() -> None:
     assert identity_evidence.supports_roles == ()
 
 
+def test_model_keeps_original_issue_after_workspace_clarification() -> None:
+    context = _resolved_context()
+    context = context.model_copy(
+        update={
+            "ticket": context.ticket.model_copy(
+                update={
+                    "questions": (
+                        "Please approve a refund for this renewal.",
+                        "Workspace One",
+                    ),
+                    "active_question": "Please approve a refund for this renewal.",
+                }
+            )
+        }
+    )
+
+    result = investigation_result_from_content(
+        context=context,
+        evidence=(),
+        content=json.dumps({"answer_status": "insufficient"}),
+    )
+
+    assert result.proposal.question == "Please approve a refund for this renewal."
+
+
 def test_model_binds_visual_observation_to_current_ticket() -> None:
     context = _resolved_context()
     content = json.dumps(

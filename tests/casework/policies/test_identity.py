@@ -88,6 +88,47 @@ def test_unique_exact_candidate_name_disambiguates_multiple_memberships() -> Non
     assert resolution.selected_tenant_id == TENANT_2
 
 
+def test_customer_reply_exact_name_disambiguates_email_memberships() -> None:
+    resolution = resolve_workspace_identity(
+        form_email="owner@example.com",
+        form_workspace_id="",
+        requester_email="",
+        customer_workspace_hint="  ＡＣＭＥ   Support  ",
+        lookups=(
+            _lookup(
+                "owner@example.com",
+                _candidate(TENANT_1, "Other"),
+                _candidate(TENANT_2, "acme support"),
+            ),
+        ),
+        form_evidence_id="ev-form",
+    )
+
+    assert resolution.status is ResolutionStatus.RESOLVED
+    assert resolution.method is ResolutionMethod.UNIQUE_EXACT_CANDIDATE_NAME
+    assert resolution.selected_tenant_id == TENANT_2
+
+
+def test_customer_reply_cannot_override_a_conflicting_form_workspace_name() -> None:
+    resolution = resolve_workspace_identity(
+        form_email="owner@example.com",
+        form_workspace_id="Other",
+        requester_email="",
+        customer_workspace_hint="Acme Support",
+        lookups=(
+            _lookup(
+                "owner@example.com",
+                _candidate(TENANT_1, "Other"),
+                _candidate(TENANT_2, "Acme Support"),
+            ),
+        ),
+        form_evidence_id="ev-form",
+    )
+
+    assert resolution.status is ResolutionStatus.AMBIGUOUS
+    assert resolution.selected_tenant_id == ""
+
+
 def test_duplicate_candidate_name_remains_ambiguous() -> None:
     resolution = resolve_workspace_identity(
         form_email="owner@example.com",
@@ -118,6 +159,42 @@ def test_canonical_workspace_id_must_belong_to_email_candidates() -> None:
 
     assert resolution.status is ResolutionStatus.CONFLICT
     assert resolution.selected_tenant_id == ""
+
+
+def test_customer_exact_name_resolves_a_bounded_canonical_id_conflict() -> None:
+    resolution = resolve_workspace_identity(
+        form_email="owner@example.com",
+        form_workspace_id=TENANT_2,
+        requester_email="",
+        customer_workspace_hint="Acme",
+        lookups=(_lookup("owner@example.com", _candidate(TENANT_1, "Acme")),),
+        form_evidence_id="ev-form",
+    )
+
+    assert resolution.status is ResolutionStatus.RESOLVED
+    assert resolution.method is ResolutionMethod.UNIQUE_EXACT_CANDIDATE_NAME
+    assert resolution.selected_tenant_id == TENANT_1
+
+
+def test_customer_email_replaces_a_membership_email_with_no_workspaces() -> None:
+    resolution = resolve_workspace_identity(
+        form_email="owner@example.com",
+        form_workspace_id="",
+        requester_email="",
+        customer_workspace_hint="workspace-owner@example.com",
+        lookups=(
+            _lookup("owner@example.com"),
+            _lookup(
+                "workspace-owner@example.com",
+                _candidate(TENANT_2, "Target"),
+            ),
+        ),
+        form_evidence_id="ev-form",
+    )
+
+    assert resolution.status is ResolutionStatus.RESOLVED
+    assert resolution.method is ResolutionMethod.UNIQUE_EMAIL_MEMBERSHIP
+    assert resolution.selected_tenant_id == TENANT_2
 
 
 def test_email_shaped_workspace_field_is_target_and_contact_is_cross_checked() -> None:

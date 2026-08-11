@@ -94,6 +94,13 @@ class TicketSnapshot(FrozenModel):
     # A completed SaaS intake form can create the ticket before the customer
     # sends problem prose. The intake policy owns that empty-question state.
     questions: tuple[str, ...] = ()
+    # The durable question that the current field answer is clarifying. This
+    # remains separate from the complete ordered conversation above.
+    active_question: str = ""
+    # Only populated when durable state proves the Agent explicitly requested
+    # a workspace identity field in the previous customer-visible ASK. Free
+    # text in an ordinary issue must never override the form-selected tenant.
+    customer_workspace_hint: str = ""
     customer_messages: tuple[CustomerMessageEvent, ...] = ()
     form_identity: FormIdentity = Field(default_factory=FormIdentity)
     requester_email: str = ""

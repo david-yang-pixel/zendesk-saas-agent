@@ -247,8 +247,8 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
     async def fake_mention_poller(**kwargs):
         return kwargs
 
-    async def fake_trigger_consumer(*args):
-        return args
+    async def fake_trigger_consumer(*args, **kwargs):
+        return args, kwargs
 
     def fake_create_task(coro):
         created_coros.append(coro)
@@ -276,7 +276,7 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
     silence_kwargs = await created_coros[0]
     waiting_kwargs = await created_coros[1]
     mention_kwargs = await created_coros[2]
-    trigger_args = await created_coros[3]
+    trigger_args, trigger_kwargs = await created_coros[3]
 
     assert silence_kwargs == {
         "state": state,
@@ -293,6 +293,7 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
     assert mention_kwargs["poll_interval_seconds"] == 55
     assert mention_kwargs["tracker"] is app[MENTION_TRACKER_KEY]
     assert trigger_args == (trigger_queue, manager, state)
+    assert trigger_kwargs == {"mention_tracker": app[MENTION_TRACKER_KEY]}
 
 
 @pytest.mark.asyncio

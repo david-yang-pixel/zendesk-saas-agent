@@ -65,6 +65,7 @@ class CaseContextBuilder:
             form_email=form.email,
             form_workspace_id=form.workspace_id,
             requester_email=ticket.requester_email,
+            customer_workspace_hint=ticket.customer_workspace_hint,
         )
         lookups = tuple(
             await asyncio.gather(*(self._read_identity(email) for email in emails)),
@@ -77,6 +78,12 @@ class CaseContextBuilder:
             form_evidence_id=(
                 f"ticket:{ticket.ticket_id}:generation:{ticket.generation}:form"
             ),
+            # A customer who was asked to choose among verified email
+            # memberships can reply with the exact workspace name.  The
+            # identity policy compares the entire latest issue text only
+            # against that bounded candidate set; it never performs fuzzy or
+            # cross-account lookup from free text.
+            customer_workspace_hint=ticket.customer_workspace_hint,
         )
 
     async def _bind_billing(
