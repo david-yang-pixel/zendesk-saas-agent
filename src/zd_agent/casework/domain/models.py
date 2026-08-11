@@ -518,3 +518,56 @@ class DispositionDecision(FrozenModel):
             if self.reason_code is not ReasonCode.SECURITY_OR_PRIVACY_REVIEW_REQUIRED:
                 raise ValueError("security review requires a security/privacy reason")
         return self
+
+
+class ReplyCandidate(FrozenModel):
+    body: str = Field(min_length=1)
+    language: str = "en"
+    reply_kind: ReplyKind
+    used_claim_ids: tuple[str, ...] = ()
+    requested_customer_fields: tuple[str, ...] = ()
+    mentions_human_followup: bool = False
+
+    @field_validator("body")
+    @classmethod
+    def _normalize_body(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _validate_candidate(self) -> ReplyCandidate:
+        if self.language != "en":
+            raise ValueError("public reply language must be English")
+        if len(self.used_claim_ids) != len(set(self.used_claim_ids)):
+            raise ValueError("reply candidate cannot repeat claim IDs")
+        if len(self.requested_customer_fields) != len(
+            set(self.requested_customer_fields),
+        ):
+            raise ValueError("reply candidate cannot repeat customer fields")
+        return self
+
+
+class ReplyDraft(FrozenModel):
+    body: str = Field(min_length=1)
+    language: str = "en"
+    reply_kind: ReplyKind
+    disposition: Disposition
+    ownership_action: OwnershipAction
+    reason_code: ReasonCode
+    used_claim_ids: tuple[str, ...] = ()
+    requested_customer_fields: tuple[str, ...] = ()
+    mentions_human_followup: bool = False
+    reviewed: bool = False
+    disclosure_required: bool = True
+
+
+class ReplyQualityResult(FrozenModel):
+    accepted: bool
+    reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_quality_result(self) -> ReplyQualityResult:
+        if self.accepted and self.reasons:
+            raise ValueError("accepted reply cannot carry rejection reasons")
+        if not self.accepted and not self.reasons:
+            raise ValueError("rejected reply requires reasons")
+        return self
