@@ -45,6 +45,9 @@ jobs:
       - name: Check source quality
         run: uv run ruff check src
 
+      - name: Check strict casework types
+        run: uv run pyright src/zd_agent/casework tests/casework
+
       - name: Run test suite
         run: uv run pytest -q
 

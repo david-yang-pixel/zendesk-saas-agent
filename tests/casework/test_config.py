@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 from zd_agent.casework.domain.enums import ExecutionMode
-from zd_agent.config import AppConfig, load_config
+from zd_agent.config import AppConfig, CaseworkConfig, load_config
 
 
 def test_casework_defaults_to_legacy_and_cannot_change_production_behavior() -> None:
@@ -50,3 +52,24 @@ def test_repository_config_keeps_casework_on_legacy_path() -> None:
     raw = yaml.safe_load(config_path.read_text())
 
     assert raw["casework"]["mode"] == "legacy"
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [ExecutionMode.CANARY, ExecutionMode.CASEWORK],
+)
+def test_unapproved_delivery_modes_are_rejected(mode: ExecutionMode) -> None:
+    with pytest.raises(ValidationError, match="not approved"):
+        AppConfig(casework=CaseworkConfig(mode=mode))
+
+
+def test_unapproved_environment_mode_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("casework:\n  mode: legacy\n")
+    monkeypatch.setenv("ZD_CASEWORK_MODE", "canary")
+
+    with pytest.raises(ValidationError, match="not approved"):
+        load_config(str(config_path))

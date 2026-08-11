@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from zd_agent.casework.domain.enums import ExecutionMode
@@ -413,8 +413,22 @@ class LoggingConfig(BaseModel):
 class CaseworkConfig(BaseModel):
     """New decision core rollout control; legacy is the safe default."""
 
+    model_config = ConfigDict(validate_assignment=True)
+
     mode: ExecutionMode = ExecutionMode.LEGACY
     shadow_archive_dir: str = "casework-shadow"
+
+    @field_validator("mode")
+    @classmethod
+    def _reject_unapproved_delivery_modes(
+        cls,
+        value: ExecutionMode,
+    ) -> ExecutionMode:
+        if value not in {ExecutionMode.LEGACY, ExecutionMode.SHADOW}:
+            raise ValueError(
+                "casework delivery modes are not approved; use legacy or shadow",
+            )
+        return value
 
 
 class AppConfig(BaseModel):

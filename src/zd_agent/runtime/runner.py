@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from zd_agent.casework.domain.enums import ExecutionMode
 from zd_agent.config import get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.runtime.guardrails import Guardrails
+from zd_agent.runtime.casework_shadow import maybe_run_casework_shadow
 from zd_agent.runtime.llm_client import LLMClient
 from zd_agent.runtime.runner_archive import ensure_archive
 from zd_agent.runtime.runner_reporting import report_preflight_failure
@@ -318,6 +322,23 @@ async def run_agent(session: AgentSession) -> None:
             await _report_agent_failure(session, str(e))
 
     finally:
+        if cfg.casework.mode is ExecutionMode.SHADOW:
+            try:
+                await maybe_run_casework_shadow(
+                    mode=cfg.casework.mode,
+                    session=session,
+                    provider=llm._provider,
+                    registry=registry,
+                    archive_dir=Path(cfg.casework.shadow_archive_dir),
+                    enable_vision=cfg.llm.enable_vision_input,
+                )
+            except Exception as error:
+                logger.warning(
+                    "casework_shadow_boundary_failed",
+                    ticket_id=session.ticket_id,
+                    error_type=type(error).__name__,
+                )
+
         # 输出处理摘要
         logger.info(
             "agent_done",
