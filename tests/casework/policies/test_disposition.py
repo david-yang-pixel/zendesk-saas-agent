@@ -1,3 +1,5 @@
+import pytest
+
 from zd_agent.casework.domain.enums import (
     AdapterErrorCode,
     AnswerStatus,
@@ -101,44 +103,57 @@ def test_answerable_case_is_resolved_even_if_an_unneeded_tool_failed() -> None:
     assert decision.ownership_action is OwnershipAction.NONE
 
 
-def test_exhausted_automation_failure_creates_specific_support_ownership() -> None:
+def test_exhausted_failure_cannot_create_ownership_without_action_packet() -> None:
+    assessment = CaseAssessment(
+        question="What is my subscription?",
+        answer_status=AnswerStatus.INSUFFICIENT,
+        blocking_failure=AdapterFailure(
+            operation="billing.lookup",
+            code=AdapterErrorCode.TIMEOUT,
+            attempt=3,
+            max_attempts=3,
+            evidence_id="ev-timeout",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="action packet"):
+        decide_disposition(assessment)
+
+
+def test_nonretryable_read_failure_stays_internal_before_budget_exhaustion() -> None:
     decision = decide_disposition(
         CaseAssessment(
             question="What is my subscription?",
             answer_status=AnswerStatus.INSUFFICIENT,
             blocking_failure=AdapterFailure(
                 operation="billing.lookup",
-                code=AdapterErrorCode.TIMEOUT,
-                attempt=3,
+                code=AdapterErrorCode.MALFORMED_RESPONSE,
+                attempt=1,
                 max_attempts=3,
-                evidence_id="ev-timeout",
+                evidence_id="ev-malformed",
             ),
         ),
     )
 
-    assert decision.disposition is Disposition.HUMAN_ACTION_REQUIRED
-    assert decision.reply_kind is ReplyKind.PROGRESS
-    assert decision.ownership_action is OwnershipAction.SUPPORT
-    assert decision.reason_code is ReasonCode.AUTOMATION_RETRY_EXHAUSTED
+    assert decision.disposition is Disposition.RETRY_PENDING
+    assert decision.ownership_action is OwnershipAction.NONE
 
 
 def test_ambiguous_write_is_never_retried() -> None:
-    decision = decide_disposition(
-        CaseAssessment(
-            question="Was the external action completed?",
-            answer_status=AnswerStatus.INSUFFICIENT,
-            blocking_failure=AdapterFailure(
-                operation="external.write",
-                code=AdapterErrorCode.AMBIGUOUS_WRITE,
-                attempt=1,
-                max_attempts=3,
-                evidence_id="ev-write",
-            ),
+    assessment = CaseAssessment(
+        question="Was the external action completed?",
+        answer_status=AnswerStatus.INSUFFICIENT,
+        blocking_failure=AdapterFailure(
+            operation="external.write",
+            code=AdapterErrorCode.AMBIGUOUS_WRITE,
+            attempt=1,
+            max_attempts=3,
+            evidence_id="ev-write",
         ),
     )
 
-    assert decision.disposition is Disposition.HUMAN_ACTION_REQUIRED
-    assert decision.retry_directive is None
+    with pytest.raises(ValueError, match="action packet"):
+        decide_disposition(assessment)
 
 
 def test_confirmed_defect_answers_customer_and_routes_engineering_packet() -> None:

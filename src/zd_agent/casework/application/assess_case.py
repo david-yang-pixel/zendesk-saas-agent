@@ -105,16 +105,10 @@ def _customer_fields(
     )
 
 
-def _identity_failure(
+def _identity_context_failure(
     *,
     context: CaseContext,
-    proposal: AssessmentProposal,
-    answer_status: AnswerStatus,
 ) -> AdapterFailure | None:
-    if proposal.blocking_failure is not None:
-        return proposal.blocking_failure
-    if answer_status is not AnswerStatus.INSUFFICIENT:
-        return None
     status = context.identity.status
     if status not in {ResolutionStatus.LOOKUP_PENDING, ResolutionStatus.LOOKUP_FAILED}:
         return None
@@ -132,6 +126,46 @@ def _identity_failure(
         evidence_id=(context.identity.evidence_ids[-1] if context.identity.evidence_ids else ""),
         detail=context.identity.detail,
     )
+
+
+def _billing_context_failure(context: CaseContext) -> AdapterFailure | None:
+    billing = context.billing
+    if billing is None or billing.status in {
+        BillingBindingStatus.RESOLVED,
+        BillingBindingStatus.IDENTITY_UNRESOLVED,
+    }:
+        return None
+    code = {
+        BillingBindingStatus.LOOKUP_PENDING: AdapterErrorCode.TRANSPORT_UNAVAILABLE,
+        BillingBindingStatus.LOOKUP_FAILED: (
+            billing.error_code or AdapterErrorCode.PERMANENT_FAILURE
+        ),
+        BillingBindingStatus.TARGET_MISMATCH: AdapterErrorCode.MALFORMED_RESPONSE,
+    }[billing.status]
+    return AdapterFailure(
+        operation="billing.lookup",
+        code=code,
+        attempt=1,
+        max_attempts=3,
+        retry_after_seconds=2,
+        evidence_id=(billing.evidence_ids[-1] if billing.evidence_ids else ""),
+        detail=billing.detail,
+    )
+
+
+def _blocking_failure(
+    *,
+    context: CaseContext,
+    proposal: AssessmentProposal,
+    answer_status: AnswerStatus,
+) -> AdapterFailure | None:
+    if proposal.blocking_failure is not None:
+        return proposal.blocking_failure
+    if answer_status is not AnswerStatus.INSUFFICIENT:
+        return None
+    return _identity_context_failure(
+        context=context,
+    ) or _billing_context_failure(context)
 
 
 def _answer_status(
@@ -195,7 +229,7 @@ def build_case_assessment(
         answer_status=answer_status,
         admitted_claims=admitted_claims,
         customer_only_fields=customer_fields,
-        blocking_failure=_identity_failure(
+        blocking_failure=_blocking_failure(
             context=context,
             proposal=proposal,
             answer_status=answer_status,

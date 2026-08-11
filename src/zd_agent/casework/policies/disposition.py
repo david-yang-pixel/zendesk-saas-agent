@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from zd_agent.casework.domain.enums import (
+    AdapterErrorCode,
     AnswerStatus,
     Disposition,
     OwnershipAction,
@@ -59,7 +60,10 @@ def _failure_decision(
     *,
     evidence_ids: tuple[str, ...],
 ) -> DispositionDecision:
-    if failure.can_retry():
+    if (
+        failure.code is not AdapterErrorCode.AMBIGUOUS_WRITE
+        and failure.attempt < failure.max_attempts
+    ):
         return DispositionDecision(
             disposition=Disposition.RETRY_PENDING,
             reply_kind=ReplyKind.NONE,
@@ -72,12 +76,9 @@ def _failure_decision(
                 retry_after_seconds=failure.retry_after_seconds,
             ),
         )
-    return DispositionDecision(
-        disposition=Disposition.HUMAN_ACTION_REQUIRED,
-        reply_kind=ReplyKind.PROGRESS,
-        ownership_action=OwnershipAction.SUPPORT,
-        reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
-        evidence_ids=evidence_ids,
+    raise ValueError(
+        "failed or ambiguous automation requires an explicit human action packet "
+        "before ownership can change",
     )
 
 

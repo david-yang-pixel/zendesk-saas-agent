@@ -324,6 +324,38 @@ def test_pending_identity_lookup_uses_retry_even_without_model_requested_field()
     assert result.assessment.blocking_failure.code is AdapterErrorCode.TRANSPORT_UNAVAILABLE
 
 
+def test_failed_billing_lookup_becomes_internal_retry() -> None:
+    context = CaseContext(
+        ticket=_ticket(),
+        built_at=NOW,
+        identity=_resolved_identity(),
+        billing_required=True,
+        billing=BillingBinding(
+            status=BillingBindingStatus.LOOKUP_FAILED,
+            error_code=AdapterErrorCode.TIMEOUT,
+            evidence_ids=("ev-identity", "ev-billing-timeout"),
+            detail="tenant-scoped Billing lookup failed",
+        ),
+    )
+
+    result = build_case_assessment(
+        context=context,
+        proposal=AssessmentProposal(
+            question="What plan is active?",
+            answer_status=AnswerStatus.INSUFFICIENT,
+        ),
+        evidence=(),
+        as_of=NOW,
+    )
+    decision = decide_disposition(result.assessment)
+
+    assert result.assessment.blocking_failure is not None
+    assert result.assessment.blocking_failure.operation == "billing.lookup"
+    assert result.assessment.blocking_failure.code is AdapterErrorCode.TIMEOUT
+    assert decision.disposition is Disposition.RETRY_PENDING
+    assert decision.ownership_action is OwnershipAction.NONE
+
+
 def test_model_proposal_cannot_choose_ownership_directly() -> None:
     with pytest.raises(ValidationError, match="human_action"):
         AssessmentProposal.model_validate(
