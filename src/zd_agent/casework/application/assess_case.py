@@ -27,6 +27,9 @@ from zd_agent.casework.application.customer_clarification import (
     admit_case_customer_fields,
 )
 from zd_agent.casework.policies.evidence import admit_claim
+from zd_agent.casework.policies.investigation_completion import (
+    enforce_investigation_completion,
+)
 from zd_agent.casework.policies.ownership import admit_action_proposal
 
 
@@ -331,6 +334,23 @@ def _case_assessment(
     )
 
 
+def _admitted_answer(
+    context: CaseContext,
+    proposal: AssessmentProposal,
+    evidence: tuple[EvidenceItem, ...],
+    as_of: datetime,
+) -> tuple[tuple[ClaimAdmission, ...], tuple[Claim, ...], AnswerStatus]:
+    admissions, claims = _admit_claims(
+        context=context, proposal=proposal, evidence=evidence, as_of=as_of
+    )
+    status = enforce_investigation_completion(
+        question=proposal.question,
+        answer_status=_answer_status(proposal, admissions),
+        admitted_claims=claims,
+    )
+    return admissions, claims, status
+
+
 def build_case_assessment(
     *,
     context: CaseContext,
@@ -338,10 +358,9 @@ def build_case_assessment(
     evidence: tuple[EvidenceItem, ...],
     as_of: datetime,
 ) -> AssessmentBuild:
-    admissions, admitted_claims = _admit_claims(
-        context=context, proposal=proposal, evidence=evidence, as_of=as_of
+    admissions, admitted_claims, answer_status = _admitted_answer(
+        context, proposal, evidence, as_of
     )
-    answer_status = _answer_status(proposal, admissions)
     human_action, blocking_failure, rejected_action_reason = _action_and_failure(
         context=context,
         proposal=proposal,

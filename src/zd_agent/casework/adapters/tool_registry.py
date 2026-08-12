@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from zd_agent.tools.base import Tool, ToolRegistry
+from zd_agent.tools.document_indexing_status import DocumentIndexingStatus
 from zd_agent.tools.git_source import (
     GitDiff,
     GitGrep,
@@ -22,6 +23,7 @@ from zd_agent.tools.inspector_exec import InspectorExec
 from zd_agent.tools.knowledge import KnowledgeRead, KnowledgeSearch
 from zd_agent.tools.official_docs import OfficialDocsRead, OfficialDocsSearch
 from zd_agent.tools.saas_version import SaasDeployedVersion
+from zd_agent.tools.scoped_queries import TenantScopedSignozQuery, TenantScopedSqlQuery
 from zd_agent.tools.signoz_tools import (
     SignozErrors,
     SignozTraceback,
@@ -64,6 +66,9 @@ def _casework_tools() -> tuple[Tool, ...]:
         GithubGetIssue(),
         GithubCodeSearch(),
         SaasDeployedVersion(),
+        DocumentIndexingStatus(),
+        TenantScopedSqlQuery(),
+        TenantScopedSignozQuery(),
         InspectorExec(),
         TicketRecordRead(),
         SignozErrors(),

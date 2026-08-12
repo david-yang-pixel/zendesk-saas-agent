@@ -41,6 +41,9 @@ class AgentSession:
 
     # v2 运行时状态
     tool_call_log: list[dict[str, Any]] = field(default_factory=list)
+    # Object IDs discovered from code-scoped current-ticket evidence. Arbitrary
+    # queries may pivot only to identifiers already proven in this set.
+    investigation_scope_ids: set[str] = field(default_factory=set)
     round_count: int = 0
     token_usage: TokenUsage = field(default_factory=TokenUsage)
 

@@ -12,17 +12,26 @@ from zd_agent.casework.adapters.model import (
     investigation_output_schema,
     investigation_result_from_content,
 )
+from zd_agent.casework.adapters.investigation_skill import load_investigation_skill
 from zd_agent.casework.adapters.token_budget import (
     CaseworkTokenBudget,
     CaseworkTokenBudgetExceeded,
 )
-from zd_agent.casework.domain.enums import ResolutionStatus
+from zd_agent.casework.domain.enums import (
+    EvidenceAuthority,
+    EvidenceResultStatus,
+    ResolutionStatus,
+)
 from zd_agent.casework.domain.models import (
     CaseContext,
+    Claim,
     EvidenceItem,
     InvestigationResult,
 )
 from zd_agent.casework.ports.readers import Clock
+from zd_agent.casework.policies.investigation_completion import (
+    missing_completion_roles,
+)
 from zd_agent.runtime.llm.types import (
     LLMProvider,
     LLMResponse,
@@ -36,9 +45,12 @@ from zd_agent.tools.base import Tool, ToolRegistry, ToolResult
 _APPROVED_EXACT_NAMES = frozenset(
     {
         "inspector_exec",
+        "document_indexing_status",
         "list_repo_tags",
         "list_repos",
         "saas_deployed_version",
+        "signoz_query",
+        "sql_query",
     },
 )
 _APPROVED_PREFIXES = (
@@ -51,7 +63,8 @@ _APPROVED_PREFIXES = (
     "zendesk_get_",
     "zendesk_search",
 )
-_DISABLED_RAW_QUERY_TOOLS = frozenset({"sql_query", "signoz_query"})
+_DISABLED_RAW_QUERY_TOOLS: frozenset[str] = frozenset()
+_SCOPED_QUERY_TOOLS = frozenset({"sql_query", "signoz_query"})
 _SAFE_UNRESOLVED_ZENDESK_TOOLS = frozenset(
     {"zendesk_get_article", "zendesk_search_articles"},
 )
@@ -86,6 +99,10 @@ def approved_read_tools(registry: ToolRegistry) -> tuple[Tool, ...]:
         for tool in registry.list_tools()
         if _approved_name(tool.name)
         and tool.name not in _DISABLED_RAW_QUERY_TOOLS
+        and (
+            tool.name not in _SCOPED_QUERY_TOOLS
+            or getattr(tool, "casework_scope_enforced", False) is True
+        )
         and not tool.is_write_operation
         and not tool.requires_sandbox
     )
@@ -285,7 +302,7 @@ def _validate_schema_value(
 
 
 def _is_tenant_data_tool(name: str) -> bool:
-    if name in {"inspector_exec", "sql_query"}:
+    if name in {"document_indexing_status", "inspector_exec", "sql_query"}:
         return True
     if name.startswith(("signoz_", "ticket_record_")):
         return True
@@ -457,17 +474,27 @@ def _bind_trusted_tool_scope(
     context: CaseContext,
 ) -> dict[str, Any]:
     """Inject scope resolved by code instead of asking the model to reproduce it."""
-    if (
-        context.identity.status is not ResolutionStatus.RESOLVED
-        or not tool_name.startswith("signoz_")
-    ):
+    if context.identity.status is not ResolutionStatus.RESOLVED:
         return args
     raw_properties: object = parameters.get("properties", {})
-    if not isinstance(raw_properties, dict) or "tenant" not in raw_properties:
+    if not isinstance(raw_properties, dict):
         return args
-    if _normalized_string(args, "tenant"):
-        return args
-    return {**args, "tenant": context.identity.selected_tenant_id}
+    if tool_name.startswith("signoz_") and "tenant" in raw_properties:
+        return (
+            args
+            if _normalized_string(args, "tenant")
+            else {**args, "tenant": context.identity.selected_tenant_id}
+        )
+    if (
+        tool_name in {"document_indexing_status", "sql_query"}
+        and "tenant_id" in raw_properties
+    ):
+        return (
+            args
+            if _normalized_string(args, "tenant_id")
+            else {**args, "tenant_id": context.identity.selected_tenant_id}
+        )
+    return args
 
 
 def _context_payload(context: CaseContext) -> dict[str, Any]:
@@ -500,8 +527,42 @@ def _context_payload(context: CaseContext) -> dict[str, Any]:
     }
 
 
-def _system_prompt() -> str:
-    return (
+def _active_question(context: CaseContext) -> str:
+    return context.ticket.active_question or context.ticket.questions[-1]
+
+
+def _completion_eligible_claims(
+    claims: tuple[Claim, ...],
+    evidence: tuple[EvidenceItem, ...],
+) -> tuple[Claim, ...]:
+    """Count only claims backed by role-matching current factual evidence."""
+    by_id = {item.evidence_id: item for item in evidence}
+    eligible_authorities = {
+        EvidenceAuthority.CURRENT_AUTHORITATIVE,
+        EvidenceAuthority.CURRENT_SUPPORTING,
+    }
+    eligible: list[Claim] = []
+    for claim in claims:
+        required_targets = {(target.kind, target.value) for target in claim.targets}
+        for evidence_id in claim.supporting_evidence_ids:
+            item = by_id.get(evidence_id)
+            if item is None:
+                continue
+            covered_targets = {(target.kind, target.value) for target in item.targets}
+            if (
+                item.result_status is EvidenceResultStatus.SUCCESS
+                and item.authority in eligible_authorities
+                and claim.role in item.supports_roles
+                and required_targets.issubset(covered_targets)
+            ):
+                eligible.append(claim)
+                break
+    return tuple(eligible)
+
+
+def _system_prompt(context: CaseContext) -> str:
+    skill = load_investigation_skill(_active_question(context))
+    base = (
         "You are the read-only investigation lane of Dify Cloud Support v2. "
         "Investigate the latest customer question using only the supplied tools. "
         "Current Zendesk conversation context has already been loaded. Identity "
@@ -545,13 +606,25 @@ def _system_prompt() -> str:
         "role-matching current evidence. Use only arguments declared by each tool "
         "schema."
     )
+    return (
+        f"{base}\n\nACTIVE_SERVER_SKILL={skill.name}\n"
+        f"ACTIVE_SCENARIO={skill.scenario.value}\n"
+        f"REQUIRED_COMPLETION_ROLES={list(skill.required_roles)!r}\n\n"
+        f"{skill.instructions}"
+    )
 
 
 def _user_prompt(context: CaseContext, evidence: tuple[EvidenceItem, ...]) -> str:
+    skill = load_investigation_skill(_active_question(context))
     payload = {
         "case_context": _context_payload(context),
         "case_context_evidence": [item.model_dump(mode="json") for item in evidence],
         "output_schema": investigation_output_schema(),
+        "investigation_policy": {
+            "skill": skill.name,
+            "scenario": skill.scenario.value,
+            "required_completion_roles": skill.required_roles,
+        },
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -763,7 +836,7 @@ class BoundedToolCaseInvestigator:
         context_evidence = build_case_context_evidence(context)
         evidence = list(context_evidence)
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": _system_prompt()},
+            {"role": "system", "content": _system_prompt(context)},
             {"role": "user", "content": _user_prompt(context, context_evidence)},
         ]
         schemas = _tool_schemas(self._tools)
@@ -781,11 +854,38 @@ class BoundedToolCaseInvestigator:
             if not response.tool_calls:
                 content = response.content or ""
                 try:
-                    return investigation_result_from_content(
+                    result = investigation_result_from_content(
                         context=context,
                         evidence=tuple(evidence),
                         content=content,
                     )
+                    missing = missing_completion_roles(
+                        result.proposal.question,
+                        _completion_eligible_claims(
+                            result.proposal.proposed_claims,
+                            tuple(evidence),
+                        ),
+                    )
+                    if (
+                        missing
+                        and result.proposal.answer_status.value
+                        in {"supported", "bounded"}
+                        and not result.proposal.proposed_customer_fields
+                        and result.proposal.action_proposal is None
+                    ):
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "The investigation is incomplete and cannot end yet. "
+                                    "Continue with authoritative tools. Missing material "
+                                    "claim roles: "
+                                    + ", ".join(role.value for role in missing)
+                                ),
+                            },
+                        )
+                        continue
+                    return result
                 except ModelOutputError as error:
                     corrected = await self._correct_terminal_output(
                         messages=messages,

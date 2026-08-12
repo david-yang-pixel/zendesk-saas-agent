@@ -38,8 +38,14 @@ def evidence_contract(
     tool_name: str,
 ) -> tuple[EvidenceAuthority, tuple[ClaimRole, ...]]:
     lowered = tool_name.casefold()
-    if lowered in {"sql_query", "signoz_query"}:
-        return EvidenceAuthority.CURRENT_SUPPORTING, ()
+    if lowered == "sql_query":
+        return EvidenceAuthority.CURRENT_AUTHORITATIVE, (
+            ClaimRole.PRODUCT_FACT,
+            ClaimRole.CURRENT_STATE,
+            ClaimRole.FAILING_BOUNDARY,
+            ClaimRole.IMPACT,
+            ClaimRole.RECOVERY,
+        )
     if lowered.startswith("ticket_record_"):
         return EvidenceAuthority.HISTORICAL_GUIDANCE, (ClaimRole.PRODUCT_FACT,)
     if lowered == "zendesk_search":
@@ -82,6 +88,13 @@ def evidence_contract(
             ClaimRole.IMPACT,
             ClaimRole.RECOVERY,
         )
+    if lowered == "document_indexing_status":
+        return EvidenceAuthority.CURRENT_AUTHORITATIVE, (
+            ClaimRole.CURRENT_STATE,
+            ClaimRole.FAILING_BOUNDARY,
+            ClaimRole.IMPACT,
+            ClaimRole.RECOVERY,
+        )
     return EvidenceAuthority.CURRENT_SUPPORTING, (
         ClaimRole.PRODUCT_FACT,
         ClaimRole.CURRENT_STATE,
@@ -112,7 +125,7 @@ def evidence_targets(
 ) -> tuple[TargetReference, ...]:
     targets: list[TargetReference] = []
     for name in _TARGET_ARGUMENTS:
-        if name not in allowed_target_arguments or tool_name == "sql_query":
+        if name not in allowed_target_arguments:
             continue
         value = args.get(name)
         if (
@@ -125,7 +138,6 @@ def evidence_targets(
     tenant = (
         args.get("tenant")
         if "tenant" in allowed_target_arguments
-        and tool_name != "sql_query"
         and not (tool_name == "signoz_traceback" and args.get("id"))
         else None
     )
@@ -148,6 +160,17 @@ def tool_evidence(
 ) -> EvidenceItem:
     authority, roles = evidence_contract(tool_name)
     roles = _aligned_source_roles(tool_name, args, roles)
+    targets = evidence_targets(
+        args,
+        allowed_target_arguments=allowed_target_arguments,
+        tool_name=tool_name,
+    )
+    if tool_name.casefold() in {"sql_query", "signoz_query"} and not any(
+        target.kind == "tenant_id" for target in targets
+    ):
+        # Raw result columns and model-authored SQL never establish provenance.
+        # The code-injected tenant argument must be part of the executed schema.
+        roles = ()
     return EvidenceItem(
         evidence_id=call_id,
         call_id=call_id,
@@ -156,11 +179,7 @@ def tool_evidence(
         result_status=(
             EvidenceResultStatus.SUCCESS if success else EvidenceResultStatus.FAILURE
         ),
-        targets=evidence_targets(
-            args,
-            allowed_target_arguments=allowed_target_arguments,
-            tool_name=tool_name,
-        ),
+        targets=targets,
         observed_at=observed_at,
         supports_roles=roles,
         payload=output if success else {"error": error},

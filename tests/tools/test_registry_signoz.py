@@ -33,7 +33,6 @@ def test_global_and_trace_only_signoz_capabilities_are_not_registered():
     reg = create_casework_tool_registry()
 
     for name in (
-        "signoz_query",
         "signoz_services",
         "signoz_list_services",
         "signoz_get_trace_details",
@@ -43,3 +42,12 @@ def test_global_and_trace_only_signoz_capabilities_are_not_registered():
         "signoz_query_metrics",
     ):
         assert reg.get(name) is None
+
+
+def test_raw_signoz_query_is_registered_only_as_tenant_scoped_wrapper():
+    reg = create_casework_tool_registry()
+
+    tool = reg.get("signoz_query")
+    assert tool is not None
+    assert getattr(tool, "casework_scope_enforced", False) is True
+    assert tool.parameters["required"] == ["tenant", "sql"]

@@ -512,7 +512,7 @@
           {"kind": "tenant_id", "value": "77777777-7777-4777-8777-777777777777"}
         ],
         "observed_at": "2026-08-11T05:00:00Z",
-        "supports_roles": ["failing_boundary"],
+        "supports_roles": ["current_state", "failing_boundary"],
         "payload": {"retrieval_failed": true}
       },
       {
@@ -533,6 +533,17 @@
       "question": "Why is retrieval failing?",
       "answer_status": "supported",
       "proposed_claims": [
+        {
+          "claim_id": "claim-defect-state",
+          "statement": "Retrieval is currently failing for the affected workspace.",
+          "role": "current_state",
+          "status": "confirmed",
+          "supporting_evidence_ids": ["ev-defect-boundary"],
+          "targets": [
+            {"kind": "tenant_id", "value": "77777777-7777-4777-8777-777777777777"}
+          ],
+          "public_allowed": true
+        },
         {
           "claim_id": "claim-defect-boundary",
           "statement": "The current retrieval request fails before results are returned.",
@@ -572,7 +583,7 @@
       "reply_kind": "answer",
       "ownership_action": "engineering",
       "reason_code": "confirmed_platform_defect",
-      "admitted_claim_ids": ["claim-defect-boundary", "claim-defect-cause"],
+      "admitted_claim_ids": ["claim-defect-state", "claim-defect-boundary", "claim-defect-cause"],
       "forbidden_customer_fields": ["workspace_id", "workspace_name"]
     }
   }

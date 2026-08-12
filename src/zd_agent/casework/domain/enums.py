@@ -142,6 +142,15 @@ class ClaimRole(str, Enum):
     LIMITATION = "limitation"
 
 
+class InvestigationScenario(str, Enum):
+    GENERAL = "general"
+    ASYNC_PROCESSING = "async_processing"
+    WORKFLOW_RUNTIME = "workflow_runtime"
+    RETRIEVAL_RUNTIME = "retrieval_runtime"
+    PROVIDER_RUNTIME = "provider_runtime"
+    BILLING_ENTITLEMENT = "billing_entitlement"
+
+
 class ClaimStatus(str, Enum):
     CONFIRMED = "confirmed"
     EVIDENCE_SUPPORTED = "evidence_supported"

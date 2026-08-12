@@ -174,6 +174,18 @@ def _unresolved_context() -> CaseContext:
     )
 
 
+def _stuck_document_context() -> CaseContext:
+    return _context().model_copy(
+        update={
+            "ticket": _context().ticket.model_copy(
+                update={
+                    "questions": ("Tengo documentos atascados. Ahora están en pausa.",),
+                },
+            ),
+        },
+    )
+
+
 def _final_assessment(evidence_id: str) -> str:
     return json.dumps(
         {
@@ -1118,3 +1130,89 @@ async def test_investigator_does_not_call_model_after_vision_exhausts_budget() -
         await investigator.investigate(_context())
 
     assert provider.calls == []
+
+
+async def test_runtime_skill_forces_more_investigation_before_terminal_answer() -> None:
+    registry = ToolRegistry()
+    status = FakeTool(
+        "document_indexing_status",
+        parameters={
+            "type": "object",
+            "properties": {"tenant_id": {"type": "string"}},
+            "required": ["tenant_id"],
+        },
+    )
+    registry.register(status)
+    current_only = json.dumps(
+        {
+            "answer_status": "bounded",
+            "proposed_claims": [
+                {
+                    "statement": "The documents are currently waiting.",
+                    "role": "current_state",
+                    "status": "confirmed",
+                    "supporting_evidence_ids": ["ev-identity"],
+                },
+            ],
+            "proposed_customer_fields": [],
+            "action_proposal": None,
+        },
+    )
+    complete = json.dumps(
+        {
+            "answer_status": "bounded",
+            "proposed_claims": [
+                {
+                    "statement": "The documents are currently waiting.",
+                    "role": "current_state",
+                    "status": "confirmed",
+                    "supporting_evidence_ids": ["call-status"],
+                },
+                {
+                    "statement": "Processing has not started for those documents.",
+                    "role": "failing_boundary",
+                    "status": "confirmed",
+                    "supporting_evidence_ids": ["call-status"],
+                },
+            ],
+            "proposed_customer_fields": [],
+            "action_proposal": None,
+        },
+    )
+    provider = FakeProvider(
+        [
+            _response(content=current_only),
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-status",
+                        name="document_indexing_status",
+                        arguments="{}",
+                    ),
+                ],
+            ),
+            _response(content=complete),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=3880),
+        clock=FakeClock(),
+    )
+
+    result = await investigator.investigate(_stuck_document_context())
+
+    assert status.calls == [{"tenant_id": TENANT}]
+    assert {claim.role for claim in result.proposal.proposed_claims} == {
+        ClaimRole.CURRENT_STATE,
+        ClaimRole.FAILING_BOUNDARY,
+    }
+    corrective_messages, _ = provider.calls[1]
+    correction = corrective_messages[-1]["content"]
+    assert "Missing material claim roles:" in correction
+    assert "current_state" in correction
+    assert "failing_boundary" in correction
+    first_messages, _ = provider.calls[0]
+    assert "ACTIVE_SCENARIO=async_processing" in first_messages[0]["content"]
+    assert "document_indexing_status" in first_messages[0]["content"]

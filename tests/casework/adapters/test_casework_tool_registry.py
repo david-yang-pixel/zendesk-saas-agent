@@ -6,15 +6,16 @@ def test_casework_registry_exposes_only_approved_read_capabilities() -> None:
     names = {tool.name for tool in registry.list_tools()}
 
     assert {
+        "document_indexing_status",
         "inspector_exec",
         "official_docs_search",
+        "signoz_query",
         "github_get_pr",
         "signoz_search_logs",
+        "sql_query",
         "zendesk_get_ticket",
     } <= names
     assert {
-        "sql_query",
-        "signoz_query",
         "zendesk_public_reply",
         "zendesk_internal_reply",
         "zendesk_add_tags",

@@ -1,15 +1,17 @@
-"""Raw SQL is intentionally unreachable from the v2 model tool surface."""
+"""Raw SQL remains available through the tenant-scoped v2 wrapper."""
 
 from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 
 
-def test_raw_sql_query_is_not_registered():
+def test_raw_sql_query_is_registered_with_mandatory_tenant_scope():
     reg = create_casework_tool_registry()
-    assert reg.get("sql_query") is None
+    tool = reg.get("sql_query")
+    assert tool is not None
+    assert tool.parameters["required"] == ["database", "tenant_id", "sql"]
 
 
-def test_scoped_inspector_replaces_model_authored_sql():
+def test_scoped_signoz_query_is_registered_with_mandatory_tenant_scope():
     reg = create_casework_tool_registry()
-    inspector = reg.get("inspector_exec")
-    assert inspector is not None
-    assert "tenant_id" in inspector.parameters["properties"]
+    tool = reg.get("signoz_query")
+    assert tool is not None
+    assert tool.parameters["required"] == ["tenant", "sql"]

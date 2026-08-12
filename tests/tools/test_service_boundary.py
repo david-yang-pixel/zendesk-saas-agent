@@ -30,7 +30,7 @@ def test_existing_split_services_are_marked_service_backed() -> None:
 
 
 def test_removed_global_data_capabilities_have_no_casework_boundary() -> None:
-    for name in ("sql_query", "signoz_query", "zendesk_search", "zendesk_get_user"):
+    for name in ("zendesk_search", "zendesk_get_user"):
         assert name not in TOOL_SERVICE_BOUNDARIES
 
 
