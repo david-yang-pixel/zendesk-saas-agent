@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import time
 
+from zd_agent.casework.adapters.tool_investigator import CustomerContextStaleError
 from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 from zd_agent.casework.policies.rollout import casework_controls_ticket
 from zd_agent.config import AppConfig, EnvSettings, get_config
@@ -153,6 +154,19 @@ async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
             registry=registry,
         )
         apply_casework_execution_to_session(session, execution)
+    except CustomerContextStaleError as error:
+        session.status = SessionStatus.DEFERRED
+        session.error_message = str(error)
+        session.analysis = (
+            "Customer context changed during investigation; this generation "
+            "was stopped before delivery and must be replaced by a fresh generation."
+        )
+        logger.info(
+            "casework_v2_customer_context_stale",
+            ticket_id=session.ticket_id,
+            session_id=session.session_id,
+            generation=session.customer_context_generation,
+        )
     except Exception as error:  # noqa: BLE001 - bounded retry owns all failures.
         logger.error(
             "casework_v2_error",

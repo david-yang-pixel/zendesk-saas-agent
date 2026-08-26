@@ -46,6 +46,10 @@ class AgentSession:
     investigation_scope_ids: set[str] = field(default_factory=set)
     round_count: int = 0
     token_usage: TokenUsage = field(default_factory=TokenUsage)
+    active_context_tokens: int = 0
+    context_compaction_count: int = 0
+    context_compaction_log: list[dict[str, Any]] = field(default_factory=list)
+    context_checkpoints: list[dict[str, Any]] = field(default_factory=list)
 
     # v2 产出物与不可逆 effect 回执
     analysis: str = ""
@@ -113,3 +117,29 @@ class AgentSession:
                 "metadata": dict(metadata or {}),
             }
         )
+
+    def log_context_compaction(
+        self,
+        *,
+        trigger: str,
+        tokens_before: int,
+        tokens_after: int,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        self.context_compaction_count += 1
+        self.active_context_tokens = tokens_after
+        reclaimed = max(tokens_before - tokens_after, 0)
+        self.context_compaction_log.append(
+            {
+                "sequence": self.context_compaction_count,
+                "trigger": trigger,
+                "tokens_before": tokens_before,
+                "tokens_after": tokens_after,
+                "reclaimed_tokens": reclaimed,
+                "reclaimed_ratio": round(
+                    reclaimed / max(tokens_before, 1),
+                    4,
+                ),
+            }
+        )
+        self.context_checkpoints.append(dict(checkpoint))

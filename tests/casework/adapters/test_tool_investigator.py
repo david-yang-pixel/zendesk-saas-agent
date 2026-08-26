@@ -9,6 +9,7 @@ import pytest
 
 from zd_agent.casework.adapters.tool_investigator import (
     BoundedToolCaseInvestigator,
+    CustomerContextStaleError,
     InvestigationProtocolError,
     approved_read_tools,
 )
@@ -1186,6 +1187,92 @@ async def test_investigator_does_not_call_model_after_vision_exhausts_budget() -
     )
 
     with pytest.raises(InvestigationProtocolError, match="token budget"):
+        await investigator.investigate(_context())
+
+    assert provider.calls == []
+
+
+async def test_investigator_compacts_large_active_context_before_next_round() -> None:
+    registry = ToolRegistry()
+    docs = FakeTool(
+        "official_docs_search",
+        output="published behavior " * 5000,
+    )
+    registry.register(docs)
+    checkpoint = json.dumps(
+        {
+            "proposed_claims": [
+                {
+                    "statement": "The documented behavior is available.",
+                    "role": "product_fact",
+                    "status": "confirmed",
+                    "supporting_evidence_ids": ["call-docs"],
+                    "contradicting_evidence_ids": [],
+                },
+            ],
+            "unknowns": [],
+            "completed_checks": ["Read the official documentation."],
+            "failed_checks": [],
+            "missing_completion_roles": [],
+            "navigation_hypotheses": [],
+            "next_actions": [],
+        },
+    )
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-docs",
+                        name="official_docs_search",
+                        arguments='{"query":"behavior"}',
+                    ),
+                ],
+            ),
+            _response(content=checkpoint),
+            _response(content=_final_assessment("call-docs")),
+        ],
+    )
+    session = AgentSession(ticket_id=4001)
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=session,
+        clock=FakeClock(),
+        context_window_tokens=38_000,
+        context_compaction_soft_ratio=0.70,
+        context_compaction_hard_ratio=0.88,
+        context_retain_recent_rounds=1,
+    )
+
+    result = await investigator.investigate(_context())
+
+    assert result.proposal.answer_status is AnswerStatus.SUPPORTED
+    assert len(provider.calls) == 3
+    checkpoint_messages, checkpoint_tools = provider.calls[1]
+    assert checkpoint_tools is None
+    assert "CHECKPOINT_SCHEMA" in str(checkpoint_messages[-1]["content"])
+    compacted_messages, compacted_tools = provider.calls[2]
+    assert compacted_tools is not None
+    assert "INVESTIGATION_CHECKPOINT" in str(compacted_messages)
+    assert len(str(compacted_messages)) < len(str(checkpoint_messages))
+    assert session.context_compaction_count == 1
+    assert session.context_compaction_log[0]["tokens_after"] < session.context_compaction_log[0]["tokens_before"]
+
+
+async def test_investigator_stops_before_another_model_call_when_customer_context_is_dirty() -> None:
+    registry = ToolRegistry()
+    provider = FakeProvider([_response(content=_final_assessment("ev-identity"))])
+    session = AgentSession(ticket_id=4001)
+    session.customer_context_dirty = True
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=session,
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(CustomerContextStaleError, match="stale_context"):
         await investigator.investigate(_context())
 
     assert provider.calls == []

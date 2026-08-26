@@ -13,6 +13,23 @@ def test_casework_defaults_to_v2_production_behavior() -> None:
 
     assert config.casework.mode is ExecutionMode.CASEWORK
     assert config.casework.canary_ticket_ids == ()
+    assert config.llm.context_window_tokens == 272_000
+    assert config.casework.context_compaction_soft_ratio == 0.70
+    assert config.casework.context_compaction_hard_ratio == 0.88
+    assert config.casework.context_checkpoint_max_tokens == 12_000
+    assert config.casework.context_retain_recent_rounds == 2
+    assert config.casework.context_max_compactions == 3
+
+
+def test_context_compaction_thresholds_must_leave_a_hard_limit_margin() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="soft ratio must be lower than hard ratio",
+    ):
+        CaseworkConfig(
+            context_compaction_soft_ratio=0.90,
+            context_compaction_hard_ratio=0.88,
+        )
 
 
 def test_saas_intake_defaults_start_immediately() -> None:
@@ -63,6 +80,9 @@ def test_repository_config_uses_the_v2_casework_path() -> None:
 
     assert raw["casework"]["mode"] == "casework"
     assert "shadow_archive_dir" not in raw["casework"]
+    assert raw["llm"]["context_window_tokens"] == 272000
+    assert raw["casework"]["context_compaction_soft_ratio"] == 0.70
+    assert raw["casework"]["context_compaction_hard_ratio"] == 0.88
 
 
 def test_repository_config_starts_saas_intake_immediately() -> None:

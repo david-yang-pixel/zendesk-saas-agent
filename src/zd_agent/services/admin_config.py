@@ -44,7 +44,7 @@ class FieldSpec:
 FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("llm.provider", "模型供应商", "模型与运行"),
     FieldSpec("llm.base_url", "模型 Base URL", "模型与运行"),
-    FieldSpec("llm.model", "主模型", "模型与运行"),
+    FieldSpec("llm.model", "主模型", "模型与运行", input="model_picker"),
     FieldSpec(
         "llm.reasoning_effort",
         "主模型推理强度",
@@ -53,11 +53,17 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         model_path="llm.model",
     ),
     FieldSpec(
-        "llm.enable_vision_input", "主模型视觉输入", "模型与运行", input="boolean"
+        "llm.enable_vision_input", "视觉能力", "模型与运行", input="vision_capability"
     ),
     FieldSpec("llm.temperature", "温度", "模型与运行", input="number"),
     FieldSpec("llm.timeout", "模型请求超时秒数", "模型与运行", input="number"),
     FieldSpec("llm.max_tokens", "单次最大输出 token", "模型与运行", input="number"),
+    FieldSpec(
+        "llm.context_window_tokens",
+        "活跃上下文窗口 token",
+        "模型与运行",
+        input="number",
+    ),
     FieldSpec("openai.api_key", "OpenAI API Key", "模型与运行", secret=True),
     FieldSpec("anthropic.api_key", "Anthropic API Key", "模型与运行", secret=True),
     FieldSpec(
@@ -69,19 +75,49 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     ),
     FieldSpec(
         "casework.max_investigation_rounds",
-        "v2 调查轮次上限",
+        "调查轮次上限",
         "模型与运行",
         input="number",
     ),
     FieldSpec(
         "casework.max_investigation_calls",
-        "v2 工具调用上限",
+        "工具调用上限",
         "模型与运行",
         input="number",
     ),
     FieldSpec(
         "casework.max_investigation_tokens",
-        "v2 累计模型 token 上限",
+        "累计模型 token 上限",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "casework.context_compaction_soft_ratio",
+        "上下文压缩软阈值比例",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "casework.context_compaction_hard_ratio",
+        "上下文硬限制比例",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "casework.context_checkpoint_max_tokens",
+        "检查点最大 token",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "casework.context_retain_recent_rounds",
+        "压缩后保留最近工具轮次",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "casework.context_max_compactions",
+        "单工单最大压缩次数",
         "模型与运行",
         input="number",
     ),
@@ -170,13 +206,13 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     ),
     FieldSpec(
         "intake.silence_minutes_default",
-        "v2 Intake 静默分钟数",
+        "Intake 静默分钟数",
         "触发配置",
         input="number",
     ),
     FieldSpec(
         "intake.post_agent_cooldown_seconds",
-        "v2 处理后冷却秒数",
+        "处理后冷却秒数",
         "触发配置",
         input="number",
     ),

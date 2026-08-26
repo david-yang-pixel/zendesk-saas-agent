@@ -61,6 +61,11 @@ def build_archive_meta(
         "archived_at": archived_at,
         "rounds": session.round_count,
         "total_tokens": session.token_usage.total_tokens,
+        "active_context_tokens": session.active_context_tokens,
+        "context_compaction_count": session.context_compaction_count,
+        "context_compactions": [
+            dict(item) for item in session.context_compaction_log
+        ],
         "token_usage": {
             "prompt": session.token_usage.prompt_tokens,
             "completion": session.token_usage.completion_tokens,

@@ -19,6 +19,10 @@ import httpx
 from aiohttp import web
 
 from zd_agent.config import AppConfig, EnvSettings
+from zd_agent.runtime.openai_reasoning import (
+    reasoning_capabilities_manifest,
+    supported_reasoning_efforts,
+)
 from zd_agent.services.admin_auth import AdminAuthStore
 from zd_agent.services.admin_config import AdminConfigStore
 from zd_agent.services.app_context import (
@@ -1541,6 +1545,140 @@ def _model_endpoint(base_url: str, provider: str) -> str:
     return f"{base}/v1/models"
 
 
+_VISION_SUPPORTED_PATTERNS = (
+    r"^gpt-5(?:\.|-|$)",
+    r"^gpt-4(?:o|\.1)(?:-|$)",
+    r"^o[134](?:-|$)",
+    r"^claude-(?:3|sonnet-4|opus-4|haiku-3)(?:[.-]|$)",
+    r"^gemini-(?:1\.5|2|3)(?:[.-]|$)",
+)
+_VISION_UNSUPPORTED_PATTERNS = (
+    r"^(?:text-)?embedding(?:-|$)",
+    r"^text-embedding-",
+    r"^(?:whisper|tts|dall-e|gpt-image|text-moderation)(?:-|$)",
+    r"^(?:gpt-3\.5|babbage|davinci)(?:-|$)",
+)
+_KNOWN_NON_REASONING_PATTERNS = (
+    r"^gpt-4(?:o|\.1)(?:-|$)",
+    r"^(?:gpt-3\.5|claude-|gemini-|text-embedding-|whisper|tts|dall-e|gpt-image)",
+)
+
+
+def _normalized_discovered_model_id(model_id: str) -> str:
+    return (model_id or "").strip().lower().rsplit("/", 1)[-1]
+
+
+def _matches_any(model_id: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.match(pattern, model_id) for pattern in patterns)
+
+
+def _capability_value(item: dict[str, Any], names: tuple[str, ...]) -> bool | None:
+    """Read explicit provider capability flags without guessing missing fields."""
+    containers = [item, item.get("capabilities"), item.get("features")]
+    for container in containers:
+        if isinstance(container, dict):
+            for name in names:
+                value = container.get(name)
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str) and value.strip().lower() in {
+                    "true",
+                    "supported",
+                    "enabled",
+                    "yes",
+                }:
+                    return True
+                if isinstance(value, str) and value.strip().lower() in {
+                    "false",
+                    "unsupported",
+                    "disabled",
+                    "no",
+                }:
+                    return False
+        elif isinstance(container, list):
+            values = {str(value).strip().lower() for value in container}
+            if any(name in values for name in names):
+                return True
+    return None
+
+
+def _provider_modalities(item: dict[str, Any]) -> set[str]:
+    modalities: set[str] = set()
+    for key in ("modalities", "input_modalities", "supported_modalities"):
+        value = item.get(key)
+        if isinstance(value, list):
+            modalities.update(str(entry).strip().lower() for entry in value)
+        elif isinstance(value, dict):
+            inputs = value.get("input") or value.get("inputs") or []
+            if isinstance(inputs, list):
+                modalities.update(str(entry).strip().lower() for entry in inputs)
+    return modalities
+
+
+def _discovered_model_capabilities(
+    item: dict[str, Any], *, provider: str
+) -> dict[str, Any]:
+    model_id = str(item.get("id") or "")
+    normalized = _normalized_discovered_model_id(model_id)
+    efforts = list(supported_reasoning_efforts(model_id))
+    reasoning_known = any(
+        re.match(str(rule["model_pattern"]), normalized)
+        for rule in reasoning_capabilities_manifest()
+    )
+    explicit_reasoning = _capability_value(
+        item,
+        ("reasoning", "reasoning_effort", "reasoning_efforts", "thinking"),
+    )
+    if provider != "openai":
+        reasoning_status = "unsupported"
+        reasoning_source = "agent_adapter"
+        efforts = []
+    elif efforts:
+        reasoning_status = "supported"
+        reasoning_source = "agent_registry"
+    elif reasoning_known or _matches_any(normalized, _KNOWN_NON_REASONING_PATTERNS):
+        reasoning_status = "unsupported"
+        reasoning_source = "agent_registry"
+    elif explicit_reasoning is False:
+        reasoning_status = "unsupported"
+        reasoning_source = "provider_metadata"
+    else:
+        # /v1/models commonly omits capability metadata.  Do not turn a missing
+        # field (or a generic "reasoning: true") into configurable effort levels.
+        reasoning_status = "unknown"
+        reasoning_source = (
+            "provider_metadata" if explicit_reasoning is True else "unreported"
+        )
+
+    explicit_vision = _capability_value(
+        item,
+        ("vision", "image_input", "input_image", "image", "multimodal"),
+    )
+    modalities = _provider_modalities(item)
+    if explicit_vision is None and modalities:
+        explicit_vision = bool({"image", "images", "vision"} & modalities)
+    if explicit_vision is not None:
+        vision_status = "supported" if explicit_vision else "unsupported"
+        vision_source = "provider_metadata"
+    elif _matches_any(normalized, _VISION_SUPPORTED_PATTERNS):
+        vision_status = "supported"
+        vision_source = "agent_registry"
+    elif _matches_any(normalized, _VISION_UNSUPPORTED_PATTERNS):
+        vision_status = "unsupported"
+        vision_source = "agent_registry"
+    else:
+        vision_status = "unknown"
+        vision_source = "unreported"
+
+    return {
+        "reasoning": reasoning_status,
+        "reasoning_efforts": efforts,
+        "reasoning_source": reasoning_source,
+        "vision": vision_status,
+        "vision_source": vision_source,
+    }
+
+
 def _admin_session_payload(value: Any) -> dict[str, Any]:
     if is_dataclass(value):
         payload = asdict(value)
@@ -1993,7 +2131,7 @@ async def handle_admin_model_discovery(request: web.Request) -> web.Response:
     except ValueError:
         return _json_error("model_discovery_invalid_json", status=502)
     raw_models = body.get("data", []) if isinstance(body, dict) else []
-    models: list[dict[str, str]] = []
+    models: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in raw_models:
         if not isinstance(item, dict):
@@ -2006,6 +2144,10 @@ async def handle_admin_model_discovery(request: web.Request) -> web.Response:
             {
                 "id": model_id,
                 "owned_by": str(item.get("owned_by") or item.get("display_name") or ""),
+                "capabilities": _discovered_model_capabilities(
+                    item,
+                    provider=provider,
+                ),
             }
         )
         if len(models) >= 500:

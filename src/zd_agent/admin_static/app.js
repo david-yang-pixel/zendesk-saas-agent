@@ -49,8 +49,8 @@ const SUBTITLES = {
   "运行记录": "每次 agent 处理工单的完整日志中心",
   "Agent 策略": "集中管理触发、等待、人工接管与自动回复策略",
   "系统与审计": "部署、持久化、访问控制与关键变更记录",
-  "触发配置": "webhook、轮询、@mention 和 v2 intake 规则",
-  "回复策略": "v2 自动 public reply、可靠送达和等待策略",
+  "触发配置": "webhook、轮询、@mention 和 intake 规则",
+  "回复策略": "自动 public reply、可靠送达和等待策略",
   "模型与运行": "模型、Base URL、API key、并发和运行护栏",
   "工具与集成": "Zendesk、DB、SigNoz、GitHub、Docs、Sandbox 等远程服务",
   "存储配置": "配置运行记录、审计日志、附件缓存和配置持久化路径",
@@ -60,19 +60,19 @@ const SUBTITLES = {
 
 const GROUP_DESCRIPTIONS = {
   "触发配置": [
-    "控制 v2 什么时候开始处理、什么时候等待，以及如何合并客户消息。",
+    "控制 Agent 什么时候开始处理、什么时候等待，以及如何合并客户消息。",
     "这里聚焦 durable queue、intake 窗口和漏消息恢复。"
   ],
   "回复策略": [
-    "控制 v2 public reply 的写入总开关、合并窗口和可靠送达参数。",
+    "控制自动 public reply 的写入总开关、合并窗口和可靠送达参数。",
     "人工所有权由类型化策略决定，不再由追问次数或旧回复模板触发。"
   ],
   "模型与运行": [
-    "配置 v2 调查与回复模型、API Key、并发、轮次和超时。",
-    "模型名是可编辑输入框，不限制为固定下拉选项。"
+    "配置调查与回复模型、API Key、并发、轮次和超时。",
+    "展开主模型下拉框时，会按当前 Base URL 实时读取可用模型与能力。"
   ],
   "工具与集成": [
-    "配置 v2 使用的远程 MCP/Tool Service 和 Browser Relay。",
+    "配置 Agent 使用的远程 MCP/Tool Service 和 Browser Relay。",
     "这里可以测试连通性；检测结果会写入审计日志。"
   ],
   "存储配置": [
@@ -117,7 +117,7 @@ const FIELD_SECTIONS = {
       ]
     },
     {
-      title: "v2 Intake 与等待策略",
+      title: "Intake 与等待策略",
       description: "durable queue 入队前的静默窗口与处理后冷却。",
       paths: [
         "intake.silence_minutes_default",
@@ -138,7 +138,7 @@ const FIELD_SECTIONS = {
   "回复策略": [
     {
       title: "Public reply 策略",
-      description: "是否允许 v2 自动公开回复以及 Browser Relay 调用超时。",
+      description: "是否允许 Agent 自动公开回复以及 Browser Relay 调用超时。",
       paths: [
         "public_reply.enabled",
         "public_reply.browser_relay_timeout_seconds"
@@ -155,35 +155,47 @@ const FIELD_SECTIONS = {
   ],
   "模型与运行": [
     {
-      title: "v2 调查与回复模型",
-      description: "统一用于调查、视觉证据、回复与发送前复核的模型。",
+      title: "模型连接与能力",
+      description: "在一处配置供应商、Base URL、密钥、模型及模型能力。",
       paths: [
         "llm.provider",
         "llm.base_url",
+        "openai.api_key",
+        "anthropic.api_key",
         "llm.model",
         "llm.reasoning_effort",
         "llm.enable_vision_input"
       ]
     },
     {
-      title: "模型参数与密钥",
-      description: "请求温度、超时、输出上限和供应商 API Key。",
+      title: "模型运行参数",
+      description: "请求温度、超时和单次最大输出 token。",
       paths: [
         "llm.temperature",
         "llm.timeout",
         "llm.max_tokens",
-        "openai.api_key",
-        "anthropic.api_key"
+        "llm.context_window_tokens"
       ]
     },
     {
-      title: "v2 调查预算",
-      description: "并发，以及 v2 调查轮次、工具调用和累计模型 token 预算。",
+      title: "调查预算",
+      description: "并发，以及调查轮次、工具调用和累计模型 token 预算。",
       paths: [
         "agent.max_concurrent_sessions",
         "casework.max_investigation_rounds",
         "casework.max_investigation_calls",
         "casework.max_investigation_tokens"
+      ]
+    },
+    {
+      title: "上下文压缩",
+      description: "接近模型窗口时生成证据受约束的检查点，并保留最近工具轮次。",
+      paths: [
+        "casework.context_compaction_soft_ratio",
+        "casework.context_compaction_hard_ratio",
+        "casework.context_checkpoint_max_tokens",
+        "casework.context_retain_recent_rounds",
+        "casework.context_max_compactions"
       ]
     },
     {
@@ -249,7 +261,7 @@ const FIELD_SECTIONS = {
     },
     {
       title: "Inspector（只读）",
-      description: "现有只读生产检查入口；v2 调查器会按证据需要调用。",
+      description: "现有只读生产检查入口；Agent 会按证据需要调用。",
       paths: [
         "inspector.binary",
         "inspector.config_file",
@@ -280,7 +292,7 @@ const FIELD_SECTIONS = {
     },
     {
       title: "历史 Sandbox 取证",
-      description: "只供 CLI 查看或显式清理 pre-v2 遗留文件；v2 不在这里执行代码。",
+      description: "只供 CLI 查看或显式清理历史遗留文件；Agent 不在这里执行代码。",
       paths: [
         "sandbox.base_dir"
       ]
@@ -385,7 +397,15 @@ const state = {
   runFilters: {},
   auditFilters: {},
   activeConfigSections: {},
-  integrationChecks: {}
+  integrationChecks: {},
+  modelDiscovery: {
+    provider: "",
+    baseUrl: "",
+    models: [],
+    latencyMs: 0,
+    loading: false,
+    error: ""
+  }
 };
 
 async function api(path, options = {}) {
@@ -1500,53 +1520,135 @@ async function renderTicketCenter() {
 
 function renderModelManagement() {
   const fields = fieldsFor("模型与运行");
-  const provider = String(state.values["llm.provider"] || "openai").toLowerCase();
-  const baseUrl = fieldValue("llm.base_url") || "https://api.openai.com/v1";
   setContent(`
-    <section class="model-discovery-hero">
+    <section class="model-registry-note">
       <div>
         <span class="section-kicker">MODEL REGISTRY</span>
-        <h2>从供应商同步模型</h2>
-        <p>输入兼容 Base URL，服务端会使用已保存密钥读取模型列表；密钥不会回传浏览器或写入日志。</p>
+        <h2>模型能力跟随所选模型</h2>
+        <p>供应商、Base URL 与 API Key 在同一组完成配置。展开“主模型”选择器后读取模型；推理强度与视觉能力由所选模型自动决定。</p>
       </div>
       <span class="secure-note"><span class="status-dot"></span>密钥仅在服务端使用</span>
-      <div class="model-discovery-form">
-        <label>供应商<select id="model-discovery-provider"><option value="openai" ${provider === "openai" ? "selected" : ""}>OpenAI Compatible</option><option value="anthropic" ${provider === "anthropic" ? "selected" : ""}>Anthropic</option></select></label>
-        <label>Base URL<input id="model-discovery-base-url" value="${escapeHtml(baseUrl)}" placeholder="https://api.openai.com/v1"></label>
-        <label>临时 API Key <span>可选</span><input id="model-discovery-key" type="password" autocomplete="off" placeholder="使用已保存密钥"></label>
-        <button class="btn primary discovery-button" onclick="discoverModels()">获取模型</button>
+      <div class="capability-legend">
+        <span data-status="supported">支持</span>
+        <span data-status="unsupported">不支持</span>
+        <span data-status="unknown">未知，需按供应商文档确认</span>
       </div>
-      <div id="model-discovery-results" class="model-discovery-results"><span class="muted">同步后可一键选择模型，并继续配置推理强度与预算。</span></div>
     </section>
     ${renderModuleOverview("模型与运行", fields)}
     ${renderForm("模型与运行", fields)}
   `);
+  syncProviderSecretVisibility();
+  syncSelectedModelCapabilities();
 }
 
-async function discoverModels() {
-  const provider = document.getElementById("model-discovery-provider")?.value || "openai";
-  const baseUrl = document.getElementById("model-discovery-base-url")?.value.trim() || "";
-  const apiKey = document.getElementById("model-discovery-key")?.value.trim() || "";
-  setInnerHtml("model-discovery-results", inlineLoadingHtml("正在读取模型列表"));
+function modelDiscoveryContext() {
+  const provider = document.getElementById("field-llm.provider")?.value.trim().toLowerCase()
+    || String(state.values["llm.provider"] || "openai").trim().toLowerCase();
+  const baseUrl = document.getElementById("field-llm.base_url")?.value.trim()
+    || String(fieldValue("llm.base_url") || "").trim();
+  return { provider, baseUrl };
+}
+
+function modelCatalogMatchesCurrentInputs() {
+  const { provider, baseUrl } = modelDiscoveryContext();
+  return state.modelDiscovery.provider === provider && state.modelDiscovery.baseUrl === baseUrl;
+}
+
+function invalidateModelCatalog() {
+  state.modelDiscovery = {
+    provider: "",
+    baseUrl: "",
+    models: [],
+    latencyMs: 0,
+    loading: false,
+    error: ""
+  };
+  const visionValue = document.querySelector("input[data-vision-model-path]");
+  if (visionValue) visionValue.value = "false";
+  refreshReasoningEffortOptions();
+  syncSelectedModelCapabilities();
+}
+
+function handleModelProviderChange() {
+  invalidateModelCatalog();
+  syncProviderSecretVisibility();
+}
+
+function syncProviderSecretVisibility() {
+  const { provider } = modelDiscoveryContext();
+  document.querySelectorAll("[data-provider-secret]").forEach(element => {
+    element.classList.toggle(
+      "provider-secret-hidden",
+      element.getAttribute("data-provider-secret") !== provider
+    );
+  });
+}
+
+function pendingModelApiKey(provider) {
+  return document.querySelector(`input[data-path="${provider}.api_key"]`)?.value.trim() || "";
+}
+
+function toggleModelPicker() {
+  const picker = document.getElementById("model-picker");
+  const trigger = document.getElementById("model-picker-trigger");
+  if (!picker || !trigger) return;
+  const willOpen = picker.hidden;
+  picker.hidden = !willOpen;
+  trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
+  if (!willOpen) return;
+  if (!modelCatalogMatchesCurrentInputs() || !state.modelDiscovery.models.length) {
+    void discoverModels();
+  } else {
+    renderModelPickerOptions();
+    document.getElementById("model-picker-search")?.focus();
+  }
+}
+
+async function discoverModels(force = false) {
+  const { provider, baseUrl } = modelDiscoveryContext();
+  const apiKey = pendingModelApiKey(provider);
+  if (!force && state.modelDiscovery.loading) return;
+  state.modelDiscovery = {
+    provider,
+    baseUrl,
+    models: [],
+    latencyMs: 0,
+    loading: true,
+    error: ""
+  };
+  renderModelPickerOptions();
   try {
     const result = await api("/admin/api/models/discover", {
       method: "POST",
       body: JSON.stringify({ provider, base_url: baseUrl, api_key: apiKey })
     });
-    const models = result.models || [];
-    setInnerHtml("model-discovery-results", models.length ? `
-      <div class="model-results-head"><strong>${models.length} 个模型</strong><span>${escapeHtml(result.latency_ms)} ms</span></div>
-      <div class="model-chip-list">${models.map(model => `<button data-model-id="${escapeHtml(model.id)}" onclick="selectDiscoveredModel(this.dataset.modelId)"><strong>${escapeHtml(model.id)}</strong>${model.owned_by ? `<small>${escapeHtml(model.owned_by)}</small>` : ""}</button>`).join("")}</div>
-    ` : `<span class="muted">供应商返回成功，但没有可用模型。</span>`);
+    state.modelDiscovery = {
+      provider,
+      baseUrl,
+      models: Array.isArray(result.models) ? result.models : [],
+      latencyMs: Number(result.latency_ms || 0),
+      loading: false,
+      error: ""
+    };
   } catch (err) {
-    setInnerHtml("model-discovery-results", errorHtml(modelDiscoveryErrorText(err.message)));
+    state.modelDiscovery = {
+      provider,
+      baseUrl,
+      models: [],
+      latencyMs: 0,
+      loading: false,
+      error: modelDiscoveryErrorText(err.message)
+    };
   }
+  renderModelPickerOptions();
+  syncSelectedModelCapabilities();
+  document.getElementById("model-picker-search")?.focus();
 }
 
 function modelDiscoveryErrorText(message) {
   const value = String(message || "");
   if (value.includes("http_401") || value.includes("http_403")) return "鉴权失败，请检查 API Key 与 Base URL。";
-  if (value.includes("api_key_is_required")) return "请先保存供应商 API Key，或输入本次同步使用的临时密钥。";
+  if (value.includes("api_key_is_required")) return "请在当前模型配置中输入 API Key，再重新获取模型。";
   if (value.includes("unreachable")) return "无法连接模型服务，请检查 Base URL、网络和证书配置。";
   if (value.includes("invalid_json")) return "模型服务返回了无法识别的响应格式。";
   return value || "模型列表读取失败";
@@ -1556,9 +1658,85 @@ function selectDiscoveredModel(model) {
   const input = document.getElementById("field-llm.model");
   if (!input) return;
   input.value = model;
-  input.focus();
+  const label = document.getElementById("model-picker-current");
+  if (label) label.textContent = model;
+  const picker = document.getElementById("model-picker");
+  const trigger = document.getElementById("model-picker-trigger");
+  if (picker) picker.hidden = true;
+  if (trigger) {
+    trigger.setAttribute("aria-expanded", "false");
+    trigger.focus();
+  }
   refreshReasoningEffortOptions();
+  syncSelectedModelCapabilities();
   showToast(`已选择 ${model}`);
+}
+
+function filterModelPicker(value) {
+  const query = String(value || "").trim().toLowerCase();
+  document.querySelectorAll("#model-picker-list .model-option").forEach(option => {
+    const searchable = String(option.getAttribute("data-search") || "").toLowerCase();
+    option.hidden = Boolean(query) && !searchable.includes(query);
+  });
+}
+
+function renderModelPickerOptions() {
+  const target = document.getElementById("model-picker-content");
+  if (!target) return;
+  if (state.modelDiscovery.loading) {
+    target.innerHTML = inlineLoadingHtml("正在按当前 Base URL 读取模型");
+    return;
+  }
+  if (state.modelDiscovery.error) {
+    target.innerHTML = `
+      <div class="model-picker-error">${escapeHtml(state.modelDiscovery.error)}</div>
+      <button type="button" class="btn secondary compact" onclick="discoverModels(true)">重新获取</button>
+    `;
+    return;
+  }
+  const models = state.modelDiscovery.models || [];
+  if (!models.length) {
+    target.innerHTML = `<div class="model-picker-empty">展开后会按当前 Base URL 获取模型。</div>`;
+    return;
+  }
+  target.innerHTML = `
+    <div class="model-picker-toolbar">
+      <input id="model-picker-search" type="search" placeholder="搜索 ${models.length} 个模型" oninput="filterModelPicker(this.value)">
+      <button type="button" class="btn secondary compact" onclick="discoverModels(true)">刷新</button>
+    </div>
+    <div class="model-picker-meta"><span>${models.length} 个模型</span><span>${escapeHtml(state.modelDiscovery.latencyMs)} ms</span></div>
+    <div id="model-picker-list" class="model-picker-list" role="listbox">
+      ${models.map(renderModelOption).join("")}
+    </div>
+  `;
+}
+
+function renderModelOption(model) {
+  const capabilities = model.capabilities || {};
+  const reasoning = capabilities.reasoning || "unknown";
+  const vision = capabilities.vision || "unknown";
+  const efforts = Array.isArray(capabilities.reasoning_efforts)
+    ? capabilities.reasoning_efforts.length
+    : 0;
+  const reasoningLabel = reasoning === "supported"
+    ? `推理 ${efforts} 档`
+    : `推理 ${capabilityStatusLabel(reasoning)}`;
+  return `
+    <button
+      type="button"
+      class="model-option"
+      role="option"
+      data-model-id="${escapeHtml(model.id)}"
+      data-search="${escapeHtml(`${model.id} ${model.owned_by || ""}`)}"
+      onclick="selectDiscoveredModel(this.dataset.modelId)"
+    >
+      <span class="model-option-name"><strong>${escapeHtml(model.id)}</strong>${model.owned_by ? `<small>${escapeHtml(model.owned_by)}</small>` : ""}</span>
+      <span class="model-option-capabilities">
+        <small data-status="${escapeHtml(reasoning)}">${escapeHtml(reasoningLabel)}</small>
+        <small data-status="${escapeHtml(vision)}">视觉 ${escapeHtml(capabilityStatusLabel(vision))}</small>
+      </span>
+    </button>
+  `;
 }
 
 function renderStrategyHub() {
@@ -1676,12 +1854,12 @@ function renderIntegrations() {
     <section class="card">
       <div class="card-header">
         <span>管理说明</span>
-        <span class="chip">v2 只读能力面</span>
+        <span class="chip">只读能力面</span>
       </div>
       <div class="card-body integration-note-grid">
         <div>
           <strong>MCP</strong>
-          <p>v2 生产调查只注册经过审核的只读工具。内置 MCP 点击卡片编辑连接配置；自定义 MCP 当前仅做连通性管理，不会自动加入生产工具注册表。</p>
+          <p>生产调查只注册经过审核的只读工具。内置 MCP 点击卡片编辑连接配置；自定义 MCP 当前仅做连通性管理，不会自动加入生产工具注册表。</p>
         </div>
       </div>
     </section>
@@ -1824,7 +2002,7 @@ function openMcpManager() {
     <div class="manager-toolbar">
       <div>
         <strong>自定义 MCP 服务</strong>
-        <p>用于登记内置 MCP 之外的远程服务并执行连通性检查；它不会自动加入 v2 生产工具注册表。</p>
+        <p>用于登记内置 MCP 之外的远程服务并执行连通性检查；它不会自动加入生产工具注册表。</p>
       </div>
       <button class="btn secondary compact" onclick="addMcpManagerItem()">添加 MCP</button>
     </div>
@@ -2115,10 +2293,26 @@ function renderConfigSectionDetails(section) {
 }
 
 function renderFieldRow(field) {
+  const labelTarget = field.input === "model_picker"
+    ? "model-picker-trigger"
+    : field.input === "vision_capability"
+      ? "model-vision-capability"
+      : `field-${field.path}`;
+  const secretProvider = field.path === "openai.api_key"
+    ? "openai"
+    : field.path === "anthropic.api_key"
+      ? "anthropic"
+      : "";
+  const providerAttribute = secretProvider
+    ? ` data-provider-secret="${secretProvider}"`
+    : "";
+  const renderedInput = secretProvider
+    ? `<div${providerAttribute}>${renderInput(field)}</div>`
+    : renderInput(field);
   return `
-    <label for="field-${field.path}" title="${escapeHtml(field.path)}">${escapeHtml(field.label)}</label>
-    ${renderInput(field)}
-    <span class="field-help ${field.restart_required ? "warn-text" : "muted"}">
+    <label for="${labelTarget}" title="${escapeHtml(field.path)}"${providerAttribute}>${escapeHtml(field.label)}</label>
+    ${renderedInput}
+    <span id="field-help-${field.path}" class="field-help ${field.restart_required ? "warn-text" : "muted"}"${providerAttribute}>
       ${fieldHelpText(field)}
     </span>
   `;
@@ -2126,7 +2320,9 @@ function renderFieldRow(field) {
 
 function fieldHelpText(field) {
   if (field.secret) return "可替换密钥";
+  if (field.input === "model_picker") return "展开下拉框，按当前 Base URL 获取模型";
   if (field.input === "reasoning_effort") return "按所选模型限制档位；新会话立即生效";
+  if (field.input === "vision_capability") return "由所选模型自动决定，不提供人工开关";
   if (field.restart_required) return "需重启生效";
   if (field.protected) return "受保护";
   return "立即生效";
@@ -2172,6 +2368,12 @@ function renderInput(field) {
       </div>
     `;
   }
+  if (field.input === "model_picker") {
+    return renderModelPickerInput(field);
+  }
+  if (field.input === "vision_capability") {
+    return renderVisionCapabilityInput(field);
+  }
   if (field.input === "boolean") {
     const checked = state.values[field.path] === true || state.values[field.path] === "true";
     return `
@@ -2191,10 +2393,87 @@ function renderInput(field) {
     return `<textarea id="${id}" data-path="${field.path}" class="json-textarea" rows="10">${escapeHtml(formatJsonFieldValue(value))}</textarea>`;
   }
   const inputType = field.input === "number" ? "number" : "text";
-  const reasoningRefresh = field.path === "llm.model"
-    ? ' oninput="refreshReasoningEffortOptions()"'
+  if (field.path === "llm.provider") {
+    const provider = String(displayValue || "openai").toLowerCase();
+    return `
+      <select id="${id}" data-path="${field.path}" onchange="handleModelProviderChange()">
+        <option value="openai" ${provider === "openai" ? "selected" : ""}>OpenAI Compatible</option>
+        <option value="anthropic" ${provider === "anthropic" ? "selected" : ""}>Anthropic</option>
+      </select>
+    `;
+  }
+  const modelCatalogRefresh = ["llm.provider", "llm.base_url"].includes(field.path)
+    ? ' oninput="invalidateModelCatalog()"'
     : "";
-  return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(displayValue)}"${reasoningRefresh}>`;
+  return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(displayValue)}"${modelCatalogRefresh}>`;
+}
+
+function renderModelPickerInput(field) {
+  const model = String(fieldValue(field.path) || "");
+  return `
+    <div class="model-picker-control">
+      <input id="field-${field.path}" data-path="${field.path}" type="hidden" value="${escapeHtml(model)}">
+      <button
+        id="model-picker-trigger"
+        type="button"
+        class="model-picker-trigger"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        onclick="toggleModelPicker()"
+      >
+        <span id="model-picker-current">${escapeHtml(model || "请选择模型")}</span>
+        <small>选择模型</small>
+      </button>
+      <div id="model-picker" class="model-picker-popover" hidden>
+        <div class="model-picker-heading">
+          <div><strong>可用模型</strong><span>来自当前 Base URL</span></div>
+          <button type="button" class="model-picker-close" onclick="toggleModelPicker()">关闭</button>
+        </div>
+        <div id="model-picker-content"><div class="model-picker-empty">展开后会按当前 Base URL 获取模型。</div></div>
+      </div>
+      <div id="model-capability-summary" class="model-capability-summary">
+        ${selectedModelCapabilitySummaryHtml(model)}
+      </div>
+    </div>
+  `;
+}
+
+function renderVisionCapabilityInput(field) {
+  const configured = state.values[field.path] === true || state.values[field.path] === "true";
+  const capabilities = selectedModelCapabilities(reasoningModelValue("llm.model"));
+  const discovered = discoveredModelCapabilities(reasoningModelValue("llm.model"));
+  const effective = capabilities.vision === "supported"
+    ? true
+    : capabilities.vision === "unsupported" || discovered
+      ? false
+      : configured;
+  return `
+    <div class="vision-capability-control">
+      <input
+      id="field-${field.path}"
+      type="hidden"
+      data-path="${field.path}"
+      data-vision-model-path="llm.model"
+      value="${effective ? "true" : "false"}"
+      >
+      <div id="model-vision-capability" class="vision-capability-readonly" data-status="${escapeHtml(capabilities.vision)}" tabindex="0">
+        ${visionCapabilityReadonlyHtml(capabilities)}
+      </div>
+    </div>
+  `;
+}
+
+function visionCapabilityReadonlyHtml(capabilities) {
+  const status = capabilities.vision || "unknown";
+  const title = status === "supported"
+    ? "支持视觉输入"
+    : status === "unsupported"
+      ? "不支持视觉输入"
+      : "视觉能力未知";
+  const detail = status === "unknown"
+    ? "供应商未返回能力信息；保存时按不支持处理"
+    : capabilitySourceLabel(capabilities.vision_source);
+  return `<strong>${escapeHtml(title)}</strong><small>${escapeHtml(detail)}</small>`;
 }
 
 function normalizedModelId(model) {
@@ -2202,6 +2481,10 @@ function normalizedModelId(model) {
 }
 
 function reasoningEffortsForModel(model) {
+  const discovered = discoveredModelCapabilities(model);
+  if (discovered && Array.isArray(discovered.reasoning_efforts)) {
+    return discovered.reasoning_efforts;
+  }
   const rule = reasoningCapabilityForModel(model);
   return rule && Array.isArray(rule.efforts) ? rule.efforts : [];
 }
@@ -2220,7 +2503,77 @@ function reasoningCapabilityForModel(model) {
   return null;
 }
 
-function reasoningUnsupportedReason(_modelPath, _model) {
+function discoveredModelCapabilities(model) {
+  if (!modelCatalogMatchesCurrentInputs()) return null;
+  const selected = (state.modelDiscovery.models || []).find(item => item.id === model);
+  return selected?.capabilities || null;
+}
+
+function selectedModelCapabilities(model) {
+  if (modelDiscoveryContext().provider !== "openai") {
+    const discovered = discoveredModelCapabilities(model);
+    return {
+      reasoning: "unsupported",
+      reasoning_efforts: [],
+      reasoning_source: "agent_adapter",
+      vision: discovered?.vision || "unknown",
+      vision_source: discovered?.vision_source || "unreported"
+    };
+  }
+  const discovered = discoveredModelCapabilities(model);
+  if (discovered) {
+    return {
+      reasoning: discovered.reasoning || "unknown",
+      reasoning_efforts: Array.isArray(discovered.reasoning_efforts)
+        ? discovered.reasoning_efforts
+        : [],
+      reasoning_source: discovered.reasoning_source || "unreported",
+      vision: discovered.vision || "unknown",
+      vision_source: discovered.vision_source || "unreported"
+    };
+  }
+  const reasoningRule = reasoningCapabilityForModel(model);
+  const efforts = reasoningRule && Array.isArray(reasoningRule.efforts)
+    ? reasoningRule.efforts
+    : [];
+  return {
+    reasoning: reasoningRule ? (efforts.length ? "supported" : "unsupported") : "unknown",
+    reasoning_efforts: efforts,
+    reasoning_source: reasoningRule ? "agent_registry" : "unreported",
+    vision: "unknown",
+    vision_source: "unreported"
+  };
+}
+
+function capabilityStatusLabel(status) {
+  if (status === "supported") return "支持";
+  if (status === "unsupported") return "不支持";
+  return "未知";
+}
+
+function capabilitySourceLabel(source) {
+  if (source === "provider_metadata") return "供应商返回";
+  if (source === "agent_registry") return "Agent 已验证";
+  if (source === "agent_adapter") return "当前适配器限制";
+  return "供应商未返回";
+}
+
+function selectedModelCapabilitySummaryHtml(model) {
+  const capabilities = selectedModelCapabilities(model);
+  const reasoningCount = capabilities.reasoning_efforts.length;
+  const reasoningLabel = capabilities.reasoning === "supported"
+    ? `推理强度 ${reasoningCount} 档`
+    : `推理强度 ${capabilityStatusLabel(capabilities.reasoning)}`;
+  return `
+    <span data-status="${escapeHtml(capabilities.reasoning)}" title="${escapeHtml(capabilitySourceLabel(capabilities.reasoning_source))}">${escapeHtml(reasoningLabel)}</span>
+    <span data-status="${escapeHtml(capabilities.vision)}" title="${escapeHtml(capabilitySourceLabel(capabilities.vision_source))}">视觉 ${escapeHtml(capabilityStatusLabel(capabilities.vision))}</span>
+  `;
+}
+
+function reasoningUnsupportedReason(_modelPath, model) {
+  const capabilities = selectedModelCapabilities(model);
+  if (capabilities.reasoning === "unsupported") return "该模型不支持可配置推理强度";
+  if (capabilities.reasoning === "unknown") return "推理强度未知，暂不可配置";
   return "";
 }
 
@@ -2283,6 +2636,42 @@ function refreshReasoningEffortOptions() {
       || Boolean(reasoningUnsupportedReason(modelPath, model))
     );
   });
+}
+
+function syncSelectedModelCapabilities() {
+  const model = reasoningModelValue("llm.model");
+  const capabilities = selectedModelCapabilities(model);
+  const summary = document.getElementById("model-capability-summary");
+  if (summary) summary.innerHTML = selectedModelCapabilitySummaryHtml(model);
+
+  const reasoningHelp = document.getElementById("field-help-llm.reasoning_effort");
+  if (reasoningHelp) {
+    reasoningHelp.textContent = capabilities.reasoning === "supported"
+      ? `支持 ${capabilities.reasoning_efforts.join(" / ")}；${capabilitySourceLabel(capabilities.reasoning_source)}`
+      : `${capabilityStatusLabel(capabilities.reasoning)}；${capabilitySourceLabel(capabilities.reasoning_source)}`;
+  }
+
+  const vision = document.querySelector("input[data-vision-model-path]");
+  const discoveredVision = discoveredModelCapabilities(model);
+  if (vision && capabilities.vision === "supported") {
+    vision.value = "true";
+  } else if (
+    vision
+    && (capabilities.vision === "unsupported" || discoveredVision)
+  ) {
+    vision.value = "false";
+  }
+  const visionDisplay = document.getElementById("model-vision-capability");
+  if (visionDisplay) {
+    visionDisplay.setAttribute("data-status", capabilities.vision);
+    visionDisplay.innerHTML = visionCapabilityReadonlyHtml(capabilities);
+  }
+  const visionHelp = document.getElementById("field-help-llm.enable_vision_input");
+  if (visionHelp) {
+    visionHelp.textContent = capabilities.vision === "unknown"
+      ? "能力未知时按不支持处理；不可人工覆盖"
+      : `由模型自动设为${capabilities.vision === "supported" ? "开启" : "关闭"}；${capabilitySourceLabel(capabilities.vision_source)}`;
+  }
 }
 
 function fieldValue(path) {

@@ -8,6 +8,13 @@ from zd_agent.casework.adapters.evidence import (
     build_case_context_evidence,
     tool_evidence,
 )
+from zd_agent.casework.adapters.context_compaction import (
+    ActiveContextDecision,
+    ActiveContextPolicy,
+    ContextCompactionError,
+    compact_active_context,
+    estimate_active_context_tokens,
+)
 from zd_agent.casework.adapters.model import (
     ModelOutputError,
     investigation_output_schema,
@@ -41,6 +48,10 @@ from zd_agent.runtime.llm.types import (
 )
 from zd_agent.session.agent_session import AgentSession
 from zd_agent.tools.base import Tool, ToolRegistry, ToolResult
+from zd_agent.log import get_logger
+
+
+logger = get_logger(module="casework.tool_investigator")
 
 
 _APPROVED_EXACT_NAMES = frozenset(
@@ -85,6 +96,10 @@ _INSPECTOR_PRIMARY_ARGUMENTS = frozenset(
 
 
 class InvestigationProtocolError(RuntimeError):
+    pass
+
+
+class CustomerContextStaleError(InvestigationProtocolError):
     pass
 
 
@@ -655,6 +670,12 @@ class BoundedToolCaseInvestigator:
         max_rounds: int = 10,
         max_calls: int = 16,
         max_tokens: int = 1_500_000,
+        context_window_tokens: int = 272_000,
+        context_compaction_soft_ratio: float = 0.70,
+        context_compaction_hard_ratio: float = 0.88,
+        context_checkpoint_max_tokens: int = 12_000,
+        context_retain_recent_rounds: int = 2,
+        context_max_compactions: int = 3,
     ) -> None:
         if max_rounds < 1 or max_calls < 1 or max_tokens < 1:
             raise ValueError("investigation budgets must be positive")
@@ -668,6 +689,18 @@ class BoundedToolCaseInvestigator:
             session=session,
             maximum=max_tokens,
         )
+        self._context_policy = ActiveContextPolicy(
+            context_window_tokens=context_window_tokens,
+            soft_ratio=context_compaction_soft_ratio,
+            hard_ratio=context_compaction_hard_ratio,
+        )
+        if context_checkpoint_max_tokens < 1:
+            raise ValueError("checkpoint token budget must be positive")
+        if context_retain_recent_rounds < 0 or context_max_compactions < 0:
+            raise ValueError("context compaction limits cannot be negative")
+        self._context_checkpoint_max_tokens = context_checkpoint_max_tokens
+        self._context_retain_recent_rounds = context_retain_recent_rounds
+        self._context_max_compactions = context_max_compactions
         self._tools = approved_read_tools(registry)
         self._tools_by_name = {tool.name: tool for tool in self._tools}
         self._approved_names = frozenset(tool.name for tool in self._tools)
@@ -823,6 +856,101 @@ class BoundedToolCaseInvestigator:
                 "investigation model token budget exhausted",
             ) from error
 
+    def _ensure_customer_context_current(self) -> None:
+        if self._session.customer_context_dirty:
+            raise CustomerContextStaleError(
+                "stale_context: customer added a message during investigation"
+            )
+
+    async def _prepare_active_context(
+        self,
+        *,
+        context: CaseContext,
+        evidence: list[EvidenceItem],
+        messages: list[dict[str, Any]],
+        tools: list[ToolSchema] | None,
+    ) -> list[dict[str, Any]]:
+        self._ensure_customer_context_current()
+        estimated = estimate_active_context_tokens(messages, tools)
+        self._session.active_context_tokens = estimated
+        decision = self._context_policy.decision(estimated)
+        if decision is ActiveContextDecision.CONTINUE:
+            return messages
+
+        has_tool_history = any(
+            message.get("role") == "assistant" and message.get("tool_calls")
+            for message in messages
+        )
+        if not has_tool_history:
+            if decision is ActiveContextDecision.HARD_LIMIT:
+                raise InvestigationProtocolError(
+                    "active context hard limit reached before investigation tools"
+                )
+            return messages
+
+        if self._session.context_compaction_count >= self._context_max_compactions:
+            if decision is ActiveContextDecision.HARD_LIMIT:
+                raise InvestigationProtocolError(
+                    "active context hard limit reached after compaction budget exhausted"
+                )
+            return messages
+
+        trigger = decision.value
+        logger.info(
+            "context_compaction_started",
+            ticket_id=context.ticket.ticket_id,
+            session_id=self._session.session_id,
+            generation=context.ticket.generation,
+            trigger=trigger,
+            tokens_before=estimated,
+            soft_limit=self._context_policy.soft_limit,
+            hard_limit=self._context_policy.hard_limit,
+        )
+        try:
+            compacted = await compact_active_context(
+                provider=self._provider,
+                context=context,
+                evidence=tuple(evidence),
+                messages=messages,
+                tools=tools,
+                created_at=self._clock.now(),
+                max_checkpoint_tokens=self._context_checkpoint_max_tokens,
+                retain_recent_rounds=self._context_retain_recent_rounds,
+                on_response=self._record_tokens,
+            )
+        except ContextCompactionError as error:
+            logger.error(
+                "context_compaction_failed",
+                ticket_id=context.ticket.ticket_id,
+                session_id=self._session.session_id,
+                generation=context.ticket.generation,
+                trigger=trigger,
+                error_type=type(error).__name__,
+            )
+            raise InvestigationProtocolError(str(error)) from error
+        self._ensure_customer_context_current()
+        if compacted.tokens_after >= self._context_policy.hard_limit:
+            raise InvestigationProtocolError(
+                "active context remains above hard limit after compaction"
+            )
+        self._session.log_context_compaction(
+            trigger=trigger,
+            tokens_before=compacted.tokens_before,
+            tokens_after=compacted.tokens_after,
+            checkpoint=compacted.checkpoint.model_dump(mode="json"),
+        )
+        logger.info(
+            "context_compaction_completed",
+            ticket_id=context.ticket.ticket_id,
+            session_id=self._session.session_id,
+            generation=context.ticket.generation,
+            trigger=trigger,
+            tokens_before=compacted.tokens_before,
+            tokens_after=compacted.tokens_after,
+            compaction_count=self._session.context_compaction_count,
+        )
+        return compacted.messages
+
     async def _terminal_result(
         self,
         *,
@@ -831,6 +959,12 @@ class BoundedToolCaseInvestigator:
         messages: list[dict[str, Any]],
         instruction: str,
     ) -> InvestigationResult:
+        messages[:] = await self._prepare_active_context(
+            context=context,
+            evidence=evidence,
+            messages=messages,
+            tools=None,
+        )
         messages.append({"role": "user", "content": instruction})
         self._ensure_tokens_available()
         response = await self._provider.chat(messages, tools=None, temperature=0.0)
@@ -870,6 +1004,12 @@ class BoundedToolCaseInvestigator:
         used_calls = 0
         for round_index in range(1, self._max_rounds + 1):
             self._ensure_tokens_available()
+            messages = await self._prepare_active_context(
+                context=context,
+                evidence=evidence,
+                messages=messages,
+                tools=schemas,
+            )
             response = await self._provider.chat(
                 messages,
                 tools=schemas,

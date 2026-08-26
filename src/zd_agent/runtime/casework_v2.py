@@ -110,6 +110,20 @@ async def execute_casework_v2(
         max_rounds=cfg.casework.max_investigation_rounds,
         max_calls=cfg.casework.max_investigation_calls,
         max_tokens=cfg.casework.max_investigation_tokens,
+        context_window_tokens=cfg.llm.context_window_tokens,
+        context_compaction_soft_ratio=(
+            cfg.casework.context_compaction_soft_ratio
+        ),
+        context_compaction_hard_ratio=(
+            cfg.casework.context_compaction_hard_ratio
+        ),
+        context_checkpoint_max_tokens=(
+            cfg.casework.context_checkpoint_max_tokens
+        ),
+        context_retain_recent_rounds=(
+            cfg.casework.context_retain_recent_rounds
+        ),
+        context_max_compactions=cfg.casework.context_max_compactions,
     )
     orchestrator = CaseworkOrchestrator(
         context_builder=context_builder,

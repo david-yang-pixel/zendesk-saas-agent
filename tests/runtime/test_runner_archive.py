@@ -128,6 +128,57 @@ def test_archive_meta_retains_typed_casework_and_exact_evidence_calls() -> None:
     assert meta["tool_calls"][0]["metadata"] == {"source": "billing"}
 
 
+def test_archive_meta_retains_context_compaction_metrics() -> None:
+    session = AgentSession(ticket_id=4100, session_id="compaction-session")
+    session.log_context_compaction(
+        trigger="compact",
+        tokens_before=200_000,
+        tokens_after=80_000,
+        checkpoint={"ticket_id": 4100, "generation": 2, "body": {}},
+    )
+
+    meta = build_archive_meta(
+        session=session,
+        archived_at="2026-08-26T00:00:00+00:00",
+    )
+
+    assert meta["active_context_tokens"] == 80_000
+    assert meta["context_compaction_count"] == 1
+    assert meta["context_compactions"][0]["reclaimed_tokens"] == 120_000
+
+
+def test_auto_archive_writes_checkpoints_and_compaction_events(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    cfg = SimpleNamespace(
+        archive=SimpleNamespace(archive_dir=str(tmp_path / "tickets")),
+    )
+    monkeypatch.setattr("zd_agent.runtime.runner_archive.get_config", lambda: cfg)
+    session = AgentSession(ticket_id=4100, session_id="compaction-session")
+    session.log_context_compaction(
+        trigger="compact",
+        tokens_before=200_000,
+        tokens_after=80_000,
+        checkpoint={"ticket_id": 4100, "generation": 2, "body": {}},
+    )
+
+    ensure_archive(session, elapsed_seconds=4.2)
+
+    run_dir = tmp_path / "tickets" / "4100" / "runs" / "compaction-session"
+    checkpoint = json.loads(
+        (run_dir / "checkpoints" / "001.json").read_text(encoding="utf-8")
+    )
+    events = [
+        json.loads(line)
+        for line in (run_dir / "compaction-events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert checkpoint["generation"] == 2
+    assert events[0]["tokens_before"] == 200_000
+
+
 def test_auto_archive_failure_never_breaks_agent_completion(
     tmp_path,
     monkeypatch,

@@ -67,6 +67,25 @@ def ensure_archive(
                 session.reply_draft,
                 encoding="utf-8",
             )
+        checkpoints = getattr(session, "context_checkpoints", ())
+        if checkpoints:
+            checkpoint_dir = archive_dir / "checkpoints"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            for index, checkpoint in enumerate(checkpoints, start=1):
+                (checkpoint_dir / f"{index:03d}.json").write_text(
+                    json.dumps(checkpoint, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+        compaction_events = getattr(session, "context_compaction_log", ())
+        if compaction_events:
+            event_lines = "\n".join(
+                json.dumps(item, ensure_ascii=False)
+                for item in compaction_events
+            )
+            (archive_dir / "compaction-events.jsonl").write_text(
+                f"{event_lines}\n",
+                encoding="utf-8",
+            )
         logger.info(
             "auto_archive_created",
             ticket_id=session.ticket_id,

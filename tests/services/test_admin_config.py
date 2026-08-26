@@ -16,17 +16,24 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     by_path = {field["path"]: field for field in schema["fields"]}
 
     assert by_path["llm.base_url"]["editable"] is True
-    assert by_path["llm.model"]["input"] == "text"
+    assert by_path["llm.model"]["input"] == "model_picker"
     assert by_path["llm.reasoning_effort"]["input"] == "reasoning_effort"
     assert by_path["llm.reasoning_effort"]["model_path"] == "llm.model"
-    assert by_path["llm.enable_vision_input"]["input"] == "boolean"
+    assert by_path["llm.enable_vision_input"]["input"] == "vision_capability"
+    assert by_path["llm.enable_vision_input"]["label"] == "视觉能力"
     assert by_path["llm.timeout"]["input"] == "number"
+    assert by_path["llm.context_window_tokens"]["input"] == "number"
     assert by_path["openai.api_key"]["secret"] is True
     assert by_path["openai.api_key"]["editable"] is True
     assert by_path["retry.max_attempts"]["group"] == "模型与运行"
     assert by_path["casework.max_investigation_rounds"]["input"] == "number"
     assert by_path["casework.max_investigation_calls"]["input"] == "number"
     assert by_path["casework.max_investigation_tokens"]["input"] == "number"
+    assert by_path["casework.context_compaction_soft_ratio"]["input"] == "number"
+    assert by_path["casework.context_compaction_hard_ratio"]["input"] == "number"
+    assert by_path["casework.context_checkpoint_max_tokens"]["input"] == "number"
+    assert by_path["casework.context_retain_recent_rounds"]["input"] == "number"
+    assert by_path["casework.context_max_compactions"]["input"] == "number"
     assert not any(path.startswith("agent.guardrails.") for path in by_path)
     assert "retry.llm.max_attempts" not in by_path
     assert "retry.zendesk.max_attempts" not in by_path

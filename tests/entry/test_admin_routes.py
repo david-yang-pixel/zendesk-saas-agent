@@ -298,9 +298,21 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "zendesk.mention_aliases" in app_js
     assert "fieldComparableValue" in app_js
     assert "json-textarea" in app_js
-    assert "v2 Intake 与等待策略" in app_js
-    assert "v2 调查与回复模型" in app_js
+    assert "Intake 与等待策略" in app_js
+    assert "模型连接与能力" in app_js
+    assert "v2" not in app_js
+    assert "模型运行参数" in app_js
     assert "llm.reasoning_effort" in app_js
+    assert 'field.input === "model_picker"' in app_js
+    assert "toggleModelPicker" in app_js
+    assert "modelDiscoveryContext" in app_js
+    assert "selectedModelCapabilities" in app_js
+    assert "syncSelectedModelCapabilities" in app_js
+    assert "能力未知时按不支持处理；不可人工覆盖" in app_js
+    assert 'field.input === "vision_capability"' in app_js
+    assert "syncProviderSecretVisibility" in app_js
+    assert "pendingModelApiKey" in app_js
+    assert 'api_key: apiKey' in app_js
     assert 'field.input === "reasoning_effort"' in app_js
     assert "reasoningEffortsForModel" in app_js
     assert "refreshReasoningEffortOptions" in app_js
@@ -1826,8 +1838,113 @@ async def test_admin_model_discovery_lists_models_without_exposing_key(
     assert body["endpoint"] == "https://models.example.test/v1/models"
     assert [model["id"] for model in body["models"]] == ["gpt-a", "gpt-z"]
     assert body["count"] == 2
+    assert body["models"][0]["capabilities"] == {
+        "reasoning": "unknown",
+        "reasoning_efforts": [],
+        "reasoning_source": "unreported",
+        "vision": "unknown",
+        "vision_source": "unreported",
+    }
     assert "stored-model-secret" not in response.text
     assert "stored-model-secret" not in audit.text
+
+
+@pytest.mark.asyncio
+async def test_admin_model_discovery_prefers_unsaved_key_without_exposing_it(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "stored-model-secret")
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer unsaved-model-secret"
+        return httpx.Response(200, json={"data": [{"id": "gpt-private"}]})
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.services.admin_routes.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        response = await app[ADMIN_HANDLERS_KEY]["model_discovery"](
+            _Request(
+                app=app,
+                cookies=cookie,
+                payload={
+                    "provider": "openai",
+                    "base_url": "https://models.example.test",
+                    "api_key": "unsaved-model-secret",
+                },
+            )
+        )
+
+    audit = await app[ADMIN_HANDLERS_KEY]["audit_logs"](
+        _Request(app=app, cookies=cookie, query={"action": "model_discovery"})
+    )
+    assert response.status == 200
+    assert "unsaved-model-secret" not in response.text
+    assert "unsaved-model-secret" not in audit.text
+
+
+def test_discovered_model_capabilities_are_model_specific_and_tri_state() -> None:
+    reasoning_vision = admin_routes._discovered_model_capabilities(
+        {"id": "gpt-5.6-terra"},
+        provider="openai",
+    )
+    non_reasoning_vision = admin_routes._discovered_model_capabilities(
+        {"id": "gpt-4.1"},
+        provider="openai",
+    )
+    explicit_metadata = admin_routes._discovered_model_capabilities(
+        {
+            "id": "private-multimodal-model",
+            "capabilities": {"vision": True, "reasoning": False},
+        },
+        provider="openai",
+    )
+    unknown = admin_routes._discovered_model_capabilities(
+        {"id": "private-model"},
+        provider="openai",
+    )
+
+    assert reasoning_vision["reasoning"] == "supported"
+    assert reasoning_vision["reasoning_efforts"] == [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    assert reasoning_vision["vision"] == "supported"
+    assert non_reasoning_vision["reasoning"] == "unsupported"
+    assert non_reasoning_vision["vision"] == "supported"
+    assert explicit_metadata["reasoning"] == "unsupported"
+    assert explicit_metadata["vision"] == "supported"
+    assert explicit_metadata["vision_source"] == "provider_metadata"
+    assert unknown["reasoning"] == "unknown"
+    assert unknown["vision"] == "unknown"
+
+
+def test_anthropic_discovery_disables_unimplemented_reasoning_effort_adapter() -> None:
+    capabilities = admin_routes._discovered_model_capabilities(
+        {
+            "id": "claude-sonnet-4-5",
+            "capabilities": {"reasoning": True},
+            "input_modalities": ["text", "image"],
+        },
+        provider="anthropic",
+    )
+
+    assert capabilities["reasoning"] == "unsupported"
+    assert capabilities["reasoning_source"] == "agent_adapter"
+    assert capabilities["vision"] == "supported"
 
 
 @pytest.mark.asyncio

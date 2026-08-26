@@ -100,6 +100,45 @@ async def test_v2_runner_failure_never_writes_legacy_customer_handoff(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_v2_runner_defers_stale_customer_context_for_a_fresh_generation(
+    monkeypatch,
+):
+    from zd_agent.casework.adapters.tool_investigator import (
+        CustomerContextStaleError,
+    )
+    from zd_agent.runtime import runner
+
+    cfg = MagicMock()
+    cfg.casework.mode = ExecutionMode.CASEWORK
+    cfg.casework.canary_ticket_ids = ()
+    monkeypatch.setattr(runner, "_send_ack_note", AsyncMock())
+    monkeypatch.setattr(runner, "create_casework_tool_registry", MagicMock())
+    monkeypatch.setattr(runner, "create_llm_provider", MagicMock(return_value=object()))
+    monkeypatch.setattr(
+        runner,
+        "execute_casework_v2",
+        AsyncMock(
+            side_effect=CustomerContextStaleError(
+                "stale_context: customer added a message during investigation"
+            )
+        ),
+    )
+    persist = AsyncMock()
+    monkeypatch.setattr(runner, "persist_runtime_failure_ownership", persist)
+    monkeypatch.setattr(runner, "ensure_archive", MagicMock())
+    monkeypatch.setattr(runner, "notify_session_outcome_durable", AsyncMock())
+    session = AgentSession(ticket_id=4051)
+    session.customer_context_dirty = True
+
+    await runner._run_casework_agent(session, cfg)
+
+    assert session.status is SessionStatus.DEFERRED
+    assert session.error_message.startswith("stale_context:")
+    assert "fresh generation" in session.analysis
+    persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_v2_runner_defers_non_allowlisted_canary_before_any_write(monkeypatch):
     from zd_agent.runtime import runner
 
