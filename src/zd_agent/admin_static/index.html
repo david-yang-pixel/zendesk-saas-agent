@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f4f7fb">
+  <meta name="theme-color" content="#ffffff">
   <meta name="description" content="zd-agent 管理后台">
   <title>zd-agent 管理后台</title>
   <link rel="stylesheet" href="/admin/static/styles.css">
@@ -102,7 +102,7 @@
           <img class="sidebar-logo" src="/admin/static/dify-logo.svg" width="200" height="89" alt="Dify">
           <div>
             <div class="sidebar-title">zd-agent</div>
-            <div class="sidebar-subtitle">Agent 管理后台</div>
+            <div class="sidebar-subtitle">SaaS Support</div>
           </div>
         </div>
         <button type="button" class="icon-btn sidebar-close" aria-label="关闭导航" onclick="closeSidebar(true)">
@@ -113,7 +113,7 @@
       <div class="sidebar-footer">
         <div class="sidebar-health">
           <span class="status-dot"></span>
-          <div><strong>Agent 服务正常</strong><span id="side-image-tag" class="side-meta">zd-agent:latest</span></div>
+          <div><strong>通知服务已连接</strong><span id="side-image-tag" class="side-meta">zd-agent:latest</span></div>
         </div>
         <button type="button" class="btn secondary full sidebar-logout" onclick="logout()">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
@@ -128,13 +128,13 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
           </button>
           <div class="page-heading">
-            <span class="page-eyebrow">Agent 控制台</span>
+            <span class="page-eyebrow">DIFY SUPPORT OPERATIONS</span>
             <h1 id="page-title" tabindex="-1">总览</h1>
             <p id="page-subtitle"></p>
           </div>
         </div>
         <div class="page-command-bar">
-          <div class="live-state"><span class="status-dot"></span>服务正常</div>
+          <div class="live-state"><span class="status-dot"></span><span id="header-live-state">服务正常</span></div>
           <div id="page-actions" class="button-row"></div>
         </div>
       </header>

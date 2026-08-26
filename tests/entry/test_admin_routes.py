@@ -19,6 +19,8 @@ from zd_agent.services.admin_routes import (
     register_admin_routes,
 )
 from zd_agent.services.app_context import (
+    SESSION_MANAGER_KEY,
+    TRIGGER_QUEUE_KEY,
     admin_config,
     app_config,
     install_saas_app_context,
@@ -100,6 +102,8 @@ def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
     assert "/admin/api/run-records" in route_paths
     assert "/admin/api/audit-logs" in route_paths
     assert "/admin/api/integrations/check" in route_paths
+    assert "/admin/api/operations/status" in route_paths
+    assert "/admin/api/models/discover" in route_paths
     assert "/admin/static/{name}" in route_paths
 
 
@@ -186,7 +190,7 @@ def test_admin_shell_uses_focused_auth_and_grouped_responsive_navigation() -> No
     ]:
         assert symbol in html
     for symbol in [
-        "MENU_GROUPS",
+        "PRIMARY_MENU",
         "MENU_ICONS",
         "toggleSidebar",
         "aria-current",
@@ -254,24 +258,19 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert "缓存命中" in app_js
     assert "rawEvents" in app_js
     assert "查看完整日志" in app_js
-    assert "renderOverviewShell" in app_js
+    assert "renderCommandCenter" in app_js
     assert "quick: shouldQuickLoadRunRecords()" not in app_js
     assert "quick: true" in app_js
     assert "refreshRunRecordsInBackground();" in app_js
     assert "quick: false" in app_js
-    assert "renderRecentRunsIntoOverview" in app_js
+    assert "mergeCommandTickets" in app_js
     assert "renderRunRecordsShell" in app_js
     assert "detail: false" in app_js
     assert "ensureRunRecordDetail" in app_js
     assert "detail: true" in app_js
-    assert (
-        "await Promise.all"
-        not in app_js[
-            app_js.index("async function renderOverview") : app_js.index(
-                "function goMenu"
-            )
-        ]
-    )
+    assert "await Promise.allSettled" in app_js[
+        app_js.index("async function renderOverview") : app_js.index("function goMenu")
+    ]
 
 
 def test_admin_config_pages_render_prompt_textareas() -> None:
@@ -1712,6 +1711,123 @@ async def test_admin_integration_check_supports_custom_mcp_services(tmp_path) ->
     assert body["reachable"] is True
     assert body["label"] == "Linear MCP"
     assert "linear-secret-key" not in audit.text
+
+
+@pytest.mark.asyncio
+async def test_admin_operations_status_reports_live_capacity_and_queue(tmp_path) -> None:
+    class Queue:
+        path = tmp_path / ".state" / "trigger_queue.sqlite3"
+
+        async def pending_count(self):
+            return 4
+
+        async def dead_letter_count(self):
+            return 1
+
+    class Manager:
+        def get_all_sessions(self):
+            return {
+                "active": 1,
+                "max_concurrent": 3,
+                "active_sessions": [
+                    {
+                        "ticket_id": 4051,
+                        "session_id": "run-secret-token",
+                        "status": "analyzing",
+                        "round_count": 2,
+                        "total_tokens": 1940,
+                        "elapsed": 83.2,
+                        "start_time": "must-not-leak",
+                    }
+                ],
+                "recent_completed": [],
+            }
+
+    app = _app(tmp_path)
+    app[TRIGGER_QUEUE_KEY] = Queue()
+    app[SESSION_MANAGER_KEY] = Manager()
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    response = await app[ADMIN_HANDLERS_KEY]["operations_status"](
+        _Request(app=app, cookies=cookie)
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert body["active"] == 1
+    assert body["max_concurrent"] == 3
+    assert body["queue"] == {"pending": 4, "dead_letter": 1}
+    assert body["active_sessions"][0]["ticket_id"] == 4051
+    assert "start_time" not in body["active_sessions"][0]
+    assert set(body["background_tasks"]) == {
+        "silence_task",
+        "waiting_poller_task",
+        "intake_poller_task",
+        "mention_poller_task",
+        "trigger_task",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_model_discovery_lists_models_without_exposing_key(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "stored-model-secret")
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://models.example.test/v1/models"
+        assert request.headers["authorization"] == "Bearer stored-model-secret"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-z", "owned_by": "OpenAI"},
+                    {"id": "gpt-a", "owned_by": "OpenAI"},
+                    {"id": "gpt-a", "owned_by": "duplicate"},
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    with patch(
+        "zd_agent.services.admin_routes.httpx.AsyncClient",
+        lambda **kwargs: REAL_ASYNC_CLIENT(transport=transport, **kwargs),
+    ):
+        response = await app[ADMIN_HANDLERS_KEY]["model_discovery"](
+            _Request(
+                app=app,
+                cookies=cookie,
+                payload={
+                    "provider": "openai",
+                    "base_url": "https://models.example.test",
+                },
+            )
+        )
+
+    body = json.loads(response.text)
+    audit = await app[ADMIN_HANDLERS_KEY]["audit_logs"](
+        _Request(app=app, cookies=cookie, query={"action": "model_discovery"})
+    )
+    assert response.status == 200
+    assert body["endpoint"] == "https://models.example.test/v1/models"
+    assert [model["id"] for model in body["models"]] == ["gpt-a", "gpt-z"]
+    assert body["count"] == 2
+    assert "stored-model-secret" not in response.text
+    assert "stored-model-secret" not in audit.text
 
 
 @pytest.mark.asyncio

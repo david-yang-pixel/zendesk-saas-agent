@@ -7,11 +7,13 @@ import ipaddress
 import os
 import re
 import time
+from dataclasses import asdict, is_dataclass
 from copy import deepcopy
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from aiohttp import web
@@ -20,10 +22,14 @@ from zd_agent.config import AppConfig, EnvSettings
 from zd_agent.services.admin_auth import AdminAuthStore
 from zd_agent.services.admin_config import AdminConfigStore
 from zd_agent.services.app_context import (
+    BACKGROUND_TASK_KEYS,
+    BACKGROUND_TASK_NAMES,
     admin_auth,
     admin_config,
     app_config,
     install_admin_context,
+    session_manager,
+    trigger_queue,
 )
 
 SESSION_COOKIE = "zd_admin_session"
@@ -1502,6 +1508,66 @@ def _mcp_endpoint(url: str) -> str:
     return base if base.endswith("/mcp") else f"{base}/mcp"
 
 
+def _model_endpoint(base_url: str, provider: str) -> str:
+    base = (base_url or "").strip().rstrip("/")
+    if not base:
+        base = (
+            "https://api.anthropic.com/v1"
+            if provider == "anthropic"
+            else "https://api.openai.com/v1"
+        )
+    parsed = urlparse(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("model_base_url_must_use_http_or_https")
+    if parsed.username or parsed.password:
+        raise ValueError("model_base_url_must_not_include_credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("model_base_url_must_not_include_query_or_fragment")
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        address = None
+    if address is not None and (
+        address.is_link_local
+        or address.is_multicast
+        or address.is_unspecified
+        or address.is_reserved
+    ):
+        raise ValueError("model_base_url_address_is_not_allowed")
+    if base.endswith("/models"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/models"
+    return f"{base}/v1/models"
+
+
+def _admin_session_payload(value: Any) -> dict[str, Any]:
+    if is_dataclass(value):
+        payload = asdict(value)
+    elif isinstance(value, dict):
+        payload = dict(value)
+    else:
+        payload = {
+            key: getattr(value, key)
+            for key in (
+                "ticket_id",
+                "session_id",
+                "status",
+                "round_count",
+                "total_tokens",
+                "elapsed",
+                "hint",
+                "dry_run",
+            )
+            if hasattr(value, key)
+        }
+    status = payload.get("status")
+    if hasattr(status, "value"):
+        payload["status"] = status.value
+    payload.pop("start_time", None)
+    return _redact_value(payload)
+
+
 async def _probe_integration(
     *,
     name: str,
@@ -1818,6 +1884,162 @@ async def handle_admin_integration_check(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def handle_admin_operations_status(request: web.Request) -> web.Response:
+    """Expose the live work surface needed by the production command center."""
+    _username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+
+    queue = trigger_queue(request.app)
+    manager = session_manager(request.app)
+    try:
+        overview = manager.get_all_sessions()
+    except (AttributeError, TypeError):
+        overview = {}
+    if not isinstance(overview, dict):
+        overview = {}
+    active_sessions = [
+        _admin_session_payload(item)
+        for item in overview.get("active_sessions", [])
+    ]
+    recent_completed = [
+        _admin_session_payload(item)
+        for item in overview.get("recent_completed", [])
+    ]
+
+    from zd_agent.services.saas_routes import _outbox_health, _task_status
+
+    background_tasks = {
+        BACKGROUND_TASK_NAMES[key]: _task_status(request.app.get(key))
+        for key in BACKGROUND_TASK_KEYS
+    }
+    queue_path = getattr(queue, "path", None)
+    state_dir = (
+        Path(queue_path).parent
+        if isinstance(queue_path, (str, os.PathLike))
+        else Path(app_config(request.app).resources.base_dir)
+        / app_config(request.app).resources.state_dir
+    )
+    return web.json_response(
+        {
+            "ok": True,
+            "ready": all(value == "running" for value in background_tasks.values()),
+            "active": int(overview.get("active", len(active_sessions)) or 0),
+            "max_concurrent": int(
+                overview.get(
+                    "max_concurrent",
+                    app_config(request.app).agent.max_concurrent_sessions,
+                )
+                or 0
+            ),
+            "active_sessions": active_sessions,
+            "recent_completed": recent_completed[:8],
+            "queue": {
+                "pending": await queue.pending_count(),
+                "dead_letter": await queue.dead_letter_count(),
+            },
+            "outbox": _outbox_health(state_dir),
+            "background_tasks": background_tasks,
+        }
+    )
+
+
+async def handle_admin_model_discovery(request: web.Request) -> web.Response:
+    """Discover model IDs through a server-side provider adapter."""
+    username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json_error("bad_request", status=400)
+
+    provider = str(payload.get("provider") or "openai").strip().lower()
+    if provider not in {"openai", "anthropic"}:
+        return _json_error("unsupported_model_provider", status=400)
+    base_url = str(payload.get("base_url") or "").strip()
+    try:
+        endpoint = _model_endpoint(base_url, provider)
+    except ValueError as exc:
+        return _json_error(str(exc), status=400)
+
+    env = EnvSettings()
+    api_key = str(payload.get("api_key") or "").strip()
+    if not api_key:
+        api_key = (
+            env.anthropic_api_key if provider == "anthropic" else env.openai_api_key
+        )
+    if not api_key:
+        return _json_error("model_api_key_is_required", status=400)
+
+    headers = (
+        {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+        if provider == "anthropic"
+        else {"Authorization": f"Bearer {api_key}"}
+    )
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
+            response = await client.get(endpoint, headers=headers)
+    except httpx.HTTPError as exc:
+        return _json_error(f"model_discovery_unreachable:{exc.__class__.__name__}", status=502)
+    if response.status_code < 200 or response.status_code >= 300:
+        return _json_error(
+            f"model_discovery_http_{response.status_code}",
+            status=502,
+        )
+    try:
+        body = response.json()
+    except ValueError:
+        return _json_error("model_discovery_invalid_json", status=502)
+    raw_models = body.get("data", []) if isinstance(body, dict) else []
+    models: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_models:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append(
+            {
+                "id": model_id,
+                "owned_by": str(item.get("owned_by") or item.get("display_name") or ""),
+            }
+        )
+        if len(models) >= 500:
+            break
+    models.sort(key=lambda item: item["id"].casefold())
+    admin_config(request.app).audit_event(
+        actor=username or "",
+        ip=_remote_ip(request),
+        action="model_discovery",
+        reason=provider,
+        diff=[
+            {
+                "path": "llm.base_url",
+                "label": "模型发现",
+                "group": "模型与运行",
+                "old": "",
+                "new": {"provider": provider, "model_count": len(models)},
+                "secret": False,
+                "restart_required": False,
+            }
+        ],
+    )
+    return web.json_response(
+        {
+            "ok": True,
+            "provider": provider,
+            "endpoint": endpoint,
+            "models": models,
+            "count": len(models),
+            "latency_ms": round((time.monotonic() - started) * 1000),
+        }
+    )
+
+
 async def handle_admin_deploy_status(request: web.Request) -> web.Response:
     _username, unauthorized = _require_admin(request)
     if unauthorized is not None:
@@ -1909,6 +2131,8 @@ def register_admin_routes(
         "audit_logs": handle_admin_audit_logs,
         "run_records": handle_admin_run_records,
         "integration_check": handle_admin_integration_check,
+        "operations_status": handle_admin_operations_status,
+        "model_discovery": handle_admin_model_discovery,
         "deploy_status": handle_admin_deploy_status,
     }
     app[ADMIN_HANDLERS_KEY] = handlers
@@ -1927,4 +2151,6 @@ def register_admin_routes(
     app.router.add_get("/admin/api/run-records", handle_admin_run_records)
     app.router.add_get("/admin/api/audit-logs", handle_admin_audit_logs)
     app.router.add_post("/admin/api/integrations/check", handle_admin_integration_check)
+    app.router.add_get("/admin/api/operations/status", handle_admin_operations_status)
+    app.router.add_post("/admin/api/models/discover", handle_admin_model_discovery)
     app.router.add_get("/admin/api/deploy/status", handle_admin_deploy_status)

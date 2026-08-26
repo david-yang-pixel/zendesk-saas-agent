@@ -1,8 +1,22 @@
-const MENU_GROUPS = [
-  { label: "工作台", items: ["总览", "运行记录"] },
-  { label: "Agent 配置", items: ["触发配置", "回复策略", "模型与运行", "工具与集成", "存储配置"] },
-  { label: "系统", items: ["部署状态", "审计日志"] }
+const PRIMARY_MENU = [
+  { key: "总览", label: "工单指挥台" },
+  { key: "工单中心", label: "工单中心" },
+  { key: "运行记录", label: "日志与观测" },
+  { key: "模型与运行", label: "模型管理" },
+  { key: "Agent 策略", label: "Agent 策略" },
+  { key: "工具与集成", label: "工具与集成" },
+  { key: "系统与审计", label: "系统与审计" }
 ];
+
+const NAV_PARENT = {
+  "触发配置": "Agent 策略",
+  "回复策略": "Agent 策略",
+  "存储配置": "系统与审计",
+  "部署状态": "系统与审计",
+  "审计日志": "系统与审计"
+};
+
+const PAGE_LABELS = Object.fromEntries(PRIMARY_MENU.map(item => [item.key, item.label]));
 
 const MENU_ICONS = {
   "总览": '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
@@ -15,6 +29,9 @@ const MENU_ICONS = {
   "部署状态": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7Z"/><path d="m4 7 8 4 8-4M12 11v10"/></svg>',
   "审计日志": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3h12v18H6zM9 7h6M9 11h6M9 15h4"/></svg>'
 };
+MENU_ICONS["工单中心"] = MENU_ICONS["回复策略"];
+MENU_ICONS["Agent 策略"] = MENU_ICONS["触发配置"];
+MENU_ICONS["系统与审计"] = MENU_ICONS["审计日志"];
 
 const PASSWORD_ICONS = {
   visible: '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M2.1 12s3.6-7 9.9-7 9.9 7 9.9 7-3.6 7-9.9 7-9.9-7-9.9-7Z"/><circle cx="12" cy="12" r="3"/></svg>',
@@ -27,8 +44,11 @@ let drawerReturnFocus = null;
 let modalReturnFocus = null;
 
 const SUBTITLES = {
-  "总览": "服务健康、今日处理和关键状态摘要",
+  "总览": "实时掌握每一张工单、每一个 Agent 槽位与每一次发送",
+  "工单中心": "统一查看正在处理、等待客户和已经完成的工单",
   "运行记录": "每次 agent 处理工单的完整日志中心",
+  "Agent 策略": "集中管理触发、等待、人工接管与自动回复策略",
+  "系统与审计": "部署、持久化、访问控制与关键变更记录",
   "触发配置": "webhook、轮询、@mention 和 v2 intake 规则",
   "回复策略": "v2 自动 public reply、可靠送达和等待策略",
   "模型与运行": "模型、Base URL、API key、并发和运行护栏",
@@ -616,25 +636,20 @@ async function loadDeployStatus() {
 function renderNav() {
   const nav = document.getElementById("nav");
   nav.innerHTML = "";
-  MENU_GROUPS.forEach(group => {
-    const section = document.createElement("section");
-    section.className = "nav-group";
-
-    const label = document.createElement("div");
-    label.className = "nav-group-label";
-    label.textContent = group.label;
-    section.appendChild(label);
-
-    group.items.forEach(menu => {
+  const section = document.createElement("section");
+  section.className = "nav-group nav-primary";
+  PRIMARY_MENU.forEach(item => {
+      const menu = item.key;
       const btn = document.createElement("button");
-      const isActive = menu === state.activeMenu;
+      const isActive = menu === state.activeMenu || menu === NAV_PARENT[state.activeMenu];
       btn.type = "button";
       btn.className = isActive ? "active" : "";
       btn.setAttribute("aria-current", isActive ? "page" : "false");
-      btn.innerHTML = `<span class="nav-icon">${MENU_ICONS[menu]}</span><span>${menu}</span>`;
+      btn.innerHTML = `<span class="nav-icon">${MENU_ICONS[menu]}</span><span>${item.label}</span>`;
       btn.onclick = () => {
         const wasMobileDrawerOpen = document.getElementById("sidebar").classList.contains("open");
         state.activeMenu = menu;
+        window.scrollTo({ top: 0, behavior: "auto" });
         closeSidebar();
         renderNav();
         void render().then(() => {
@@ -642,20 +657,22 @@ function renderNav() {
         });
       };
       section.appendChild(btn);
-    });
-    nav.appendChild(section);
   });
+  nav.appendChild(section);
 }
 
 async function render() {
-  document.title = `${state.activeMenu} · zd-agent`;
-  document.getElementById("page-title").textContent = state.activeMenu;
+  const pageLabel = PAGE_LABELS[state.activeMenu] || state.activeMenu;
+  document.title = `${pageLabel} · zd-agent`;
+  document.getElementById("page-title").textContent = pageLabel;
   document.getElementById("page-subtitle").textContent = SUBTITLES[state.activeMenu] || "";
   setPageActions();
   setContent(loadingHtml("加载中"));
   try {
     if (state.activeMenu === "总览") {
       await renderOverview();
+    } else if (state.activeMenu === "工单中心") {
+      await renderTicketCenter();
     } else if (state.activeMenu === "运行记录") {
       await renderRunRecords();
     } else if (state.activeMenu === "审计日志") {
@@ -666,6 +683,12 @@ async function render() {
       renderIntegrations();
     } else if (state.activeMenu === "存储配置") {
       await renderStorageConfig();
+    } else if (state.activeMenu === "模型与运行") {
+      renderModelManagement();
+    } else if (state.activeMenu === "Agent 策略") {
+      renderStrategyHub();
+    } else if (state.activeMenu === "系统与审计") {
+      renderSystemHub();
     } else {
       renderConfigPage(state.activeMenu);
     }
@@ -683,7 +706,9 @@ function setPageActions() {
     `;
     return;
   }
-  const editable = !["总览", "运行记录", "审计日志"].includes(state.activeMenu);
+  const editable = ![
+    "总览", "工单中心", "运行记录", "审计日志", "Agent 策略", "系统与审计"
+  ].includes(state.activeMenu);
   if (!editable) {
     actions.innerHTML = `<button class="btn secondary" onclick="refreshActivePage()">刷新</button>`;
     return;
@@ -722,132 +747,167 @@ function replaceHtml(id, html) {
 
 async function renderOverview() {
   state.runDisplayRecords = [];
-  setContent(renderOverviewShell());
-  void loadDeployStatus()
-    .then(renderOverviewDeploy)
-    .catch(error => renderOverviewDeployError(error));
-  void loadRunRecords(5, {}, { quick: true, detail: false, updateState: false })
-    .then(renderRecentRunsIntoOverview)
-    .catch(error => renderRecentRunsError(error));
+  setContent(loadingHtml("正在同步 Agent、队列与发送状态"));
+  const [operationsResult, deployResult, runsResult] = await Promise.allSettled([
+    api("/admin/api/operations/status"),
+    loadDeployStatus(),
+    loadRunRecords(14, {}, { quick: true, detail: false, updateState: false })
+  ]);
+  const operations = operationsResult.status === "fulfilled" ? operationsResult.value : null;
+  const deploy = deployResult.status === "fulfilled" ? deployResult.value : null;
+  const runs = runsResult.status === "fulfilled" ? runsResult.value : { items: [], summary: {} };
+  const healthLine = operations?.ready
+    ? `系统运行正常 · Intake 正常 · Codex ${operations.active || 0} / ${operations.max_concurrent || 3} 在线 · 队列 ${operations.queue?.pending || 0}`
+    : "系统状态未完全就绪，请查看右侧运行概览";
+  document.getElementById("page-subtitle").textContent = healthLine;
+  document.getElementById("header-live-state").textContent = new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit", day: "2-digit", weekday: "short", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+  }).format(new Date());
+  const errors = [operationsResult, deployResult, runsResult]
+    .filter(result => result.status === "rejected")
+    .map(result => result.reason?.message || "数据源不可用");
+  setContent(renderCommandCenter(operations, deploy, runs, errors));
 }
 
-function renderOverviewShell() {
+function renderCommandCenter(operations, deploy, runs, errors = []) {
+  const activeSessions = operations?.active_sessions || [];
+  const maxConcurrent = Math.max(1, Number(operations?.max_concurrent || 3));
+  const visibleSlots = Array.from({ length: Math.min(maxConcurrent, 3) }, (_, index) => activeSessions[index] || null);
+  const records = buildRunDisplayRecords(runs.items || []);
+  state.runDisplayRecords = records;
+  const tickets = mergeCommandTickets(activeSessions, records).slice(0, 8);
+  const queuePending = Number(operations?.queue?.pending || 0);
+  const outbox = operations?.outbox || {};
+  const outboxPending = Object.values(outbox).reduce((total, value) => total + Number(value || 0), 0);
+  const backgroundReady = operations?.ready === true;
+  const deliveryFailures = records.filter(record => ["failed", "timeout"].includes(record.status)).length;
+  const durations = records.map(record => record.durationMs).filter(Boolean);
+  const averageDuration = durations.length
+    ? formatDuration(durations.reduce((sum, value) => sum + value, 0) / durations.length)
+    : "--";
   return `
-    <div class="metric-grid">
-      ${metricCard("Agent 服务", "加载中", "读取部署状态", "", "overview-agent-card")}
-      ${metricCard("今日处理", "--", "读取运行记录", "", "overview-today-card")}
-      ${metricCard("成功率", "--", "读取错误事件", "", "overview-success-card")}
-      ${metricCard("配置状态", "加载中", "读取配置状态", "", "overview-config-card")}
-    </div>
-    <div class="overview-grid">
-      <section class="card">
-        <div class="card-header">
-          <span>最近运行</span>
-          <button class="btn secondary" onclick="goMenu('运行记录')">查看全部</button>
+    ${errors.length ? `<div class="command-alert">部分数据暂不可用：${escapeHtml(errors.join("；"))}</div>` : ""}
+    <div class="command-layout">
+      <div class="command-main">
+        <section class="live-session-panel">
+          <div class="section-heading">
+            <div><span class="section-kicker">LIVE CAPACITY</span><h2>Codex 实时槽位</h2></div>
+            <span class="capacity-number">${activeSessions.length}<small> / ${maxConcurrent}</small></span>
+          </div>
+          <div class="session-slots">
+            ${visibleSlots.map((session, index) => renderSessionSlot(session, index)).join("")}
+          </div>
+        </section>
+
+        <section class="command-section ticket-board">
+          <div class="section-heading">
+            <div><span class="section-kicker">TICKET FLOW</span><h2>正在处理的工单</h2></div>
+            <button class="text-action" onclick="goMenu('工单中心')">查看工单中心 <span>→</span></button>
+          </div>
+          <div class="command-ticket-table">
+            <div class="command-ticket-head"><span>工单</span><span>当前状态</span><span>处理摘要</span><span>耗时</span><span>更新时间</span></div>
+            ${tickets.length ? tickets.map(renderCommandTicketRow).join("") : `<div class="command-empty">当前没有正在处理或最近完成的工单</div>`}
+          </div>
+        </section>
+
+        <section class="command-section activity-stream">
+          <div class="section-heading">
+            <div><span class="section-kicker">ACTIVITY</span><h2>系统动态</h2></div>
+            <button class="text-action" onclick="goMenu('运行记录')">查看全部日志 <span>→</span></button>
+          </div>
+          <div class="activity-list">
+            ${records.length ? records.slice(0, 5).map(renderActivityRow).join("") : `<div class="command-empty">暂无运行动态</div>`}
+          </div>
+        </section>
+      </div>
+
+      <aside class="operations-rail">
+        <div class="rail-heading"><span class="status-dot ${backgroundReady ? "" : "warning"}"></span><strong>${backgroundReady ? "系统运行正常" : "系统需要关注"}</strong></div>
+        ${renderOperationalStat("接入服务", backgroundReady ? "已连接" : "检查中", backgroundReady ? "正常接收 Zendesk 事件" : "后台任务未全部运行")}
+        ${renderOperationalStat("队列等待", String(queuePending), queuePending ? "工单等待处理" : "当前无排队工单")}
+        ${renderOperationalStat("并发占用", `${activeSessions.length} / ${maxConcurrent}`, `${Math.max(0, maxConcurrent - activeSessions.length)} 个槽位可用`)}
+        ${renderOperationalStat("平均处理", averageDuration, "基于最近运行记录")}
+        ${renderOperationalStat("发送异常", String(deliveryFailures), deliveryFailures ? "最近记录中需要复核" : "最近发送未见异常", deliveryFailures > 0)}
+        ${renderOperationalStat("待补偿任务", String(outboxPending), outboxPending ? "可靠送达队列仍有任务" : "Outbox 已清空", outboxPending > 0)}
+        <div class="rail-footer">
+          <span>版本</span><strong>${escapeHtml(deploy?.image?.tag || "latest")}</strong>
+          <span>配置</span><strong>${deploy?.pending_restart ? "待重启" : "已同步"}</strong>
         </div>
-        <div id="overview-recent-list" class="card-body mini-list">
-          ${inlineLoadingHtml("正在读取最近运行")}
-        </div>
-      </section>
-      <section class="card">
-        <div class="card-header">
-          <span>关键配置</span>
-          <span id="overview-config-chip" class="chip">加载中</span>
-        </div>
-        <div id="overview-config-grid" class="card-body kv-grid">
-          <strong>镜像标签</strong><span>--</span>
-          <strong>提交</strong><span>--</span>
-          <strong>账号密码登录</strong><span>--</span>
-          <strong>Google SSO</strong><span>--</span>
-          <strong>飞书 SSO</strong><span>--</span>
-        </div>
-      </section>
+      </aside>
     </div>
   `;
 }
 
-function renderOverviewDeploy(deploy) {
-  replaceHtml(
-    "overview-agent-card",
-    metricCard(
-      "Agent 服务",
-      deploy.agent?.status === "running" ? "运行中" : "异常",
-      "当前进程",
-      deploy.agent?.status === "running" ? "success-text" : "warn-text",
-      "overview-agent-card"
-    )
-  );
-  replaceHtml(
-    "overview-config-card",
-    metricCard(
-      "配置状态",
-      deploy.pending_restart ? "待重启" : "已同步",
-      deploy.pending_restart ? "存在需重启配置" : "当前配置已生效",
-      deploy.pending_restart ? "warn-text" : "success-text",
-      "overview-config-card"
-    )
-  );
-  setInnerHtml("overview-config-chip", deploy.pending_restart ? "待重启" : "已同步");
-  setInnerHtml("overview-config-grid", `
-    <strong>镜像标签</strong><span>${escapeHtml(deploy.image?.tag || "latest")}</span>
-    <strong>提交</strong><span>${escapeHtml(shortSha(deploy.image?.commit_sha) || "--")}</span>
-    <strong>账号密码登录</strong><span>${deploy.admin_auth?.password_login?.enabled ? "开启" : "关闭"}</span>
-    <strong>Google SSO</strong><span>${authStatus(deploy.admin_auth?.google_sso)}</span>
-    <strong>飞书 SSO</strong><span>${authStatus(deploy.admin_auth?.feishu_sso)}</span>
-  `);
+function renderSessionSlot(session, index) {
+  if (!session) {
+    return `<div class="session-slot empty"><span>槽位 ${index + 1}</span><strong>空闲</strong><small>等待下一张工单</small></div>`;
+  }
+  const elapsedMs = Number(session.elapsed || session.elapsed_seconds || 0) * 1000;
+  return `
+    <div class="session-slot active">
+      <span class="slot-pulse"></span>
+      <span>槽位 ${index + 1} · #${escapeHtml(session.ticket_id || "-")}</span>
+      <strong>${escapeHtml(sessionStatusLabel(session.status))}</strong>
+      <small>${escapeHtml(session.round_count || 0)} 轮 · ${escapeHtml(formatTokenCount(session.total_tokens || 0))} tokens · ${escapeHtml(elapsedMs ? formatDuration(elapsedMs) : "刚刚开始")}</small>
+    </div>`;
 }
 
-function renderOverviewDeployError(error) {
-  replaceHtml(
-    "overview-agent-card",
-    metricCard("Agent 服务", "读取失败", error.message || "部署状态不可用", "warn-text", "overview-agent-card")
-  );
-  replaceHtml(
-    "overview-config-card",
-    metricCard("配置状态", "未知", "部署状态读取失败", "warn-text", "overview-config-card")
-  );
+function mergeCommandTickets(activeSessions, records) {
+  const seen = new Set();
+  const active = activeSessions.map(session => {
+    const ticket = String(session.ticket_id || "-");
+    seen.add(ticket);
+    return {
+      ticketLabel: ticket === "-" ? "-" : `#${ticket}`,
+      status: "running",
+      summary: session.hint || sessionStatusLabel(session.status),
+      durationMs: Number(session.elapsed || session.elapsed_seconds || 0) * 1000,
+      time: null,
+      active: true
+    };
+  });
+  return active.concat(records.filter(record => {
+    const ticket = record.ticketLabel.replace(/^#/, "");
+    if (seen.has(ticket)) return false;
+    seen.add(ticket);
+    return true;
+  }));
 }
 
-function renderRecentRunsIntoOverview(runs) {
-  const summary = runs.summary || {};
-  const latest = buildRunDisplayRecords(runs.items || []).slice(0, 5);
-  const total = summary.today_tickets || latest.length || summary.filtered || 0;
-  const errors = summary.error_events || 0;
-  const successRate = total ? `${Math.max(0, Math.round((1 - errors / total) * 100))}%` : "--";
-  replaceHtml(
-    "overview-today-card",
-    metricCard("今日处理", total || "--", `${summary.today_events || 0} 个事件`, "", "overview-today-card")
-  );
-  replaceHtml(
-    "overview-success-card",
-    metricCard("成功率", successRate, `${errors} 个错误事件`, errors ? "warn-text" : "success-text", "overview-success-card")
-  );
-  setInnerHtml("overview-recent-list", `
-    ${latest.length ? latest.map((record, index) => `
-      <button class="mini-row" onclick="goRunDetail(${index})">
-        <span class="event-name">${escapeHtml(record.ticketLabel)}</span>
-        <span>${renderStatusBadge(record.status)}</span>
-        <span class="truncate">${escapeHtml(record.summary || "查看完整日志")}</span>
-      </button>
-    `).join("") : emptyHtml(runRecordsEmptyText(runs))}
-  `);
-  state.runDisplayRecords = latest;
+function renderCommandTicketRow(record) {
+  return `<button class="command-ticket-row" onclick="goMenu('运行记录')">
+    <strong>${escapeHtml(record.ticketLabel)}</strong>
+    <span>${renderStatusBadge(record.status)}</span>
+    <span class="ticket-summary">${escapeHtml(record.summary || "查看处理链路")}</span>
+    <span>${escapeHtml(record.durationMs ? formatDuration(record.durationMs) : "--")}</span>
+    <span>${escapeHtml(record.active ? "进行中" : relativeTime(record.time))}</span>
+  </button>`;
 }
 
-function renderRecentRunsError(error) {
-  setInnerHtml("overview-recent-list", errorHtml(error.message || "运行记录读取失败"));
-  replaceHtml(
-    "overview-today-card",
-    metricCard("今日处理", "--", "运行记录读取失败", "warn-text", "overview-today-card")
-  );
-  replaceHtml(
-    "overview-success-card",
-    metricCard("成功率", "--", "运行记录读取失败", "warn-text", "overview-success-card")
-  );
+function renderActivityRow(record) {
+  return `<button class="activity-row" onclick="goMenu('运行记录')">
+    <span class="activity-mark ${record.status}"></span>
+    <div><strong>${escapeHtml(record.ticketLabel)} · ${escapeHtml(record.summary || "Agent 运行记录")}</strong><small>${escapeHtml(record.model)} · ${escapeHtml(relativeTime(record.time))}</small></div>
+    <span>${renderStatusBadge(record.status)}</span>
+  </button>`;
+}
+
+function renderOperationalStat(label, value, note, warning = false) {
+  return `<div class="operational-stat ${warning ? "warning" : ""}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></div>`;
+}
+
+function sessionStatusLabel(status) {
+  const value = String(status || "processing").toLowerCase();
+  if (value.includes("tool")) return "调用工具";
+  if (value.includes("reply")) return "生成回复";
+  if (value.includes("send")) return "发送前复核";
+  if (value.includes("wait")) return "等待外部结果";
+  return "分析工单";
 }
 
 function goMenu(menu) {
   state.activeMenu = menu;
+  window.scrollTo({ top: 0, behavior: "auto" });
   renderNav();
   void render();
 }
@@ -1411,6 +1471,119 @@ function resetRunFilters() {
 function loadMoreRuns() {
   state.runLimit += 80;
   void renderRunRecords({ reload: true });
+}
+
+async function renderTicketCenter() {
+  setContent(loadingHtml("正在读取工单处理状态"));
+  const [operationsResult, runsResult] = await Promise.allSettled([
+    api("/admin/api/operations/status"),
+    loadRunRecords(80, {}, { quick: true, detail: false, updateState: false })
+  ]);
+  const operations = operationsResult.status === "fulfilled" ? operationsResult.value : { active_sessions: [] };
+  const runs = runsResult.status === "fulfilled" ? runsResult.value : { items: [] };
+  const records = buildRunDisplayRecords(runs.items || []);
+  state.runDisplayRecords = records;
+  const tickets = mergeCommandTickets(operations.active_sessions || [], records);
+  setContent(`
+    <section class="ticket-center-intro">
+      <div><span class="section-kicker">ALL TICKETS</span><h2>工单处理全景</h2><p>运行中、等待客户、人工接管与最近完成记录集中在一张表中。</p></div>
+      <div class="ticket-center-count"><strong>${tickets.length}</strong><span>张可见工单</span></div>
+    </section>
+    <section class="command-section ticket-board ticket-center-board">
+      <div class="command-ticket-table">
+        <div class="command-ticket-head"><span>工单</span><span>状态</span><span>最近处理摘要</span><span>耗时</span><span>更新时间</span></div>
+        ${tickets.length ? tickets.map(renderCommandTicketRow).join("") : `<div class="command-empty">当前没有可展示的工单记录</div>`}
+      </div>
+    </section>
+  `);
+}
+
+function renderModelManagement() {
+  const fields = fieldsFor("模型与运行");
+  const provider = String(state.values["llm.provider"] || "openai").toLowerCase();
+  const baseUrl = fieldValue("llm.base_url") || "https://api.openai.com/v1";
+  setContent(`
+    <section class="model-discovery-hero">
+      <div>
+        <span class="section-kicker">MODEL REGISTRY</span>
+        <h2>从供应商同步模型</h2>
+        <p>输入兼容 Base URL，服务端会使用已保存密钥读取模型列表；密钥不会回传浏览器或写入日志。</p>
+      </div>
+      <span class="secure-note"><span class="status-dot"></span>密钥仅在服务端使用</span>
+      <div class="model-discovery-form">
+        <label>供应商<select id="model-discovery-provider"><option value="openai" ${provider === "openai" ? "selected" : ""}>OpenAI Compatible</option><option value="anthropic" ${provider === "anthropic" ? "selected" : ""}>Anthropic</option></select></label>
+        <label>Base URL<input id="model-discovery-base-url" value="${escapeHtml(baseUrl)}" placeholder="https://api.openai.com/v1"></label>
+        <label>临时 API Key <span>可选</span><input id="model-discovery-key" type="password" autocomplete="off" placeholder="使用已保存密钥"></label>
+        <button class="btn primary discovery-button" onclick="discoverModels()">获取模型</button>
+      </div>
+      <div id="model-discovery-results" class="model-discovery-results"><span class="muted">同步后可一键选择模型，并继续配置推理强度与预算。</span></div>
+    </section>
+    ${renderModuleOverview("模型与运行", fields)}
+    ${renderForm("模型与运行", fields)}
+  `);
+}
+
+async function discoverModels() {
+  const provider = document.getElementById("model-discovery-provider")?.value || "openai";
+  const baseUrl = document.getElementById("model-discovery-base-url")?.value.trim() || "";
+  const apiKey = document.getElementById("model-discovery-key")?.value.trim() || "";
+  setInnerHtml("model-discovery-results", inlineLoadingHtml("正在读取模型列表"));
+  try {
+    const result = await api("/admin/api/models/discover", {
+      method: "POST",
+      body: JSON.stringify({ provider, base_url: baseUrl, api_key: apiKey })
+    });
+    const models = result.models || [];
+    setInnerHtml("model-discovery-results", models.length ? `
+      <div class="model-results-head"><strong>${models.length} 个模型</strong><span>${escapeHtml(result.latency_ms)} ms</span></div>
+      <div class="model-chip-list">${models.map(model => `<button data-model-id="${escapeHtml(model.id)}" onclick="selectDiscoveredModel(this.dataset.modelId)"><strong>${escapeHtml(model.id)}</strong>${model.owned_by ? `<small>${escapeHtml(model.owned_by)}</small>` : ""}</button>`).join("")}</div>
+    ` : `<span class="muted">供应商返回成功，但没有可用模型。</span>`);
+  } catch (err) {
+    setInnerHtml("model-discovery-results", errorHtml(modelDiscoveryErrorText(err.message)));
+  }
+}
+
+function modelDiscoveryErrorText(message) {
+  const value = String(message || "");
+  if (value.includes("http_401") || value.includes("http_403")) return "鉴权失败，请检查 API Key 与 Base URL。";
+  if (value.includes("api_key_is_required")) return "请先保存供应商 API Key，或输入本次同步使用的临时密钥。";
+  if (value.includes("unreachable")) return "无法连接模型服务，请检查 Base URL、网络和证书配置。";
+  if (value.includes("invalid_json")) return "模型服务返回了无法识别的响应格式。";
+  return value || "模型列表读取失败";
+}
+
+function selectDiscoveredModel(model) {
+  const input = document.getElementById("field-llm.model");
+  if (!input) return;
+  input.value = model;
+  input.focus();
+  refreshReasoningEffortOptions();
+  showToast(`已选择 ${model}`);
+}
+
+function renderStrategyHub() {
+  setContent(`
+    <section class="hub-intro"><span class="section-kicker">POLICY CONTROL</span><h2>Agent 策略</h2><p>把触发、等待、自动回复与人工接管拆成清晰边界。每次保存都会预览变更并写入审计日志。</p></section>
+    <div class="hub-grid">
+      ${renderHubLink("触发与等待", "Webhook、轮询、静默窗口和消息合并策略。", "触发配置", "接入")}
+      ${renderHubLink("回复与送达", "公开回复开关、发送前复核、可靠送达和人工接管。", "回复策略", "回复")}
+    </div>
+  `);
+}
+
+function renderSystemHub() {
+  setContent(`
+    <section class="hub-intro"><span class="section-kicker">SYSTEM CONTROL</span><h2>系统与审计</h2><p>运行环境、持久化和所有关键变更都可以在这里追踪。</p></section>
+    <div class="hub-grid three">
+      ${renderHubLink("部署状态", "镜像、提交、进程状态、SSO 与待重启配置。", "部署状态", "部署")}
+      ${renderHubLink("存储配置", "日志、附件、状态文件和配置覆盖的持久化路径。", "存储配置", "存储")}
+      ${renderHubLink("审计日志", "登录、配置、密钥、连通性检测和模型同步记录。", "审计日志", "审计")}
+    </div>
+  `);
+}
+
+function renderHubLink(title, description, menu, tag) {
+  return `<button class="hub-link" onclick="goMenu('${menu}')"><span>${escapeHtml(tag)}</span><strong>${escapeHtml(title)}</strong><p>${escapeHtml(description)}</p><small>进入配置 →</small></button>`;
 }
 
 function renderConfigPage(menu) {
@@ -2750,6 +2923,8 @@ function eventRoundLabel(event) {
 }
 
 function logSummary(item) {
+  const direct = item.summary || item.message || item.hint;
+  if (direct) return String(direct);
   const parts = [];
   ["status", "reason", "error", "reply_type", "tool", "rounds", "_source_file"].forEach(key => {
     if (item[key] !== undefined && item[key] !== null && item[key] !== "") {
