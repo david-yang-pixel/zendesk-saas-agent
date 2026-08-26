@@ -105,9 +105,7 @@ TOOL_SERVICE_BOUNDARIES: dict[str, ToolServiceBoundary] = {
     "zendesk_get_ticket": _ZENDESK_MCP,
     "zendesk_search_articles": _ZENDESK_MCP,
     "zendesk_get_article": _ZENDESK_MCP,
-    # Knowledge and local records
-    "knowledge_search": _LOCAL_KNOWLEDGE,
-    "knowledge_read": _LOCAL_KNOWLEDGE,
+    # Official documentation and local ticket audit records
     "official_docs_search": _OFFICIAL_DOCS_MCP,
     "official_docs_read": _OFFICIAL_DOCS_MCP,
     "ticket_record_read": _LOCAL_KNOWLEDGE,

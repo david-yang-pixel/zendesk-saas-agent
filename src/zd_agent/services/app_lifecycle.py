@@ -14,6 +14,7 @@ from zd_agent.log import get_logger
 from zd_agent.mention.tracker import MentionTracker
 from zd_agent.services.app_context import (
     BACKGROUND_TASK_KEYS,
+    INTAKE_POLLER_TASK_KEY,
     MENTION_POLLER_TASK_KEY,
     MENTION_TRACKER_KEY,
     SILENCE_TASK_KEY,
@@ -32,6 +33,7 @@ class BackgroundRunners:
 
     silence_waker: RunnerFn
     waiting_poller: RunnerFn
+    intake_poller: RunnerFn
     mention_poller: RunnerFn
 
 
@@ -117,6 +119,13 @@ def register_background_lifecycle(
                 customer_wait_timeout_hours=(
                     cfg.waiting_poller.customer_wait_timeout_hours
                 ),
+            )
+        )
+        _app[INTAKE_POLLER_TASK_KEY] = create_task_fn(
+            background_runners.intake_poller(
+                trigger_queue=trigger_queue,
+                query=cfg.zendesk.backfill_query,
+                poll_interval_seconds=cfg.zendesk.poll_interval_seconds,
             )
         )
         mention_tracker = MentionTracker(state_dir / "processed_mentions.json")

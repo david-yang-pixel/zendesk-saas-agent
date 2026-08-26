@@ -829,7 +829,7 @@ async def test_admin_run_records_enriches_archive_tool_call_rounds(tmp_path) -> 
     app = _app(tmp_path)
     cfg = app_config(app)
     cfg.logging.log_dir = str(tmp_path / "logs")
-    cfg.knowledge.archive_dir = str(tmp_path / "archive")
+    cfg.archive.archive_dir = str(tmp_path / "archive")
     log_dir = tmp_path / "logs"
     archive_dir = tmp_path / "archive" / "3172"
     log_dir.mkdir()

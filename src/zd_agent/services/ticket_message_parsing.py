@@ -258,6 +258,22 @@ def _messaging_customer_messages(
         normalized = normalize_messaging_content(content)
         content_type = normalized["content_type"]
         body = normalized["body"]
+        attachments = [
+            dict(attachment)
+            for attachment in (event.get("attachments") or [])
+            if isinstance(attachment, dict)
+        ]
+        media_url = str(content.get("media_url") or "").strip()
+        if media_url:
+            attachments.append(
+                {
+                    "id": content.get("attachment_id"),
+                    "file_name": content.get("alt_text"),
+                    "content_type": content.get("media_type") or content_type,
+                    "content_url": media_url,
+                    "size": content.get("media_size"),
+                }
+            )
         image_urls = list(normalized["image_urls"])
         image_urls.extend(collect_image_urls_from_attachments(event.get("attachments")))
         body = body.strip()
@@ -273,6 +289,7 @@ def _messaging_customer_messages(
                 "body": body,
                 "public": True,
                 "image_urls": image_urls,
+                "attachments": attachments,
                 "content_type": content_type,
                 "classification_body": normalized["classification_body"],
                 "form_data": normalized["form_data"],

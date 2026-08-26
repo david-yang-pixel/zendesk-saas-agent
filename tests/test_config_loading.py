@@ -20,7 +20,6 @@ llm:
 resources:
   base_dir: /opt/zd-agent/resources
   saas_codebase_dir: saas源代码
-  knowledge_base_dir: saas版知识库
   ticket_records_dir: zendesk-cli/工单记录
   state_dir: .state
 zendesk:
@@ -125,7 +124,6 @@ def saas_config_file(tmp_path):
 def test_config_loads_resources_section(saas_env, saas_config_file):
     cfg = load_config(saas_config_file)
     assert cfg.resources.saas_codebase_dir == "saas源代码"
-    assert cfg.resources.knowledge_base_dir == "saas版知识库"
     assert cfg.resources.ticket_records_dir == "zendesk-cli/工单记录"
     assert cfg.resources.state_dir == ".state"
 
@@ -159,7 +157,7 @@ def test_repository_config_persists_agent_archives_under_resources_mount() -> No
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    assert raw["knowledge"]["archive_dir"] == ("/opt/zd-agent/resources/agent-runs")
+    assert raw["archive"]["archive_dir"] == ("/opt/zd-agent/resources/agent-runs")
 
 
 def test_llm_config_rejects_reasoning_effort_unsupported_by_model() -> None:

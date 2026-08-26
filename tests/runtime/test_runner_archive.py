@@ -10,7 +10,7 @@ from zd_agent.session.agent_session import AgentSession, SessionStatus
 
 def test_auto_archive_writes_one_meta_per_session(tmp_path, monkeypatch) -> None:
     cfg = SimpleNamespace(
-        knowledge=SimpleNamespace(archive_dir=str(tmp_path / "tickets")),
+        archive=SimpleNamespace(archive_dir=str(tmp_path / "tickets")),
     )
     monkeypatch.setattr("zd_agent.runtime.runner_archive.get_config", lambda: cfg)
 
@@ -60,7 +60,7 @@ def test_auto_archive_writes_one_meta_per_session(tmp_path, monkeypatch) -> None
 
 def test_auto_archive_hashes_dot_segment_session_id(tmp_path, monkeypatch) -> None:
     cfg = SimpleNamespace(
-        knowledge=SimpleNamespace(archive_dir=str(tmp_path / "tickets")),
+        archive=SimpleNamespace(archive_dir=str(tmp_path / "tickets")),
     )
     monkeypatch.setattr("zd_agent.runtime.runner_archive.get_config", lambda: cfg)
     monkeypatch.setattr(

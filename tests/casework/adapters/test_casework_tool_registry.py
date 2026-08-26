@@ -38,5 +38,6 @@ def test_casework_registry_exposes_only_approved_read_capabilities() -> None:
         "signoz_get_field_values",
         "signoz_query_metrics",
     }.isdisjoint(names)
+    assert all(not name.startswith("knowledge_") for name in names)
     assert all(not tool.is_write_operation for tool in registry.list_tools())
     assert all(not tool.requires_sandbox for tool in registry.list_tools())

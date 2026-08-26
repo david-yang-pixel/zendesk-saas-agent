@@ -76,6 +76,39 @@ def test_ticket_snapshot_deduplicates_images_without_exposing_url_as_identifier(
     assert len(snapshot.attachments[0].attachment_id) == 20
 
 
+def test_ticket_snapshot_preserves_customer_non_image_attachment_metadata() -> None:
+    snapshot = build_ticket_snapshot(
+        session=AgentSession(ticket_id=4321),
+        customer_messages=[
+            {
+                "id": "event-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "body": "The logs are attached.",
+                "attachments": [
+                    {
+                        "id": "att-log-1",
+                        "file_name": "workflow.log",
+                        "content_type": "text/plain",
+                        "content_url": (
+                            "https://example.zendesk.com/attachments/token/log"
+                        ),
+                    },
+                ],
+            },
+        ],
+        ticket={"status": "new"},
+    )
+
+    assert [item.model_dump() for item in snapshot.attachments] == [
+        {
+            "attachment_id": "att-log-1",
+            "filename": "workflow.log",
+            "content_type": "text/plain",
+            "download_url": "https://example.zendesk.com/attachments/token/log",
+        },
+    ]
+
+
 def test_profile_only_form_response_keeps_prior_issue_and_advances_cursor() -> None:
     snapshot = build_ticket_snapshot(
         session=AgentSession(ticket_id=4321),
@@ -253,6 +286,32 @@ def test_workspace_clarification_keeps_the_original_issue_active() -> None:
     assert snapshot.questions[-1] == "Workspace One"
     assert snapshot.active_question == "Please approve a refund for this renewal."
     assert snapshot.customer_workspace_hint == "Workspace One"
+
+
+def test_generic_clarification_keeps_the_original_issue_active() -> None:
+    session = AgentSession(ticket_id=4321)
+    session.prior_customer_required_fields = ("request_timestamp",)
+    session.prior_issue_question = "Why did this workflow run fail?"
+
+    snapshot = build_ticket_snapshot(
+        session=session,
+        customer_messages=[
+            {
+                "id": "issue-1",
+                "created_at": "2026-08-11T07:00:00Z",
+                "body": "Why did this workflow run fail?",
+            },
+            {
+                "id": "timestamp-2",
+                "created_at": "2026-08-11T07:01:00Z",
+                "body": "It failed at 2026-08-11 15:00 UTC+8.",
+            },
+        ],
+        ticket={"status": "open"},
+    )
+
+    assert snapshot.active_question == "Why did this workflow run fail?"
+    assert snapshot.customer_workspace_hint == ""
 
 
 def test_ticket_snapshot_uses_only_current_ticket_requester_email() -> None:

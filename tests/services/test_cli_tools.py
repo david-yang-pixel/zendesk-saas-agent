@@ -22,7 +22,7 @@ class FakeRegistry:
     def __init__(self) -> None:
         self._tools = [
             FakeTool("zendesk_search", "Search tickets"),
-            FakeTool("knowledge_read", "Read knowledge"),
+            FakeTool("official_docs_read", "Read official docs"),
         ]
 
     def list_tools(self) -> list[FakeTool]:
@@ -43,7 +43,11 @@ def test_collect_tool_list_returns_summary_rows():
     assert result.total == 2
     assert result.rows == [
         {"index": 1, "name": "zendesk_search", "description": "Search tickets"},
-        {"index": 2, "name": "knowledge_read", "description": "Read knowledge"},
+        {
+            "index": 2,
+            "name": "official_docs_read",
+            "description": "Read official docs",
+        },
     ]
 
 

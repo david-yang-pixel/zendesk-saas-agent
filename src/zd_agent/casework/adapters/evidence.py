@@ -68,7 +68,7 @@ def evidence_contract(
             ClaimRole.ROOT_CAUSE,
             ClaimRole.LIMITATION,
         )
-    if any(value in lowered for value in ("knowledge", "official_docs")):
+    if "official_docs" in lowered:
         return EvidenceAuthority.CURRENT_SUPPORTING, (
             ClaimRole.PRODUCT_FACT,
             ClaimRole.LIMITATION,

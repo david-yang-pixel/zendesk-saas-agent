@@ -82,27 +82,76 @@ def _customer_message_events(
 def _attachment_refs(
     customer_messages: list[dict[str, Any]],
 ) -> tuple[AttachmentRef, ...]:
-    urls: list[str] = []
+    refs: list[AttachmentRef] = []
+    seen_urls: set[str] = set()
     for message in customer_messages:
+        raw_attachments = message.get("attachments")
+        if isinstance(raw_attachments, list):
+            for raw in cast(list[object], raw_attachments):
+                if not isinstance(raw, dict):
+                    continue
+                attachment = cast(dict[str, object], raw)
+                raw_url = next(
+                    (
+                        attachment.get(key)
+                        for key in (
+                            "content_url",
+                            "mapped_content_url",
+                            "media_url",
+                            "url",
+                        )
+                        if attachment.get(key)
+                    ),
+                    "",
+                )
+                url = raw_url.strip() if isinstance(raw_url, str) else ""
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                raw_id = attachment.get("id") or attachment.get("attachment_id")
+                attachment_id = (
+                    str(raw_id).strip()
+                    if raw_id not in (None, "")
+                    else sha256(url.encode("utf-8")).hexdigest()[:20]
+                )
+                raw_name = (
+                    attachment.get("file_name")
+                    or attachment.get("filename")
+                    or attachment.get("name")
+                    or attachment.get("alt_text")
+                    or "customer-attachment"
+                )
+                raw_type = (
+                    attachment.get("content_type")
+                    or attachment.get("mime_type")
+                    or attachment.get("type")
+                    or ""
+                )
+                refs.append(
+                    AttachmentRef(
+                        attachment_id=attachment_id,
+                        filename=str(raw_name).strip() or "customer-attachment",
+                        content_type=str(raw_type).strip(),
+                        download_url=url,
+                    )
+                )
         raw_urls = message.get("image_urls")
         if not isinstance(raw_urls, list):
             continue
-        url_values = cast(list[object], raw_urls)
-        urls.extend(
-            value.strip()
-            for value in url_values
-            if isinstance(value, str) and value.strip()
-        )
-    unique_urls = tuple(dict.fromkeys(urls))
-    return tuple(
-        AttachmentRef(
-            attachment_id=sha256(url.encode("utf-8")).hexdigest()[:20],
-            filename=f"customer-image-{index}",
-            content_type="image",
-            download_url=url,
-        )
-        for index, url in enumerate(unique_urls, start=1)
-    )
+        for value in cast(list[object], raw_urls):
+            url = value.strip() if isinstance(value, str) else ""
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            refs.append(
+                AttachmentRef(
+                    attachment_id=sha256(url.encode("utf-8")).hexdigest()[:20],
+                    filename=f"customer-image-{len(refs) + 1}",
+                    content_type="image",
+                    download_url=url,
+                )
+            )
+    return tuple(refs)
 
 
 def _requester_email(ticket: dict[str, Any]) -> str:
@@ -140,6 +189,7 @@ def build_ticket_snapshot(
         raise ValueError("latest customer message requires an event ID")
     form = extract_form_data_from_msgs(customer_messages)
     questions = _questions(customer_messages)
+    clarification_pending = bool(session.prior_customer_required_fields)
     identity_clarification_pending = bool(
         {
             "target_workspace_choice",
@@ -149,7 +199,7 @@ def build_ticket_snapshot(
     )
     active_question = (
         session.prior_issue_question
-        if identity_clarification_pending and session.prior_issue_question
+        if clarification_pending and session.prior_issue_question
         else (questions[-1] if questions else "")
     )
     customer_workspace_hint = (

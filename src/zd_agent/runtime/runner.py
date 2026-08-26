@@ -19,7 +19,7 @@ from zd_agent.runtime.runner_archive import ensure_archive
 from zd_agent.services.casework_runtime_failures import (
     persist_runtime_failure_ownership,
 )
-from zd_agent.services.feishu_notifications import notify_ticket_done_best_effort
+from zd_agent.services.feishu_notifications import notify_session_outcome_durable
 from zd_agent.services.instance_fence import verify_active_instance
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 
@@ -163,12 +163,7 @@ async def _run_casework_agent(session: AgentSession, cfg: AppConfig) -> None:
         )
         await _handle_casework_runtime_failure(session, cfg, error)
 
-    if (
-        session.status is SessionStatus.COMPLETED
-        and session.reply_sent
-        and session.casework_ownership_action in {"", "none"}
-    ):
-        await notify_ticket_done_best_effort(session)
+    await notify_session_outcome_durable(session, cfg)
     ensure_archive(
         session,
         elapsed_seconds=time.monotonic() - started_at,

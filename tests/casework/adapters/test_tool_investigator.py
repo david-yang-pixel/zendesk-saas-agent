@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 import json
 from typing import Any
@@ -322,6 +323,64 @@ async def test_investigator_calls_tools_itself_and_returns_typed_evidence() -> N
     assert "all customer-useful confirmed facts" in system_prompt
     assert "recovery or next step" in system_prompt
     assert "Do not stop at the first plausible explanation" in system_prompt
+
+
+async def test_investigator_executes_independent_tool_batch_in_parallel() -> None:
+    both_started = asyncio.Event()
+    started: list[str] = []
+
+    class CoordinatedTool(FakeTool):
+        async def execute(
+            self,
+            args: dict[str, Any],
+            session: AgentSession,
+        ) -> ToolResult:
+            _ = session
+            self.calls.append(args)
+            started.append(self.name)
+            if len(started) == 2:
+                both_started.set()
+            await both_started.wait()
+            return ToolResult(success=True, output=self.output)
+
+    registry = ToolRegistry()
+    docs = CoordinatedTool("official_docs_search", output="Published behavior")
+    github = CoordinatedTool("github_get_issue", output="Issue state")
+    registry.register(docs)
+    registry.register(github)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-docs",
+                        name="official_docs_search",
+                        arguments='{"query":"behavior"}',
+                    ),
+                    ToolCallRequest(
+                        id="call-issue",
+                        name="github_get_issue",
+                        arguments='{"query":"state"}',
+                    ),
+                ],
+            ),
+            _response(content=_final_assessment("call-docs")),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    result = await asyncio.wait_for(
+        investigator.investigate(_context()),
+        timeout=0.2,
+    )
+
+    assert started == ["official_docs_search", "github_get_issue"]
+    assert result.proposal.answer_status is AnswerStatus.SUPPORTED
 
 
 async def test_investigator_preserves_responses_reasoning_across_tool_rounds() -> None:

@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
 from typing import Any
 
 from zd_agent.integrations.notification_service import push_notification_card
 from zd_agent.log import get_logger
+from zd_agent.services.notification_outbox import (
+    NotificationOutbox,
+    reconcile_notifications,
+)
+from zd_agent.session.agent_session import SessionStatus
 
 logger = get_logger(module="services.feishu_notifications")
 
@@ -113,3 +119,69 @@ async def notify_ticket_done_best_effort(session: Any) -> bool:
 
     logger.info("feishu_ticket_done_pushed", ticket_id=ticket_id)
     return True
+
+
+def _outcome_kind(session: Any) -> str:
+    delivery_state = str(getattr(session, "casework_delivery_state", "") or "")
+    status = getattr(session, "status", None)
+    if (
+        status is SessionStatus.COMPLETED
+        and bool(getattr(session, "reply_sent", False))
+        and delivery_state not in {"failed", "ambiguous"}
+    ):
+        return "success"
+    if status in {SessionStatus.FAILED, SessionStatus.TIMEOUT} or delivery_state in {
+        "failed",
+        "ambiguous",
+    }:
+        return "failed"
+    return ""
+
+
+def _outcome_content(session: Any, outcome: str) -> str:
+    if outcome == "success":
+        reply = str(getattr(session, "reply_draft", "") or "").strip()
+        return "处理结果：已成功回复客户\n\n实际发送正文：\n" + (
+            reply or "（正文未记录，请在 Zendesk 查看。）"
+        )
+    return "\n".join(
+        (
+            "处理结果：自动回复未确认成功，需要人工检查",
+            f"会话状态：{getattr(getattr(session, 'status', None), 'value', '')}",
+            "发送阶段："
+            f"{str(getattr(session, 'casework_delivery_state', '') or 'analysis')}",
+            "错误摘要："
+            f"{str(getattr(session, 'error_message', '') or 'unknown error')[:1000]}",
+        )
+    )
+
+
+async def notify_session_outcome_durable(session: Any, cfg: Any) -> bool:
+    """Persist and immediately attempt a success/failure lifecycle card."""
+    outcome = _outcome_kind(session)
+    ownership_action = str(
+        getattr(session, "casework_ownership_action", "") or "none"
+    )
+    if not outcome or (outcome == "success" and ownership_action not in {"", "none"}):
+        return False
+    ticket_id = int(getattr(session, "ticket_id", 0) or 0)
+    attempt_id = str(
+        getattr(session, "delivery_attempt_id", "")
+        or getattr(session, "session_id", "")
+    )
+    reference = f"session-outcome:{ticket_id}:{attempt_id}:{outcome}"
+    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
+    store = NotificationOutbox(state_dir / "notification_outbox.sqlite3")
+    store.prepare(
+        reference=reference,
+        ticket_id=ticket_id,
+        card_type="ticket_done" if outcome == "success" else "ticket_escalate",
+        title="自动回复发送成功" if outcome == "success" else "自动回复发送失败",
+        content=_outcome_content(session, outcome),
+        zendesk_url=f"https://langgenius.zendesk.com/agent/tickets/{ticket_id}",
+        urgent=outcome == "failed",
+    )
+    before = len(store.pending(limit=100))
+    await reconcile_notifications(store=store, push=push_notification_card, limit=20)
+    after = len(store.pending(limit=100))
+    return after < before

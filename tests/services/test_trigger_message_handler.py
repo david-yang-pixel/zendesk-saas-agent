@@ -869,3 +869,27 @@ async def test_v2_intake_does_not_require_legacy_classifier(tmp_path) -> None:
 
     assert result.action == "casework_queued"
     assert state.get(12345).last_verdict == "casework_ready"
+
+
+@pytest.mark.asyncio
+async def test_pending_ticket_is_outside_automatic_reply_scope(tmp_path) -> None:
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    takeover = AsyncMock()
+
+    result = await handle_trigger_message(
+        msg={"ticket_id": 12345, "source": "zendesk_webhook"},
+        manager=MagicMock(),
+        state=state,
+        cfg=_cfg(),
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [{"id": "m1", "body": "new detail"}],
+                {"id": 12345, "status": "pending"},
+            )
+        ),
+        human_takeover_fn=takeover,
+    )
+
+    assert result.action == "status_out_of_scope"
+    takeover.assert_not_awaited()

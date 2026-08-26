@@ -1,6 +1,6 @@
 """Tests for deterministic post-session notifications."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 
@@ -30,13 +30,13 @@ async def test_v2_runner_notifies_after_confirmed_direct_reply(monkeypatch):
             setattr(session, "casework_ownership_action", "none"),
         ),
     )
-    monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
+    monkeypatch.setattr(runner, "notify_session_outcome_durable", notify)
     monkeypatch.setattr(runner, "ensure_archive", archive, raising=False)
 
     session = AgentSession(ticket_id=2809)
     await runner._run_casework_agent(session, cfg)
 
-    notify.assert_awaited_once_with(session)
+    notify.assert_awaited_once_with(session, cfg)
     archive.assert_called_once()
     assert archive.call_args.args[0] is session
 
@@ -62,12 +62,12 @@ async def test_v2_runner_does_not_notify_when_ownership_is_required(monkeypatch)
             setattr(session, "casework_ownership_action", "billing"),
         ),
     )
-    monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
+    monkeypatch.setattr(runner, "notify_session_outcome_durable", notify)
     monkeypatch.setattr(runner, "ensure_archive", MagicMock())
 
     await runner._run_casework_agent(AgentSession(ticket_id=2810), cfg)
 
-    notify.assert_not_awaited()
+    notify.assert_awaited_once_with(ANY, cfg)
 
 
 @pytest.mark.asyncio
@@ -87,7 +87,7 @@ async def test_v2_runner_failure_never_writes_legacy_customer_handoff(monkeypatc
     )
     monkeypatch.setattr(runner, "ensure_archive", MagicMock())
     notify = AsyncMock()
-    monkeypatch.setattr(runner, "notify_ticket_done_best_effort", notify)
+    monkeypatch.setattr(runner, "notify_session_outcome_durable", notify)
 
     session = AgentSession(ticket_id=3436)
     await runner._run_casework_agent(session, cfg)
@@ -96,7 +96,7 @@ async def test_v2_runner_failure_never_writes_legacy_customer_handoff(monkeypatc
     assert session.reply_sent is False
     assert not hasattr(runner, "_send_error_note")
     assert not hasattr(runner, "send_feishu_escalation_best_effort")
-    notify.assert_not_awaited()
+    notify.assert_awaited_once_with(session, cfg)
 
 
 @pytest.mark.asyncio

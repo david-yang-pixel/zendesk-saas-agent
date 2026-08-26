@@ -1773,7 +1773,7 @@ async def handle_admin_run_records(request: web.Request) -> web.Response:
         Path(cfg.logging.log_dir),
         limit=_query_limit(request),
         filters=filters,
-        archive_dir=Path(cfg.knowledge.archive_dir),
+        archive_dir=Path(cfg.archive.archive_dir),
         include_detail=_truthy(request.query.get("detail", "true")),  # type: ignore[attr-defined]
     )
     payload["jsonl_enabled"] = bool(cfg.logging.jsonl_enabled)

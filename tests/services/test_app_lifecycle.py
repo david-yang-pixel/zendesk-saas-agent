@@ -11,6 +11,7 @@ from aiohttp import web
 from zd_agent.config import AppConfig
 from zd_agent.services.app_context import (
     BACKGROUND_TASK_KEYS,
+    INTAKE_POLLER_TASK_KEY,
     MENTION_POLLER_TASK_KEY,
     MENTION_TRACKER_KEY,
     SILENCE_TASK_KEY,
@@ -52,6 +53,8 @@ def _cfg() -> AppConfig:
     cfg.silence_waker.scan_interval_seconds = 11
     cfg.waiting_poller.scan_interval_seconds = 22
     cfg.waiting_poller.customer_wait_timeout_hours = 33
+    cfg.zendesk.backfill_query = "status<solved tags:saas"
+    cfg.zendesk.poll_interval_seconds = 44
     cfg.zendesk.mention_poll_interval_seconds = 55
     return cfg
 
@@ -197,6 +200,9 @@ async def test_startup_creates_background_tasks(tmp_path) -> None:
     async def fake_mention_poller(**kwargs):
         calls.append(("mention", kwargs))
 
+    async def fake_intake_poller(**kwargs):
+        calls.append(("intake", kwargs))
+
     def fake_create_task(coro):
         coro.close()
         task = FakeTask()
@@ -214,6 +220,7 @@ async def test_startup_creates_background_tasks(tmp_path) -> None:
         background_runners=BackgroundRunners(
             silence_waker=fake_silence_waker,
             waiting_poller=fake_waiting_poller,
+            intake_poller=fake_intake_poller,
             mention_poller=fake_mention_poller,
         ),
         create_task_fn=fake_create_task,
@@ -221,11 +228,12 @@ async def test_startup_creates_background_tasks(tmp_path) -> None:
 
     await app.on_startup[-1](app)
 
-    assert len(created) == 4
+    assert len(created) == 5
     assert app[SILENCE_TASK_KEY] is created[0]
     assert app[WAITING_POLLER_TASK_KEY] is created[1]
-    assert app[MENTION_POLLER_TASK_KEY] is created[2]
-    assert app[TRIGGER_TASK_KEY] is created[3]
+    assert app[INTAKE_POLLER_TASK_KEY] is created[2]
+    assert app[MENTION_POLLER_TASK_KEY] is created[3]
+    assert app[TRIGGER_TASK_KEY] is created[4]
     assert MENTION_TRACKER_KEY in app
     assert calls == []
 
@@ -247,6 +255,9 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
     async def fake_mention_poller(**kwargs):
         return kwargs
 
+    async def fake_intake_poller(**kwargs):
+        return kwargs
+
     async def fake_trigger_consumer(*args, **kwargs):
         return args, kwargs
 
@@ -266,6 +277,7 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
         background_runners=BackgroundRunners(
             silence_waker=fake_silence_waker,
             waiting_poller=fake_waiting_poller,
+            intake_poller=fake_intake_poller,
             mention_poller=fake_mention_poller,
         ),
         create_task_fn=fake_create_task,
@@ -275,8 +287,9 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
 
     silence_kwargs = await created_coros[0]
     waiting_kwargs = await created_coros[1]
-    mention_kwargs = await created_coros[2]
-    trigger_args, trigger_kwargs = await created_coros[3]
+    intake_kwargs = await created_coros[2]
+    mention_kwargs = await created_coros[3]
+    trigger_args, trigger_kwargs = await created_coros[4]
 
     assert silence_kwargs == {
         "state": state,
@@ -288,6 +301,11 @@ async def test_startup_wires_background_runner_arguments(tmp_path) -> None:
         "trigger_queue": trigger_queue,
         "scan_interval_seconds": 22,
         "customer_wait_timeout_hours": 33,
+    }
+    assert intake_kwargs == {
+        "trigger_queue": trigger_queue,
+        "query": "status<solved tags:saas",
+        "poll_interval_seconds": 44,
     }
     assert mention_kwargs["trigger_queue"] is trigger_queue
     assert mention_kwargs["poll_interval_seconds"] == 55
@@ -314,6 +332,7 @@ async def test_shutdown_cancels_background_tasks_and_waits_manager() -> None:
         background_runners=BackgroundRunners(
             silence_waker=AsyncMock(),
             waiting_poller=AsyncMock(),
+            intake_poller=AsyncMock(),
             mention_poller=AsyncMock(),
         ),
     )

@@ -62,7 +62,7 @@ def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
         "signoz.request_timeout_seconds",
         "logging.jsonl_enabled",
         "logging.log_dir",
-        "knowledge.archive_dir",
+        "archive.archive_dir",
     ]:
         assert path in by_path
     assert by_path["zendesk.api_token"]["secret"] is True

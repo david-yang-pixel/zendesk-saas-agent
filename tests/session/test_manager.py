@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -169,3 +169,42 @@ async def test_create_task_failure_removes_provisional_active_session() -> None:
 
     created_hook.assert_called_once()
     assert manager.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_session_runtime_is_bounded_after_it_acquires_a_slot() -> None:
+    started = asyncio.Event()
+
+    async def never_finishes(_session) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    finished = MagicMock()
+    notify = AsyncMock(return_value=True)
+
+    async def on_finished(session) -> None:
+        finished(session)
+
+    cfg = SimpleNamespace(agent=SimpleNamespace(max_concurrent_sessions=1))
+    with (
+        patch("zd_agent.session.manager.get_config", return_value=cfg),
+        patch("zd_agent.session.manager.run_agent", side_effect=never_finishes),
+        patch(
+            "zd_agent.services.feishu_notifications.notify_session_outcome_durable",
+            notify,
+        ),
+    ):
+        manager = SessionManager(
+            max_concurrent=1,
+            session_timeout_seconds=0.01,
+            on_finished=on_finished,
+        )
+        session = await manager.dispatch(3999)
+        await started.wait()
+        await manager.wait_all()
+
+    assert session.status is SessionStatus.TIMEOUT
+    assert "session deadline" in session.error_message
+    assert manager.active_count == 0
+    finished.assert_called_once_with(session)
+    notify.assert_awaited_once_with(session, cfg)

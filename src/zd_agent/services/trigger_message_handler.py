@@ -328,6 +328,34 @@ async def handle_trigger_message(
             delay_seconds=30.0,
         )
 
+    ticket_status = str(ticket_info.get("status") or "").strip().casefold()
+    if ticket_status and ticket_status not in {"new", "open"}:
+        from zd_agent.services.trigger_state_machine import (
+            apply_waiting_poller_out_of_scope,
+        )
+
+        current = state.get(ticket_id)
+        if current is not None:
+            apply_waiting_poller_out_of_scope(
+                state,
+                ticket_id,
+                reason="status_out_of_scope",
+                expected_revision=current.state_revision,
+                expected_state=current.state,
+            )
+        logger.info(
+            "trigger_status_out_of_scope",
+            ticket_id=ticket_id,
+            source=source,
+            status=ticket_status,
+        )
+        return TriggerMessageResult(
+            True,
+            "status_out_of_scope",
+            ticket_id,
+            source,
+        )
+
     if source == "silence_waker" and not (
         _silence_event_is_current(state=state, ticket_id=ticket_id, msg=msg)
     ):
@@ -376,6 +404,29 @@ async def handle_trigger_message(
             action="skip",
         )
         return TriggerMessageResult(True, "no_customer_message", ticket_id, source)
+
+    current_after_fetch = state.get(ticket_id)
+    if current_after_fetch is not None and current_after_fetch.state in {
+        "owned",
+        "externally_owned",
+        "escalated_to_human",
+    }:
+        from zd_agent.services.owned_customer_followup import (
+            notify_owned_customer_followup,
+        )
+
+        await notify_owned_customer_followup(
+            ticket_id=ticket_id,
+            customer_msgs=customer_msgs,
+            state=state,
+            state_dir=Path(state.path).parent,
+        )
+        return TriggerMessageResult(
+            True,
+            "owned_customer_followup",
+            ticket_id,
+            source,
+        )
 
     if human_takeover_fn is None:
         raise RuntimeError("human_takeover_fn is required for trigger message handling")

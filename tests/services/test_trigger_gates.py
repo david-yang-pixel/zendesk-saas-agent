@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
+import pytest
+
 from zd_agent.config import AppConfig, ZendeskConfig
 from zd_agent.services.trigger_gates import handle_trigger_entry_gate
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
@@ -122,6 +124,93 @@ def test_mention_trigger_bypasses_escalated_state(tmp_path) -> None:
 
     assert result.handled is False
     assert result.action == "continue"
+
+
+@pytest.mark.parametrize(
+    "owned_state",
+    ["owned", "externally_owned", "escalated_to_human"],
+)
+def test_customer_activity_reaches_owned_followup_handler(
+    tmp_path,
+    owned_state: str,
+) -> None:
+    state = _state(tmp_path)
+    state.set(
+        1002,
+        TicketState(state=owned_state, first_seen=_now()),
+    )
+
+    result = handle_trigger_entry_gate(
+        ticket_id=1002,
+        source="messaging_webhook",
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        is_paused_fn=MagicMock(return_value=False),
+    )
+
+    assert result.handled is False
+
+
+@pytest.mark.parametrize(
+    ("source", "timeout_verdict"),
+    [
+        ("zendesk_webhook", "customer_response_timeout"),
+        ("messaging_webhook", "customer_response_timeout"),
+        ("poller_new_msg", "form_submission_timeout"),
+    ],
+)
+def test_customer_activity_can_reopen_a_timeout_expired_wait(
+    tmp_path,
+    source: str,
+    timeout_verdict: str,
+) -> None:
+    state = _state(tmp_path)
+    state.set(
+        9999,
+        TicketState(
+            state="out_of_scope",
+            first_seen=_now(),
+            last_verdict=timeout_verdict,
+            last_customer_comment_id="old-comment",
+        ),
+    )
+
+    result = handle_trigger_entry_gate(
+        ticket_id=9999,
+        source=source,
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        is_paused_fn=MagicMock(return_value=False),
+    )
+
+    assert result.handled is False
+    assert result.action == "continue"
+
+
+def test_real_lifecycle_out_of_scope_still_blocks_customer_webhooks(tmp_path) -> None:
+    state = _state(tmp_path)
+    state.set(
+        9999,
+        TicketState(
+            state="out_of_scope",
+            first_seen=_now(),
+            last_verdict="status_out_of_scope",
+        ),
+    )
+
+    result = handle_trigger_entry_gate(
+        ticket_id=9999,
+        source="zendesk_webhook",
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        is_paused_fn=MagicMock(return_value=False),
+    )
+
+    assert result.handled is True
+    assert result.action == "out_of_scope"
 
 
 def test_manual_reconciliation_blocks_every_trigger_including_mentions(

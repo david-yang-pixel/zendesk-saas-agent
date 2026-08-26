@@ -340,12 +340,6 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         restart_required=True,
     ),
     FieldSpec(
-        "resources.knowledge_base_dir",
-        "知识库资料目录名",
-        "存储配置",
-        restart_required=True,
-    ),
-    FieldSpec(
         "resources.ticket_records_dir",
         "工单记录目录名",
         "存储配置",
@@ -360,10 +354,7 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         protected=True,
     ),
     FieldSpec(
-        "knowledge.docs_dir", "知识库文档目录", "存储配置", restart_required=True
-    ),
-    FieldSpec(
-        "knowledge.archive_dir", "Agent 归档目录", "存储配置", restart_required=True
+        "archive.archive_dir", "Agent 归档目录", "存储配置", restart_required=True
     ),
     FieldSpec(
         "logging.jsonl_enabled",

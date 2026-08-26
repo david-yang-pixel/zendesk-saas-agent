@@ -16,6 +16,7 @@ ADMIN_CONFIG_KEY = web.AppKey("zd_agent.admin_config", object)
 
 SILENCE_TASK_KEY = web.AppKey("zd_agent.silence_task", object)
 WAITING_POLLER_TASK_KEY = web.AppKey("zd_agent.waiting_poller_task", object)
+INTAKE_POLLER_TASK_KEY = web.AppKey("zd_agent.intake_poller_task", object)
 MENTION_POLLER_TASK_KEY = web.AppKey("zd_agent.mention_poller_task", object)
 TRIGGER_TASK_KEY = web.AppKey("zd_agent.trigger_task", object)
 MENTION_TRACKER_KEY = web.AppKey("zd_agent.mention_tracker", object)
@@ -23,6 +24,7 @@ MENTION_TRACKER_KEY = web.AppKey("zd_agent.mention_tracker", object)
 BACKGROUND_TASK_KEYS = (
     SILENCE_TASK_KEY,
     WAITING_POLLER_TASK_KEY,
+    INTAKE_POLLER_TASK_KEY,
     MENTION_POLLER_TASK_KEY,
     TRIGGER_TASK_KEY,
 )
@@ -30,6 +32,7 @@ BACKGROUND_TASK_KEYS = (
 BACKGROUND_TASK_NAMES = {
     SILENCE_TASK_KEY: "silence_task",
     WAITING_POLLER_TASK_KEY: "waiting_poller_task",
+    INTAKE_POLLER_TASK_KEY: "intake_poller_task",
     MENTION_POLLER_TASK_KEY: "mention_poller_task",
     TRIGGER_TASK_KEY: "trigger_task",
 }

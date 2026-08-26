@@ -341,3 +341,22 @@ class NoOpReplyReviewer:
     ) -> str:
         _ = assessment, decision
         return body
+
+
+class PolicyReplyReviewer:
+    """Verify that the final text is exactly the code-authored safe projection."""
+
+    async def revise_wording(
+        self,
+        *,
+        body: str,
+        assessment: CaseAssessment,
+        decision: DispositionDecision,
+    ) -> str:
+        expected = await PolicyReplyWriter().write_reply(
+            assessment=assessment,
+            decision=decision,
+        )
+        if body.strip() != expected.body:
+            raise ValueError("final body differs from the policy-authored reply")
+        return expected.body

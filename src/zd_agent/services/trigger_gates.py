@@ -13,6 +13,17 @@ logger = get_logger(module="services.trigger_gates")
 
 IsPausedFn = Callable[[Any], bool]
 
+_CUSTOMER_ACTIVITY_SOURCES = {
+    "zendesk_webhook",
+    "messaging_webhook",
+    "poller_new_msg",
+    "intake_backfill",
+}
+_CUSTOMER_WAIT_TIMEOUT_VERDICTS = {
+    "customer_response_timeout",
+    "form_submission_timeout",
+}
+
 
 @dataclass(frozen=True)
 class TriggerGateResult:
@@ -116,6 +127,18 @@ def handle_trigger_entry_gate(
             action="active_session_processing",
         )
 
+    timed_out_wait_may_have_new_customer_activity = bool(
+        existing_state is not None
+        and existing_state.state == "out_of_scope"
+        and existing_state.last_verdict in _CUSTOMER_WAIT_TIMEOUT_VERDICTS
+        and source in _CUSTOMER_ACTIVITY_SOURCES
+    )
+    owned_ticket_may_have_new_customer_activity = bool(
+        existing_state is not None
+        and existing_state.state
+        in {"escalated_to_human", "owned", "externally_owned"}
+        and source in _CUSTOMER_ACTIVITY_SOURCES
+    )
     if (
         existing_state is not None
         and existing_state.state
@@ -126,6 +149,8 @@ def handle_trigger_entry_gate(
             "out_of_scope",
         }
         and source != "mention"
+        and not timed_out_wait_may_have_new_customer_activity
+        and not owned_ticket_may_have_new_customer_activity
     ):
         logger.info(
             "trigger_skip_owned",

@@ -14,6 +14,7 @@ from zd_agent.runtime.openai_reasoning import validate_reasoning_effort
 
 class AgentConfig(BaseModel):
     max_concurrent_sessions: int = 5
+    session_timeout_seconds: int = Field(default=720, ge=30, le=3600)
 
 
 class LLMConfig(BaseModel):
@@ -63,6 +64,7 @@ class ZendeskConfig(BaseModel):
     poll_interval_seconds: int = 60
     poll_query: str = "status:open status:new"
     search_query: str = "status:new tags:saas"
+    backfill_query: str = "status<solved tags:saas"
     mention_trigger: str = "@saas-bot"
     mention_aliases: list[str] = Field(default_factory=list)
     mention_poll_interval_seconds: int = 5
@@ -118,15 +120,15 @@ class SandboxConfig(BaseModel):
     base_dir: str = "/tmp/zd-agent"
 
 
-class KnowledgeConfig(BaseModel):
-    docs_dir: str = "./ai-docs"
+class ArchiveConfig(BaseModel):
+    """Agent run archive storage; never a support evidence source."""
+
     archive_dir: str = "./ai-docs/tickets"
 
 
 class ResourcesConfig(BaseModel):
     base_dir: str = "/opt/zd-agent/resources"
     saas_codebase_dir: str = "saas源代码"
-    knowledge_base_dir: str = "saas版知识库"
     ticket_records_dir: str = "zendesk-cli/工单记录"
     attachments_dir: str = "工单附件"
     state_dir: str = ".state"
@@ -353,7 +355,7 @@ class AppConfig(BaseModel):
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     repos: ReposConfig = Field(default_factory=ReposConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
-    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
+    archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     intake: IntakeConfig = Field(
         default_factory=IntakeConfig,
@@ -473,8 +475,7 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
         )
     else:
         cfg.repos.base_dir = _resolve(cfg.repos.base_dir)
-    cfg.knowledge.docs_dir = _resolve(cfg.knowledge.docs_dir)
-    cfg.knowledge.archive_dir = _resolve(cfg.knowledge.archive_dir)
+    cfg.archive.archive_dir = _resolve(cfg.archive.archive_dir)
 
     env = EnvSettings()
 

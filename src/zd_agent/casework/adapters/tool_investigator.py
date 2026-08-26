@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, cast
 
@@ -56,7 +57,6 @@ _APPROVED_EXACT_NAMES = frozenset(
 _APPROVED_PREFIXES = (
     "git_",
     "github_",
-    "knowledge_",
     "official_docs_",
     "signoz_",
     "ticket_record_",
@@ -756,6 +756,32 @@ class BoundedToolCaseInvestigator:
         )
         return item, _tool_result_body(call.id, result)
 
+    async def _execute_calls(
+        self,
+        calls: list[ToolCallRequest],
+        *,
+        validated_args: dict[str, dict[str, Any]],
+        round_index: int,
+    ) -> list[tuple[EvidenceItem, str]]:
+        """Execute one model batch concurrently only when every read is safe."""
+        coroutines = [
+            self._execute_call(
+                call,
+                args=validated_args[call.id],
+                round_index=round_index,
+            )
+            for call in calls
+        ]
+        if len(calls) > 1 and all(
+            self._tools_by_name[call.name].concurrency_safe for call in calls
+        ):
+            return list(await asyncio.gather(*coroutines))
+
+        results: list[tuple[EvidenceItem, str]] = []
+        for coroutine in coroutines:
+            results.append(await coroutine)
+        return results
+
     async def _correct_terminal_output(
         self,
         *,
@@ -925,12 +951,16 @@ class BoundedToolCaseInvestigator:
                         "unknown or insufficient."
                     ),
                 )
-            for call in response.tool_calls:
-                item, body = await self._execute_call(
-                    call,
-                    args=validated_args[call.id],
-                    round_index=round_index,
-                )
+            call_results = await self._execute_calls(
+                response.tool_calls,
+                validated_args=validated_args,
+                round_index=round_index,
+            )
+            for call, (item, body) in zip(
+                response.tool_calls,
+                call_results,
+                strict=True,
+            ):
                 evidence.append(item)
                 messages.append(
                     self._provider.format_tool_result(call.id, call.name, body)

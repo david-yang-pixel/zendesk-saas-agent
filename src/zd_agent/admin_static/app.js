@@ -240,22 +240,20 @@ const FIELD_SECTIONS = {
   "存储配置": [
     {
       title: "资源目录",
-      description: "资源根目录、代码库、知识库和工单记录目录。",
+      description: "资源根目录、代码库、工单记录和附件目录。",
       paths: [
         "resources.base_dir",
         "resources.saas_codebase_dir",
-        "resources.knowledge_base_dir",
         "resources.ticket_records_dir",
         "resources.attachments_dir",
         "resources.state_dir"
       ]
     },
     {
-      title: "知识库与日志",
-      description: "知识库路径、归档路径和 JSONL 运行日志存储。",
+      title: "归档与日志",
+      description: "Agent 运行归档和 JSONL 日志存储。",
       paths: [
-        "knowledge.docs_dir",
-        "knowledge.archive_dir",
+        "archive.archive_dir",
         "logging.jsonl_enabled",
         "logging.log_dir"
       ]

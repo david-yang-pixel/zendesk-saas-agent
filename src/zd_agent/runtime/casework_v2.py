@@ -11,7 +11,7 @@ from zd_agent.casework.adapters.read_tools import (
     SystemClock,
 )
 from zd_agent.casework.adapters.ticket_snapshot import build_ticket_snapshot
-from zd_agent.casework.adapters.model import NoOpReplyReviewer, PolicyReplyWriter
+from zd_agent.casework.adapters.model import PolicyReplyReviewer, PolicyReplyWriter
 from zd_agent.casework.adapters.ticket import (
     NoVisualAnalyzer,
     VisualAnalyzer,
@@ -116,7 +116,7 @@ async def execute_casework_v2(
         investigator=investigator,
         reply_composer=ReplyComposer(
             writer=PolicyReplyWriter(),
-            reviewer=NoOpReplyReviewer(),
+            reviewer=PolicyReplyReviewer(),
         ),
         clock=clock,
     )

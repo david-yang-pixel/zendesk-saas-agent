@@ -127,11 +127,17 @@ class LlmVisualAnalyzer:
         )
 
     async def analyze(self, ticket: TicketSnapshot) -> tuple[VisualObservation, ...]:
-        if not ticket.attachments:
+        visual_attachments = tuple(
+            attachment
+            for attachment in ticket.attachments
+            if attachment.content_type.casefold() == "image"
+            or attachment.content_type.casefold().startswith("image/")
+        )
+        if not visual_attachments:
             return ()
-        selected = ticket.attachments[:_MAX_VISUAL_ATTACHMENTS]
+        selected = visual_attachments[:_MAX_VISUAL_ATTACHMENTS]
         omitted = tuple(
-            _omitted(item) for item in ticket.attachments[_MAX_VISUAL_ATTACHMENTS:]
+            _omitted(item) for item in visual_attachments[_MAX_VISUAL_ATTACHMENTS:]
         )
         loaded_values = await asyncio.gather(
             *(self._image_loader.load(item.download_url) for item in selected),

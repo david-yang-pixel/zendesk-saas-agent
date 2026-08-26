@@ -27,7 +27,7 @@ def _archive_session_dir(session: AgentSession) -> Path:
         digest = hashlib.sha256(raw_session_id.encode("utf-8")).hexdigest()[:16]
         session_dir_name = f"session-{digest}"
     return (
-        Path(cfg.knowledge.archive_dir)
+        Path(cfg.archive.archive_dir)
         / str(session.ticket_id)
         / "runs"
         / session_dir_name

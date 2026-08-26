@@ -280,7 +280,7 @@ def status() -> None:
     base = Path(cfg.sandbox.base_dir)
     rows = collect_sandbox_status(
         base,
-        archive_base=Path(cfg.knowledge.archive_dir),
+        archive_base=Path(cfg.archive.archive_dir),
     )
     if not rows:
         console.print("[dim]无活跃或保留的 sandbox[/dim]")
@@ -361,7 +361,7 @@ def log(
     cfg = get_config()
     result = collect_ticket_log(
         ticket_id=ticket_id,
-        archive_base=Path(cfg.knowledge.archive_dir),
+        archive_base=Path(cfg.archive.archive_dir),
         sandbox_base=Path(cfg.sandbox.base_dir),
     )
 
@@ -397,7 +397,7 @@ def stats(
     from zd_agent.services.cli_archive import collect_archive_stats
 
     cfg = get_config()
-    archive_base = Path(cfg.knowledge.archive_dir)
+    archive_base = Path(cfg.archive.archive_dir)
 
     try:
         stats = collect_archive_stats(archive_base, last=last)

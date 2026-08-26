@@ -129,6 +129,10 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
         from zd_agent.services.casework_ownership_effects import (
             reconcile_casework_ownership_effects,
         )
+        from zd_agent.services.notification_outbox import (
+            NotificationOutbox,
+            reconcile_notifications,
+        )
 
         note_store = PostPublicInternalNoteStore(
             state.path.parent / "post_public_internal_note_outbox.sqlite3"
@@ -141,6 +145,9 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
         )
         casework_store = CaseworkEffectStore(
             state.path.parent / "casework_effects.sqlite3"
+        )
+        notification_store = NotificationOutbox(
+            state.path.parent / "notification_outbox.sqlite3"
         )
         if note_store.pending(limit=1):
             await asyncio.wait_for(
@@ -167,6 +174,11 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
                     store=casework_store,
                     state=state,
                 ),
+                timeout=90,
+            )
+        if notification_store.pending(limit=1):
+            await asyncio.wait_for(
+                reconcile_notifications(store=notification_store),
                 timeout=90,
             )
         purged = casework_store.purge_completed()

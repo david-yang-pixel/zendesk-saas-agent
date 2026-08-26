@@ -62,9 +62,18 @@ class SessionManager:
         *,
         on_finished: SessionFinishedCallback | None = None,
         force_dry_run: bool = False,
+        session_timeout_seconds: float | None = None,
     ) -> None:
         cfg = get_config()
+        self._cfg = cfg
         self._max_concurrent = max_concurrent or cfg.agent.max_concurrent_sessions
+        self._session_timeout_seconds = float(
+            session_timeout_seconds
+            if session_timeout_seconds is not None
+            else getattr(cfg.agent, "session_timeout_seconds", 720)
+        )
+        if self._session_timeout_seconds <= 0:
+            raise ValueError("session_timeout_seconds must be positive")
         self._semaphore = asyncio.Semaphore(self._max_concurrent)
 
         # ticket_id → _TrackedSession
@@ -217,7 +226,35 @@ class SessionManager:
         async with self._semaphore:
             tracked.start_time = time.monotonic()
             try:
-                await run_agent(session)
+                await asyncio.wait_for(
+                    run_agent(session),
+                    timeout=self._session_timeout_seconds,
+                )
+            except TimeoutError:
+                session.status = SessionStatus.TIMEOUT
+                session.error_message = (
+                    "session deadline exceeded after "
+                    f"{self._session_timeout_seconds:g} seconds"
+                )
+                logger.error(
+                    "session_timeout",
+                    ticket_id=ticket_id,
+                    session_id=session.session_id,
+                    timeout_seconds=self._session_timeout_seconds,
+                )
+                if not session.dry_run:
+                    try:
+                        from zd_agent.services.feishu_notifications import (
+                            notify_session_outcome_durable,
+                        )
+
+                        await notify_session_outcome_durable(session, self._cfg)
+                    except Exception as error:  # noqa: BLE001 - outbox retries later.
+                        logger.warning(
+                            "session_timeout_notification_prepare_failed",
+                            ticket_id=ticket_id,
+                            error_type=type(error).__name__,
+                        )
             except Exception as e:
                 logger.error(
                     "session_crash",

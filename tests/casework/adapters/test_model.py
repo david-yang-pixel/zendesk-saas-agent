@@ -1,9 +1,12 @@
 from datetime import datetime, timezone
 import json
 
+import pytest
+
 from zd_agent.casework.adapters.evidence import build_case_context_evidence
 from zd_agent.casework.adapters.model import (
     NoOpReplyReviewer,
+    PolicyReplyReviewer,
     PolicyReplyWriter,
     investigation_result_from_content,
 )
@@ -232,3 +235,38 @@ async def test_policy_reply_writer_cannot_add_facts_or_unapproved_questions() ->
     assert candidate.requested_customer_fields == ()
     assert "workspace" not in candidate.body.casefold()
     assert reviewed == candidate.body
+
+
+async def test_policy_reply_reviewer_rejects_any_non_policy_wording() -> None:
+    assessment = CaseAssessment(
+        question="Why is this failing?",
+        answer_status=AnswerStatus.SUPPORTED,
+        admitted_claims=(
+            Claim(
+                claim_id="claim-safe",
+                statement="The request was rejected at the API boundary.",
+                role=ClaimRole.FAILING_BOUNDARY,
+                status=ClaimStatus.CONFIRMED,
+                supporting_evidence_ids=("ev-runtime",),
+                public_allowed=True,
+            ),
+        ),
+    )
+    decision = DispositionDecision(
+        disposition=Disposition.RESOLVED,
+        reply_kind=ReplyKind.ANSWER,
+        ownership_action=OwnershipAction.NONE,
+        reason_code=ReasonCode.RESOLVED_WITH_EVIDENCE,
+        evidence_ids=("ev-runtime",),
+    )
+    candidate = await PolicyReplyWriter().write_reply(
+        assessment=assessment,
+        decision=decision,
+    )
+
+    with pytest.raises(ValueError, match="policy-authored reply"):
+        await PolicyReplyReviewer().revise_wording(
+            body=candidate.body + "\n\nInternal trace: secret-trace-id",
+            assessment=assessment,
+            decision=decision,
+        )

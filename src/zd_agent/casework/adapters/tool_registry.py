@@ -20,7 +20,6 @@ from zd_agent.tools.github_pr import (
     GithubSearchPrs,
 )
 from zd_agent.tools.inspector_exec import InspectorExec
-from zd_agent.tools.knowledge import KnowledgeRead, KnowledgeSearch
 from zd_agent.tools.official_docs import OfficialDocsRead, OfficialDocsSearch
 from zd_agent.tools.saas_version import SaasDeployedVersion
 from zd_agent.tools.scoped_queries import TenantScopedSignozQuery, TenantScopedSqlQuery
@@ -50,8 +49,6 @@ def _casework_tools() -> tuple[Tool, ...]:
         ZendeskGetTicket(),
         ZendeskSearchArticles(),
         ZendeskGetArticle(),
-        KnowledgeSearch(),
-        KnowledgeRead(),
         OfficialDocsSearch(),
         OfficialDocsRead(),
         GitShow(),
