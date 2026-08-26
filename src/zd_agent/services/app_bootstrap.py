@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +32,7 @@ from zd_agent.services.public_reply_handoff_effects import (
 )
 from zd_agent.services.webhook_dedup import WebhookDedup
 from zd_agent.services.v2_state_migration import migrate_ticket_state_to_v2
+from zd_agent.services.agent_lifecycle import NEW_EPOCH_ENV
 from zd_agent.trigger.state_store import TicketStateTracker
 
 if TYPE_CHECKING:
@@ -93,7 +95,8 @@ def prepare_saas_app_runtime(
             backup_path=str(migration.backup_path),
         )
     recovered_ticket_ids: list[int] = []
-    for ticket_id in state.list_by_state("processing"):
+    start_new_epoch = os.environ.get(NEW_EPOCH_ENV, "0") == "1"
+    for ticket_id in ([] if start_new_epoch else state.list_by_state("processing")):
         try:
             numeric_ticket_id = int(ticket_id)
         except ValueError:
@@ -237,8 +240,11 @@ def prepare_saas_app_runtime(
                 error=str(exc)[:200],
             )
 
-    app.on_startup.append(_reconcile_dead_letters)
-    app.on_startup.append(_reconcile_internal_notes)
+    if start_new_epoch:
+        logger.warning("startup_recovery_skipped_for_new_online_epoch")
+    else:
+        app.on_startup.append(_reconcile_dead_letters)
+        app.on_startup.append(_reconcile_internal_notes)
 
     return SaasAppRuntime(
         state_dir=state_dir,

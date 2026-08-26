@@ -41,6 +41,10 @@ from typing import Any, TYPE_CHECKING
 
 from zd_agent.config import get_config
 from zd_agent.log import get_logger
+from zd_agent.services.child_process_registry import (
+    CHILD_PROCESS_GROUP_REGISTRY_ENV,
+    ChildProcessGroupRegistry,
+)
 from zd_agent.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:
@@ -478,7 +482,19 @@ class InspectorExec(Tool):
                 # client children as one process group.
                 start_new_session=True,
             )
+            registry_path = os.environ.get(CHILD_PROCESS_GROUP_REGISTRY_ENV, "")
+            registry = (
+                ChildProcessGroupRegistry(registry_path) if registry_path else None
+            )
+            registered = False
             try:
+                if registry is not None:
+                    try:
+                        await asyncio.to_thread(registry.add, proc.pid)
+                        registered = True
+                    except BaseException:
+                        await asyncio.shield(_terminate_process_tree(proc))
+                        raise
                 out_b, err_b = await asyncio.wait_for(
                     proc.communicate(),
                     timeout=timeout,
@@ -509,6 +525,9 @@ class InspectorExec(Tool):
                     stage="process_wait",
                 )
                 raise
+            finally:
+                if registry is not None and registered:
+                    await asyncio.to_thread(registry.remove, proc.pid)
 
         try:
             try:

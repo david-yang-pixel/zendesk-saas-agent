@@ -53,5 +53,7 @@ RUN uv sync --no-dev
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8080
 
+# The default command is the always-on control plane. It owns an HTTP-free
+# child Worker process and may keep that Worker completely absent.
 # Note: real deployment mounts /resources volume and /app/.env (read-only)
 CMD ["/app/.venv/bin/zd-agent", "serve"]

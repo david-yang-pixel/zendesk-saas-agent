@@ -19,6 +19,10 @@ from zd_agent.services.app_context import (
 from zd_agent.services.messaging_context import save_messaging_context
 from zd_agent.services.trigger_delay import with_trigger_delay
 from zd_agent.services.zendesk_webhook import verify_zendesk_signature
+from zd_agent.services.webhook_lifecycle import (
+    drop_when_agent_offline,
+    drop_when_before_online_watermark,
+)
 
 logger = get_logger(module="services.zendesk_messaging_webhook")
 
@@ -152,6 +156,33 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
             msg_id=msg_id,
         )
         return web.Response(status=200, text="dup")
+    event_body = event.get("event") or {}
+    message_body = event_body.get("message") or {}
+    occurred_at = (
+        message_body.get("created_at")
+        or event_body.get("created_at")
+        or event.get("created_at")
+        or event.get("time")
+    )
+    old_epoch = drop_when_before_online_watermark(
+        request,
+        source="messaging_webhook",
+        ticket_id=ticket_id,
+        event_time=occurred_at,
+        dedup=dedup,
+        dedup_key=dedup_key,
+    )
+    if old_epoch is not None:
+        return old_epoch
+    offline = drop_when_agent_offline(
+        request,
+        source="messaging_webhook",
+        ticket_id=ticket_id,
+        dedup=dedup,
+        dedup_key=dedup_key,
+    )
+    if offline is not None:
+        return offline
     try:
         save_messaging_context(
             ticket_id=ticket_id,

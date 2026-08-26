@@ -11,7 +11,6 @@ from zd_agent.entry import cli
 def test_runtime_command_applies_saved_config_before_logging_setup() -> None:
     cfg = AppConfig()
     events: list[str] = []
-    manager = MagicMock()
 
     def apply_saved(received_cfg):
         assert received_cfg is cfg
@@ -28,18 +27,16 @@ def test_runtime_command_applies_saved_config_before_logging_setup() -> None:
         ),
         patch.object(cli, "setup_logging", side_effect=setup_logging),
         patch(
-            "zd_agent.services.app_bootstrap.create_configured_session_manager",
-            side_effect=lambda _cfg, **_kwargs: events.append("manager") or manager,
-        ),
-        patch(
-            "zd_agent.services.saas_app.run_saas_app",
-            side_effect=lambda _manager: events.append("run"),
+            "zd_agent.services.control_plane_app.run_control_plane_app",
+            side_effect=lambda received_cfg: events.append("control")
+            if received_cfg is cfg
+            else None,
         ),
     ):
         result = CliRunner().invoke(cli.app, ["serve"])
 
     assert result.exit_code == 0
-    assert events == ["config", "logging", "manager", "run"]
+    assert events == ["config", "logging", "control"]
 
 
 def test_subcommand_help_does_not_initialize_or_write_runtime_state() -> None:
@@ -60,51 +57,31 @@ def test_subcommand_help_does_not_initialize_or_write_runtime_state() -> None:
     setup.assert_not_called()
 
 
-def test_serve_applies_saved_config_before_session_manager() -> None:
+def test_serve_starts_control_plane_without_creating_worker_in_process() -> None:
     cfg = AppConfig()
-    events: list[str] = []
-
-    manager = MagicMock()
-
-    def create_manager(received_cfg, *, force_dry_run=False):
-        assert received_cfg is cfg
-        assert force_dry_run is False
-        events.append("manager")
-        return manager
-
-    configured_manager = MagicMock(side_effect=create_manager)
-    run_app = MagicMock(side_effect=lambda _manager: events.append("run"))
+    run_app = MagicMock()
 
     with (
         patch.object(cli, "get_config", return_value=cfg),
-        patch(
-            "zd_agent.services.app_bootstrap.create_configured_session_manager",
-            configured_manager,
-        ),
-        patch("zd_agent.services.saas_app.run_saas_app", run_app),
+        patch("zd_agent.services.control_plane_app.run_control_plane_app", run_app),
     ):
         cli.serve()
 
-    assert events == ["manager", "run"]
-    run_app.assert_called_once_with(manager)
+    run_app.assert_called_once_with(cfg)
 
 
 def test_serve_dry_run_forces_all_webhook_sessions_to_no_write() -> None:
     cfg = AppConfig()
-    manager = MagicMock()
 
     with (
         patch.object(cli, "get_config", return_value=cfg),
-        patch(
-            "zd_agent.services.app_bootstrap.create_configured_session_manager",
-            return_value=manager,
-        ) as create_manager,
-        patch("zd_agent.services.saas_app.run_saas_app") as run_app,
+        patch.dict("os.environ", {}, clear=False),
+        patch("zd_agent.services.control_plane_app.run_control_plane_app") as run_app,
     ):
         cli.serve(dry_run=True)
+        assert cli.os.environ["ZD_AGENT_FORCE_DRY_RUN"] == "1"
 
-    create_manager.assert_called_once_with(cfg, force_dry_run=True)
-    run_app.assert_called_once_with(manager)
+    run_app.assert_called_once_with(cfg)
 
 
 def test_top_level_help_exposes_only_the_durable_http_server_command() -> None:

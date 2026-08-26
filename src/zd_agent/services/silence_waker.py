@@ -9,6 +9,7 @@ from typing import Any
 
 from zd_agent.log import get_logger
 from zd_agent.trigger.state_store import TicketStateTracker
+from zd_agent.services.event_watermark import is_after_online_watermark
 
 logger = get_logger(module="services.silence_waker")
 
@@ -33,6 +34,9 @@ async def scan_once(
             or record.silence_window_end is None
             or record.silence_window_end > now
         ):
+            continue
+        if not is_after_online_watermark(record.silence_window_end):
+            # The wakeup matured while the Agent was deliberately offline.
             continue
 
         source = "silence_waker"

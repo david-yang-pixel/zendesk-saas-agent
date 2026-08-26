@@ -18,6 +18,10 @@ from zd_agent.services.app_context import (
     webhook_dedup,
 )
 from zd_agent.services.trigger_delay import with_trigger_delay
+from zd_agent.services.webhook_lifecycle import (
+    drop_when_agent_offline,
+    drop_when_before_online_watermark,
+)
 
 logger = get_logger(module="services.zendesk_webhook")
 SIGNATURE_MAX_AGE_SECONDS = 300
@@ -96,6 +100,38 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
     if dedup.seen(key):
         logger.info("zendesk_webhook_dup", key=key, comment_id=comment_id)
         return web.Response(status=200, text="dup")
+    occurred_at = next(
+        (
+            event.get(field)
+            for field in (
+                "event_occurred_at",
+                "ticket_updated_at",
+                "updated_at",
+                "created_at",
+            )
+            if event.get(field) is not None and event.get(field) != ""
+        ),
+        None,
+    )
+    old_epoch = drop_when_before_online_watermark(
+        request,
+        source="zendesk_webhook",
+        ticket_id=ticket_id,
+        event_time=occurred_at,
+        dedup=dedup,
+        dedup_key=key,
+    )
+    if old_epoch is not None:
+        return old_epoch
+    offline = drop_when_agent_offline(
+        request,
+        source="zendesk_webhook",
+        ticket_id=ticket_id,
+        dedup=dedup,
+        dedup_key=key,
+    )
+    if offline is not None:
+        return offline
     queue = trigger_queue(request.app)
     if is_mention_candidate:
         normalized_comment_id = str(comment_id)

@@ -251,6 +251,89 @@ async def test_billing_section_promotes_billing_db_over_prod_plan(
 
 
 @pytest.mark.asyncio
+async def test_worker_registry_tracks_inspector_process_group(
+    fake_session,
+    inspector_config,
+    monkeypatch,
+) -> None:
+    class CompletedProcess:
+        pid = 4321
+        returncode = 0
+
+        async def communicate(self):
+            return b"ok", b""
+
+    registry = MagicMock()
+    monkeypatch.setenv(
+        "ZD_AGENT_CHILD_PROCESS_GROUP_REGISTRY",
+        "/tmp/test-worker-child-groups.json",
+    )
+    registry_factory = MagicMock(return_value=registry)
+    monkeypatch.setattr(
+        "zd_agent.tools.inspector_exec.ChildProcessGroupRegistry",
+        registry_factory,
+    )
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=CompletedProcess()),
+    )
+
+    result = await InspectorExec().execute(
+        {"tenant_id": "tenant-1", "section": "all"},
+        fake_session,
+    )
+
+    assert result.success is True
+    registry_factory.assert_called_once_with("/tmp/test-worker-child-groups.json")
+    registry.add.assert_called_once_with(4321)
+    registry.remove.assert_called_once_with(4321)
+
+
+@pytest.mark.asyncio
+async def test_registry_failure_terminates_inspector_before_returning_error(
+    fake_session,
+    inspector_config,
+    monkeypatch,
+) -> None:
+    class HangingProcess:
+        pid = 4321
+        returncode = None
+
+        async def communicate(self):
+            raise AssertionError("unregistered process must not execute")
+
+        async def wait(self):
+            self.returncode = -9
+            return self.returncode
+
+    registry = MagicMock()
+    registry.add.side_effect = OSError("registry unavailable")
+    monkeypatch.setenv(
+        "ZD_AGENT_CHILD_PROCESS_GROUP_REGISTRY",
+        "/tmp/test-worker-child-groups.json",
+    )
+    monkeypatch.setattr(
+        "zd_agent.tools.inspector_exec.ChildProcessGroupRegistry",
+        MagicMock(return_value=registry),
+    )
+    monkeypatch.setattr(
+        "asyncio.create_subprocess_exec",
+        AsyncMock(return_value=HangingProcess()),
+    )
+    killpg = MagicMock()
+    monkeypatch.setattr(os, "killpg", killpg)
+
+    result = await InspectorExec().execute(
+        {"tenant_id": "tenant-1", "section": "all"},
+        fake_session,
+    )
+
+    assert result.success is False
+    killpg.assert_called_once_with(4321, 9)
+    registry.remove.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_all_section_cannot_authorize_a_subscription_plan_claim(
     fake_session,
     inspector_config,

@@ -228,6 +228,12 @@ class DurableTriggerQueue:
     async def dead_letter_count(self) -> int:
         return await asyncio.to_thread(self._store.count, "dead_letter")
 
+    async def discard_backlog(self, reason: str) -> int:
+        """Fence queued work when the operator deliberately starts a new epoch."""
+        discarded = await asyncio.to_thread(self._store.discard_backlog, reason)
+        self._wake.set()
+        return discarded
+
     async def list_dead_letters(self, limit: int = 100) -> list[dict[str, Any]]:
         return await asyncio.to_thread(
             self._store.dead_letters,

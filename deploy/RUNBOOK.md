@@ -413,6 +413,31 @@ sudo journalctl -u zd-agent -f
 
 ## Daily Operations
 
+### Control plane and Agent Worker
+
+The `zd-agent` systemd unit now keeps the HTTP control plane online. The
+control plane owns a separate, HTTP-free Agent Worker process. Use the admin
+console **部署状态** page to start, stop, or restart only that Worker.
+
+- **关闭 Agent** exits the Worker process completely; the control plane,
+  `/admin`, `/healthz`, and signed Zendesk webhook ingress remain online.
+- While the Worker is stopped, valid Zendesk events are acknowledged and
+  audited as discarded. They are not queued.
+- **开启 Agent** creates a new online watermark. Queue rows and ticket updates
+  from before that watermark are not backfilled.
+- Stop and restart first fence new sessions, stop all pollers/consumers, and
+  wait for the Worker to acknowledge that fence. Events received during this
+  drain remain in the durable queue. Stop discards them only after every active
+  session and customer-visible side effect is safe and the Worker has exited;
+  restart preserves them for the replacement Worker.
+- A failed or interrupted drain never commits `desired_state=stopped`, so its
+  webhooks remain queued rather than being acknowledged as offline drops.
+- `systemctl stop zd-agent` stops both the control plane and the Worker and is
+  reserved for host maintenance; it is not the normal Agent off switch.
+
+The persisted desired state survives container and host restarts. A deployment
+must not change `desired_state=stopped` back to running.
+
 ### Cross-host cutover (single active Agent)
 
 Do not start the new host while the old Agent can restart. The host identity
@@ -451,13 +476,14 @@ ownership.
 
 | What | How |
 |------|-----|
-| Restart agent | `sudo systemctl restart zd-agent` |
+| Restart only the Agent Worker | 管理后台 → **系统与审计** → **部署状态** → **重启 Agent** |
 | Restart DB Gateway | `sudo systemctl restart db-gateway`（DB Gateway 项目负责） |
 | Restart Tool Services | 通过 `/opt/mcp/code` 的独立 MCP 运维流程处理；agent 部署不会重启它们 |
 | View live logs | `sudo docker logs -f zd-agent` (or `journalctl -u zd-agent -f`) |
 | Manual Teleport renew | Follow `/opt/db-gateway/code/README.md`; Agent does not own DB credentials or Teleport login |
-| Stop all processing | `sudo systemctl stop zd-agent` |
-| Resume all processing | `sudo systemctl start zd-agent` (instance fence must pass) |
+| Stop Agent processing, keep control plane online | 管理后台 → **部署状态** → **关闭 Agent** |
+| Resume Agent processing without offline backlog | 管理后台 → **部署状态** → **开启 Agent** |
+| Stop the entire control plane for host maintenance | `sudo systemctl stop zd-agent` |
 | Resolve an ambiguous historical reply | After verifying the exact Zendesk comment, run `zd-agent reconcile-delivery <ticket> --attempt-id <id> --outcome delivered\|unsent --reason '<evidence>' --actor '<operator>'`; never guess an outcome |
 | Check status | `curl -fsS http://127.0.0.1:8080/healthz` |
 | Refresh local source fallback | `uv run zd-agent repos fetch <repo>`; production root-cause evidence should prefer Source MCP `ref=runtime` |

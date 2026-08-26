@@ -53,6 +53,10 @@ class _TrackedSession:
     start_time: float = field(default_factory=time.monotonic)
 
 
+class SessionDispatchDisabled(RuntimeError):
+    """Raised when the control plane has fenced new Agent sessions."""
+
+
 class SessionManager:
     """工单会话并发管理器"""
 
@@ -85,10 +89,34 @@ class SessionManager:
         self._lock = asyncio.Lock()
         self._on_finished = on_finished
         self._force_dry_run = force_dry_run
+        # Lifecycle fencing is process-local and ordered by ``_lock``.  The
+        # control plane publishes a durable generation; the Worker applies it
+        # here before acknowledging quiescence.  A callback checked outside
+        # this lock would leave a check-then-create race during shutdown.
+        self._dispatch_enabled = True
+        self._dispatch_generation = 0
 
     def set_on_finished(self, callback: SessionFinishedCallback | None) -> None:
         """注册 session 完成回调（典型用于 saas_app 在 state 创建后挂钩）。"""
         self._on_finished = callback
+
+    def configure_dispatch_gate(self, *, enabled: bool, generation: int) -> None:
+        """Set the initial gate before the Worker event loop starts."""
+        self._dispatch_enabled = bool(enabled)
+        self._dispatch_generation = max(0, int(generation))
+
+    def accepting_dispatches(self) -> bool:
+        return self._dispatch_enabled
+
+    @property
+    def dispatch_generation(self) -> int:
+        return self._dispatch_generation
+
+    async def apply_dispatch_gate(self, *, enabled: bool, generation: int) -> None:
+        """Apply one control-plane fence in the same lock as session creation."""
+        async with self._lock:
+            self._dispatch_enabled = bool(enabled)
+            self._dispatch_generation = max(0, int(generation))
 
     @property
     def max_concurrent(self) -> int:
@@ -161,6 +189,10 @@ class SessionManager:
         - 否则创建新 session，受信号量控制并发
         """
         async with self._lock:
+            if not self._dispatch_enabled:
+                raise SessionDispatchDisabled(
+                    "Agent lifecycle is not accepting dispatches"
+                )
             if ticket_id in self._active:
                 existing_session = self._active[ticket_id].session
                 logger.info(
@@ -207,7 +239,6 @@ class SessionManager:
             )
 
             return session
-
     async def _run_with_semaphore(self, tracked: _TrackedSession) -> None:
         """在信号量保护下运行 session"""
         session = tracked.session

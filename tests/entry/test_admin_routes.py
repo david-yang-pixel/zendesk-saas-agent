@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from importlib import resources
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import patch
 
 import httpx
@@ -24,7 +24,9 @@ from zd_agent.services.app_context import (
     admin_config,
     app_config,
     install_saas_app_context,
+    install_agent_lifecycle,
 )
+from zd_agent.services.agent_lifecycle import AgentLifecycleStore
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
 TEST_ADMIN_PASSWORD = "test-admin-password"
@@ -104,6 +106,8 @@ def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
     assert "/admin/api/integrations/check" in route_paths
     assert "/admin/api/operations/status" in route_paths
     assert "/admin/api/models/discover" in route_paths
+    assert "/admin/api/agent/lifecycle" in route_paths
+    assert "/admin/api/agent/actions" in route_paths
     assert "/admin/static/{name}" in route_paths
 
 
@@ -2002,3 +2006,160 @@ async def test_admin_deploy_status_includes_runtime_metadata_and_pending_restart
     assert body["image"]["tag"] == "sha-test"
     assert body["image"]["commit_sha"] == "abc123"
     assert body["pending_restart"] is True
+
+
+@pytest.mark.asyncio
+async def test_admin_agent_action_requires_header_and_writes_audit(tmp_path) -> None:
+    app = _app(tmp_path)
+    lifecycle = MagicMock()
+    lifecycle.store = AgentLifecycleStore(tmp_path / ".state")
+    lifecycle.status.return_value = {
+        "status": "starting",
+        "generation": 2,
+        "active": 0,
+    }
+    lifecycle.start = AsyncMock(return_value=lifecycle.status.return_value)
+    install_agent_lifecycle(app=app, lifecycle=lifecycle)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+    payload = {
+        "action": "start",
+        "confirmation": "START_AGENT",
+        "reason": "production start",
+        "operation_id": "operation-1234",
+    }
+
+    forbidden = await app[ADMIN_HANDLERS_KEY]["agent_action"](
+        _Request(app=app, cookies=cookie, payload=payload)
+    )
+    response = await app[ADMIN_HANDLERS_KEY]["agent_action"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload=payload,
+            headers={"X-ZD-Agent-Action": "lifecycle"},
+        )
+    )
+
+    assert forbidden.status == 403
+    assert response.status == 200
+    lifecycle.start.assert_awaited_once()
+    audit = admin_config(app).list_audit_logs(action="agent_start_completed")
+    assert audit["items"][0]["reason"] == "production start"
+
+
+@pytest.mark.asyncio
+async def test_admin_stop_returns_accepted_and_audits_request(tmp_path) -> None:
+    app = _app(tmp_path)
+    lifecycle = MagicMock()
+    lifecycle.store = AgentLifecycleStore(tmp_path / ".state")
+    lifecycle.status.return_value = {
+        "status": "stopping",
+        "desired_state": "running",
+        "transition_status": "pending",
+        "generation": 2,
+        "active": 1,
+    }
+    lifecycle.stop = AsyncMock(return_value=(lifecycle.status.return_value, 0))
+    install_agent_lifecycle(app=app, lifecycle=lifecycle)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    response = await app[ADMIN_HANDLERS_KEY]["agent_action"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "action": "stop",
+                "confirmation": "STOP_AGENT",
+                "reason": "operator requested shutdown",
+                "operation_id": "operation-stop-1234",
+            },
+            headers={"X-ZD-Agent-Action": "lifecycle"},
+        )
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 202
+    assert body["accepted"] is True
+    assert body["operation_id"] == "operation-stop-1234"
+    lifecycle.stop.assert_awaited_once()
+    audit = admin_config(app).list_audit_logs(action="agent_stop_requested")
+    assert audit["items"][0]["reason"] == "operator requested shutdown"
+
+
+@pytest.mark.asyncio
+async def test_admin_noop_stop_returns_completed_once(tmp_path) -> None:
+    app = _app(tmp_path)
+    lifecycle = MagicMock()
+    lifecycle.store = AgentLifecycleStore(tmp_path / ".state")
+    lifecycle.store.write(
+        {
+            "desired_state": "stopped",
+            "dispatch_enabled": False,
+            "dispatch_generation": 1,
+            "generation": 1,
+            "accept_after": 0,
+        }
+    )
+    completed = {
+        "status": "stopped",
+        "desired_state": "stopped",
+        "transition_status": "completed",
+        "generation": 1,
+        "active": 0,
+    }
+
+    async def _stop(**kwargs):
+        state = lifecycle.store.read()
+        state.update(
+            {
+                "last_operation_id": kwargs["operation_id"],
+                "last_operation_action": "stop",
+            }
+        )
+        lifecycle.store.write(state)
+        return completed, 0
+
+    lifecycle.stop = AsyncMock(side_effect=_stop)
+    lifecycle.status.return_value = completed
+    install_agent_lifecycle(app=app, lifecycle=lifecycle)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+    request = _Request(
+        app=app,
+        cookies=cookie,
+        payload={
+            "action": "stop",
+            "confirmation": "STOP_AGENT",
+            "reason": "confirm already stopped",
+            "operation_id": "operation-noop-stop-1",
+        },
+        headers={"X-ZD-Agent-Action": "lifecycle"},
+    )
+
+    first = await app[ADMIN_HANDLERS_KEY]["agent_action"](request)
+    second = await app[ADMIN_HANDLERS_KEY]["agent_action"](request)
+
+    assert first.status == 200
+    assert json.loads(first.text)["accepted"] is False
+    assert second.status == 200
+    assert json.loads(second.text)["idempotent"] is True
+    lifecycle.stop.assert_awaited_once()
+    audit = admin_config(app).list_audit_logs(action="agent_stop_completed")
+    assert audit["summary"]["filtered"] == 1

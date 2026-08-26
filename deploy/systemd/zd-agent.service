@@ -1,5 +1,5 @@
 [Unit]
-Description=zd-agent (Dify SaaS Zendesk Agent)
+Description=zd-agent control plane (manages optional Dify SaaS Agent Worker)
 After=docker.service network-online.target
 Requires=docker.service
 
@@ -26,12 +26,11 @@ ExecStart=/usr/bin/docker run --rm --name zd-agent \
     --log-driver=journald \
     zd-agent:latest
 
-ExecStop=/usr/bin/docker stop -t 35 zd-agent
+ExecStop=/usr/bin/docker stop -t 50 zd-agent
 
-# 给应用 30s grace（saas_app._on_shutdown 等 in-flight session 收尾）+
-# 5s buffer 让 docker 体面退出。原本 10s 太短，aiohttp 没跑完
-# on_shutdown → on_cleanup 就被 SIGKILL，造成 RuntimeError: Event loop is closed。
-TimeoutStopSec=40
+# Worker cleanup 30s，control-plane supervisor 最多等待 40s；Docker 再留
+# 10s，systemd 最外层再留 5s，避免各层同一时刻触发 SIGKILL。
+TimeoutStopSec=55
 
 [Install]
 WantedBy=multi-user.target

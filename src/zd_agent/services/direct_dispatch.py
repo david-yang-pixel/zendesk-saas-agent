@@ -48,6 +48,14 @@ async def handle_direct_dispatch_source(
     source = msg.get("source", "unknown")
     if source not in DIRECT_DISPATCH_SOURCES:
         return DirectDispatchResult(handled=False)
+    accepting_dispatches = getattr(manager, "accepting_dispatches", None)
+    if callable(accepting_dispatches) and not accepting_dispatches():
+        logger.warning(
+            "trigger_dispatch_blocked_by_lifecycle",
+            ticket_id=ticket_id,
+            source=source,
+        )
+        return DirectDispatchResult(handled=True, action="agent_offline")
 
     now = now or datetime.now(timezone.utc)
     hint = msg.get("hint") or ""

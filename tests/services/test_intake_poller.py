@@ -155,3 +155,35 @@ async def test_scan_paginates_all_active_ticket_results() -> None:
         "search_tickets",
         {"query": "status<solved tags:saas", "page": 2, "per_page": 100},
     )
+
+
+@pytest.mark.asyncio
+async def test_online_watermark_primes_old_ticket_without_backfill(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ZD_AGENT_ACCEPT_EVENTS_AFTER", "1787702400")
+    call = AsyncMock(
+        return_value={
+            "success": True,
+            "data": {
+                "results": [
+                    {"id": 4049, "updated_at": "2026-08-25T23:59:59Z"},
+                    {"id": 4051, "updated_at": "2026-08-26T00:00:01Z"},
+                ]
+            },
+        }
+    )
+    queue = AsyncMock()
+    queue.put.return_value = True
+    cache: dict[int, str] = {}
+
+    dispatched = await scan_once(
+        trigger_queue=queue,
+        query="status<solved tags:saas",
+        ticket_update_cache=cache,
+        call_fn=call,
+    )
+
+    assert dispatched == 1
+    assert cache[4049] == "2026-08-25T23:59:59Z"
+    assert queue.put.await_args.args[0]["ticket_id"] == 4051

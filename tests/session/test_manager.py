@@ -5,7 +5,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from zd_agent.session.agent_session import SessionStatus
-from zd_agent.session.manager import SessionManager
+from zd_agent.session.manager import SessionDispatchDisabled, SessionManager
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_gate_prevents_session_creation() -> None:
+    cfg = SimpleNamespace(agent=SimpleNamespace(max_concurrent_sessions=1))
+    with patch("zd_agent.session.manager.get_config", return_value=cfg):
+        manager = SessionManager(max_concurrent=1)
+        manager.configure_dispatch_gate(enabled=False, generation=1)
+
+        with pytest.raises(SessionDispatchDisabled):
+            await manager.dispatch(4051)
+
+    assert manager.active_count == 0
 
 
 @pytest.mark.asyncio

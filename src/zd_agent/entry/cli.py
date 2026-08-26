@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from functools import wraps
 from typing import Optional, ParamSpec, TypeVar
@@ -202,30 +203,56 @@ def serve(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="只分析不发送回复"),
 ) -> None:
-    """启动 SaaS Webhook 服务（接收 Zendesk webhook，自动处理工单）"""
-    from zd_agent.services.app_bootstrap import create_configured_session_manager
-    from zd_agent.services.saas_app import run_saas_app
+    """启动常驻控制面，并按持久状态管理独立 Agent Worker。"""
+    from zd_agent.services.control_plane_app import run_control_plane_app
 
     cfg = get_config()
     # Typer supplies ``OptionInfo`` when this command function is called
     # directly from Python. Only the literal boolean True enables the
     # server-wide no-write boundary.
     force_dry_run = dry_run is True
-    manager = create_configured_session_manager(
-        cfg,
-        force_dry_run=force_dry_run,
-    )
-    console.print("[bold green]Starting zd-agent SaaS service...[/bold green]")
+    if force_dry_run:
+        os.environ["ZD_AGENT_FORCE_DRY_RUN"] = "1"
+    console.print("[bold green]Starting zd-agent control plane...[/bold green]")
     console.print(
         f"  Webhook host: {cfg.webhook.listen_host}:{cfg.webhook.listen_port}"
     )
     console.print(f"  Zendesk path: {cfg.webhook.zendesk_path}")
     if force_dry_run:
         console.print(
-            "  [yellow]Dry Run 模式：所有 webhook 仅分析并保存草稿，外部写入已禁用[/yellow]"
+            "  [yellow]Dry Run 模式：Worker 仅分析并保存草稿，外部写入已禁用[/yellow]"
         )
+    run_control_plane_app(cfg)
 
-    run_saas_app(manager)
+
+@app.command(hidden=True)
+@_runtime_command
+def worker() -> None:
+    """Run the HTTP-free Agent worker owned by the control plane."""
+    from pathlib import Path
+
+    from zd_agent.services.agent_lifecycle import (
+        AgentLifecycleStore,
+        FORCE_DRY_RUN_ENV,
+    )
+    from zd_agent.services.agent_worker import run_agent_worker
+    from zd_agent.services.app_bootstrap import create_configured_session_manager
+
+    cfg = get_config()
+    manager = create_configured_session_manager(
+        cfg,
+        force_dry_run=os.environ.get(FORCE_DRY_RUN_ENV, "0") == "1",
+    )
+    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
+    lifecycle = AgentLifecycleStore(state_dir).read()
+    manager.configure_dispatch_gate(
+        enabled=bool(
+            lifecycle["desired_state"] == "running"
+            and lifecycle.get("dispatch_enabled")
+        ),
+        generation=int(lifecycle.get("dispatch_generation") or 0),
+    )
+    asyncio.run(run_agent_worker(manager))
 
 
 @app.command()

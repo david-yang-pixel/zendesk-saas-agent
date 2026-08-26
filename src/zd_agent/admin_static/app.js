@@ -42,6 +42,7 @@ const SIDEBAR_FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled])
 let sidebarReturnFocus = null;
 let drawerReturnFocus = null;
 let modalReturnFocus = null;
+let lifecyclePollTimer = null;
 
 const SUBTITLES = {
   "总览": "实时掌握每一张工单、每一个 Agent 槽位与每一次发送",
@@ -2821,10 +2822,12 @@ async function applyChanges(changes) {
     showModal("保存成功", `
       <p>配置已保存。</p>
       <p><strong>Audit ID</strong> ${escapeHtml(result.audit_id || "-")}</p>
+      ${result.worker_reload_started ? "<p>Agent Worker 正在安全重载，新配置将在替换进程启动后生效。</p>" : ""}
       ${result.restart_required ? "<p class=\"warn-text\">本次变更包含需重启生效的配置。</p>" : ""}
     `, [
       { label: "关闭", className: "secondary", onClick: closeModal }
     ]);
+    if (result.worker_reload_started) scheduleLifecyclePoll();
   } catch (err) {
     error.textContent = err.message || "保存失败";
   }
@@ -2862,10 +2865,12 @@ async function applyConfigPayload(changes, reason, errorNode) {
     showModal("保存成功", `
       <p>配置已保存。</p>
       <p><strong>Audit ID</strong> ${escapeHtml(result.audit_id || "-")}</p>
+      ${result.worker_reload_started ? "<p>Agent Worker 正在安全重载，新配置将在替换进程启动后生效。</p>" : ""}
       ${result.restart_required ? "<p class=\"warn-text\">本次变更包含需重启生效的配置。</p>" : ""}
     `, [
       { label: "关闭", className: "secondary", onClick: closeModal }
     ]);
+    if (result.worker_reload_started) scheduleLifecyclePoll();
   } catch (err) {
     if (errorNode) {
       errorNode.textContent = err.message || "保存失败";
@@ -2900,10 +2905,12 @@ function renderDiff(diff, restartRequired) {
 
 async function renderDeployStatus() {
   const deploy = await loadDeployStatus();
+  const agent = deploy.agent || { status: "unknown" };
   setContent(`
     ${renderModuleGuide("部署状态")}
+    ${renderAgentLifecycleCard(agent)}
     <div class="metric-grid">
-      ${metricCard("Agent 服务", deploy.agent?.status || "unknown", "当前进程", deploy.agent?.status === "running" ? "success-text" : "warn-text")}
+      ${metricCard("Agent Worker", agentStatusLabel(agent.status), agent.process_running ? `PID ${agent.pid || "-"}` : "当前没有 Agent 进程", agent.status === "running" ? "success-text" : "warn-text")}
       ${metricCard("镜像标签", deploy.image?.tag || "latest", deploy.image?.name || "zd-agent")}
       ${metricCard("提交", shortSha(deploy.image?.commit_sha) || "--", "当前部署版本")}
       ${metricCard("待重启", deploy.pending_restart ? "有" : "无", deploy.pending_restart ? "存在需重启配置" : "配置已生效", deploy.pending_restart ? "warn-text" : "success-text")}
@@ -2923,6 +2930,139 @@ async function renderDeployStatus() {
     </section>
     ${renderForm("部署状态", fieldsFor("部署状态"))}
   `);
+}
+
+function agentStatusLabel(status) {
+  return ({
+    running: "运行中",
+    stopped: "已关闭",
+    starting: "正在开启",
+    stopping: "正在安全关闭",
+    restarting: "正在重启",
+    failed: "启动失败"
+  })[status] || "未知";
+}
+
+function renderAgentLifecycleCard(agent) {
+  const status = agent.status || "unknown";
+  const busy = ["stopping", "restarting"].includes(status);
+  const active = Number(agent.active || 0);
+  const desiredRunning = agent.desired_state === "running";
+  const canStart = agent.desired_state === "stopped";
+  const canStop = desiredRunning && status !== "stopping";
+  const canRestart = desiredRunning && active === 0 && !["stopping", "restarting"].includes(status);
+  const details = status === "stopped"
+    ? "控制面仍保持在线；Zendesk 事件会在验签后丢弃，不会进入处理队列。"
+    : status === "stopping"
+      ? "已禁止创建新会话；正在等待现有处理和发送副作用安全完成，然后彻底退出 Worker。"
+    : active
+      ? `当前还有 ${active} 个会话运行；关闭会等待它们安全结束。`
+      : "Worker 独立运行；关闭后服务器中不会保留 Agent 处理进程。";
+  return `
+    <section class="card lifecycle-card ${status === "stopped" ? "is-stopped" : ""}">
+      <div class="lifecycle-copy">
+        <span class="section-kicker">AGENT LIFECYCLE</span>
+        <div class="lifecycle-title-row">
+          <h2>Agent 运行控制</h2>
+          <span class="chip ${status === "running" ? "enabled" : status === "failed" ? "danger-chip" : ""}">${escapeHtml(agentStatusLabel(status))}</span>
+        </div>
+        <p>${escapeHtml(details)}</p>
+        <div class="lifecycle-meta">
+          <span>代际 <strong>${escapeHtml(agent.generation ?? 0)}</strong></span>
+          <span>活跃会话 <strong>${active}</strong></span>
+          <span>停机丢弃 <strong>${escapeHtml(agent.dropped_events ?? 0)}</strong></span>
+          <span>积压策略 <strong>不补跑</strong></span>
+        </div>
+      </div>
+      <div class="lifecycle-actions">
+        <button class="btn primary" ${canStart && !busy ? "" : "disabled"} onclick="openAgentAction('start')">开启 Agent</button>
+        <button class="btn secondary" ${canRestart && !busy ? "" : "disabled"} onclick="openAgentAction('restart')">重启 Agent</button>
+        <button class="btn danger" ${canStop ? "" : "disabled"} onclick="openAgentAction('stop')">关闭 Agent</button>
+      </div>
+    </section>
+  `;
+}
+
+function openAgentAction(action) {
+  const config = {
+    start: {
+      title: "开启 Agent",
+      warning: "将创建新的 Agent Worker 进程。开启时刻以前的队列、停机消息和轮询结果不会补跑。",
+      button: "确认开启"
+    },
+    restart: {
+      title: "重启 Agent",
+      warning: "只重启 Agent Worker，控制面保持在线。已有活跃会话或待确认副作用时会拒绝操作。",
+      button: "确认重启"
+    },
+    stop: {
+      title: "关闭 Agent",
+      warning: "Agent Worker 将彻底退出。控制面继续在线，但停机期间收到的工单事件会被永久丢弃，重新开启后不会补跑。",
+      button: "确认关闭"
+    }
+  }[action];
+  showModal(config.title, `
+    <div class="lifecycle-warning">${escapeHtml(config.warning)}</div>
+    <label class="field-stack" for="lifecycle-reason">
+      <span>操作原因</span>
+      <textarea id="lifecycle-reason" rows="3" maxlength="500" placeholder="请填写本次操作原因"></textarea>
+    </label>
+    <div id="lifecycle-action-error" class="form-message danger-text" role="alert"></div>
+  `, [
+    { label: "取消", className: "secondary", onClick: closeModal },
+    { label: config.button, className: action === "stop" ? "danger" : "primary", onClick: () => submitAgentAction(action) }
+  ]);
+  document.getElementById("lifecycle-reason")?.focus();
+}
+
+async function submitAgentAction(action) {
+  const reason = document.getElementById("lifecycle-reason")?.value?.trim() || "";
+  const errorNode = document.getElementById("lifecycle-action-error");
+  if (reason.length < 3) {
+    errorNode.textContent = "请填写至少 3 个字符的操作原因";
+    return;
+  }
+  const confirmation = {
+    start: "START_AGENT",
+    stop: "STOP_AGENT",
+    restart: "RESTART_AGENT"
+  }[action];
+  const operationId = globalThis.crypto?.randomUUID?.() || `op-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await api("/admin/api/agent/actions", {
+      method: "POST",
+      headers: { "X-ZD-Agent-Action": "lifecycle" },
+      body: JSON.stringify({ action, confirmation, reason, operation_id: operationId })
+    });
+    closeModal();
+    await renderDeployStatus();
+    scheduleLifecyclePoll();
+  } catch (err) {
+    const message = err.message === "active_sessions"
+      ? "仍有工单正在处理，完成前不能关闭或重启"
+      : err.message === "unsafe_outbox"
+        ? "仍有发送或所有权副作用待确认，为避免重复回复，当前拒绝关闭或重启"
+        : err.message === "lifecycle_operation_in_progress"
+          ? "另一个 Agent 生命周期操作仍在进行，请等待当前操作完成"
+        : err.message || "操作失败";
+    errorNode.textContent = message;
+  }
+}
+
+function scheduleLifecyclePoll() {
+  if (lifecyclePollTimer) clearTimeout(lifecyclePollTimer);
+  lifecyclePollTimer = setTimeout(async () => {
+    try {
+      const result = await api("/admin/api/agent/lifecycle");
+      const status = result.agent?.status || "unknown";
+      if (state.activeMenu === "部署状态") await renderDeployStatus();
+      if (["starting", "stopping", "restarting"].includes(status)) {
+        scheduleLifecyclePoll();
+      }
+    } catch (_err) {
+      scheduleLifecyclePoll();
+    }
+  }, 1000);
 }
 
 function authMethodCard(label, enabled, description) {

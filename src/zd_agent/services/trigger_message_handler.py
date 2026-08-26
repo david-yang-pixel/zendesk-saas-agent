@@ -496,6 +496,11 @@ async def handle_trigger_message(
             cfg=cfg,
         )
         if direct_dispatch.handled:
+            if direct_dispatch.action == "agent_offline":
+                raise TriggerDeferredError(
+                    "agent_draining",
+                    delay_seconds=5.0,
+                )
             return TriggerMessageResult(
                 True,
                 "direct_dispatch",

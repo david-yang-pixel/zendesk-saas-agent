@@ -38,6 +38,10 @@ from zd_agent.services.trigger_state_machine import (
     apply_waiting_poller_timeouts,
 )
 from zd_agent.services.ticket_tags import AGENT_ASKED_TAG
+from zd_agent.services.event_watermark import (
+    is_after_online_watermark,
+    timestamp_unix,
+)
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 logger = get_logger(module="services.waiting_poller")
@@ -146,21 +150,51 @@ async def _process_one(
     if cfg.waiting_poller.poll_new_messages and msgs:
         latest_cid = msgs[-1].get("id")
         if latest_cid and latest_cid != rec.last_customer_comment_id:
-            logger.info(
-                "waiting_poller_new_customer_msg_fallback",
-                ticket_id=ticket_id,
-                from_cid=rec.last_customer_comment_id,
-                to_cid=latest_cid,
-                note="webhook 漏了，poller 兜底",
-            )
-            await trigger_queue.put(
-                {
-                    "source": "poller_new_msg",
-                    "ticket_id": ticket_id,
-                    "_queue_key": f"poller_new_msg:{ticket_id}:{latest_cid}",
-                }
-            )
-            return
+            if not is_after_online_watermark(msgs[-1].get("created_at")):
+                observed_at = timestamp_unix(msgs[-1].get("created_at"))
+
+                def _discard_offline_cursor(current: TicketState | None) -> TicketState:
+                    if current is None:
+                        raise RuntimeError("waiting poller state disappeared")
+                    current.last_customer_comment_id = str(latest_cid)
+                    if observed_at is not None:
+                        current.last_comment_ts = datetime.fromtimestamp(
+                            observed_at,
+                            tz=timezone.utc,
+                        )
+                    current.last_verdict = "offline_customer_message_discarded"
+                    return current
+
+                commit = state.update_if_revision(
+                    ticket_id,
+                    expected_revision=rec.state_revision,
+                    expected_state=rec.state,
+                    mutate=_discard_offline_cursor,
+                )
+                logger.info(
+                    "waiting_poller_offline_message_discarded",
+                    ticket_id=ticket_id,
+                    latest_cid=latest_cid,
+                )
+                if commit is None:
+                    return
+                rec = commit.after
+            else:
+                logger.info(
+                    "waiting_poller_new_customer_msg_fallback",
+                    ticket_id=ticket_id,
+                    from_cid=rec.last_customer_comment_id,
+                    to_cid=latest_cid,
+                    note="webhook 漏了，poller 兜底",
+                )
+                await trigger_queue.put(
+                    {
+                        "source": "poller_new_msg",
+                        "ticket_id": ticket_id,
+                        "_queue_key": f"poller_new_msg:{ticket_id}:{latest_cid}",
+                    }
+                )
+                return
 
     # Step 4: no new message — apply bounded customer-wait timeouts.
     transition = apply_waiting_poller_timeouts(

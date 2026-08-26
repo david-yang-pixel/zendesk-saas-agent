@@ -28,6 +28,7 @@ from zd_agent.log import get_logger
 from zd_agent.mention.detector import configured_mention_triggers, is_any_mention
 from zd_agent.mention.tracker import MentionTracker
 from zd_agent.services.mention_comments import fetch_recent_ticket_comments
+from zd_agent.services.event_watermark import is_after_online_watermark
 
 logger = get_logger(module="services.mention_poller")
 
@@ -125,6 +126,8 @@ async def scan_once(
             if not comment_id:
                 continue
             if tracker.is_processed(comment_id):
+                continue
+            if not is_after_online_watermark(comment.get("created_at")):
                 continue
             matched_trigger = is_any_mention(comment, triggers)
             if not matched_trigger:

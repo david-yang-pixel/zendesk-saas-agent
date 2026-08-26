@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import ipaddress
 import os
 import re
 import time
+import uuid
 from dataclasses import asdict, is_dataclass
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -30,14 +32,19 @@ from zd_agent.services.app_context import (
     BACKGROUND_TASK_NAMES,
     admin_auth,
     admin_config,
+    agent_lifecycle,
     app_config,
     install_admin_context,
     session_manager,
     trigger_queue,
 )
+from zd_agent.services.agent_lifecycle import AgentLifecycleConflict
 
 SESSION_COOKIE = "zd_admin_session"
 ADMIN_HANDLERS_KEY = web.AppKey("zd_agent.admin_handlers", dict)
+ADMIN_LIFECYCLE_ACTION_LOCK_KEY = web.AppKey(
+    "zd_agent.admin_lifecycle_action_lock", asyncio.Lock
+)
 ADMIN_STATIC_FILES = {
     "app.js": "application/javascript",
     "dify-logo-on-blue.svg": "image/svg+xml",
@@ -1951,6 +1958,32 @@ async def handle_admin_config_apply(request: web.Request) -> web.Response:
         )
     except ValueError as exc:
         return _json_error(str(exc), status=400)
+    lifecycle = agent_lifecycle(request.app)
+    worker_changes = [
+        item
+        for item in result.get("diff", [])
+        if not item.get("restart_required")
+        and not str(item.get("path") or "").startswith("admin_auth.")
+    ]
+    if (
+        worker_changes
+        and lifecycle is not None
+        and lifecycle.status().get("desired_state") == "running"
+    ):
+        try:
+            status = await lifecycle.restart(
+                operation_id=f"config-{uuid.uuid4()}",
+                actor=username or "system",
+                reason="apply runtime configuration",
+                ip=_remote_ip(request),
+            )
+            result["worker_reload_started"] = True
+            result["agent"] = status
+        except AgentLifecycleConflict as exc:
+            # Persisted configuration remains valid. Surface that the Worker
+            # still needs a lifecycle restart instead of claiming hot reload.
+            result["worker_reload_started"] = False
+            result["worker_reload_error"] = exc.reason
     return web.json_response(result)
 
 
@@ -2047,10 +2080,23 @@ async def handle_admin_operations_status(request: web.Request) -> web.Response:
 
     from zd_agent.services.saas_routes import _outbox_health, _task_status
 
-    background_tasks = {
-        BACKGROUND_TASK_NAMES[key]: _task_status(request.app.get(key))
-        for key in BACKGROUND_TASK_KEYS
-    }
+    lifecycle = agent_lifecycle(request.app)
+    if lifecycle is None:
+        background_tasks = {
+            BACKGROUND_TASK_NAMES[key]: _task_status(request.app.get(key))
+            for key in BACKGROUND_TASK_KEYS
+        }
+        ready = all(value == "running" for value in background_tasks.values())
+    else:
+        lifecycle_status = lifecycle.status()
+        background_tasks = {"agent_worker": lifecycle_status["status"]}
+        ready = bool(
+            lifecycle_status["status"] == "running"
+            or (
+                lifecycle_status["status"] == "stopped"
+                and lifecycle_status.get("desired_state") == "stopped"
+            )
+        )
     queue_path = getattr(queue, "path", None)
     state_dir = (
         Path(queue_path).parent
@@ -2061,7 +2107,7 @@ async def handle_admin_operations_status(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "ready": all(value == "running" for value in background_tasks.values()),
+            "ready": ready,
             "active": int(overview.get("active", len(active_sessions)) or 0),
             "max_concurrent": int(
                 overview.get(
@@ -2190,10 +2236,12 @@ async def handle_admin_deploy_status(request: web.Request) -> web.Response:
     effective = admin_config(request.app).effective_config(cfg)["values"]
     google_secret = effective.get("admin_auth.google_client_secret") or {}
     feishu_secret = effective.get("admin_auth.feishu_app_secret") or {}
+    lifecycle = agent_lifecycle(request.app)
+    agent_status = lifecycle.status() if lifecycle is not None else {"status": "running"}
     return web.json_response(
         {
             "ok": True,
-            "agent": {"status": "running"},
+            "agent": agent_status,
             "image": {
                 "name": os.environ.get("ZD_AGENT_IMAGE", "zd-agent"),
                 "tag": (
@@ -2239,6 +2287,151 @@ async def handle_admin_deploy_status(request: web.Request) -> web.Response:
     )
 
 
+async def handle_admin_agent_lifecycle(request: web.Request) -> web.Response:
+    _username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    lifecycle = agent_lifecycle(request.app)
+    if lifecycle is None:
+        return _json_error("lifecycle_unavailable", status=503)
+    return web.json_response({"ok": True, "agent": lifecycle.status()})
+
+
+async def handle_admin_agent_action(request: web.Request) -> web.Response:
+    username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    if request.headers.get("X-ZD-Agent-Action") != "lifecycle":
+        return _json_error("lifecycle_action_header_required", status=403)
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json_error("bad_request", status=400)
+    action = str(payload.get("action") or "").strip().lower()
+    confirmations = {
+        "start": "START_AGENT",
+        "stop": "STOP_AGENT",
+        "restart": "RESTART_AGENT",
+    }
+    if action not in confirmations:
+        return _json_error("unsupported_lifecycle_action", status=400)
+    if str(payload.get("confirmation") or "") != confirmations[action]:
+        return _json_error("lifecycle_confirmation_mismatch", status=400)
+    reason = str(payload.get("reason") or "").strip()
+    if len(reason) < 3 or len(reason) > 500:
+        return _json_error("lifecycle_reason_required", status=400)
+    operation_id = str(payload.get("operation_id") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{8,128}", operation_id):
+        return _json_error("invalid_operation_id", status=400)
+    lifecycle = agent_lifecycle(request.app)
+    if lifecycle is None:
+        return _json_error("lifecycle_unavailable", status=503)
+    ensure_audit = getattr(lifecycle, "ensure_terminal_audit_delivered", None)
+    if callable(ensure_audit):
+        try:
+            ensure_audit()
+        except AgentLifecycleConflict as exc:
+            return web.json_response(
+                {"ok": False, "error": exc.reason, "blockers": exc.blockers},
+                status=409,
+            )
+
+    lock = request.app[ADMIN_LIFECYCLE_ACTION_LOCK_KEY]
+    async with lock:
+        persisted = lifecycle.store.read()
+        if (
+            persisted.get("last_operation_id") == operation_id
+            and persisted.get("last_operation_action") == action
+        ):
+            return web.json_response(
+                {"ok": True, "idempotent": True, "agent": lifecycle.status()}
+            )
+        try:
+            discarded = 0
+            if action == "start":
+                status = await lifecycle.start(
+                    operation_id=operation_id,
+                    actor=username or "",
+                    reason=reason,
+                    ip=_remote_ip(request),
+                )
+            elif action == "stop":
+                status, discarded = await lifecycle.stop(
+                    operation_id=operation_id,
+                    actor=username or "",
+                    reason=reason,
+                    ip=_remote_ip(request),
+                )
+            else:
+                status = await lifecycle.restart(
+                    operation_id=operation_id,
+                    actor=username or "",
+                    reason=reason,
+                    ip=_remote_ip(request),
+                )
+        except AgentLifecycleConflict as exc:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": exc.reason,
+                    "active_sessions": exc.active_sessions,
+                    "blockers": exc.blockers,
+                },
+                status=409,
+            )
+        except Exception as exc:  # noqa: BLE001 - redact process details.
+            admin_config(request.app).audit_event(
+                actor=username or "",
+                ip=_remote_ip(request),
+                action=f"agent_{action}_failed",
+                reason=reason,
+            )
+            return _json_error(f"lifecycle_action_failed:{type(exc).__name__}", status=500)
+
+        pending = status.get("transition_status") == "pending"
+        admin_config(request.app).audit_event(
+            actor=username or "",
+            ip=_remote_ip(request),
+            action=f"agent_{action}_{'requested' if pending else 'completed'}",
+            reason=reason,
+            diff=[
+                {
+                    "path": "agent.lifecycle",
+                    "label": "Agent 生命周期",
+                    "group": "部署状态",
+                    "old": "",
+                    "new": {
+                        "operation_id": operation_id,
+                        "status": status.get("status"),
+                        "generation": status.get("generation"),
+                        "discarded": discarded,
+                    },
+                    "secret": False,
+                    "restart_required": False,
+                }
+            ],
+        )
+        if not pending:
+            persisted = lifecycle.store.read()
+            if (
+                persisted.get("last_operation_id") == operation_id
+                and persisted.get("last_operation_action") == action
+                and persisted.get("transition_status") == "completed"
+            ):
+                persisted["transition_audit_status"] = "completed"
+                lifecycle.store.write(persisted)
+        return web.json_response(
+            {
+                "ok": True,
+                "accepted": pending,
+                "operation_id": operation_id,
+                "agent": status,
+                "discarded": discarded,
+            },
+            status=202 if pending else 200,
+        )
+
+
 def register_admin_routes(
     *,
     app: web.Application,
@@ -2276,8 +2469,11 @@ def register_admin_routes(
         "operations_status": handle_admin_operations_status,
         "model_discovery": handle_admin_model_discovery,
         "deploy_status": handle_admin_deploy_status,
+        "agent_lifecycle": handle_admin_agent_lifecycle,
+        "agent_action": handle_admin_agent_action,
     }
     app[ADMIN_HANDLERS_KEY] = handlers
+    app[ADMIN_LIFECYCLE_ACTION_LOCK_KEY] = asyncio.Lock()
 
     app.router.add_get("/admin", handle_admin_index)
     app.router.add_get("/admin/", handle_admin_index)
@@ -2296,3 +2492,5 @@ def register_admin_routes(
     app.router.add_get("/admin/api/operations/status", handle_admin_operations_status)
     app.router.add_post("/admin/api/models/discover", handle_admin_model_discovery)
     app.router.add_get("/admin/api/deploy/status", handle_admin_deploy_status)
+    app.router.add_get("/admin/api/agent/lifecycle", handle_admin_agent_lifecycle)
+    app.router.add_post("/admin/api/agent/actions", handle_admin_agent_action)

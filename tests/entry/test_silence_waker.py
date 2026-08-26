@@ -97,6 +97,28 @@ async def test_scan_once_skips_unexpired(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_does_not_wake_window_that_expired_offline(
+    tmp_path,
+    monkeypatch,
+):
+    boundary = _now()
+    monkeypatch.setenv("ZD_AGENT_ACCEPT_EVENTS_AFTER", str(boundary.timestamp()))
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    queue: asyncio.Queue = asyncio.Queue()
+    state.set(
+        "1",
+        TicketState(
+            state="in_silence_window",
+            first_seen=boundary - timedelta(minutes=10),
+            silence_window_end=boundary - timedelta(seconds=1),
+        ),
+    )
+
+    assert await scan_once(state=state, trigger_queue=queue) == 0
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_scan_once_ignores_other_states(tmp_path):
     state = TicketStateTracker(tmp_path / "tickets.json")
     queue: asyncio.Queue = asyncio.Queue()

@@ -283,6 +283,18 @@ class DurableTriggerStore:
             ).fetchone()
             return int(row["count"] if row else 0)
 
+    def discard_backlog(self, reason: str) -> int:
+        """Discard all not-yet-owned triggers while retaining an audit row."""
+        now = self._now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE trigger_events SET status = 'discarded', "
+                "last_error = ?, claim_token = '', lease_until = 0, updated_at = ? "
+                "WHERE status IN ('pending','processing','dead_letter')",
+                (str(reason)[:500], now),
+            )
+            return max(0, int(cursor.rowcount))
+
     def dead_letters(self, limit: int) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(

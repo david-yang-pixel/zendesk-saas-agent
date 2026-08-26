@@ -3,15 +3,53 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
+from zd_agent.services.atomic_write import atomic_write_text
+from zd_agent.services.event_watermark import (
+    accept_after_unix,
+    is_after_online_watermark,
+)
 
 logger = get_logger(module="services.intake_poller")
 
 ZendeskCallFn = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 _MAX_SEARCH_PAGES = 10
+_REVISION_CACHE_FILE = "intake_revisions.json"
+
+
+def _load_revision_cache(path: Path) -> dict[int, str]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, OSError) as error:
+        logger.warning(
+            "intake_revision_cache_read_failed",
+            error_type=type(error).__name__,
+        )
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    result: dict[int, str] = {}
+    for key, revision in value.items():
+        try:
+            result[int(key)] = str(revision)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
+def _save_revision_cache(path: Path, cache: dict[int, str]) -> None:
+    atomic_write_text(
+        path,
+        json.dumps({str(key): value for key, value in cache.items()}),
+    )
+    path.chmod(0o600)
 
 
 async def _search_all_active_tickets(
@@ -65,6 +103,10 @@ async def scan_once(
         revision = str(ticket.get("updated_at") or "unknown").strip() or "unknown"
         if ticket_update_cache.get(ticket_id) == revision:
             continue
+        if not is_after_online_watermark(ticket.get("updated_at")):
+            # Prime the cache without creating work for the offline interval.
+            ticket_update_cache[ticket_id] = revision
+            continue
         try:
             inserted = await trigger_queue.put(
                 {
@@ -97,12 +139,38 @@ async def run_intake_poller(
     poll_interval_seconds: int,
 ) -> None:
     """Continuously reconcile active-ticket search results into the queue."""
-    ticket_update_cache: dict[int, str] = {}
+    queue_path = Path(getattr(trigger_queue, "path", Path("trigger_queue.sqlite3")))
+    cache_path = queue_path.parent / _REVISION_CACHE_FILE
+    ticket_update_cache = _load_revision_cache(cache_path)
     logger.info(
         "intake_backfill_started",
         query=query,
         interval_s=poll_interval_seconds,
     )
+    try:
+        results = await _search_all_active_tickets(
+            query=query,
+            call_fn=call_zendesk_tool,
+        )
+        for ticket in results:
+            try:
+                ticket_id = int(ticket.get("id"))
+            except (TypeError, ValueError):
+                continue
+            updated_at = ticket.get("updated_at")
+            revision = str(updated_at or "unknown").strip() or "unknown"
+            # Baseline only revisions that provably predate this online epoch.
+            # Newer revisions must flow through scan_once and be enqueued.
+            boundary = accept_after_unix()
+            if boundary <= 0 or not is_after_online_watermark(updated_at):
+                ticket_update_cache[ticket_id] = revision
+        _save_revision_cache(cache_path, ticket_update_cache)
+        logger.info("intake_backfill_baseline_primed", tickets=len(ticket_update_cache))
+    except Exception as error:  # noqa: BLE001 - next cycle remains available.
+        logger.warning(
+            "intake_backfill_baseline_failed",
+            error_type=type(error).__name__,
+        )
     while True:
         try:
             inserted = await scan_once(
@@ -112,6 +180,7 @@ async def run_intake_poller(
             )
             if inserted:
                 logger.info("intake_backfill_cycle_done", enqueued=inserted)
+            _save_revision_cache(cache_path, ticket_update_cache)
         except Exception as error:  # noqa: BLE001 - keep the critical task alive.
             logger.exception(
                 "intake_backfill_cycle_failed",

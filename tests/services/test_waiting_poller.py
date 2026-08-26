@@ -8,6 +8,7 @@ import pytest
 
 from zd_agent.config import AppConfig, ZendeskConfig
 from zd_agent.services.waiting_poller import AGENT_ASKED_TAG, scan_once
+from zd_agent.services.agent_lifecycle import ACCEPT_AFTER_ENV
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
 
@@ -308,6 +309,41 @@ async def test_expired_wait_stops_without_notification_or_handoff(
     assert record.last_verdict == reason
     assert record.escalated_at is None
     assert record.ownership_effect_reference == ""
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_offline_customer_message_advances_cursor_and_still_expires_wait(
+    state, queue, monkeypatch
+) -> None:
+    monkeypatch.setenv(ACCEPT_AFTER_ENV, str(_now().timestamp()))
+    state.set(
+        1,
+        TicketState(
+            state="awaiting_customer",
+            first_seen=_now() - timedelta(hours=25),
+            last_agent_finish_ts=_now() - timedelta(hours=25),
+            last_customer_comment_id="old",
+        ),
+    )
+
+    await _scan(
+        state,
+        queue,
+        messages=[
+            {
+                "id": "offline-new",
+                "body": "sent while agent was stopped",
+                "created_at": (_now() - timedelta(minutes=5)).isoformat(),
+            }
+        ],
+        ticket=_ticket(),
+    )
+
+    record = state.get(1)
+    assert record.last_customer_comment_id == "offline-new"
+    assert record.state == "out_of_scope"
+    assert record.last_verdict == "customer_response_timeout"
     assert queue.empty()
 
 

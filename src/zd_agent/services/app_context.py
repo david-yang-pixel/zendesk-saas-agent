@@ -13,6 +13,7 @@ WEBHOOK_DEDUP_KEY = web.AppKey("zd_agent.webhook_dedup", object)
 SESSION_MANAGER_KEY = web.AppKey("zd_agent.session_manager", object)
 ADMIN_AUTH_KEY = web.AppKey("zd_agent.admin_auth", object)
 ADMIN_CONFIG_KEY = web.AppKey("zd_agent.admin_config", object)
+AGENT_LIFECYCLE_KEY = web.AppKey("zd_agent.agent_lifecycle", object)
 
 SILENCE_TASK_KEY = web.AppKey("zd_agent.silence_task", object)
 WAITING_POLLER_TASK_KEY = web.AppKey("zd_agent.waiting_poller_task", object)
@@ -74,6 +75,10 @@ def install_admin_context(
     app[ADMIN_CONFIG_KEY] = config_store
 
 
+def install_agent_lifecycle(*, app: web.Application, lifecycle: Any) -> None:
+    app[AGENT_LIFECYCLE_KEY] = lifecycle
+
+
 def _get(app: web.Application, key: web.AppKey[Any]) -> Any:
     if key in app:
         return app[key]
@@ -106,3 +111,7 @@ def admin_auth(app: web.Application) -> Any:
 
 def admin_config(app: web.Application) -> Any:
     return _get(app, ADMIN_CONFIG_KEY)
+
+
+def agent_lifecycle(app: web.Application) -> Any | None:
+    return app.get(AGENT_LIFECYCLE_KEY)
