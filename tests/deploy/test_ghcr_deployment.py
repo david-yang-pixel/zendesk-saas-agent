@@ -71,7 +71,8 @@ def test_github_action_runs_quality_checks_for_main_pull_requests() -> None:
     assert "branches: [main]" in text
     assert workflow["jobs"]["build"]["if"] == "github.ref == 'refs/heads/main'"
     assert workflow["jobs"]["deploy"]["if"] == (
-        "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+        "(github.event_name == 'push' || github.event_name == 'workflow_dispatch') && "
+        "github.ref == 'refs/heads/main'"
     )
 
 
@@ -125,7 +126,8 @@ def test_github_action_deploys_main_image_over_ssh_after_build() -> None:
     assert deploy_job["needs"] == "build"
     assert (
         deploy_job["if"]
-        == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+        == "(github.event_name == 'push' || github.event_name == 'workflow_dispatch') && "
+        "github.ref == 'refs/heads/main'"
     )
     assert deploy_job["permissions"] == {"contents": "read", "packages": "read"}
     assert deploy_job["environment"] == "production"
