@@ -121,6 +121,27 @@ def test_admin_static_assets_are_split_from_html_shell() -> None:
     assert ".nav-group-label" in shell_asset[0]
 
 
+def test_model_picker_flips_inside_viewport_and_owns_its_scroll_area() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+    css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("shell.css")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "function positionModelPicker()" in app_js
+    assert "picker.dataset.placement" in app_js
+    assert 'document.addEventListener("scroll", positionModelPicker, true)' in app_js
+    assert "position: fixed" in css[css.index(".model-picker-popover {") :]
+    model_list = css[css.index(".model-picker-list {") :]
+    assert "overflow-y: auto" in model_list
+    assert "overscroll-behavior: contain" in model_list
+
+
 def test_admin_table_layout_keeps_rows_as_vertical_items() -> None:
     css = (
         resources.files("zd_agent.admin_static")

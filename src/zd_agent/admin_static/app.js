@@ -1588,6 +1588,47 @@ function pendingModelApiKey(provider) {
   return document.querySelector(`input[data-path="${provider}.api_key"]`)?.value.trim() || "";
 }
 
+function positionModelPicker() {
+  const picker = document.getElementById("model-picker");
+  const trigger = document.getElementById("model-picker-trigger");
+  if (!picker || !trigger || picker.hidden) return;
+
+  const viewportPadding = 16;
+  const triggerGap = 8;
+  const minimumComfortableHeight = 320;
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+  const triggerRect = trigger.getBoundingClientRect();
+  const spaceBelow = Math.max(
+    0,
+    viewportHeight - triggerRect.bottom - triggerGap - viewportPadding
+  );
+  const spaceAbove = Math.max(
+    0,
+    triggerRect.top - triggerGap - viewportPadding
+  );
+  const openAbove = spaceBelow < minimumComfortableHeight && spaceAbove > spaceBelow;
+  const availableHeight = openAbove ? spaceAbove : spaceBelow;
+  const width = Math.min(
+    Math.max(triggerRect.width, 320),
+    Math.max(0, viewportWidth - viewportPadding * 2)
+  );
+  const left = Math.min(
+    Math.max(viewportPadding, triggerRect.left),
+    Math.max(viewportPadding, viewportWidth - width - viewportPadding)
+  );
+
+  picker.style.left = `${Math.round(left)}px`;
+  picker.style.right = "auto";
+  picker.style.width = `${Math.round(width)}px`;
+  picker.style.maxHeight = `${Math.floor(Math.min(520, availableHeight))}px`;
+  picker.style.top = openAbove ? "auto" : `${Math.round(triggerRect.bottom + triggerGap)}px`;
+  picker.style.bottom = openAbove
+    ? `${Math.round(viewportHeight - triggerRect.top + triggerGap)}px`
+    : "auto";
+  picker.dataset.placement = openAbove ? "top" : "bottom";
+}
+
 function toggleModelPicker() {
   const picker = document.getElementById("model-picker");
   const trigger = document.getElementById("model-picker-trigger");
@@ -1596,6 +1637,7 @@ function toggleModelPicker() {
   picker.hidden = !willOpen;
   trigger.setAttribute("aria-expanded", willOpen ? "true" : "false");
   if (!willOpen) return;
+  positionModelPicker();
   if (!modelCatalogMatchesCurrentInputs() || !state.modelDiscovery.models.length) {
     void discoverModels();
   } else {
@@ -1642,6 +1684,7 @@ async function discoverModels(force = false) {
   }
   renderModelPickerOptions();
   syncSelectedModelCapabilities();
+  positionModelPicker();
   document.getElementById("model-picker-search")?.focus();
 }
 
@@ -3138,6 +3181,13 @@ function syncOverlayAccessibility() {
 }
 
 function handleOverlayKeydown(event) {
+  const modelPicker = document.getElementById("model-picker");
+  if (event.key === "Escape" && modelPicker && !modelPicker.hidden) {
+    event.preventDefault();
+    toggleModelPicker();
+    document.getElementById("model-picker-trigger")?.focus();
+    return;
+  }
   const modal = document.getElementById("modal-backdrop");
   const drawer = document.getElementById("detail-drawer");
   const overlay = !modal.classList.contains("hidden")
@@ -3411,6 +3461,10 @@ document.addEventListener("keydown", event => {
   handleOverlayKeydown(event);
 });
 
-window.addEventListener("resize", syncSidebarAccessibility);
+window.addEventListener("resize", () => {
+  syncSidebarAccessibility();
+  positionModelPicker();
+});
+document.addEventListener("scroll", positionModelPicker, true);
 
 init();

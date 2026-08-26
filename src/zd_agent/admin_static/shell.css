@@ -1454,12 +1454,16 @@ body {
   border: 1px solid #d6dce5;
   border-radius: 11px;
   box-shadow: 0 18px 48px rgba(30, 39, 51, 0.16);
-  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   overflow: hidden;
-  position: absolute;
-  right: 0;
-  top: 46px;
-  z-index: 30;
+  position: fixed;
+  z-index: 60;
+}
+
+.model-picker-popover[hidden] {
+  display: none;
 }
 
 .model-picker-heading,
@@ -1499,6 +1503,11 @@ body {
 }
 
 #model-picker-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   padding: 12px 14px 14px;
 }
 
@@ -1522,8 +1531,12 @@ body {
 .model-picker-list {
   border: 1px solid var(--line);
   border-radius: 8px;
-  max-height: 280px;
-  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .model-option {
