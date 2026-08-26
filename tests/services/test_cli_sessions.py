@@ -4,16 +4,22 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_run_ticket_session_creates_and_runs_agent():
+async def test_run_ticket_session_uses_the_configured_deadline_manager():
     from zd_agent.services.cli_sessions import run_ticket_session
 
     fake_session = MagicMock()
-    agent_session_cls = MagicMock(return_value=fake_session)
-    run_agent = AsyncMock()
+    manager = MagicMock()
+    manager.dispatch = AsyncMock(return_value=fake_session)
+    manager.wait_all = AsyncMock()
+    cfg = MagicMock()
+    configured_manager = MagicMock(return_value=manager)
 
     with (
-        patch("zd_agent.services.cli_sessions.AgentSession", agent_session_cls),
-        patch("zd_agent.services.cli_sessions.run_agent", run_agent),
+        patch("zd_agent.services.cli_sessions.get_config", return_value=cfg),
+        patch(
+            "zd_agent.services.cli_sessions.create_configured_session_manager",
+            configured_manager,
+        ),
     ):
         session = await run_ticket_session(
             ticket_id=123,
@@ -21,12 +27,13 @@ async def test_run_ticket_session_creates_and_runs_agent():
             dry_run=True,
         )
 
-    agent_session_cls.assert_called_once_with(
-        ticket_id=123,
+    configured_manager.assert_called_once_with(cfg)
+    manager.dispatch.assert_awaited_once_with(
+        123,
         hint="extra",
         dry_run=True,
     )
-    run_agent.assert_awaited_once_with(fake_session)
+    manager.wait_all.assert_awaited_once_with()
     assert session is fake_session
 
 

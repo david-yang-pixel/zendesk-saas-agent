@@ -300,8 +300,6 @@ async def test_investigator_calls_tools_itself_and_returns_typed_evidence() -> N
         registry=registry,
         session=session,
         clock=FakeClock(),
-        max_rounds=4,
-        max_calls=6,
     )
 
     result = await investigator.investigate(_context())
@@ -382,6 +380,53 @@ async def test_investigator_executes_independent_tool_batch_in_parallel() -> Non
 
     assert started == ["official_docs_search", "github_get_issue"]
     assert result.proposal.answer_status is AnswerStatus.SUPPORTED
+
+
+async def test_investigator_limits_only_in_flight_tool_concurrency() -> None:
+    active = 0
+    maximum_active = 0
+
+    class MeasuredTool(FakeTool):
+        async def execute(
+            self,
+            args: dict[str, Any],
+            session: AgentSession,
+        ) -> ToolResult:
+            nonlocal active, maximum_active
+            _ = session
+            self.calls.append(args)
+            active += 1
+            maximum_active = max(maximum_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return ToolResult(success=True, output=self.output)
+
+    registry = ToolRegistry()
+    docs = MeasuredTool("official_docs_search", output="Published behavior")
+    registry.register(docs)
+    calls = [
+        ToolCallRequest(
+            id=f"call-{index}",
+            name="official_docs_search",
+            arguments=json.dumps({"query": str(index)}),
+        )
+        for index in range(4)
+    ]
+    provider = FakeProvider(
+        [_response(calls=calls), _response(content=_final_assessment("call-3"))]
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    result = await investigator.investigate(_context())
+
+    assert result.proposal.answer_status is AnswerStatus.SUPPORTED
+    assert len(docs.calls) == 4
+    assert maximum_active == 3
 
 
 async def test_investigator_preserves_responses_reasoning_across_tool_rounds() -> None:
@@ -1055,141 +1100,58 @@ async def test_investigator_fails_closed_on_unexposed_or_write_tool_call() -> No
     assert public_reply.calls == []
 
 
-async def test_investigator_converges_when_tool_call_batch_exceeds_budget() -> None:
+async def test_investigator_can_continue_beyond_legacy_round_and_call_limits() -> None:
     registry = ToolRegistry()
-    docs = FakeTool("official_docs_search")
+    docs = FakeTool("official_docs_search", output="Published behavior")
     registry.register(docs)
-    provider = FakeProvider(
-        [
-            _response(
-                calls=[
-                    ToolCallRequest(
-                        id="call-1",
-                        name="official_docs_search",
-                        arguments="{}",
+    tool_rounds = [
+        _response(
+            calls=[
+                ToolCallRequest(
+                    id=f"call-{round_index}-{call_index}",
+                    name="official_docs_search",
+                    arguments=json.dumps(
+                        {"query": f"evidence {round_index}-{call_index}"}
                     ),
-                    ToolCallRequest(
-                        id="call-2",
-                        name="official_docs_search",
-                        arguments="{}",
-                    ),
-                ],
-            ),
-            _response(
-                content=json.dumps(
-                    {
-                        "answer_status": "insufficient",
-                        "proposed_claims": [],
-                        "proposed_customer_fields": [],
-                        "action_proposal": None,
-                    },
-                ),
-            ),
-        ],
-    )
-    investigator = BoundedToolCaseInvestigator(
-        provider=provider,
-        registry=registry,
-        session=AgentSession(ticket_id=4001),
-        clock=FakeClock(),
-        max_calls=1,
-    )
-
-    result = await investigator.investigate(_context())
-
-    assert docs.calls == []
-    assert result.proposal.answer_status is AnswerStatus.INSUFFICIENT
-    assert len(provider.calls) == 2
-    terminal_messages, terminal_tools = provider.calls[-1]
-    assert terminal_tools is None
-    assert "tool-call budget is exhausted" in terminal_messages[-1]["content"]
-    assert [message["role"] for message in terminal_messages[-3:]] == [
-        "tool",
-        "tool",
-        "user",
+                )
+                for call_index in range(1, 4)
+            ],
+        )
+        for round_index in range(1, 22)
     ]
-
-
-async def test_investigator_converges_when_round_budget_is_exhausted() -> None:
-    registry = ToolRegistry()
-    docs = FakeTool("official_docs_search")
-    registry.register(docs)
     provider = FakeProvider(
-        [
-            _response(
-                calls=[
-                    ToolCallRequest(
-                        id="call-docs",
-                        name="official_docs_search",
-                        arguments="{}",
-                    ),
-                ],
-            ),
-            _response(
-                content=json.dumps(
-                    {
-                        "answer_status": "insufficient",
-                        "proposed_claims": [],
-                        "proposed_customer_fields": [],
-                        "action_proposal": None,
-                    },
-                ),
-            ),
-        ],
+        [*tool_rounds, _response(content=_final_assessment("call-21-3"))]
     )
     investigator = BoundedToolCaseInvestigator(
         provider=provider,
         registry=registry,
         session=AgentSession(ticket_id=4001),
         clock=FakeClock(),
-        max_rounds=1,
     )
 
     result = await investigator.investigate(_context())
 
-    assert docs.calls == [{}]
-    assert result.proposal.answer_status is AnswerStatus.INSUFFICIENT
-    terminal_messages, terminal_tools = provider.calls[-1]
-    assert terminal_tools is None
-    assert "round budget is exhausted" in terminal_messages[-1]["content"]
+    assert result.proposal.answer_status is AnswerStatus.SUPPORTED
+    assert len(docs.calls) == 63
+    assert len(provider.calls) == 22
 
 
-async def test_investigator_enforces_cumulative_model_token_budget() -> None:
+async def test_investigator_does_not_enforce_a_cumulative_model_token_budget() -> None:
     registry = ToolRegistry()
     provider = FakeProvider([_response(content=_final_assessment("ev-identity"))])
     session = AgentSession(ticket_id=4001)
+    session.token_usage.prompt_tokens = 2_000_000
     investigator = BoundedToolCaseInvestigator(
         provider=provider,
         registry=registry,
         session=session,
         clock=FakeClock(),
-        max_tokens=14,
     )
 
-    with pytest.raises(InvestigationProtocolError, match="token budget"):
-        await investigator.investigate(_context())
+    result = await investigator.investigate(_context())
 
-    assert session.token_usage.total_tokens == 15
-
-
-async def test_investigator_does_not_call_model_after_vision_exhausts_budget() -> None:
-    registry = ToolRegistry()
-    provider = FakeProvider([_response(content=_final_assessment("ev-identity"))])
-    session = AgentSession(ticket_id=4001)
-    session.token_usage.prompt_tokens = 10
-    session.token_usage.completion_tokens = 5
-    investigator = BoundedToolCaseInvestigator(
-        provider=provider,
-        registry=registry,
-        session=session,
-        clock=FakeClock(),
-        max_tokens=15,
-    )
-
-    with pytest.raises(InvestigationProtocolError, match="token budget"):
-        await investigator.investigate(_context())
-
-    assert provider.calls == []
+    assert result.proposal.answer_status is AnswerStatus.SUPPORTED
+    assert len(provider.calls) == 1
 
 
 async def test_investigator_compacts_large_active_context_before_next_round() -> None:

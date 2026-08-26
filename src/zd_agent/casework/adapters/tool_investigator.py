@@ -23,7 +23,6 @@ from zd_agent.casework.adapters.model import (
 from zd_agent.casework.adapters.investigation_skill import load_investigation_skill
 from zd_agent.casework.adapters.token_budget import (
     CaseworkTokenBudget,
-    CaseworkTokenBudgetExceeded,
 )
 from zd_agent.casework.domain.enums import (
     EvidenceAuthority,
@@ -93,6 +92,7 @@ _INSPECTOR_PRIMARY_ARGUMENTS = frozenset(
         "id",
     },
 )
+_MAX_CONCURRENT_TOOL_CALLS = 3
 
 
 class InvestigationProtocolError(RuntimeError):
@@ -650,15 +650,8 @@ def _tool_result_body(call_id: str, result: ToolResult) -> str:
     return f"EVIDENCE_ID={call_id}\nRESULT_STATUS={status}\n\n{body}"
 
 
-def _budget_exhausted_tool_result_body(call_id: str) -> str:
-    return (
-        f"EVIDENCE_ID={call_id}\nRESULT_STATUS=failure\n\n"
-        "NOT_EXECUTED: tool-call budget exhausted"
-    )
-
-
 class BoundedToolCaseInvestigator:
-    """Provider-neutral, read-only, budgeted investigation owned entirely by v2."""
+    """Provider-neutral read-only investigation bounded by the session deadline."""
 
     def __init__(
         self,
@@ -667,27 +660,18 @@ class BoundedToolCaseInvestigator:
         registry: ToolRegistry,
         session: AgentSession,
         clock: Clock,
-        max_rounds: int = 10,
-        max_calls: int = 16,
-        max_tokens: int = 1_500_000,
         context_window_tokens: int = 272_000,
         context_compaction_soft_ratio: float = 0.70,
         context_compaction_hard_ratio: float = 0.88,
         context_checkpoint_max_tokens: int = 12_000,
         context_retain_recent_rounds: int = 2,
-        context_max_compactions: int = 3,
     ) -> None:
-        if max_rounds < 1 or max_calls < 1 or max_tokens < 1:
-            raise ValueError("investigation budgets must be positive")
         self._provider = provider
         self._registry = registry
         self._session = session
         self._clock = clock
-        self._max_rounds = max_rounds
-        self._max_calls = max_calls
         self._token_budget = CaseworkTokenBudget(
             session=session,
-            maximum=max_tokens,
         )
         self._context_policy = ActiveContextPolicy(
             context_window_tokens=context_window_tokens,
@@ -696,11 +680,10 @@ class BoundedToolCaseInvestigator:
         )
         if context_checkpoint_max_tokens < 1:
             raise ValueError("checkpoint token budget must be positive")
-        if context_retain_recent_rounds < 0 or context_max_compactions < 0:
-            raise ValueError("context compaction limits cannot be negative")
+        if context_retain_recent_rounds < 0:
+            raise ValueError("context compaction retention cannot be negative")
         self._context_checkpoint_max_tokens = context_checkpoint_max_tokens
         self._context_retain_recent_rounds = context_retain_recent_rounds
-        self._context_max_compactions = context_max_compactions
         self._tools = approved_read_tools(registry)
         self._tools_by_name = {tool.name: tool for tool in self._tools}
         self._approved_names = frozenset(tool.name for tool in self._tools)
@@ -797,22 +780,32 @@ class BoundedToolCaseInvestigator:
         round_index: int,
     ) -> list[tuple[EvidenceItem, str]]:
         """Execute one model batch concurrently only when every read is safe."""
-        coroutines = [
-            self._execute_call(
-                call,
-                args=validated_args[call.id],
-                round_index=round_index,
-            )
-            for call in calls
-        ]
         if len(calls) > 1 and all(
             self._tools_by_name[call.name].concurrency_safe for call in calls
         ):
-            return list(await asyncio.gather(*coroutines))
+            semaphore = asyncio.Semaphore(_MAX_CONCURRENT_TOOL_CALLS)
+
+            async def execute_limited(
+                call: ToolCallRequest,
+            ) -> tuple[EvidenceItem, str]:
+                async with semaphore:
+                    return await self._execute_call(
+                        call,
+                        args=validated_args[call.id],
+                        round_index=round_index,
+                    )
+
+            return list(await asyncio.gather(*(execute_limited(call) for call in calls)))
 
         results: list[tuple[EvidenceItem, str]] = []
-        for coroutine in coroutines:
-            results.append(await coroutine)
+        for call in calls:
+            results.append(
+                await self._execute_call(
+                    call,
+                    args=validated_args[call.id],
+                    round_index=round_index,
+                )
+            )
         return results
 
     async def _correct_terminal_output(
@@ -841,20 +834,10 @@ class BoundedToolCaseInvestigator:
         return response.content or ""
 
     def _record_tokens(self, response: LLMResponse) -> None:
-        try:
-            self._token_budget.record(response)
-        except CaseworkTokenBudgetExceeded as error:
-            raise InvestigationProtocolError(
-                "investigation model token budget exceeded",
-            ) from error
+        self._token_budget.record(response)
 
     def _ensure_tokens_available(self) -> None:
-        try:
-            self._token_budget.ensure_available()
-        except CaseworkTokenBudgetExceeded as error:
-            raise InvestigationProtocolError(
-                "investigation model token budget exhausted",
-            ) from error
+        self._token_budget.ensure_available()
 
     def _ensure_customer_context_current(self) -> None:
         if self._session.customer_context_dirty:
@@ -885,13 +868,6 @@ class BoundedToolCaseInvestigator:
             if decision is ActiveContextDecision.HARD_LIMIT:
                 raise InvestigationProtocolError(
                     "active context hard limit reached before investigation tools"
-                )
-            return messages
-
-        if self._session.context_compaction_count >= self._context_max_compactions:
-            if decision is ActiveContextDecision.HARD_LIMIT:
-                raise InvestigationProtocolError(
-                    "active context hard limit reached after compaction budget exhausted"
                 )
             return messages
 
@@ -951,47 +927,6 @@ class BoundedToolCaseInvestigator:
         )
         return compacted.messages
 
-    async def _terminal_result(
-        self,
-        *,
-        context: CaseContext,
-        evidence: list[EvidenceItem],
-        messages: list[dict[str, Any]],
-        instruction: str,
-    ) -> InvestigationResult:
-        messages[:] = await self._prepare_active_context(
-            context=context,
-            evidence=evidence,
-            messages=messages,
-            tools=None,
-        )
-        messages.append({"role": "user", "content": instruction})
-        self._ensure_tokens_available()
-        response = await self._provider.chat(messages, tools=None, temperature=0.0)
-        self._record_tokens(response)
-        if response.tool_calls:
-            raise InvestigationProtocolError(
-                "model attempted a tool call after investigation budget exhaustion",
-            )
-        messages.append(_assistant_message(response))
-        content = response.content or ""
-        try:
-            return investigation_result_from_content(
-                context=context,
-                evidence=tuple(evidence),
-                content=content,
-            )
-        except ModelOutputError as error:
-            corrected = await self._correct_terminal_output(
-                messages=messages,
-                error=error,
-            )
-            return investigation_result_from_content(
-                context=context,
-                evidence=tuple(evidence),
-                content=corrected,
-            )
-
     async def investigate(self, context: CaseContext) -> InvestigationResult:
         context_evidence = build_case_context_evidence(context)
         evidence = list(context_evidence)
@@ -1001,8 +936,9 @@ class BoundedToolCaseInvestigator:
         ]
         schemas = _tool_schemas(self._tools)
         used_ids: set[str] = set()
-        used_calls = 0
-        for round_index in range(1, self._max_rounds + 1):
+        round_index = 0
+        while True:
+            round_index += 1
             self._ensure_tokens_available()
             messages = await self._prepare_active_context(
                 context=context,
@@ -1067,30 +1003,6 @@ class BoundedToolCaseInvestigator:
                 context=context,
                 used_ids=used_ids,
             )
-            if used_calls + len(response.tool_calls) > self._max_calls:
-                for call in response.tool_calls:
-                    messages.append(
-                        self._provider.format_tool_result(
-                            call.id,
-                            call.name,
-                            _budget_exhausted_tool_result_body(call.id),
-                        )
-                    )
-                self._session.round_count = max(
-                    self._session.round_count,
-                    round_index,
-                )
-                return await self._terminal_result(
-                    context=context,
-                    evidence=evidence,
-                    messages=messages,
-                    instruction=(
-                        "The investigation tool-call budget is exhausted. Do not "
-                        "call tools. Return only the required terminal JSON using "
-                        "the evidence already collected. Mark unsupported facts "
-                        "unknown or insufficient."
-                    ),
-                )
             call_results = await self._execute_calls(
                 response.tool_calls,
                 validated_args=validated_args,
@@ -1106,14 +1018,3 @@ class BoundedToolCaseInvestigator:
                     self._provider.format_tool_result(call.id, call.name, body)
                 )
                 used_ids.add(call.id)
-                used_calls += 1
-        return await self._terminal_result(
-            context=context,
-            evidence=evidence,
-            messages=messages,
-            instruction=(
-                "The investigation round budget is exhausted. Do not call tools. "
-                "Return only the required terminal JSON using the evidence already "
-                "collected. Mark unsupported facts unknown or insufficient."
-            ),
-        )

@@ -90,9 +90,9 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert cfg.llm.reasoning_effort == "high"
     assert cfg.llm.temperature == 0.3
     assert cfg.agent.max_concurrent_sessions == 3
-    assert cfg.casework.max_investigation_rounds == 18
-    assert cfg.casework.max_investigation_calls == 32
-    assert cfg.casework.max_investigation_tokens == 800000
+    assert not hasattr(cfg.casework, "max_investigation_rounds")
+    assert not hasattr(cfg.casework, "max_investigation_calls")
+    assert not hasattr(cfg.casework, "max_investigation_tokens")
     assert cfg.public_reply.enabled is True
     assert cfg.public_reply.silence_window_seconds == 45
     assert cfg.waiting_poller.customer_wait_timeout_hours == 36
@@ -100,7 +100,7 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert cfg.zendesk.poll_interval_seconds == 180
     assert cfg.zendesk.mention_trigger == "@saas-agent"
     assert cfg.zendesk.api_token == ""
-    assert manifest["casework"]["max_investigation_tokens"] == 800000
+    assert "session_timeout_seconds" not in manifest["agent"]
 
 
 def test_update_agent_config_rejects_invalid_public_reply_atomically() -> None:

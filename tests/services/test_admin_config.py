@@ -26,14 +26,15 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["openai.api_key"]["secret"] is True
     assert by_path["openai.api_key"]["editable"] is True
     assert by_path["retry.max_attempts"]["group"] == "模型与运行"
-    assert by_path["casework.max_investigation_rounds"]["input"] == "number"
-    assert by_path["casework.max_investigation_calls"]["input"] == "number"
-    assert by_path["casework.max_investigation_tokens"]["input"] == "number"
+    assert by_path["agent.session_timeout_seconds"]["input"] == "number"
+    assert by_path["agent.session_timeout_seconds"]["label"] == "单工单最长运行秒数"
+    assert "casework.max_investigation_rounds" not in by_path
+    assert "casework.max_investigation_calls" not in by_path
+    assert "casework.max_investigation_tokens" not in by_path
     assert by_path["casework.context_compaction_soft_ratio"]["input"] == "number"
     assert by_path["casework.context_compaction_hard_ratio"]["input"] == "number"
     assert by_path["casework.context_checkpoint_max_tokens"]["input"] == "number"
     assert by_path["casework.context_retain_recent_rounds"]["input"] == "number"
-    assert by_path["casework.context_max_compactions"]["input"] == "number"
     assert not any(path.startswith("agent.guardrails.") for path in by_path)
     assert "retry.llm.max_attempts" not in by_path
     assert "retry.zendesk.max_attempts" not in by_path
@@ -120,7 +121,7 @@ def test_apply_rejects_remote_relay_without_https_callback(tmp_path) -> None:
             {
                 "changes": {
                     "public_reply.freshness_callback_url": "",
-                    "casework.max_investigation_rounds": 19,
+                    "casework.context_checkpoint_max_tokens": 19_000,
                 },
                 "reason": "remove callback",
             },
@@ -129,7 +130,7 @@ def test_apply_rejects_remote_relay_without_https_callback(tmp_path) -> None:
         )
 
     assert cfg.public_reply.freshness_callback_url.startswith("https://")
-    assert cfg.casework.max_investigation_rounds != 19
+    assert cfg.casework.context_checkpoint_max_tokens != 19_000
     assert not store.overrides_path.exists()
     assert not store.secrets_path.exists()
     assert not store.audit_path.exists()
@@ -176,6 +177,62 @@ def test_apply_write_failure_leaves_runtime_and_files_unchanged(
     assert not store.overrides_path.exists()
     assert not store.secrets_path.exists()
     assert not store.audit_path.exists()
+
+
+def test_apply_validates_the_complete_candidate_before_persisting(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+
+    with pytest.raises(ValueError, match="上下文压缩软阈值比例必须小于硬限制比例"):
+        store.apply(
+            cfg,
+            {
+                "changes": {
+                    "casework.context_compaction_soft_ratio": 0.95,
+                    "agent.session_timeout_seconds": 1_440,
+                },
+                "reason": "reject invalid aggregate config",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert cfg.casework.context_compaction_soft_ratio == 0.70
+    assert not store.overrides_path.exists()
+    assert not store.secrets_path.exists()
+    assert not store.audit_path.exists()
+
+
+def test_apply_saved_removes_legacy_budgets_and_keeps_valid_overrides(
+    tmp_path,
+) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+    store.overrides_path.write_text(
+        "agent:\n"
+        "  session_timeout_seconds: 9999\n"
+        "casework:\n"
+        "  max_investigation_calls: 100\n"
+        "  max_investigation_rounds: 40\n"
+        "  max_investigation_tokens: 99999999\n"
+        "  context_checkpoint_max_tokens: 16000\n",
+        encoding="utf-8",
+    )
+
+    store.apply_saved(cfg)
+
+    assert cfg.casework.context_checkpoint_max_tokens == 16_000
+    assert cfg.agent.session_timeout_seconds == 1_440
+    assert not hasattr(cfg.casework, "max_investigation_calls")
+    assert not hasattr(cfg.casework, "max_investigation_rounds")
+    assert not hasattr(cfg.casework, "max_investigation_tokens")
+    saved = store._read_yaml(store.overrides_path)
+    assert saved["agent"]["session_timeout_seconds"] == 1_440
+    assert "max_investigation_calls" not in saved["casework"]
+    assert "max_investigation_rounds" not in saved["casework"]
+    assert "max_investigation_tokens" not in saved["casework"]
+    audit = store.list_audit_logs()["items"]
+    assert audit[0]["action"] == "config_override_migration"
 
 
 def test_apply_rejects_nul_secret_before_persisting(

@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from zd_agent.config import AppConfig, CustomMcpServiceConfig
 from zd_agent.runtime.openai_reasoning import (
@@ -74,22 +74,11 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         restart_required=True,
     ),
     FieldSpec(
-        "casework.max_investigation_rounds",
-        "调查轮次上限",
+        "agent.session_timeout_seconds",
+        "单工单最长运行秒数",
         "模型与运行",
         input="number",
-    ),
-    FieldSpec(
-        "casework.max_investigation_calls",
-        "工具调用上限",
-        "模型与运行",
-        input="number",
-    ),
-    FieldSpec(
-        "casework.max_investigation_tokens",
-        "累计模型 token 上限",
-        "模型与运行",
-        input="number",
+        restart_required=True,
     ),
     FieldSpec(
         "casework.context_compaction_soft_ratio",
@@ -112,12 +101,6 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec(
         "casework.context_retain_recent_rounds",
         "压缩后保留最近工具轮次",
-        "模型与运行",
-        input="number",
-    ),
-    FieldSpec(
-        "casework.context_max_compactions",
-        "单工单最大压缩次数",
         "模型与运行",
         input="number",
     ),
@@ -457,6 +440,15 @@ ADMIN_OVERRIDE_PATH_ALIASES = {
     "waiting_poller.abandoned_hours": ("waiting_poller.customer_wait_timeout_hours"),
 }
 
+REMOVED_ADMIN_OVERRIDE_PATHS = frozenset(
+    {
+        "casework.max_investigation_rounds",
+        "casework.max_investigation_calls",
+        "casework.max_investigation_tokens",
+        "casework.context_max_compactions",
+    }
+)
+
 
 def _fingerprint(value: str) -> str:
     if not value:
@@ -651,6 +643,28 @@ def _canonicalize_admin_overrides(
                 "resolution": resolution,
             },
         )
+    for removed_path in sorted(REMOVED_ADMIN_OVERRIDE_PATHS):
+        if removed_path not in flat:
+            continue
+        flat.pop(removed_path)
+        migrations.append(
+            {
+                "from": removed_path,
+                "to": "(removed)",
+                "resolution": "removed",
+            }
+        )
+    timeout_path = "agent.session_timeout_seconds"
+    timeout_value = flat.get(timeout_path)
+    if isinstance(timeout_value, int | float) and timeout_value > 1_440:
+        flat[timeout_path] = 1_440
+        migrations.append(
+            {
+                "from": timeout_path,
+                "to": timeout_path,
+                "resolution": "clamped_to_1440",
+            }
+        )
     normalized: dict[str, Any] = {}
     for path, value in flat.items():
         _deep_set(normalized, path, value)
@@ -773,25 +787,59 @@ class AdminConfigStore:
             )
             if "llm.reasoning_effort" in normalized:
                 normalized["llm.reasoning_effort"] = main_effort
-
-            if any(path.startswith("public_reply.") for path in normalized):
-                from zd_agent.tools.public_reply_delivery import (
-                    PublicReplyTransportError,
-                    validate_public_reply_transport_config,
-                )
-
-                candidate = cfg.model_copy(deep=True)
-                for path, value in normalized.items():
-                    if path.startswith("public_reply."):
-                        _set_attr(candidate, path, value)
-                try:
-                    validate_public_reply_transport_config(candidate)
-                except PublicReplyTransportError as exc:
-                    raise ValueError(str(exc)) from None
         return normalized
+
+    def _friendly_validation_error(self, error: ValidationError) -> str:
+        raw = str(error)
+        if "context compaction soft ratio must be lower than hard ratio" in raw:
+            return "上下文压缩软阈值比例必须小于硬限制比例"
+        first = error.errors()[0] if error.errors() else {}
+        path = ".".join(str(part) for part in first.get("loc", ()))
+        label = self._specs.get(path).label if path in self._specs else path or "配置"
+        context = first.get("ctx") or {}
+        error_type = str(first.get("type") or "")
+        if error_type in {"less_than_equal", "less_than"}:
+            bound = context.get("le", context.get("lt"))
+            return f"{label}不能大于 {bound}"
+        if error_type in {"greater_than_equal", "greater_than"}:
+            bound = context.get("ge", context.get("gt"))
+            return f"{label}不能小于 {bound}"
+        return f"{label}无效：{first.get('msg') or '请检查输入值'}"
+
+    def _validated_candidate(
+        self,
+        cfg: AppConfig,
+        changes: dict[str, Any],
+        *,
+        validate_transport: bool = True,
+    ) -> AppConfig:
+        payload = cfg.model_dump(mode="python")
+        for path, value in changes.items():
+            if path.startswith(("openai.", "anthropic.", "admin_auth.")):
+                continue
+            _deep_set(payload, path, _jsonable(value))
+        try:
+            candidate = AppConfig.model_validate(payload)
+        except ValidationError as exc:
+            raise ValueError(self._friendly_validation_error(exc)) from None
+
+        if validate_transport and any(
+            path.startswith("public_reply.") for path in changes
+        ):
+            from zd_agent.tools.public_reply_delivery import (
+                PublicReplyTransportError,
+                validate_public_reply_transport_config,
+            )
+
+            try:
+                validate_public_reply_transport_config(candidate)
+            except PublicReplyTransportError as exc:
+                raise ValueError(str(exc)) from None
+        return candidate
 
     def preview(self, cfg: AppConfig, payload: dict[str, Any]) -> dict[str, Any]:
         changes = self._normalized_changes(payload, cfg)
+        self._validated_candidate(cfg, changes)
         diff: list[dict[str, Any]] = []
         restart_required = False
         for path, new_value in changes.items():
@@ -840,6 +888,13 @@ class AdminConfigStore:
             raise ValueError("reason is required")
         preview = self.preview(cfg, payload)
         changes = self._normalized_changes(payload, cfg)
+        runtime_changes = {
+            path: value
+            for path, value in changes.items()
+            if not self._specs[path].restart_required
+            and not path.startswith(("openai.", "anthropic.", "admin_auth."))
+        }
+        runtime_candidate = self._validated_candidate(cfg, runtime_changes)
         overrides = self._read_yaml(self.overrides_path)
         secrets_data = self._read_yaml(self.secrets_path)
 
@@ -889,17 +944,12 @@ class AdminConfigStore:
                 env_name = SECRET_ENV_MAP.get(path)
                 if env_name:
                     os.environ[env_name] = str(value)
-                if not spec.restart_required and not path.startswith(
-                    ("openai.", "anthropic.", "admin_auth.")
-                ):
-                    _set_attr(cfg, path, value)
-            elif not path.startswith("admin_auth.") and not spec.restart_required:
-                _set_attr(cfg, path, value)
+        for root in sorted({path.split(".", 1)[0] for path in runtime_changes}):
+            setattr(cfg, root, getattr(runtime_candidate, root))
         return {**preview, "audit_id": audit["id"]}
 
     def apply_saved(self, cfg: AppConfig) -> None:
-        candidate = cfg.model_copy(deep=True)
-        nonsecret_values: list[tuple[str, Any]] = []
+        nonsecret_values: dict[str, Any] = {}
         reasoning_paths = {
             "llm.model",
             "llm.reasoning_effort",
@@ -921,10 +971,19 @@ class AdminConfigStore:
             spec = self._specs.get(path)
             if spec and not spec.secret and not path.startswith("admin_auth."):
                 coerced = _coerce_value(spec, value)
-                _set_attr(candidate, path, coerced)
-                nonsecret_values.append((path, coerced))
+                nonsecret_values[path] = coerced
 
-        if any(path in reasoning_paths for path, _value in nonsecret_values):
+        candidate = (
+            self._validated_candidate(
+                cfg,
+                nonsecret_values,
+                validate_transport=False,
+            )
+            if nonsecret_values
+            else cfg
+        )
+
+        if any(path in reasoning_paths for path in nonsecret_values):
             validate_reasoning_effort(
                 candidate.llm.model,
                 candidate.llm.reasoning_effort,
@@ -960,8 +1019,8 @@ class AdminConfigStore:
                     for item in migrations
                 ),
             )
-        for path, value in nonsecret_values:
-            _set_attr(cfg, path, value)
+        for root in sorted({path.split(".", 1)[0] for path in nonsecret_values}):
+            setattr(cfg, root, getattr(candidate, root))
 
         for path, value in _flatten(self._read_yaml(self.secrets_path)).items():
             spec = self._specs.get(path)

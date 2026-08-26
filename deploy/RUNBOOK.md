@@ -10,9 +10,8 @@
 
 ### 1. 服务器资源预算
 
-本项目支持两种内存档位。`casework.max_investigation_tokens` 是整次 v2
-调查（含视觉）的质量/成本预算，不是 Python 内存或模型 context 配置，不能用它
-推算容器内存。
+本项目支持两种内存档位。调查轮数、工具调用次数和整单累计模型 token
+不设提前终止上限，不能用这些指标推算容器内存；单工单只受运行时限约束。
 
 **🟢 推荐（4G）**：Baidu Cloud BCC Console → resize 到 **4G**（2C/4G）
 - `config.yaml`: 可将 `agent.max_concurrent_sessions` 从 `2` 逐步提高到 `5`，扩大前先做并发压测
@@ -21,7 +20,7 @@
 
 **🟡 最低（2G，当前服务器档位）** — 默认配置已按此优化：
 - `config.yaml`: `agent.max_concurrent_sessions: 2`
-- `casework.max_investigation_tokens: 1500000` 由统一 token ledger 对视觉和调查模型共同计账；旧 tool-loop compaction 配置已删除
+- `agent.session_timeout_seconds: 1440` 从工单取得执行槽后开始计时，排队时间不计入
 - `zd-agent.service`: `--memory=800m --memory-swap=1500m --cpus=0.8`
 - swap 作为 burst 兜底；2 个并发会话稳定运行
 - **务必确认 swap 已启用**（`free -h` 看 Swap 行应 ≥ 1.5G）
@@ -35,7 +34,7 @@
 | `llm.model` | `gpt-5.5` | 主 Agent 模型 |
 | `llm.enable_vision_input` | `true` | 下载并校验 Zendesk 图片后作为不可信视觉观察输入；OpenAI/Anthropic 均有 provider 适配 |
 | `casework.mode` | `casework` | v2 是唯一决策核心；`canary` 仅允许显式 ticket allowlist，`legacy/shadow` 会被配置校验拒绝 |
-| `casework.max_investigation_tokens` | `1500000` | 视觉与有界调查共用的累计 token 上限 |
+| `agent.session_timeout_seconds` | `1440` | 单工单取得执行槽后的绝对运行时限 |
 | `public_reply.enabled` | `true` | **仅客户写入 kill switch**。`false` 时继续调查和归档草稿，不调用 Browser Relay，不回落旧 Internal Note/handoff；已确认的 typed ownership 仍独立执行 |
 | `public_reply.browser_relay_url` | `https://zendesk.smlershou.top/zendesk-reply-mcp` | SaaS native messaging 客户可见回复走独立 browser relay MCP，不使用 Conversations API |
 | `public_reply.freshness_callback_url` | `https://zendesk.smlershou.top/webhook/relay-pre-send-freshness` | remote relay 在点击 Send 前调用的 HTTPS freshness gate；复用现有 `/webhook/` 反代，应用层仍强制 Bearer 校验 |

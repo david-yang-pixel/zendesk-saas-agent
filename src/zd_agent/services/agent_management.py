@@ -89,9 +89,6 @@ def build_agent_config_manifest(
         },
         "casework": {
             "mode": cfg.casework.mode.value,
-            "max_investigation_rounds": cfg.casework.max_investigation_rounds,
-            "max_investigation_calls": cfg.casework.max_investigation_calls,
-            "max_investigation_tokens": cfg.casework.max_investigation_tokens,
         },
         "features": {
             "auto_public_reply": {
@@ -237,14 +234,6 @@ def update_agent_config(
 
     agent = _as_mapping(update.get("agent"))
     _set_positive_int_if_present(cfg.agent, agent, "max_concurrent_sessions")
-    casework = _as_mapping(update.get("casework"))
-    for attr in (
-        "max_investigation_rounds",
-        "max_investigation_calls",
-        "max_investigation_tokens",
-    ):
-        _set_positive_int_if_present(cfg.casework, casework, attr)
-
     features = _as_mapping(update.get("features"))
     auto_public_reply = _as_mapping(features.get("auto_public_reply"))
     if "enabled" in auto_public_reply:

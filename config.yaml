@@ -1,7 +1,7 @@
 agent:
   max_concurrent_sessions: 3
-  # 只计算拿到执行槽后的 Codex 工单处理时间；排队等待不占这 720 秒。
-  session_timeout_seconds: 720
+  # 只计算拿到执行槽后的工单处理时间；排队等待不占这 1440 秒。
+  session_timeout_seconds: 1440
 llm:
   provider: openai
   model: gpt-5.5
@@ -12,7 +12,7 @@ llm:
   enable_vision_input: true
   temperature: 0.2
   max_tokens: 0
-  # 单次活跃请求上下文容量；累计工单 token 预算仍由 casework 单独控制。
+  # 单次活跃请求上下文容量；整单只受 agent 运行时限约束。
   context_window_tokens: 272000
 resources:
   base_dir: /opt/zd-agent/resources
@@ -61,16 +61,11 @@ public_reply:
 casework:
   # v2 是唯一生产决策路径；canary 模式仅暂缓未列入白名单的工单。
   mode: casework
-  # 代码强制执行的调查预算；不再保留旧 tool-loop/compaction 配置。
-  max_investigation_rounds: 10
-  max_investigation_calls: 16
-  max_investigation_tokens: 1500000
   # 70% 生成结构化检查点；88% 是禁止继续膨胀的硬边界。
   context_compaction_soft_ratio: 0.70
   context_compaction_hard_ratio: 0.88
   context_checkpoint_max_tokens: 12000
   context_retain_recent_rounds: 2
-  context_max_compactions: 3
 sandbox:
   # 只供 CLI 查看/清理 pre-v2 取证文件；v2 不使用 sandbox 执行工具。
   base_dir: /opt/zd-agent/resources/sandbox

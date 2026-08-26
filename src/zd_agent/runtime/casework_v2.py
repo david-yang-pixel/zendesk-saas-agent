@@ -87,7 +87,6 @@ async def execute_casework_v2(
             provider=provider,
             image_loader=ZendeskImageLoader(),
             session=session,
-            max_tokens=cfg.casework.max_investigation_tokens,
         )
         if cfg.llm.enable_vision_input
         else NoVisualAnalyzer()
@@ -107,9 +106,6 @@ async def execute_casework_v2(
         registry=registry,
         session=session,
         clock=clock,
-        max_rounds=cfg.casework.max_investigation_rounds,
-        max_calls=cfg.casework.max_investigation_calls,
-        max_tokens=cfg.casework.max_investigation_tokens,
         context_window_tokens=cfg.llm.context_window_tokens,
         context_compaction_soft_ratio=(
             cfg.casework.context_compaction_soft_ratio
@@ -123,7 +119,6 @@ async def execute_casework_v2(
         context_retain_recent_rounds=(
             cfg.casework.context_retain_recent_rounds
         ),
-        context_max_compactions=cfg.casework.context_max_compactions,
     )
     orchestrator = CaseworkOrchestrator(
         context_builder=context_builder,

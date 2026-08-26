@@ -70,7 +70,7 @@ class SessionManager:
         self._session_timeout_seconds = float(
             session_timeout_seconds
             if session_timeout_seconds is not None
-            else getattr(cfg.agent, "session_timeout_seconds", 720)
+            else getattr(cfg.agent, "session_timeout_seconds", 1_440)
         )
         if self._session_timeout_seconds <= 0:
             raise ValueError("session_timeout_seconds must be positive")

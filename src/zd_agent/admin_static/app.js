@@ -178,13 +178,11 @@ const FIELD_SECTIONS = {
       ]
     },
     {
-      title: "调查预算",
-      description: "并发，以及调查轮次、工具调用和累计模型 token 预算。",
+      title: "运行边界",
+      description: "调查轮次和工具调用不设上限，仅限制单工单运行时长。",
       paths: [
         "agent.max_concurrent_sessions",
-        "casework.max_investigation_rounds",
-        "casework.max_investigation_calls",
-        "casework.max_investigation_tokens"
+        "agent.session_timeout_seconds"
       ]
     },
     {
@@ -194,8 +192,7 @@ const FIELD_SECTIONS = {
         "casework.context_compaction_soft_ratio",
         "casework.context_compaction_hard_ratio",
         "casework.context_checkpoint_max_tokens",
-        "casework.context_retain_recent_rounds",
-        "casework.context_max_compactions"
+        "casework.context_retain_recent_rounds"
       ]
     },
     {

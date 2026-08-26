@@ -21,7 +21,7 @@ from zd_agent.runtime.openai_reasoning import validate_reasoning_effort
 
 class AgentConfig(BaseModel):
     max_concurrent_sessions: int = 5
-    session_timeout_seconds: int = Field(default=720, ge=30, le=3600)
+    session_timeout_seconds: int = Field(default=1_440, ge=30, le=1_440)
 
 
 class LLMConfig(BaseModel):
@@ -334,19 +334,12 @@ def _reject_removed_casework_mode(value: object) -> object:
 
 
 class CaseworkConfig(BaseModel):
-    """v2 decision-core rollout and bounded-investigation controls."""
+    """v2 decision-core rollout and active-context controls."""
 
     model_config = ConfigDict(validate_assignment=True)
 
     mode: ExecutionMode = ExecutionMode.CASEWORK
     canary_ticket_ids: tuple[int, ...] = ()
-    max_investigation_rounds: int = Field(default=10, ge=1, le=20)
-    max_investigation_calls: int = Field(default=16, ge=1, le=40)
-    max_investigation_tokens: int = Field(
-        default=1_500_000,
-        ge=1_000,
-        le=10_000_000,
-    )
     context_compaction_soft_ratio: float = Field(default=0.70, gt=0.0, lt=1.0)
     context_compaction_hard_ratio: float = Field(default=0.88, gt=0.0, le=1.0)
     context_checkpoint_max_tokens: int = Field(
@@ -355,7 +348,6 @@ class CaseworkConfig(BaseModel):
         le=100_000,
     )
     context_retain_recent_rounds: int = Field(default=2, ge=0, le=10)
-    context_max_compactions: int = Field(default=3, ge=0, le=20)
 
     @model_validator(mode="after")
     def _validate_context_compaction_thresholds(self) -> CaseworkConfig:

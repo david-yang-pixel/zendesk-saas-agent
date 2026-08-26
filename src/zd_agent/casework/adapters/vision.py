@@ -116,13 +116,13 @@ class LlmVisualAnalyzer:
         session: AgentSession | None = None,
         max_tokens: int | None = None,
     ) -> None:
-        if (session is None) != (max_tokens is None):
-            raise ValueError("visual token accounting requires session and max_tokens")
+        if session is None and max_tokens is not None:
+            raise ValueError("visual token limit requires a session")
         self._provider = provider
         self._image_loader = image_loader
         self._budget = (
             CaseworkTokenBudget(session=session, maximum=max_tokens)
-            if session is not None and max_tokens is not None
+            if session is not None
             else None
         )
 

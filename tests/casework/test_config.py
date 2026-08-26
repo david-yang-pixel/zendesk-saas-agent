@@ -5,7 +5,7 @@ import yaml
 from pydantic import ValidationError
 
 from zd_agent.casework.domain.enums import ExecutionMode
-from zd_agent.config import AppConfig, CaseworkConfig, load_config
+from zd_agent.config import AgentConfig, AppConfig, CaseworkConfig, load_config
 
 
 def test_casework_defaults_to_v2_production_behavior() -> None:
@@ -13,12 +13,15 @@ def test_casework_defaults_to_v2_production_behavior() -> None:
 
     assert config.casework.mode is ExecutionMode.CASEWORK
     assert config.casework.canary_ticket_ids == ()
+    assert config.agent.session_timeout_seconds == 1_440
+    assert not hasattr(config.casework, "max_investigation_rounds")
+    assert not hasattr(config.casework, "max_investigation_calls")
+    assert not hasattr(config.casework, "max_investigation_tokens")
     assert config.llm.context_window_tokens == 272_000
     assert config.casework.context_compaction_soft_ratio == 0.70
     assert config.casework.context_compaction_hard_ratio == 0.88
     assert config.casework.context_checkpoint_max_tokens == 12_000
     assert config.casework.context_retain_recent_rounds == 2
-    assert config.casework.context_max_compactions == 3
 
 
 def test_context_compaction_thresholds_must_leave_a_hard_limit_margin() -> None:
@@ -30,6 +33,11 @@ def test_context_compaction_thresholds_must_leave_a_hard_limit_margin() -> None:
             context_compaction_soft_ratio=0.90,
             context_compaction_hard_ratio=0.88,
         )
+
+
+def test_single_ticket_timeout_cannot_exceed_the_absolute_limit() -> None:
+    with pytest.raises(ValidationError, match="less than or equal to 1440"):
+        AgentConfig(session_timeout_seconds=1_441)
 
 
 def test_saas_intake_defaults_start_immediately() -> None:
@@ -79,6 +87,10 @@ def test_repository_config_uses_the_v2_casework_path() -> None:
     raw = yaml.safe_load(config_path.read_text())
 
     assert raw["casework"]["mode"] == "casework"
+    assert raw["agent"]["session_timeout_seconds"] == 1_440
+    assert "max_investigation_rounds" not in raw["casework"]
+    assert "max_investigation_calls" not in raw["casework"]
+    assert "max_investigation_tokens" not in raw["casework"]
     assert "shadow_archive_dir" not in raw["casework"]
     assert raw["llm"]["context_window_tokens"] == 272000
     assert raw["casework"]["context_compaction_soft_ratio"] == 0.70

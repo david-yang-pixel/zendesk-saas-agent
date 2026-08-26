@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from zd_agent.config import get_config
-from zd_agent.runtime.runner import run_agent
 from zd_agent.services.app_bootstrap import create_configured_session_manager
 from zd_agent.session.agent_session import AgentSession
 
@@ -17,8 +16,9 @@ async def run_ticket_session(
     dry_run: bool,
 ) -> AgentSession:
     """Create and run a single ticket session for the CLI."""
-    session = AgentSession(ticket_id=ticket_id, hint=hint, dry_run=dry_run)
-    await run_agent(session)
+    manager = create_configured_session_manager(get_config())
+    session = await manager.dispatch(ticket_id, hint=hint, dry_run=dry_run)
+    await manager.wait_all()
     return session
 
 

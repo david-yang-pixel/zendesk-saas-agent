@@ -12,21 +12,27 @@ class CaseworkTokenBudgetExceeded(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class CaseworkTokenBudget:
-    """One run-level model-token ledger shared by vision and investigation."""
+    """One run-level model-token ledger with an optional legacy hard limit."""
 
     session: AgentSession
-    maximum: int
+    maximum: int | None = None
 
     def __post_init__(self) -> None:
-        if self.maximum < 1:
+        if self.maximum is not None and self.maximum < 1:
             raise ValueError("casework token budget must be positive")
 
     def ensure_available(self) -> None:
-        if self.session.token_usage.total_tokens >= self.maximum:
+        if (
+            self.maximum is not None
+            and self.session.token_usage.total_tokens >= self.maximum
+        ):
             raise CaseworkTokenBudgetExceeded("casework model token budget exhausted")
 
     def record(self, response: LLMResponse) -> None:
         self.session.token_usage.prompt_tokens += response.prompt_tokens
         self.session.token_usage.completion_tokens += response.completion_tokens
-        if self.session.token_usage.total_tokens > self.maximum:
+        if (
+            self.maximum is not None
+            and self.session.token_usage.total_tokens > self.maximum
+        ):
             raise CaseworkTokenBudgetExceeded("casework model token budget exceeded")
