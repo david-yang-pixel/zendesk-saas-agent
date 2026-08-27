@@ -101,6 +101,11 @@ def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
     assert "/admin/" in route_paths
     assert "/admin/api/auth/login" in route_paths
     assert "/admin/api/config/schema" in route_paths
+    assert "/admin/api/instructions" in route_paths
+    assert "/admin/api/instructions/preview" in route_paths
+    assert "/admin/api/instructions/apply" in route_paths
+    assert "/admin/api/instructions/reset" in route_paths
+    assert "/admin/api/tickets" in route_paths
     assert "/admin/api/run-records" in route_paths
     assert "/admin/api/audit-logs" in route_paths
     assert "/admin/api/integrations/check" in route_paths
@@ -293,9 +298,14 @@ def test_admin_run_records_use_expandable_run_round_tool_layout() -> None:
     assert "detail: false" in app_js
     assert "ensureRunRecordDetail" in app_js
     assert "detail: true" in app_js
-    assert "await Promise.allSettled" in app_js[
-        app_js.index("async function renderOverview") : app_js.index("function goMenu")
-    ]
+    assert (
+        "await Promise.allSettled"
+        in app_js[
+            app_js.index("async function renderOverview") : app_js.index(
+                "function goMenu"
+            )
+        ]
+    )
 
 
 def test_admin_config_pages_render_prompt_textareas() -> None:
@@ -337,7 +347,7 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert 'field.input === "vision_capability"' in app_js
     assert "syncProviderSecretVisibility" in app_js
     assert "pendingModelApiKey" in app_js
-    assert 'api_key: apiKey' in app_js
+    assert "api_key: apiKey" in app_js
     assert 'field.input === "reasoning_effort"' in app_js
     assert "reasoningEffortsForModel" in app_js
     assert "refreshReasoningEffortOptions" in app_js
@@ -1652,6 +1662,99 @@ async def test_admin_audit_logs_support_filters_and_summary(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_instruction_layers_support_preview_apply_reset_and_audit(
+    tmp_path,
+) -> None:
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    unauthorized = await app[ADMIN_HANDLERS_KEY]["instructions"](_Request(app=app))
+    assert unauthorized.status == 401
+
+    response = await app[ADMIN_HANDLERS_KEY]["instructions"](
+        _Request(app=app, cookies=cookie)
+    )
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert body["revision"] == 0
+    assert body["operator_extra_instructions"] == ""
+    assert "SYSTEM" not in body.get("hidden_reasoning", {})
+    assert body["hidden_reasoning"]["visible"] is False
+    assert "模型隐藏推理不可查看" in body["hidden_reasoning"]["message"]
+    assert body["system_security_core"]
+    assert set(body["scenario_references"]) == {
+        "general",
+        "async_processing",
+        "billing_entitlement",
+        "runtime_failure",
+    }
+
+    preview = await app[ADMIN_HANDLERS_KEY]["instructions_preview"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "changes": {"operator_extra_instructions": "Use concise replies."},
+                "reason": "Preview operator guidance",
+            },
+        )
+    )
+    assert json.loads(preview.text)["changed"] is True
+    assert not (tmp_path / "agent_instructions.json").exists()
+
+    applied = await app[ADMIN_HANDLERS_KEY]["instructions_apply"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "expected_revision": 0,
+                "reason": "Add concise operator guidance",
+                "changes": {"operator_extra_instructions": "Use concise replies."},
+            },
+        )
+    )
+    applied_body = json.loads(applied.text)
+    assert applied.status == 200
+    assert applied_body["revision"] == 1
+    assert applied_body["operator_extra_instructions"] == "Use concise replies."
+    audit_path = tmp_path / ".state" / "admin_audit.jsonl"
+    audit_text = audit_path.read_text()
+    assert "Use concise replies." not in audit_text
+
+    conflict = await app[ADMIN_HANDLERS_KEY]["instructions_apply"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "expected_revision": 0,
+                "reason": "Stale operator guidance",
+                "changes": {"operator_extra_instructions": "stale"},
+            },
+        )
+    )
+    assert conflict.status == 409
+
+    reset = await app[ADMIN_HANDLERS_KEY]["instructions_reset"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={"expected_revision": 1, "reason": "Remove temporary guidance"},
+        )
+    )
+    reset_body = json.loads(reset.text)
+    assert reset.status == 200
+    assert reset_body["operator_extra_instructions"] == ""
+    assert reset_body["revision"] == 2
+    assert not (tmp_path / "agent_instructions.json").exists()
+
+
+@pytest.mark.asyncio
 async def test_admin_integration_check_reports_reachability_and_writes_audit(
     tmp_path,
 ) -> None:
@@ -1751,7 +1854,9 @@ async def test_admin_integration_check_supports_custom_mcp_services(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_admin_operations_status_reports_live_capacity_and_queue(tmp_path) -> None:
+async def test_admin_operations_status_reports_live_capacity_and_queue(
+    tmp_path,
+) -> None:
     class Queue:
         path = tmp_path / ".state" / "trigger_queue.sqlite3"
 

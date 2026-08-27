@@ -13,6 +13,7 @@ WEBHOOK_DEDUP_KEY = web.AppKey("zd_agent.webhook_dedup", object)
 SESSION_MANAGER_KEY = web.AppKey("zd_agent.session_manager", object)
 ADMIN_AUTH_KEY = web.AppKey("zd_agent.admin_auth", object)
 ADMIN_CONFIG_KEY = web.AppKey("zd_agent.admin_config", object)
+INSTRUCTION_STORE_KEY = web.AppKey("zd_agent.instruction_store", object)
 AGENT_LIFECYCLE_KEY = web.AppKey("zd_agent.agent_lifecycle", object)
 
 SILENCE_TASK_KEY = web.AppKey("zd_agent.silence_task", object)
@@ -46,6 +47,7 @@ _LEGACY_KEYS = {
     SESSION_MANAGER_KEY: "session_manager",
     ADMIN_AUTH_KEY: "admin_auth",
     ADMIN_CONFIG_KEY: "admin_config",
+    INSTRUCTION_STORE_KEY: "instruction_store",
     **BACKGROUND_TASK_NAMES,
     MENTION_TRACKER_KEY: "mention_tracker",
 }
@@ -69,10 +71,16 @@ def install_saas_app_context(
 
 
 def install_admin_context(
-    *, app: web.Application, auth_store: Any, config_store: Any
+    *,
+    app: web.Application,
+    auth_store: Any,
+    config_store: Any,
+    instruction_store: Any = None,
 ) -> None:
     app[ADMIN_AUTH_KEY] = auth_store
     app[ADMIN_CONFIG_KEY] = config_store
+    if instruction_store is not None:
+        app[INSTRUCTION_STORE_KEY] = instruction_store
 
 
 def install_agent_lifecycle(*, app: web.Application, lifecycle: Any) -> None:
@@ -111,6 +119,10 @@ def admin_auth(app: web.Application) -> Any:
 
 def admin_config(app: web.Application) -> Any:
     return _get(app, ADMIN_CONFIG_KEY)
+
+
+def instruction_store(app: web.Application) -> Any:
+    return _get(app, INSTRUCTION_STORE_KEY)
 
 
 def agent_lifecycle(app: web.Application) -> Any | None:

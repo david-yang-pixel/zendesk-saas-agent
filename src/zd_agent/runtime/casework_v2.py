@@ -40,6 +40,7 @@ from zd_agent.casework.policies.routing import billing_context_required
 from zd_agent.config import AppConfig
 from zd_agent.runtime.llm.types import LLMProvider
 from zd_agent.session.agent_session import AgentSession, SessionStatus
+from zd_agent.services.instruction_store import InstructionStore
 from zd_agent.tools.base import ToolRegistry
 
 
@@ -107,17 +108,12 @@ async def execute_casework_v2(
         session=session,
         clock=clock,
         context_window_tokens=cfg.llm.context_window_tokens,
-        context_compaction_soft_ratio=(
-            cfg.casework.context_compaction_soft_ratio
-        ),
-        context_compaction_hard_ratio=(
-            cfg.casework.context_compaction_hard_ratio
-        ),
-        context_checkpoint_max_tokens=(
-            cfg.casework.context_checkpoint_max_tokens
-        ),
-        context_retain_recent_rounds=(
-            cfg.casework.context_retain_recent_rounds
+        context_compaction_soft_ratio=(cfg.casework.context_compaction_soft_ratio),
+        context_compaction_hard_ratio=(cfg.casework.context_compaction_hard_ratio),
+        context_checkpoint_max_tokens=(cfg.casework.context_checkpoint_max_tokens),
+        context_retain_recent_rounds=(cfg.casework.context_retain_recent_rounds),
+        instruction_store=InstructionStore(
+            Path(cfg.resources.base_dir) / cfg.resources.state_dir
         ),
     )
     orchestrator = CaseworkOrchestrator(

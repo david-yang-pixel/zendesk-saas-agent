@@ -47,3 +47,39 @@ def test_run_records_treat_deferred_as_a_distinct_non_success_status() -> None:
     assert 'record.status === "deferred"' in summary
     assert "totalRuns - failed - timeout - running - deferred" in summary
     assert "summary.failed || summary.timeout || summary.deferred" in app_js
+
+
+def test_agent_instructions_page_exposes_safe_layers_and_never_hidden_reasoning() -> (
+    None
+):
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+
+    assert 'key: "Agent 指令"' in app_js
+    assert "renderAgentInstructions" in app_js
+    assert '"/admin/api/instructions"' in app_js
+    assert "instruction-effective-preview" in app_js
+    assert "模型隐藏推理不可查看" in app_js
+    assert "handleInstructionDraftInput" in app_js
+    assert 'id="instruction-save-button"' in app_js
+
+
+def test_ticket_center_uses_business_api_and_links_to_filtered_run_logs() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+    ticket_center = app_js[
+        app_js.index("async function renderTicketCenter") : app_js.index(
+            "function renderTicketCenterContent"
+        )
+    ]
+
+    assert "api(`/admin/api/tickets?" in ticket_center
+    assert "run-records" not in ticket_center
+    assert "viewTicketRunLogs" in app_js
+    assert "ticket_id" in app_js

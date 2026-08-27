@@ -8,17 +8,7 @@ from zd_agent.casework.policies.investigation_completion import (
     classify_investigation_scenario,
     required_completion_roles,
 )
-
-
-_SKILL_DIR = Path(__file__).parents[2] / "skills" / "dify-ticket-investigation"
-_REFERENCE_BY_SCENARIO = {
-    InvestigationScenario.ASYNC_PROCESSING: "async-processing.md",
-    InvestigationScenario.BILLING_ENTITLEMENT: "billing-entitlement.md",
-    InvestigationScenario.RETRIEVAL_RUNTIME: "runtime-failure.md",
-    InvestigationScenario.PROVIDER_RUNTIME: "runtime-failure.md",
-    InvestigationScenario.WORKFLOW_RUNTIME: "runtime-failure.md",
-    InvestigationScenario.GENERAL: "general.md",
-}
+from zd_agent.services.instruction_store import InstructionSnapshot, InstructionStore
 
 
 @dataclass(frozen=True)
@@ -29,26 +19,48 @@ class InvestigationSkill:
     required_roles: tuple[str, ...]
 
 
-def _body(path: Path) -> str:
-    text = path.read_text(encoding="utf-8").strip()
-    if not text.startswith("---"):
-        return text
-    _, _, remainder = text.partition("\n---\n")
-    return remainder.strip()
-
-
-def load_investigation_skill(question: str) -> InvestigationSkill:
+def _build_investigation_skill(
+    question: str,
+    *,
+    snapshot: InstructionSnapshot,
+) -> InvestigationSkill:
     scenario = classify_investigation_scenario(question)
-    core = _body(_SKILL_DIR / "SKILL.md")
-    reference = _body(
-        _SKILL_DIR / "references" / _REFERENCE_BY_SCENARIO[scenario],
-    )
+    reference_key = {
+        InvestigationScenario.ASYNC_PROCESSING: "async_processing",
+        InvestigationScenario.BILLING_ENTITLEMENT: "billing_entitlement",
+        InvestigationScenario.RETRIEVAL_RUNTIME: "runtime_failure",
+        InvestigationScenario.PROVIDER_RUNTIME: "runtime_failure",
+        InvestigationScenario.WORKFLOW_RUNTIME: "runtime_failure",
+        InvestigationScenario.GENERAL: "general",
+    }[scenario]
+    reference = snapshot.reference_for(reference_key)
     roles = tuple(
         role.value for role in sorted(required_completion_roles(question), key=str)
     )
     return InvestigationSkill(
         name="dify-ticket-investigation",
         scenario=scenario,
-        instructions=f"{core}\n\n## Active scenario\n\n{reference}",
+        instructions=(f"{snapshot.skill_core}\n\n## Active scenario\n\n{reference}"),
         required_roles=roles,
     )
+
+
+def load_investigation_skill(
+    question: str,
+    *,
+    instruction_store: InstructionStore | None = None,
+    snapshot: InstructionSnapshot | None = None,
+) -> InvestigationSkill:
+    """Load the skill using a frozen store snapshot when one is supplied.
+
+    The no-argument path remains the reliable code-default fallback used by
+    replay/unit callers.  Runtime callers pass an ``InstructionStore`` and
+    freeze its values at investigator construction time.
+    """
+    if snapshot is None:
+        snapshot = (
+            instruction_store.snapshot()
+            if instruction_store is not None
+            else InstructionStore(Path("/nonexistent")).defaults()
+        )
+    return _build_investigation_skill(question, snapshot=snapshot)

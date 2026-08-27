@@ -3,6 +3,7 @@ const PRIMARY_MENU = [
   { key: "工单中心", label: "工单中心" },
   { key: "运行记录", label: "日志与观测" },
   { key: "模型与运行", label: "模型管理" },
+  { key: "Agent 指令", label: "Agent 指令" },
   { key: "Agent 策略", label: "Agent 策略" },
   { key: "工具与集成", label: "工具与集成" },
   { key: "系统与审计", label: "系统与审计" }
@@ -24,6 +25,7 @@ const MENU_ICONS = {
   "触发配置": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4v6h6M20 20v-6h-6"/><path d="M5.1 15a8 8 0 0 0 13.4 2M18.9 9A8 8 0 0 0 5.5 7"/></svg>',
   "回复策略": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/><path d="M8 9h8M8 13h5"/></svg>',
   "模型与运行": '<svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>',
+  "Agent 指令": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>',
   "工具与集成": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 2v6M12 16v6M4.9 4.9l4.2 4.2M14.9 14.9l4.2 4.2M2 12h6M16 12h6M4.9 19.1l4.2-4.2M14.9 9.1l4.2-4.2"/><circle cx="12" cy="12" r="4"/></svg>',
   "存储配置": '<svg aria-hidden="true" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg>',
   "部署状态": '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 4 7v10l8 4 8-4V7Z"/><path d="m4 7 8 4 8-4M12 11v10"/></svg>',
@@ -53,6 +55,7 @@ const SUBTITLES = {
   "触发配置": "webhook、轮询、@mention 和 intake 规则",
   "回复策略": "自动 public reply、可靠送达和等待策略",
   "模型与运行": "模型、Base URL、API key、并发和运行护栏",
+  "Agent 指令": "查看安全核心、Skill 与场景参考，按版本安全调整附加指令",
   "工具与集成": "Zendesk、DB、SigNoz、GitHub、Docs、Sandbox 等远程服务",
   "存储配置": "配置运行记录、审计日志、附件缓存和配置持久化路径",
   "部署状态": "镜像、服务状态、重载状态和后台访问方式",
@@ -403,6 +406,17 @@ const state = {
     latencyMs: 0,
     loading: false,
     error: ""
+  },
+  instructions: null,
+  instructionDraft: null,
+  instructionScenario: "general",
+  instructionError: "",
+  ticketCenter: {
+    items: [],
+    summary: {},
+    status: "",
+    loading: false,
+    error: ""
   }
 };
 
@@ -703,6 +717,8 @@ async function render() {
       await renderStorageConfig();
     } else if (state.activeMenu === "模型与运行") {
       renderModelManagement();
+    } else if (state.activeMenu === "Agent 指令") {
+      await renderAgentInstructions();
     } else if (state.activeMenu === "Agent 策略") {
       renderStrategyHub();
     } else if (state.activeMenu === "系统与审计") {
@@ -725,7 +741,7 @@ function setPageActions() {
     return;
   }
   const editable = ![
-    "总览", "工单中心", "运行记录", "审计日志", "Agent 策略", "系统与审计"
+    "总览", "工单中心", "运行记录", "审计日志", "Agent 指令", "Agent 策略", "系统与审计"
   ].includes(state.activeMenu);
   if (!editable) {
     actions.innerHTML = `<button class="btn secondary" onclick="refreshActivePage()">刷新</button>`;
@@ -1492,28 +1508,327 @@ function loadMoreRuns() {
 }
 
 async function renderTicketCenter() {
-  setContent(loadingHtml("正在读取工单处理状态"));
-  const [operationsResult, runsResult] = await Promise.allSettled([
-    api("/admin/api/operations/status"),
-    loadRunRecords(80, {}, { quick: true, detail: false, updateState: false })
-  ]);
-  const operations = operationsResult.status === "fulfilled" ? operationsResult.value : { active_sessions: [] };
-  const runs = runsResult.status === "fulfilled" ? runsResult.value : { items: [] };
-  const records = buildRunDisplayRecords(runs.items || []);
-  state.runDisplayRecords = records;
-  const tickets = mergeCommandTickets(operations.active_sessions || [], records);
+  setContent(loadingHtml("正在读取工单生命周期"));
+  state.ticketCenter.loading = true;
+  state.ticketCenter.error = "";
+  try {
+    const params = new URLSearchParams({ limit: "200" });
+    if (state.ticketCenter.status) params.set("status", state.ticketCenter.status);
+    const data = await api(`/admin/api/tickets?${params.toString()}`);
+    state.ticketCenter.items = data.items || [];
+    state.ticketCenter.summary = data.summary || {};
+    renderTicketCenterContent(data);
+  } catch (err) {
+    state.ticketCenter.error = err.message || "工单生命周期加载失败";
+    setContent(errorHtml(state.ticketCenter.error));
+  } finally {
+    state.ticketCenter.loading = false;
+  }
+}
+
+function renderTicketCenterContent(data) {
+  const items = data.items || [];
+  const summary = data.summary || {};
+  const groups = summary.by_status || {};
+  const groupHtml = Object.entries(groups).map(([status, count]) => `
+    <button type="button" class="ticket-status-tab ${state.ticketCenter.status === status ? "active" : ""}"
+      aria-pressed="${state.ticketCenter.status === status ? "true" : "false"}"
+      onclick="setTicketCenterStatus(${jsArg(status)})">
+      <span>${escapeHtml(ticketBusinessStatusLabel(status))}</span><strong>${escapeHtml(count)}</strong>
+    </button>
+  `).join("");
   setContent(`
     <section class="ticket-center-intro">
-      <div><span class="section-kicker">ALL TICKETS</span><h2>工单处理全景</h2><p>运行中、等待客户、人工接管与最近完成记录集中在一张表中。</p></div>
-      <div class="ticket-center-count"><strong>${tickets.length}</strong><span>张可见工单</span></div>
+      <div><span class="section-kicker">BUSINESS TICKET LIFECYCLE</span><h2>工单处理全景</h2><p>这里展示工单业务状态与所有权，不复制运行轮次、工具调用或原始日志。</p></div>
+      <div class="ticket-center-count"><strong>${escapeHtml(summary.visible ?? items.length)}</strong><span>张当前视图工单</span></div>
+    </section>
+    <div class="metric-grid ticket-center-metrics">
+      ${metricCard("活跃工单", summary.active ?? items.filter(item => item.active).length, "当前有 Agent Session")}
+      ${metricCard("等待客户", summary.awaiting_customer ?? 0, "等待必要字段或新消息")}
+      ${metricCard("已归属", summary.owned ?? 0, "存在类型化所有权动作")}
+      ${metricCard("失败计数", summary.failures ?? 0, "连续 Agent 失败次数")}
+    </div>
+    <section class="ticket-center-filters card">
+      <div class="ticket-status-tabs" role="group" aria-label="按业务状态筛选">
+        <button type="button" class="ticket-status-tab ${!state.ticketCenter.status ? "active" : ""}" aria-pressed="${!state.ticketCenter.status ? "true" : "false"}" onclick="setTicketCenterStatus('')">全部 <strong>${escapeHtml(summary.total ?? items.length)}</strong></button>
+        ${groupHtml}
+      </div>
+      <button type="button" class="btn secondary" onclick="refreshActivePage()">刷新</button>
     </section>
     <section class="command-section ticket-board ticket-center-board">
-      <div class="command-ticket-table">
-        <div class="command-ticket-head"><span>工单</span><span>状态</span><span>最近处理摘要</span><span>耗时</span><span>更新时间</span></div>
-        ${tickets.length ? tickets.map(renderCommandTicketRow).join("") : `<div class="command-empty">当前没有可展示的工单记录</div>`}
+      <div class="command-ticket-table ticket-lifecycle-table">
+        <div class="command-ticket-head"><span>工单</span><span>业务状态</span><span>等待客户</span><span>所有权</span><span>更新时间</span><span>日志</span></div>
+        ${items.length ? items.map(renderTicketLifecycleRow).join("") : `<div class="command-empty">当前没有可展示的工单生命周期</div>`}
       </div>
     </section>
   `);
+}
+
+function ticketBusinessStatusLabel(status) {
+  const labels = {
+    processing: "处理中",
+    awaiting_customer: "等待客户",
+    processed: "已处理",
+    owned: "已归属",
+    externally_owned: "人工接管",
+    ownership_pending: "归属处理中",
+    out_of_scope: "超出范围",
+    waiting_for_auth: "等待授权",
+    manual_reconciliation: "需人工核对",
+    unknown: "未知"
+  };
+  return labels[status] || status || "未知";
+}
+
+function renderTicketLifecycleRow(item) {
+  const ticketId = String(item.ticket_id || "-");
+  const waiting = item.waiting_for_customer
+    ? (item.pending_customer_fields || []).join("、") || "等待客户补充"
+    : "-";
+  const ownership = item.ownership_action
+    ? `${item.ownership_action}${item.ownership_reason ? ` · ${item.ownership_reason}` : ""}`
+    : "自动处理";
+  return `
+    <div class="ticket-lifecycle-row">
+      <strong class="ticket-cell">#${escapeHtml(ticketId)}</strong>
+      <span><span class="status-badge business-${escapeHtml(item.status || "unknown")}">${escapeHtml(ticketBusinessStatusLabel(item.status))}</span>${item.active ? `<small class="ticket-active-note">活跃</small>` : ""}</span>
+      <span class="ticket-summary" title="${escapeHtml(waiting)}">${escapeHtml(waiting)}</span>
+      <span class="ticket-summary" title="${escapeHtml(ownership)}">${escapeHtml(ownership)}</span>
+      <span class="ticket-summary">${escapeHtml(relativeTime(item.updated_at) || "-")}</span>
+      <button type="button" class="text-action ticket-log-link" onclick="viewTicketRunLogs(${jsArg(ticketId)})">查看运行日志 →</button>
+    </div>
+  `;
+}
+
+function setTicketCenterStatus(status) {
+  state.ticketCenter.status = status || "";
+  void renderTicketCenter();
+}
+
+function viewTicketRunLogs(ticketId) {
+  state.runFilters = { ticket_id: String(ticketId) };
+  state.runLimit = 50;
+  state.expandedRuns.clear();
+  state.activeMenu = "运行记录";
+  renderNav();
+  void render();
+}
+
+async function renderAgentInstructions() {
+  if (!state.instructions) {
+    setContent(loadingHtml("正在读取 Agent 指令"));
+  }
+  try {
+    const data = await api("/admin/api/instructions");
+    state.instructions = data;
+    state.instructionDraft = {
+      operator_extra_instructions: data.operator_extra_instructions || "",
+      skill_core: data.skill_core || "",
+      scenario_references: { ...(data.scenario_references || {}) }
+    };
+    renderAgentInstructionsContent();
+  } catch (err) {
+    state.instructionError = err.message || "Agent 指令加载失败";
+    setContent(errorHtml(state.instructionError));
+  }
+}
+
+function renderAgentInstructionsContent() {
+  const data = state.instructions || {};
+  const draft = state.instructionDraft || {
+    operator_extra_instructions: "",
+    skill_core: "",
+    scenario_references: {}
+  };
+  const activeScenario = state.instructionScenario || "general";
+  const refs = draft.scenario_references || {};
+  const scenarioLabels = data.scenario_labels || {
+    general: "通用产品问题",
+    async_processing: "异步处理",
+    billing_entitlement: "Billing / Entitlement",
+    runtime_failure: "运行时失败"
+  };
+  const model = state.values["llm.model"] || "-";
+  const provider = state.values["llm.provider"] || "-";
+  const effort = state.values["llm.reasoning_effort"] || "默认";
+  const contextWindow = state.values["llm.context_window_tokens"] || "-";
+  const changed = instructionDraftChanged();
+  const activeReference = refs[activeScenario] || "";
+  const preview = [
+    data.system_security_core || "",
+    draft.operator_extra_instructions ? `## Operator extra instructions\n\n${draft.operator_extra_instructions}` : "",
+    `ACTIVE_SERVER_SKILL=dify-ticket-investigation\nACTIVE_SCENARIO=${activeScenario}`,
+    draft.skill_core || "",
+    "## Active scenario",
+    activeReference
+  ].filter(Boolean).join("\n\n");
+  setContent(`
+    <section class="instruction-hero card">
+      <div><span class="section-kicker">AGENT CONTROL SURFACE</span><h2>Agent 指令</h2><p>查看有效指令分层并安全调整下一次新调查。代码安全核心、只读工具权限、确定性 disposition 和发送边界始终由代码控制。</p></div>
+      <div class="instruction-meta"><span id="instruction-sync-chip" class="chip ${changed ? "warning" : "enabled"}">${changed ? "有未保存修改" : "已同步"}</span><span>revision ${escapeHtml(data.revision ?? 0)}</span></div>
+    </section>
+    <section class="instruction-safety-grid">
+      <article class="card instruction-safety-card"><span class="section-kicker">ARCHITECTURE</span><h3>单 Agent · 受控调查层</h3><p>系统核心之后才会附加 operator instructions；Skill 和场景参考只影响调查指导，不获得写权限。</p><ul><li>只读 MCP 与租户范围由代码校验</li><li>每个新调查冻结一份 revision</li><li>保存后正在运行的 Session 不改变</li></ul></article>
+      <article class="card instruction-safety-card instruction-hidden-reasoning"><span class="section-kicker">MODEL VISIBILITY</span><h3>隐藏推理不可查看</h3><p>这里只展示模型配置、推理强度、上下文容量，以及日志中的工具调用、证据和检查点摘要。</p><strong>模型隐藏推理不可查看</strong></article>
+    </section>
+    <section class="card instruction-model-summary">
+      <div class="card-header"><span>模型与推理摘要</span><span class="chip">下一次新调查生效</span></div>
+      <div class="instruction-model-grid"><div><span>供应商</span><strong>${escapeHtml(provider)}</strong></div><div><span>模型</span><strong>${escapeHtml(model)}</strong></div><div><span>推理强度</span><strong>${escapeHtml(effort)}</strong></div><div><span>上下文容量</span><strong>${escapeHtml(contextWindow)} tokens</strong></div></div>
+    </section>
+    <section class="card instruction-editor-card">
+      <div class="card-header"><div><span>只读系统安全核心</span><p>此层不可由后台覆盖，作为所有调查的代码安全边界。</p></div><span class="chip">只读</span></div>
+      <div class="card-body"><pre class="instruction-code readonly-code">${escapeHtml(data.system_security_core || "")}</pre></div>
+    </section>
+    <section class="card instruction-editor-card">
+      <div class="card-header"><div><span>Operator 附加系统指令</span><p>受控附加层；不能修改工具 ACL、租户绑定、发送或 disposition 核心规则。</p></div><span class="chip ${draft.operator_extra_instructions ? "warning" : ""}">${draft.operator_extra_instructions ? "已覆盖" : "默认空"}</span></div>
+      <div class="card-body"><label for="operator-extra-instructions">附加指令</label><textarea id="operator-extra-instructions" class="prompt-textarea instruction-textarea" maxlength="8000" placeholder="输入面向运营的补充指导，不要放入密钥或隐藏推理要求。" oninput="handleInstructionDraftInput()">${escapeHtml(draft.operator_extra_instructions)}</textarea><small class="field-help">最多 8,000 个字符；保存时必须填写变更原因。</small></div>
+    </section>
+    <section class="card instruction-editor-card">
+      <div class="card-header"><div><span>Skill 核心</span><p>默认来自镜像内 dify-ticket-investigation/SKILL.md，可通过持久化覆盖调整。</p></div><span class="chip ${data.overridden?.skill_core ? "warning" : ""}">${data.overridden?.skill_core ? "已覆盖" : "代码默认"}</span></div>
+      <div class="card-body"><label for="instruction-skill-core">Skill 正文</label><textarea id="instruction-skill-core" class="prompt-textarea instruction-textarea" maxlength="60000" oninput="handleInstructionDraftInput()">${escapeHtml(draft.skill_core)}</textarea></div>
+    </section>
+    <section class="card instruction-editor-card">
+      <div class="card-header"><div><span>场景参考</span><p>选择场景查看并修改对应参考；默认文件不会被后台直接改写。</p></div><span class="chip">4 个场景</span></div>
+      <div class="card-body"><div class="instruction-tabs" role="tablist" aria-label="调查场景参考">
+        ${Object.entries(scenarioLabels).map(([key, label]) => `<button type="button" role="tab" aria-selected="${key === activeScenario ? "true" : "false"}" class="instruction-tab ${key === activeScenario ? "active" : ""}" onclick="selectInstructionScenario(${jsArg(key)})">${escapeHtml(label)}</button>`).join("")}
+      </div><label for="instruction-scenario-reference">${escapeHtml(scenarioLabels[activeScenario] || activeScenario)}参考</label><textarea id="instruction-scenario-reference" class="prompt-textarea instruction-textarea" maxlength="30000" oninput="handleInstructionDraftInput()">${escapeHtml(activeReference)}</textarea><small class="field-help">运行时失败参考覆盖 Workflow、Retrieval、Provider 三类场景。</small></div>
+    </section>
+    <section class="card instruction-preview-card">
+      <div class="card-header"><div><span>有效内容预览</span><p>仅展示将注入下一次调查的指令层，不包含模型隐藏推理。</p></div><span class="chip">${changed ? "草稿" : "当前 revision"}</span></div>
+      <div class="card-body"><pre id="instruction-effective-preview" class="instruction-code">${escapeHtml(preview)}</pre></div>
+    </section>
+    <section class="instruction-save-panel card">
+      <div><span class="section-kicker">CHANGE CONTROL</span><strong id="instruction-revision-state">revision ${escapeHtml(data.revision ?? 0)} · ${changed ? "待保存" : "无未保存修改"}</strong><p>保存/重置必须填写原因；新配置只对下一张新工单或下一次新调查生效。</p></div>
+      <div class="instruction-save-controls"><label for="instruction-change-reason">变更原因</label><textarea id="instruction-change-reason" rows="2" maxlength="500" placeholder="例如：补充 Billing 证据检查要求"></textarea><div id="instruction-save-error" class="danger-text" role="alert"></div><div class="button-row"><button type="button" class="btn secondary" onclick="previewAgentInstructions()">预览变更</button><button type="button" class="btn danger" onclick="resetAgentInstructions()">重置为代码默认</button><button id="instruction-save-button" type="button" class="btn primary" onclick="saveAgentInstructions()" ${changed ? "" : "disabled"}>保存指令</button></div></div>
+    </section>
+  `);
+}
+
+function syncInstructionDraftFromDom() {
+  if (!state.instructionDraft) return;
+  const extra = document.getElementById("operator-extra-instructions");
+  const skill = document.getElementById("instruction-skill-core");
+  const reference = document.getElementById("instruction-scenario-reference");
+  if (extra) state.instructionDraft.operator_extra_instructions = extra.value;
+  if (skill) state.instructionDraft.skill_core = skill.value;
+  if (reference) state.instructionDraft.scenario_references[state.instructionScenario] = reference.value;
+}
+
+function handleInstructionDraftInput() {
+  syncInstructionDraftFromDom();
+  const changed = instructionDraftChanged();
+  const saveButton = document.getElementById("instruction-save-button");
+  const syncChip = document.getElementById("instruction-sync-chip");
+  const revisionState = document.getElementById("instruction-revision-state");
+  const preview = document.getElementById("instruction-effective-preview");
+  if (saveButton) saveButton.disabled = !changed;
+  if (syncChip) {
+    syncChip.className = `chip ${changed ? "warning" : "enabled"}`;
+    syncChip.textContent = changed ? "有未保存修改" : "已同步";
+  }
+  if (revisionState) {
+    revisionState.textContent = `revision ${state.instructions?.revision ?? 0} · ${changed ? "待保存" : "无未保存修改"}`;
+  }
+  if (preview) {
+    const data = state.instructions || {};
+    const draft = state.instructionDraft || {};
+    preview.textContent = [
+      data.system_security_core || "",
+      draft.operator_extra_instructions ? `## Operator extra instructions\n\n${draft.operator_extra_instructions}` : "",
+      `ACTIVE_SERVER_SKILL=dify-ticket-investigation\nACTIVE_SCENARIO=${state.instructionScenario}`,
+      draft.skill_core || "",
+      "## Active scenario",
+      draft.scenario_references?.[state.instructionScenario] || ""
+    ].filter(Boolean).join("\n\n");
+  }
+}
+
+function instructionDraftChanged() {
+  if (!state.instructions || !state.instructionDraft) return false;
+  const current = state.instructions;
+  const draft = state.instructionDraft;
+  if ((current.operator_extra_instructions || "") !== (draft.operator_extra_instructions || "")) return true;
+  if ((current.skill_core || "") !== (draft.skill_core || "")) return true;
+  return Object.keys({ ...(current.scenario_references || {}), ...(draft.scenario_references || {}) }).some(key =>
+    (current.scenario_references?.[key] || "") !== (draft.scenario_references?.[key] || "")
+  );
+}
+
+function selectInstructionScenario(key) {
+  syncInstructionDraftFromDom();
+  state.instructionScenario = key;
+  renderAgentInstructionsContent();
+}
+
+function collectInstructionChanges() {
+  syncInstructionDraftFromDom();
+  return {
+    operator_extra_instructions: state.instructionDraft?.operator_extra_instructions || "",
+    skill_core: state.instructionDraft?.skill_core || "",
+    scenario_references: { ...(state.instructionDraft?.scenario_references || {}) }
+  };
+}
+
+async function previewAgentInstructions() {
+  const error = document.getElementById("instruction-save-error");
+  const changes = collectInstructionChanges();
+  try {
+    const result = await api("/admin/api/instructions/preview", {
+      method: "POST",
+      body: JSON.stringify({ changes, reason: document.getElementById("instruction-change-reason")?.value?.trim() || "" })
+    });
+    showModal("Agent 指令变更预览", `<p>当前 revision ${escapeHtml(result.revision)}，${result.changed ? "检测到待保存修改。" : "没有内容变化。"}</p><pre class="instruction-code">${escapeHtml(result.skill_core || "")}</pre>`, [{ label: "关闭", className: "secondary", onClick: closeModal }]);
+  } catch (err) {
+    if (error) error.textContent = err.message || "预览失败";
+  }
+}
+
+async function saveAgentInstructions() {
+  const error = document.getElementById("instruction-save-error");
+  const reason = document.getElementById("instruction-change-reason")?.value?.trim() || "";
+  if (reason.length < 3) {
+    if (error) error.textContent = "请填写至少 3 个字符的变更原因";
+    return;
+  }
+  try {
+    const data = await api("/admin/api/instructions/apply", {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: state.instructions?.revision ?? 0, reason, changes: collectInstructionChanges() })
+    });
+    state.instructions = data;
+    state.instructionDraft = { operator_extra_instructions: data.operator_extra_instructions || "", skill_core: data.skill_core || "", scenario_references: { ...(data.scenario_references || {}) } };
+    renderAgentInstructionsContent();
+    showToast(`Agent 指令已保存（revision ${data.revision}）`, "success");
+  } catch (err) {
+    if (error) error.textContent = err.message || "保存失败，请刷新后重试";
+  }
+}
+
+function resetAgentInstructions() {
+  showModal("重置 Agent 指令", `<p>将删除持久化覆盖并回到镜像内代码默认。正在执行的 Session 不受影响。</p><label class="field-stack" for="instruction-reset-reason">重置原因<textarea id="instruction-reset-reason" rows="3" maxlength="500" placeholder="例如：撤销临时运营指导"></textarea></label><div id="instruction-reset-error" class="danger-text" role="alert"></div>`, [
+    { label: "取消", className: "secondary", onClick: closeModal },
+    { label: "确认重置", className: "danger", onClick: submitInstructionReset }
+  ]);
+  document.getElementById("instruction-reset-reason")?.focus();
+}
+
+async function submitInstructionReset() {
+  const reason = document.getElementById("instruction-reset-reason")?.value?.trim() || "";
+  const error = document.getElementById("instruction-reset-error");
+  if (reason.length < 3) {
+    if (error) error.textContent = "请填写至少 3 个字符的重置原因";
+    return;
+  }
+  try {
+    const data = await api("/admin/api/instructions/reset", { method: "POST", body: JSON.stringify({ expected_revision: state.instructions?.revision ?? 0, reason }) });
+    closeModal();
+    state.instructions = data;
+    state.instructionDraft = { operator_extra_instructions: "", skill_core: data.skill_core || "", scenario_references: { ...(data.scenario_references || {}) } };
+    renderAgentInstructionsContent();
+    showToast("Agent 指令已恢复代码默认", "success");
+  } catch (err) {
+    if (error) error.textContent = err.message || "重置失败，请刷新后重试";
+  }
 }
 
 function renderModelManagement() {

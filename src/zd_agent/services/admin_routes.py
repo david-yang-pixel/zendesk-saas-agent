@@ -27,6 +27,11 @@ from zd_agent.runtime.openai_reasoning import (
 )
 from zd_agent.services.admin_auth import AdminAuthStore
 from zd_agent.services.admin_config import AdminConfigStore
+from zd_agent.services.instruction_store import (
+    InstructionRevisionConflict,
+    InstructionStore,
+    InstructionValidationError,
+)
 from zd_agent.services.app_context import (
     BACKGROUND_TASK_KEYS,
     BACKGROUND_TASK_NAMES,
@@ -35,7 +40,9 @@ from zd_agent.services.app_context import (
     agent_lifecycle,
     app_config,
     install_admin_context,
+    instruction_store,
     session_manager,
+    ticket_state,
     trigger_queue,
 )
 from zd_agent.services.agent_lifecycle import AgentLifecycleConflict
@@ -1987,6 +1994,219 @@ async def handle_admin_config_apply(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _instruction_error_response(error: Exception) -> web.Response:
+    if isinstance(error, InstructionRevisionConflict):
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "instruction_revision_conflict",
+                "expected_revision": error.expected,
+                "revision": error.actual,
+            },
+            status=409,
+        )
+    return _json_error(str(error), status=400)
+
+
+async def handle_admin_instructions(request: web.Request) -> web.Response:
+    """Return safe instruction layers, never model hidden reasoning."""
+    _username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    return web.json_response(instruction_store(request.app).effective_payload())
+
+
+async def handle_admin_instructions_preview(request: web.Request) -> web.Response:
+    _username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise InstructionValidationError("payload must be an object")
+        result = instruction_store(request.app).preview_payload(payload)
+    except (InstructionValidationError, ValueError) as error:
+        return _instruction_error_response(error)
+    return web.json_response(result)
+
+
+async def handle_admin_instructions_apply(request: web.Request) -> web.Response:
+    username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise InstructionValidationError("payload must be an object")
+        result = instruction_store(request.app).apply(
+            payload,
+            actor=username or "",
+            ip=_remote_ip(request),
+            audit_store=admin_config(request.app),
+        )
+    except InstructionRevisionConflict as error:
+        return _instruction_error_response(error)
+    except (InstructionValidationError, ValueError) as error:
+        return _instruction_error_response(error)
+    return web.json_response(result)
+
+
+async def handle_admin_instructions_reset(request: web.Request) -> web.Response:
+    username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise InstructionValidationError("payload must be an object")
+        result = instruction_store(request.app).reset(
+            payload,
+            actor=username or "",
+            ip=_remote_ip(request),
+            audit_store=admin_config(request.app),
+        )
+    except InstructionRevisionConflict as error:
+        return _instruction_error_response(error)
+    except (InstructionValidationError, ValueError) as error:
+        return _instruction_error_response(error)
+    return web.json_response(result)
+
+
+def _ticket_updated_at(state: Any) -> str:
+    candidates = (
+        getattr(state, "last_eval_at", None),
+        getattr(state, "last_comment_ts", None),
+        getattr(state, "last_agent_finish_ts", None),
+        getattr(state, "first_seen", None),
+    )
+    normalized = (
+        parsed for value in candidates if (parsed := _parse_datetime(value)) is not None
+    )
+    latest = max(normalized, default=None)
+    return latest.isoformat() if latest is not None else ""
+
+
+def _business_ticket_status(state: Any | None, active: bool) -> str:
+    if active:
+        return "processing"
+    value = str(getattr(state, "state", "unknown") or "unknown")
+    return value
+
+
+def _ticket_center_item(
+    ticket_id: str, state: Any | None, active: bool
+) -> dict[str, Any]:
+    status = _business_ticket_status(state, active)
+    pending_fields = getattr(state, "pending_customer_fields", ()) if state else ()
+    if not isinstance(pending_fields, (tuple, list)):
+        pending_fields = ()
+    return {
+        "ticket_id": int(ticket_id) if ticket_id.isdigit() else ticket_id,
+        "status": status,
+        "business_status": status,
+        "active": active,
+        "last_customer_at": (
+            getattr(state, "last_comment_ts", None).isoformat()
+            if state is not None and getattr(state, "last_comment_ts", None) is not None
+            else ""
+        ),
+        "last_evaluated_at": (
+            getattr(state, "last_eval_at", None).isoformat()
+            if state is not None and getattr(state, "last_eval_at", None) is not None
+            else ""
+        ),
+        "waiting_for_customer": status == "awaiting_customer",
+        "pending_customer_fields": [str(value) for value in pending_fields],
+        "pending_issue_question": str(
+            getattr(state, "pending_issue_question", "") if state is not None else ""
+        ),
+        "ownership_action": str(
+            getattr(state, "ownership_action", "") if state is not None else ""
+        ),
+        "ownership_reason": str(
+            getattr(state, "ownership_reason", "") if state is not None else ""
+        ),
+        "failure_count": int(
+            getattr(state, "consecutive_agent_failures", 0) if state is not None else 0
+        ),
+        "state_revision": int(getattr(state, "state_revision", 0) if state else 0),
+        "updated_at": _ticket_updated_at(state) if state is not None else "",
+    }
+
+
+async def handle_admin_ticket_center(request: web.Request) -> web.Response:
+    """Expose business ticket lifecycle, independent of raw run records."""
+    _username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    tracker = ticket_state(request.app)
+    manager = session_manager(request.app)
+    try:
+        states = tracker.all()
+    except (AttributeError, TypeError):
+        states = {}
+    if not isinstance(states, dict):
+        states = {}
+    try:
+        overview = manager.get_all_sessions()
+    except (AttributeError, TypeError):
+        overview = {}
+    if not isinstance(overview, dict):
+        overview = {}
+    active_ids: set[str] = set()
+    for session in overview.get("active_sessions", []):
+        if isinstance(session, dict):
+            raw_id = session.get("ticket_id") or session.get("ticket")
+        else:
+            raw_id = getattr(session, "ticket_id", None)
+        if raw_id is not None and str(raw_id).strip():
+            active_ids.add(str(raw_id).strip())
+
+    ticket_ids = set(str(key) for key in states) | active_ids
+    all_items = [
+        _ticket_center_item(ticket_id, states.get(ticket_id), ticket_id in active_ids)
+        for ticket_id in ticket_ids
+    ]
+    items = list(all_items)
+    status_filter = str(request.query.get("status", "") or "").strip().lower()
+    search = str(request.query.get("ticket_id", "") or "").strip()
+    if status_filter:
+        items = [item for item in items if item["status"].lower() == status_filter]
+    if search:
+        items = [item for item in items if search in str(item["ticket_id"])]
+    items.sort(
+        key=lambda item: (
+            bool(item["active"]),
+            _parse_datetime(item.get("updated_at"))
+            or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    limit = _query_limit(request, default=200)
+    by_status = {
+        status: sum(1 for item in all_items if item["status"] == status)
+        for status in sorted({item["status"] for item in all_items})
+    }
+    return web.json_response(
+        {
+            "ok": True,
+            "items": items[:limit],
+            "summary": {
+                "total": len(all_items),
+                "visible": len(items),
+                "active": sum(1 for item in all_items if item["active"]),
+                "awaiting_customer": sum(
+                    1 for item in all_items if item["waiting_for_customer"]
+                ),
+                "owned": sum(1 for item in all_items if item["ownership_action"]),
+                "failures": sum(item["failure_count"] for item in all_items),
+                "by_status": by_status,
+            },
+            "filters": {"status": status_filter, "ticket_id": search},
+        }
+    )
+
+
 async def handle_admin_audit_logs(request: web.Request) -> web.Response:
     _username, unauthorized = _require_admin(request)
     if unauthorized is not None:
@@ -2070,12 +2290,10 @@ async def handle_admin_operations_status(request: web.Request) -> web.Response:
     if not isinstance(overview, dict):
         overview = {}
     active_sessions = [
-        _admin_session_payload(item)
-        for item in overview.get("active_sessions", [])
+        _admin_session_payload(item) for item in overview.get("active_sessions", [])
     ]
     recent_completed = [
-        _admin_session_payload(item)
-        for item in overview.get("recent_completed", [])
+        _admin_session_payload(item) for item in overview.get("recent_completed", [])
     ]
 
     from zd_agent.services.saas_routes import _outbox_health, _task_status
@@ -2166,7 +2384,9 @@ async def handle_admin_model_discovery(request: web.Request) -> web.Response:
         async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
             response = await client.get(endpoint, headers=headers)
     except httpx.HTTPError as exc:
-        return _json_error(f"model_discovery_unreachable:{exc.__class__.__name__}", status=502)
+        return _json_error(
+            f"model_discovery_unreachable:{exc.__class__.__name__}", status=502
+        )
     if response.status_code < 200 or response.status_code >= 300:
         return _json_error(
             f"model_discovery_http_{response.status_code}",
@@ -2237,7 +2457,9 @@ async def handle_admin_deploy_status(request: web.Request) -> web.Response:
     google_secret = effective.get("admin_auth.google_client_secret") or {}
     feishu_secret = effective.get("admin_auth.feishu_app_secret") or {}
     lifecycle = agent_lifecycle(request.app)
-    agent_status = lifecycle.status() if lifecycle is not None else {"status": "running"}
+    agent_status = (
+        lifecycle.status() if lifecycle is not None else {"status": "running"}
+    )
     return web.json_response(
         {
             "ok": True,
@@ -2386,7 +2608,9 @@ async def handle_admin_agent_action(request: web.Request) -> web.Response:
                 action=f"agent_{action}_failed",
                 reason=reason,
             )
-            return _json_error(f"lifecycle_action_failed:{type(exc).__name__}", status=500)
+            return _json_error(
+                f"lifecycle_action_failed:{type(exc).__name__}", status=500
+            )
 
         pending = status.get("transition_status") == "pending"
         admin_config(request.app).audit_event(
@@ -2451,7 +2675,13 @@ def register_admin_routes(
         ),
     )
     config_store = AdminConfigStore(state_dir)
-    install_admin_context(app=app, auth_store=auth_store, config_store=config_store)
+    instructions_store = InstructionStore(state_dir)
+    install_admin_context(
+        app=app,
+        auth_store=auth_store,
+        config_store=config_store,
+        instruction_store=instructions_store,
+    )
 
     handlers: dict[str, Any] = {
         "static_asset": handle_admin_static,
@@ -2463,6 +2693,11 @@ def register_admin_routes(
         "config_effective": handle_admin_config_effective,
         "config_preview": handle_admin_config_preview,
         "config_apply": handle_admin_config_apply,
+        "instructions": handle_admin_instructions,
+        "instructions_preview": handle_admin_instructions_preview,
+        "instructions_apply": handle_admin_instructions_apply,
+        "instructions_reset": handle_admin_instructions_reset,
+        "ticket_center": handle_admin_ticket_center,
         "audit_logs": handle_admin_audit_logs,
         "run_records": handle_admin_run_records,
         "integration_check": handle_admin_integration_check,
@@ -2486,6 +2721,29 @@ def register_admin_routes(
     app.router.add_get("/admin/api/config/effective", handle_admin_config_effective)
     app.router.add_post("/admin/api/config/preview", handle_admin_config_preview)
     app.router.add_post("/admin/api/config/apply", handle_admin_config_apply)
+    app.router.add_get("/admin/api/instructions", handle_admin_instructions)
+    app.router.add_post(
+        "/admin/api/instructions/preview", handle_admin_instructions_preview
+    )
+    app.router.add_post(
+        "/admin/api/instructions/apply", handle_admin_instructions_apply
+    )
+    app.router.add_post(
+        "/admin/api/instructions/reset", handle_admin_instructions_reset
+    )
+    # Keep a resource-oriented alias for clients that use the Agent namespace.
+    app.router.add_get("/admin/api/agent/instructions", handle_admin_instructions)
+    app.router.add_post(
+        "/admin/api/agent/instructions/preview", handle_admin_instructions_preview
+    )
+    app.router.add_post(
+        "/admin/api/agent/instructions/apply", handle_admin_instructions_apply
+    )
+    app.router.add_post(
+        "/admin/api/agent/instructions/reset", handle_admin_instructions_reset
+    )
+    app.router.add_get("/admin/api/tickets", handle_admin_ticket_center)
+    app.router.add_get("/admin/api/ticket-center", handle_admin_ticket_center)
     app.router.add_get("/admin/api/run-records", handle_admin_run_records)
     app.router.add_get("/admin/api/audit-logs", handle_admin_audit_logs)
     app.router.add_post("/admin/api/integrations/check", handle_admin_integration_check)

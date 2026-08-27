@@ -1597,3 +1597,291 @@ textarea{
     padding: 18px;
   }
 }
+
+/* Agent instruction management and business ticket lifecycle surfaces. */
+.instruction-hero{
+  align-items:flex-start;
+  display:flex;
+  gap:20px;
+  justify-content:space-between;
+  padding:24px;
+}
+.instruction-hero h2,
+.instruction-safety-card h3{
+  color:var(--text);
+  margin:5px 0 8px;
+}
+.instruction-hero p,
+.instruction-safety-card p,
+.instruction-save-panel p,
+.instruction-editor-card .card-header p{
+  color:var(--muted);
+  line-height:1.6;
+  margin:0;
+}
+.instruction-meta{
+  align-items:center;
+  color:var(--muted);
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  white-space:nowrap;
+}
+.instruction-safety-grid{
+  display:grid;
+  gap:16px;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+}
+.instruction-safety-card{
+  padding:20px;
+}
+.instruction-safety-card ul{
+  color:var(--muted);
+  line-height:1.8;
+  margin:12px 0 0;
+  padding-left:20px;
+}
+.instruction-hidden-reasoning{
+  background:#fffaf4;
+  border-color:#f2d6b8;
+}
+.instruction-hidden-reasoning strong{
+  color:var(--warn);
+  display:block;
+  margin-top:14px;
+}
+.instruction-model-summary{
+  overflow:hidden;
+}
+.instruction-model-grid{
+  display:grid;
+  gap:1px;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+}
+.instruction-model-grid>div{
+  background:var(--surface-soft);
+  display:grid;
+  gap:5px;
+  min-width:0;
+  padding:16px 18px;
+}
+.instruction-model-grid span{
+  color:var(--muted);
+  font-size:12px;
+}
+.instruction-model-grid strong{
+  overflow-wrap:anywhere;
+}
+.instruction-editor-card .card-header{
+  align-items:flex-start;
+}
+.instruction-editor-card .card-header>div{
+  min-width:0;
+}
+.instruction-editor-card .card-header p{
+  font-size:12px;
+  font-weight:400;
+  margin-top:4px;
+}
+.instruction-code{
+  background:#f7faff;
+  border:1px solid var(--border);
+  border-radius:8px;
+  color:#18335b;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  line-height:1.55;
+  margin:0;
+  max-height:360px;
+  overflow:auto;
+  padding:16px;
+  white-space:pre-wrap;
+  word-break:break-word;
+}
+.readonly-code{
+  background:#f2f6fb;
+  max-height:280px;
+}
+.instruction-textarea{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  line-height:1.55;
+  min-height:180px;
+  margin-top:8px;
+}
+.instruction-tabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-bottom:16px;
+}
+.instruction-tab,
+.ticket-status-tab{
+  align-items:center;
+  background:var(--surface);
+  border:1px solid var(--border-strong);
+  border-radius:8px;
+  color:#405675;
+  display:inline-flex;
+  gap:8px;
+  min-height:36px;
+  padding:7px 12px;
+}
+.instruction-tab:hover,
+.ticket-status-tab:hover,
+.instruction-tab.active,
+.ticket-status-tab.active{
+  background:var(--blue-50);
+  border-color:#8bb8ff;
+  color:var(--blue-700);
+}
+.instruction-save-panel{
+  align-items:flex-start;
+  display:flex;
+  gap:24px;
+  justify-content:space-between;
+  padding:20px;
+}
+.instruction-save-panel>div:first-child{
+  display:grid;
+  gap:5px;
+  min-width:220px;
+}
+.instruction-save-controls{
+  display:grid;
+  gap:8px;
+  max-width:620px;
+  width:100%;
+}
+.instruction-save-controls textarea{
+  min-height:62px;
+}
+.ticket-center-intro{
+  align-items:center;
+  display:flex;
+  gap:20px;
+  justify-content:space-between;
+}
+.ticket-center-intro h2{
+  margin:5px 0 6px;
+}
+.ticket-center-intro p{
+  color:var(--muted);
+  margin:0;
+}
+.ticket-center-count{
+  align-items:flex-end;
+  display:flex;
+  flex-direction:column;
+  white-space:nowrap;
+}
+.ticket-center-count strong{
+  color:var(--blue-700);
+  font-size:30px;
+  line-height:1;
+}
+.ticket-center-count span{
+  color:var(--muted);
+  margin-top:5px;
+}
+.ticket-center-metrics{
+  grid-template-columns:repeat(4,minmax(0,1fr));
+}
+.ticket-center-filters{
+  align-items:center;
+  display:flex;
+  gap:12px;
+  justify-content:space-between;
+  padding:12px 16px;
+}
+.ticket-status-tabs{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+}
+.ticket-lifecycle-table{
+  min-width:1060px;
+}
+.ticket-lifecycle-table .command-ticket-head,
+.ticket-lifecycle-row{
+  grid-template-columns:120px 150px minmax(150px,1fr) minmax(180px,1.2fr) 130px 150px;
+}
+.ticket-lifecycle-row{
+  align-items:center;
+  border-bottom:1px solid #edf3fb;
+  display:grid;
+  gap:12px;
+  padding:14px 18px;
+}
+.ticket-lifecycle-row:last-child{
+  border-bottom:0;
+}
+.ticket-lifecycle-row:hover{
+  background:var(--surface-soft);
+}
+.ticket-active-note{
+  color:var(--success);
+  display:block;
+  font-size:11px;
+  margin-top:3px;
+}
+.ticket-log-link{
+  text-align:left;
+  white-space:nowrap;
+}
+.status-badge.business-processing,
+.status-badge.business-ownership_pending{
+  background:var(--warn-bg);
+  border:1px solid #fed7aa;
+  color:var(--warn);
+}
+.status-badge.business-processed,
+.status-badge.business-owned{
+  background:var(--success-bg);
+  border:1px solid #bbf7d0;
+  color:var(--success);
+}
+.status-badge.business-awaiting_customer,
+.status-badge.business-waiting_for_auth{
+  background:var(--blue-50);
+  border:1px solid var(--blue-100);
+  color:var(--blue-700);
+}
+.status-badge.business-out_of_scope,
+.status-badge.business-manual_reconciliation,
+.status-badge.business-externally_owned{
+  background:var(--danger-bg);
+  border:1px solid #fecaca;
+  color:var(--danger);
+}
+
+@media (max-width:900px){
+  .instruction-safety-grid,
+  .instruction-model-grid,
+  .ticket-center-metrics{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  .instruction-save-panel{
+    flex-direction:column;
+  }
+  .instruction-save-controls{
+    max-width:none;
+  }
+}
+@media (max-width:620px){
+  .instruction-hero,
+  .ticket-center-intro,
+  .ticket-center-filters{
+    align-items:flex-start;
+    flex-direction:column;
+  }
+  .instruction-meta{
+    white-space:normal;
+  }
+  .instruction-safety-grid,
+  .instruction-model-grid,
+  .ticket-center-metrics{
+    grid-template-columns:1fr;
+  }
+  .ticket-center-count{
+    align-items:flex-start;
+  }
+}
