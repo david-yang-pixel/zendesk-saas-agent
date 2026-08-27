@@ -713,6 +713,30 @@ def test_successful_deploy_prunes_only_unprotected_historical_agent_images(
     assert Path(env["FAKE_RUNTIME_STATE_FILE"]).read_text().strip() == "target"
 
 
+def test_deploy_uses_local_image_as_rollback_source_when_service_is_stopped(
+    tmp_path: Path,
+) -> None:
+    env, calls_log = _fake_command_environment(tmp_path)
+    Path(env["FAKE_ACTIVE_STATE_FILE"]).write_text("inactive\n")
+
+    result = _run_deploy(env)
+
+    assert result.returncode == 0, result.stderr
+    calls = calls_log.read_text().splitlines()
+    container_inspect_index = calls.index(
+        "docker inspect zd-agent --format \\{\\{.Image\\}\\}"
+    )
+    local_image_inspect_index = calls.index(
+        f"docker image inspect {LOCAL_IMAGE} --format \\{{\\{{.Id\\}}\\}}"
+    )
+    previous_revision_index = _next_call(
+        calls,
+        f"docker image inspect {PREVIOUS_IMAGE_ID} ",
+        after=local_image_inspect_index,
+    )
+    assert container_inspect_index < local_image_inspect_index < previous_revision_index
+
+
 def test_deploy_refuses_a_host_that_does_not_own_the_instance_fence(
     tmp_path: Path,
 ) -> None:

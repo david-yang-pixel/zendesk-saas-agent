@@ -633,8 +633,13 @@ if ! validate_target_image_config "$REMOTE_IMAGE"; then
 fi
 
 if ! previous_image_id="$(docker inspect "$SERVICE" --format '{{.Image}}')"; then
-  echo "Could not inspect the current ${SERVICE} image for safe rollback" >&2
-  exit 1
+  echo "${SERVICE} has no running container; using ${LOCAL_IMAGE} as the rollback source"
+  if ! previous_image_id="$(
+    docker image inspect "$LOCAL_IMAGE" --format '{{.Id}}'
+  )"; then
+    echo "Could not inspect ${LOCAL_IMAGE} for safe rollback" >&2
+    exit 1
+  fi
 fi
 previous_revision="$(
   docker image inspect "$previous_image_id" \
