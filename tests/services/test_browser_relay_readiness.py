@@ -13,6 +13,7 @@ from zd_agent.services.browser_relay_readiness import (
 class FakeLifecycle:
     def __init__(self) -> None:
         self.interlock_active = False
+        self.resume_requested = False
         self.engage_dependency_interlock = AsyncMock(side_effect=self._engage)
         self.clear_dependency_interlock = AsyncMock(side_effect=self._clear)
 
@@ -22,6 +23,7 @@ class FakeLifecycle:
 
     async def _clear(self, **_kwargs):
         self.interlock_active = False
+        self.resume_requested = False
         return self.status()
 
     def status(self):
@@ -33,7 +35,8 @@ class FakeLifecycle:
                 "active": self.interlock_active,
                 "dependency": "zendesk_browser_relay" if self.interlock_active else "",
                 "reason": "login_required" if self.interlock_active else "",
-            }
+                "resume_requested": self.resume_requested,
+            },
         }
 
 
@@ -88,6 +91,28 @@ async def test_repeated_failed_probe_does_not_repeat_lifecycle_transition() -> N
     await monitor.check_once()
 
     lifecycle.engage_dependency_interlock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_recovered_probe_retries_pending_auto_resume() -> None:
+    lifecycle = FakeLifecycle()
+    lifecycle.resume_requested = True
+
+    async def probe():
+        return RelayReadiness(ok=True, status="logged_in")
+
+    monitor = BrowserRelayReadinessMonitor(
+        lifecycle=lifecycle,
+        readiness_url="http://127.0.0.1:8097/ready",
+        api_key="secret",
+        probe_fn=probe,
+    )
+
+    await monitor.check_once()
+
+    lifecycle.clear_dependency_interlock.assert_awaited_once_with(
+        dependency="zendesk_browser_relay"
+    )
 
 
 @pytest.mark.asyncio

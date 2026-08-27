@@ -207,7 +207,9 @@ async def test_dependency_interlock_immediately_fences_ingress_and_blocks_start(
 
 
 @pytest.mark.asyncio
-async def test_clearing_dependency_interlock_never_auto_starts_agent(tmp_path) -> None:
+async def test_clearing_dependency_interlock_keeps_explicitly_stopped_agent_off(
+    tmp_path,
+) -> None:
     state_dir = tmp_path / ".state"
     queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
     supervisor = AgentWorkerSupervisor(state_dir=state_dir, trigger_queue=queue)
@@ -228,6 +230,91 @@ async def test_clearing_dependency_interlock_never_auto_starts_agent(tmp_path) -
     assert status["dependency_interlock"]["active"] is False
     assert status["desired_state"] == "stopped"
     assert status["process_running"] is False
+
+
+@pytest.mark.asyncio
+async def test_dependency_recovery_auto_starts_agent_that_was_running(tmp_path) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(
+        state_dir=state_dir,
+        trigger_queue=queue,
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+        stop_timeout_seconds=2,
+    )
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="stopped",
+            dispatch_enabled=False,
+            generation=3,
+            dependency_interlock_active=True,
+            dependency_interlock_dependency="zendesk_browser_relay",
+            dependency_interlock_reason="login_required",
+            dependency_interlock_resume_requested=True,
+        )
+    )
+
+    status = await supervisor.clear_dependency_interlock(
+        dependency="zendesk_browser_relay"
+    )
+
+    assert status["dependency_interlock"]["active"] is False
+    assert status["desired_state"] == "running"
+    assert status["dispatch_enabled"] is True
+    assert status["generation"] == 4
+    assert status["process_running"] is True
+    assert supervisor.store.read()["dependency_interlock_resume_requested"] is False
+    await supervisor.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_preserves_preexisting_dependency_resume_intent(tmp_path) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(state_dir=state_dir, trigger_queue=queue)
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="running",
+            dispatch_enabled=False,
+            generation=2,
+            dependency_interlock_active=True,
+            dependency_interlock_dependency="zendesk_browser_relay",
+            dependency_interlock_reason="login_required",
+        )
+    )
+
+    await supervisor.initialize()
+
+    lifecycle = supervisor.store.read()
+    assert lifecycle["desired_state"] == "stopped"
+    assert lifecycle["dependency_interlock_resume_requested"] is True
+    assert supervisor.status()["process_running"] is False
+
+
+@pytest.mark.asyncio
+async def test_manual_stop_cancels_dependency_auto_resume(tmp_path) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(state_dir=state_dir, trigger_queue=queue)
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="stopped",
+            dispatch_enabled=False,
+            dependency_interlock_active=True,
+            dependency_interlock_dependency="zendesk_browser_relay",
+            dependency_interlock_reason="login_required",
+            dependency_interlock_resume_requested=True,
+        )
+    )
+
+    await supervisor.stop(actor="admin", reason="operator requested stop")
+    status = await supervisor.clear_dependency_interlock(
+        dependency="zendesk_browser_relay"
+    )
+
+    assert status["desired_state"] == "stopped"
+    assert status["process_running"] is False
+    assert supervisor.store.read()["dependency_interlock_resume_requested"] is False
 
 
 @pytest.mark.asyncio
@@ -253,9 +340,7 @@ async def test_recovery_during_live_dependency_stop_keeps_interlock_closed(
     supervisor._process = MagicMock(pid=4321, returncode=None)
 
     with pytest.raises(AgentLifecycleConflict, match="dependency_stop_in_progress"):
-        await supervisor.clear_dependency_interlock(
-            dependency="zendesk_browser_relay"
-        )
+        await supervisor.clear_dependency_interlock(dependency="zendesk_browser_relay")
 
     assert supervisor.accepting_events() is False
 
@@ -547,7 +632,9 @@ async def test_new_action_cannot_overwrite_undelivered_terminal_audit(
 
 
 @pytest.mark.asyncio
-async def test_noop_stop_persists_operation_as_synchronously_completed(tmp_path) -> None:
+async def test_noop_stop_persists_operation_as_synchronously_completed(
+    tmp_path,
+) -> None:
     state_dir = tmp_path / ".state"
     queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
     supervisor = AgentWorkerSupervisor(state_dir=state_dir, trigger_queue=queue)

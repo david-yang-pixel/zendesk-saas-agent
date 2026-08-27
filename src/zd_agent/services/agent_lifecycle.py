@@ -62,6 +62,8 @@ def _default_lifecycle() -> dict[str, Any]:
         "dependency_interlock_dependency": "",
         "dependency_interlock_reason": "",
         "dependency_interlock_changed_at": "",
+        "dependency_interlock_resume_requested": False,
+        "transition_allow_preserved_outbox": False,
     }
 
 
@@ -261,7 +263,10 @@ class AgentWorkerSupervisor:
             # enabled. First boot is deliberately control-plane-only.
             lifecycle = _default_lifecycle()
             self.store.write(lifecycle)
-        elif not lifecycle.get("state_error") and not self.store.initialized_path.exists():
+        elif (
+            not lifecycle.get("state_error")
+            and not self.store.initialized_path.exists()
+        ):
             # Upgrade an existing pre-control-plane lifecycle file by creating
             # the independent initialization marker before any Worker starts.
             self.store.write(lifecycle)
@@ -273,10 +278,15 @@ class AgentWorkerSupervisor:
             # A dependency failure persisted across a control-plane restart.
             # No Worker is running yet, so close the prior epoch without
             # replaying any work accumulated while the dependency was unsafe.
+            resume_requested = bool(
+                lifecycle.get("dependency_interlock_resume_requested")
+                or lifecycle.get("desired_state") == "running"
+            )
             lifecycle.update(
                 {
                     "desired_state": "stopped",
                     "dispatch_enabled": False,
+                    "dependency_interlock_resume_requested": resume_requested,
                     "stopped_at": _utc_iso(),
                     "transition_action": "dependency_stop",
                     "transition_status": "completed",
@@ -292,9 +302,7 @@ class AgentWorkerSupervisor:
         if lifecycle["desired_state"] == "running":
             transition_action = str(lifecycle.get("transition_action") or "")
             transition_pending = lifecycle.get("transition_status") == "pending"
-            transition_generation = int(
-                lifecycle.get("transition_generation") or -1
-            )
+            transition_generation = int(lifecycle.get("transition_generation") or -1)
             if not lifecycle.get("dispatch_enabled") and not (
                 transition_pending
                 and transition_action in {"stop", "restart"}
@@ -441,6 +449,9 @@ class AgentWorkerSupervisor:
                 "dependency": lifecycle.get("dependency_interlock_dependency") or "",
                 "reason": lifecycle.get("dependency_interlock_reason") or "",
                 "changed_at": lifecycle.get("dependency_interlock_changed_at") or "",
+                "resume_requested": bool(
+                    lifecycle.get("dependency_interlock_resume_requested")
+                ),
             },
         }
 
@@ -475,6 +486,10 @@ class AgentWorkerSupervisor:
                 "dependency_interlock_dependency": dependency,
                 "dependency_interlock_reason": reason,
                 "dependency_interlock_changed_at": _utc_iso(),
+                "dependency_interlock_resume_requested": bool(
+                    lifecycle.get("dependency_interlock_resume_requested")
+                    or lifecycle.get("desired_state") == "running"
+                ),
             }
             if lifecycle["desired_state"] == "stopped":
                 lifecycle.update(interlock)
@@ -502,8 +517,7 @@ class AgentWorkerSupervisor:
                 self._runtime_state = "stopped"
                 discard_without_worker = True
             elif (
-                self._operation_task is not None
-                and not self._operation_task.done()
+                self._operation_task is not None and not self._operation_task.done()
             ) or lifecycle.get("transition_status") == "pending":
                 # An existing stop/restart fence already prevents dispatch.
                 lifecycle.update(interlock)
@@ -526,8 +540,10 @@ class AgentWorkerSupervisor:
         return self.status()
 
     async def clear_dependency_interlock(self, *, dependency: str) -> dict[str, Any]:
-        """Clear the dependency alarm without starting a new Agent epoch."""
+        """Clear the alarm and resume only when the pre-failure intent was running."""
+        should_resume = False
         async with self._lock:
+            self.ensure_terminal_audit_delivered()
             lifecycle = self.store.read()
             if lifecycle.get("state_error"):
                 raise AgentLifecycleConflict("lifecycle_state_unreadable")
@@ -550,6 +566,7 @@ class AgentWorkerSupervisor:
                         "stopped_at": _utc_iso(),
                     }
                 )
+            should_resume = bool(lifecycle.get("dependency_interlock_resume_requested"))
             lifecycle.update(
                 {
                     "dependency_interlock_active": False,
@@ -558,8 +575,22 @@ class AgentWorkerSupervisor:
                     "dependency_interlock_changed_at": _utc_iso(),
                 }
             )
+            if not should_resume:
+                lifecycle["dependency_interlock_resume_requested"] = False
             self.store.write(lifecycle)
-        return self.status()
+        if not should_resume:
+            return self.status()
+        status = await self.start(
+            operation_id=f"dependency-recovered-{int(time.time())}",
+            actor="system",
+            reason=f"{dependency}:recovered",
+            ip="local",
+        )
+        async with self._lock:
+            lifecycle = self.store.read()
+            lifecycle["dependency_interlock_resume_requested"] = False
+            self.store.write(lifecycle)
+        return status
 
     async def start(
         self,
@@ -577,8 +608,7 @@ class AgentWorkerSupervisor:
             if lifecycle.get("dependency_interlock_active"):
                 raise AgentLifecycleConflict("dependency_interlock_active")
             if (
-                self._operation_task is not None
-                and not self._operation_task.done()
+                self._operation_task is not None and not self._operation_task.done()
             ) or lifecycle.get("transition_status") == "pending":
                 raise AgentLifecycleConflict("lifecycle_operation_in_progress")
             if lifecycle["desired_state"] == "running":
@@ -656,6 +686,7 @@ class AgentWorkerSupervisor:
                 now = time.time()
                 lifecycle.update(
                     {
+                        "dependency_interlock_resume_requested": False,
                         "transition_action": "stop",
                         "transition_status": "completed",
                         "transition_operation_id": operation_id,
@@ -731,15 +762,11 @@ class AgentWorkerSupervisor:
         lifecycle.update(
             {
                 "dispatch_enabled": False,
-                "dispatch_generation": int(
-                    lifecycle.get("dispatch_generation") or 0
-                )
+                "dispatch_generation": int(lifecycle.get("dispatch_generation") or 0)
                 + 1,
                 "transition_action": action,
                 "transition_status": "pending",
-                "transition_generation": int(
-                    lifecycle.get("dispatch_generation") or 0
-                )
+                "transition_generation": int(lifecycle.get("dispatch_generation") or 0)
                 + 1,
                 "transition_operation_id": operation_id,
                 "transition_actor": actor,
@@ -752,6 +779,7 @@ class AgentWorkerSupervisor:
                 "transition_audit_status": "pending",
                 "transition_error": "",
                 "transition_blockers": {},
+                "transition_allow_preserved_outbox": allow_preserved_outbox,
                 "last_operation_id": operation_id,
                 "last_operation_action": action,
             }
@@ -851,6 +879,7 @@ class AgentWorkerSupervisor:
                                 if allow_preserved_outbox
                                 else {}
                             ),
+                            "transition_allow_preserved_outbox": False,
                         }
                     )
                     self.store.write(lifecycle)
@@ -871,6 +900,7 @@ class AgentWorkerSupervisor:
                             "transition_status": "completed",
                             "transition_completed_at": _utc_iso(),
                             "transition_audit_status": "pending",
+                            "transition_allow_preserved_outbox": False,
                         }
                     )
                     self.store.write(lifecycle)
@@ -939,8 +969,7 @@ class AgentWorkerSupervisor:
         current = self.store.read()
         if (
             not current.get("state_error")
-            and current.get("transition_action")
-            == lifecycle.get("transition_action")
+            and current.get("transition_action") == lifecycle.get("transition_action")
             and current.get("transition_operation_id")
             == lifecycle.get("transition_operation_id")
             and current.get("transition_status") == status

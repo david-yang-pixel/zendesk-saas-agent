@@ -88,12 +88,13 @@ class BrowserRelayReadinessMonitor:
         interlock = self._lifecycle.status().get("dependency_interlock") or {}
         interlock_active = bool(interlock.get("active"))
         interlock_dependency = str(interlock.get("dependency") or "")
+        resume_requested = bool(interlock.get("resume_requested"))
 
         if result.ok and result.status == "logged_in":
-            if interlock_active and interlock_dependency in {"", _DEPENDENCY}:
-                await self._lifecycle.clear_dependency_interlock(
-                    dependency=_DEPENDENCY
-                )
+            if (
+                interlock_active and interlock_dependency in {"", _DEPENDENCY}
+            ) or resume_requested:
+                await self._lifecycle.clear_dependency_interlock(dependency=_DEPENDENCY)
         elif (
             not interlock_active
             or interlock_dependency != _DEPENDENCY

@@ -57,7 +57,9 @@ async def _monitor_worker_runtime(
                 generation=generation,
             )
 
-        tasks = {BACKGROUND_TASK_NAMES[key]: app.get(key) for key in BACKGROUND_TASK_KEYS}
+        tasks = {
+            BACKGROUND_TASK_NAMES[key]: app.get(key) for key in BACKGROUND_TASK_KEYS
+        }
         if not enabled and not intake_quiesced:
             # Stop every source of new work first, but keep silence_waker alive
             # temporarily because it owns the bounded side-effect reconciler.
@@ -82,7 +84,12 @@ async def _monitor_worker_runtime(
                 for key, value in _outbox_health(store.state_dir).items()
                 if key != "manual_reconciliation_tickets" and int(value) > 0
             }
-            if int(getattr(manager, "active_count", 0) or 0) == 0 and not blockers:
+            allow_preserved_outbox = bool(
+                lifecycle.get("transition_allow_preserved_outbox")
+            )
+            if int(getattr(manager, "active_count", 0) or 0) == 0 and (
+                not blockers or allow_preserved_outbox
+            ):
                 silence_task = app.get(SILENCE_TASK_KEY)
                 if silence_task is not None and not silence_task.done():
                     silence_task.cancel()
