@@ -23,6 +23,10 @@ from zd_agent.services.app_context import (
     install_saas_app_context,
     trigger_queue,
 )
+from zd_agent.services.browser_relay_readiness import (
+    BROWSER_RELAY_READINESS_KEY,
+    BrowserRelayReadinessMonitor,
+)
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.instance_fence import verify_active_instance
 from zd_agent.services.saas_routes import (
@@ -45,6 +49,7 @@ async def handle_control_plane_health(request: web.Request) -> web.Response:
     lifecycle = agent_lifecycle(request.app)
     queue = trigger_queue(request.app)
     agent = lifecycle.status()
+    relay_readiness = request.app[BROWSER_RELAY_READINESS_KEY].status()
     ready = bool(
         agent["status"] == "running"
         or (
@@ -60,6 +65,7 @@ async def handle_control_plane_health(request: web.Request) -> web.Response:
             "service": "zd-agent-control-plane",
             "version": __version__,
             "control_plane": {"status": "running"},
+            "dependencies": {"zendesk_browser_relay": relay_readiness},
             "agent": {
                 "status": agent["status"],
                 "desired_state": agent["desired_state"],
@@ -111,6 +117,14 @@ def create_control_plane_app(cfg: Any | None = None) -> web.Application:
     state = TicketStateTracker(state_dir / "tickets.json")
     dedup = WebhookDedup(state_dir / "processed_webhooks.json", max_size=10000)
     supervisor = AgentWorkerSupervisor(state_dir=state_dir, trigger_queue=queue)
+    relay_readiness = BrowserRelayReadinessMonitor(
+        lifecycle=supervisor,
+        readiness_url=cfg.public_reply.browser_relay_readiness_url,
+        api_key=cfg.public_reply.browser_relay_api_key,
+        interval_seconds=cfg.public_reply.browser_relay_readiness_interval_seconds,
+        enabled=bool(cfg.public_reply.enabled and cfg.public_reply.browser_relay_url),
+    )
+    app[BROWSER_RELAY_READINESS_KEY] = relay_readiness
     session_view = ControlPlaneSessionView(supervisor.store)
     install_saas_app_context(
         app=app,
@@ -167,9 +181,14 @@ def create_control_plane_app(cfg: Any | None = None) -> web.Application:
     _register_control_routes(app, cfg)
 
     async def _startup(_app: web.Application) -> None:
+        # Probe before Worker initialization. A bad or missing login session
+        # closes the old epoch before any queued ticket can be resumed.
+        await relay_readiness.check_once()
         await supervisor.initialize()
+        relay_readiness.start()
 
     async def _cleanup(_app: web.Application) -> None:
+        await relay_readiness.close()
         await supervisor.close()
 
     app.on_startup.append(_startup)

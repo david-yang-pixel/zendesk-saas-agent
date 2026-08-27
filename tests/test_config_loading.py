@@ -6,7 +6,13 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from zd_agent.config import IntakeConfig, LLMConfig, ZendeskConfig, load_config
+from zd_agent.config import (
+    IntakeConfig,
+    LLMConfig,
+    PublicReplyConfig,
+    ZendeskConfig,
+    load_config,
+)
 
 
 SAAS_CONFIG_YAML = """
@@ -104,6 +110,8 @@ def saas_env(monkeypatch):
         "ZENDESK_BROWSER_RELAY_URL": "https://zendesk.smlershou.top/zendesk-reply-mcp/",
         "ZENDESK_BROWSER_RELAY_API_KEY": "relay_xxx",
         "ZENDESK_BROWSER_RELAY_TIMEOUT_SECONDS": "55",
+        "ZENDESK_BROWSER_RELAY_READINESS_URL": "http://127.0.0.1:18097/ready/",
+        "ZENDESK_BROWSER_RELAY_READINESS_INTERVAL_SECONDS": "45",
         "ZENDESK_FRESHNESS_CALLBACK_URL": (
             "https://agent.example.com/webhook/relay-pre-send-freshness/"
         ),
@@ -275,9 +283,21 @@ def test_config_loads_zendesk_browser_relay_env(saas_env, saas_config_file):
     )
     assert cfg.public_reply.browser_relay_api_key == "relay_xxx"
     assert cfg.public_reply.browser_relay_timeout_seconds == 55
+    assert (
+        cfg.public_reply.browser_relay_readiness_url
+        == "http://127.0.0.1:18097/ready"
+    )
+    assert cfg.public_reply.browser_relay_readiness_interval_seconds == 45
     assert cfg.public_reply.freshness_callback_url == (
         "https://agent.example.com/webhook/relay-pre-send-freshness"
     )
+
+
+def test_browser_relay_readiness_url_rejects_remote_secret_exfiltration() -> None:
+    with pytest.raises(ValidationError, match="must be a loopback URL"):
+        PublicReplyConfig(
+            browser_relay_readiness_url="https://attacker.example/collect"
+        )
 
 
 def test_config_loads_repos_aliases(saas_env, saas_config_file):

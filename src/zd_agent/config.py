@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import (
@@ -308,9 +309,34 @@ class PublicReplyConfig(BaseModel):
     browser_relay_url: str = ""
     browser_relay_api_key: str = ""
     browser_relay_timeout_seconds: int = 90
+    # Internal authenticated readiness endpoint. This must bypass public CDN
+    # and browser-facing proxy layers so the control plane checks the Relay
+    # process and its persistent Zendesk session directly.
+    browser_relay_readiness_url: str = "http://127.0.0.1:8097/ready"
+    browser_relay_readiness_interval_seconds: int = Field(
+        default=30,
+        ge=5,
+        le=3_600,
+    )
     # Public HTTPS endpoint the remote browser relay calls immediately before
     # clicking Send. Required when browser_relay_url is not loopback.
     freshness_callback_url: str = ""
+
+    @field_validator("browser_relay_readiness_url")
+    @classmethod
+    def _readiness_url_must_be_loopback(cls, value: str) -> str:
+        normalized = str(value).strip().rstrip("/")
+        parsed = urlparse(normalized)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("browser relay readiness URL must be a loopback URL")
+        return normalized
 
 
 class LoggingConfig(BaseModel):
@@ -420,6 +446,8 @@ class EnvSettings(BaseSettings):
     zendesk_browser_relay_url: str = ""
     zendesk_browser_relay_api_key: str = ""
     zendesk_browser_relay_timeout_seconds: int | None = None
+    zendesk_browser_relay_readiness_url: str = ""
+    zendesk_browser_relay_readiness_interval_seconds: int | None = None
     zendesk_freshness_callback_url: str = ""
     github_token: str | None = None  # GitHub PAT，设置后仓库自动用 HTTPS+token 认证
     anthropic_api_key: str = ""
@@ -597,6 +625,14 @@ def load_config(config_path: str = "config.yaml") -> AppConfig:
     if env.zendesk_browser_relay_timeout_seconds is not None:
         cfg.public_reply.browser_relay_timeout_seconds = (
             env.zendesk_browser_relay_timeout_seconds
+        )
+    if env.zendesk_browser_relay_readiness_url:
+        cfg.public_reply.browser_relay_readiness_url = (
+            env.zendesk_browser_relay_readiness_url.rstrip("/")
+        )
+    if env.zendesk_browser_relay_readiness_interval_seconds is not None:
+        cfg.public_reply.browser_relay_readiness_interval_seconds = (
+            env.zendesk_browser_relay_readiness_interval_seconds
         )
     if env.zendesk_freshness_callback_url:
         cfg.public_reply.freshness_callback_url = (

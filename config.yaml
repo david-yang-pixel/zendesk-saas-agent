@@ -54,6 +54,9 @@ public_reply:
   silent_initial_wait_seconds: 0
   silence_window_seconds: 0
   browser_relay_url: https://zendesk.smlershou.top/zendesk-reply-mcp
+  # 控制面直接检查同机 Relay，不经过 Cloudflare；失效时自动关闭 Agent 接入。
+  browser_relay_readiness_url: http://127.0.0.1:8097/ready
+  browser_relay_readiness_interval_seconds: 30
   # Reuse the already-deployed /webhook/ reverse-proxy boundary. The aiohttp
   # route itself still requires the browser-relay Bearer token.
   freshness_callback_url: https://zendesk.smlershou.top/webhook/relay-pre-send-freshness

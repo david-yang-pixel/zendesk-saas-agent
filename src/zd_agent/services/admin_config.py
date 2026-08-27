@@ -247,6 +247,19 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     ),
     FieldSpec("public_reply.browser_relay_url", "Browser relay URL", "工具与集成"),
     FieldSpec(
+        "public_reply.browser_relay_readiness_url",
+        "Browser relay readiness URL",
+        "工具与集成",
+        restart_required=True,
+    ),
+    FieldSpec(
+        "public_reply.browser_relay_readiness_interval_seconds",
+        "Browser relay readiness 检查间隔秒数",
+        "工具与集成",
+        input="number",
+        restart_required=True,
+    ),
+    FieldSpec(
         "public_reply.freshness_callback_url", "Freshness callback URL", "工具与集成"
     ),
     FieldSpec(

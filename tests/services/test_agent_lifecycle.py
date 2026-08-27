@@ -178,6 +178,143 @@ async def test_running_ingress_does_not_depend_on_worker_heartbeat(tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_dependency_interlock_immediately_fences_ingress_and_blocks_start(
+    tmp_path,
+) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(state_dir=state_dir, trigger_queue=queue)
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="running",
+            dispatch_enabled=True,
+            dispatch_generation=3,
+            generation=2,
+        )
+    )
+
+    await supervisor.engage_dependency_interlock(
+        dependency="zendesk_browser_relay",
+        reason="login_required",
+    )
+
+    status = supervisor.status()
+    assert status["accepting_events"] is False
+    assert status["dispatch_enabled"] is False
+    assert status["dependency_interlock"]["active"] is True
+    with pytest.raises(AgentLifecycleConflict, match="dependency_interlock_active"):
+        await supervisor.start()
+
+
+@pytest.mark.asyncio
+async def test_clearing_dependency_interlock_never_auto_starts_agent(tmp_path) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(state_dir=state_dir, trigger_queue=queue)
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="stopped",
+            dispatch_enabled=False,
+            dependency_interlock_active=True,
+            dependency_interlock_dependency="zendesk_browser_relay",
+            dependency_interlock_reason="login_required",
+        )
+    )
+
+    status = await supervisor.clear_dependency_interlock(
+        dependency="zendesk_browser_relay"
+    )
+
+    assert status["dependency_interlock"]["active"] is False
+    assert status["desired_state"] == "stopped"
+    assert status["process_running"] is False
+
+
+@pytest.mark.asyncio
+async def test_recovery_during_live_dependency_stop_keeps_interlock_closed(
+    tmp_path,
+) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(
+        state_dir=state_dir,
+        trigger_queue=queue,
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+    )
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="running",
+            dispatch_enabled=False,
+            dependency_interlock_active=True,
+            dependency_interlock_dependency="zendesk_browser_relay",
+            dependency_interlock_reason="login_required",
+        )
+    )
+    supervisor._process = MagicMock(pid=4321, returncode=None)
+
+    with pytest.raises(AgentLifecycleConflict, match="dependency_stop_in_progress"):
+        await supervisor.clear_dependency_interlock(
+            dependency="zendesk_browser_relay"
+        )
+
+    assert supervisor.accepting_events() is False
+
+
+@pytest.mark.asyncio
+async def test_dependency_interlock_stops_worker_while_preserving_ambiguous_outbox(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(
+        state_dir=state_dir,
+        trigger_queue=queue,
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+        stop_timeout_seconds=2,
+    )
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="running",
+            dispatch_enabled=True,
+            dispatch_generation=1,
+            generation=1,
+        )
+    )
+    await supervisor.initialize()
+    monkeypatch.setattr(
+        supervisor,
+        "_outbox_blockers",
+        lambda: {"public_reply_ambiguous": 1},
+    )
+
+    await supervisor.engage_dependency_interlock(
+        dependency="zendesk_browser_relay",
+        reason="login_required",
+    )
+    fence_generation = supervisor.store.read()["dispatch_generation"]
+    supervisor.store.write_worker_status(
+        {
+            "status": "running",
+            "pid": supervisor._process.pid,
+            "heartbeat_unix": time.time(),
+            "observed_dispatch_generation": fence_generation,
+            "dispatch_enabled": False,
+            "background_tasks_quiesced": True,
+            "active": 0,
+        }
+    )
+    await supervisor.wait_for_operation(timeout=3)
+
+    status = supervisor.status()
+    assert status["desired_state"] == "stopped"
+    assert status["process_running"] is False
+    assert status["transition_status"] == "completed"
+    assert status["transition_blockers"] == {"public_reply_ambiguous": 1}
+    await supervisor.close()
+
+
+@pytest.mark.asyncio
 async def test_explicit_stopped_state_keeps_worker_process_absent(tmp_path) -> None:
     state_dir = tmp_path / ".state"
     queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
