@@ -378,6 +378,26 @@ def test_admin_storage_config_page_is_not_blank() -> None:
         assert text in app_js
 
 
+def test_agent_start_and_restart_are_one_click_but_stop_still_requires_confirmation() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+
+    lifecycle_actions = app_js[
+        app_js.index("function openAgentAction") : app_js.index(
+            "function scheduleLifecyclePoll"
+        )
+    ]
+    assert 'if (action === "start" || action === "restart")' in lifecycle_actions
+    assert "lifecycleAutomaticReason(action)" in lifecycle_actions
+    assert 'title: "关闭 Agent"' in lifecycle_actions
+    assert 'button: "确认关闭"' in lifecycle_actions
+    assert "确认开启" not in lifecycle_actions
+    assert "确认重启" not in lifecycle_actions
+
+
 @pytest.mark.asyncio
 async def test_admin_static_asset_serves_known_files_and_rejects_unknown(
     tmp_path,
