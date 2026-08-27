@@ -555,10 +555,15 @@ class AgentWorkerSupervisor:
             )
             if lifecycle["desired_state"] != "stopped" and process_live:
                 raise AgentLifecycleConflict("dependency_stop_in_progress")
+            should_resume = bool(
+                lifecycle.get("dependency_interlock_resume_requested")
+                or (
+                    lifecycle.get("dependency_interlock_active")
+                    and lifecycle.get("desired_state") == "running"
+                )
+            )
             if lifecycle["desired_state"] != "stopped":
-                # Recovery detected during control-plane startup. Keep the
-                # operator-visible state stopped; readiness recovery never
-                # revives a prior Agent epoch automatically.
+                # Normalize the interrupted epoch before starting a fresh one.
                 lifecycle.update(
                     {
                         "desired_state": "stopped",
@@ -566,7 +571,6 @@ class AgentWorkerSupervisor:
                         "stopped_at": _utc_iso(),
                     }
                 )
-            should_resume = bool(lifecycle.get("dependency_interlock_resume_requested"))
             lifecycle.update(
                 {
                     "dependency_interlock_active": False,

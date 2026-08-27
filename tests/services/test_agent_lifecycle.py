@@ -268,6 +268,40 @@ async def test_dependency_recovery_auto_starts_agent_that_was_running(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_legacy_dependency_state_recovers_before_supervisor_initialization(
+    tmp_path,
+) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(
+        state_dir=state_dir,
+        trigger_queue=queue,
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+        stop_timeout_seconds=2,
+    )
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="running",
+            dispatch_enabled=False,
+            generation=2,
+            dependency_interlock_active=True,
+            dependency_interlock_dependency="zendesk_browser_relay",
+            dependency_interlock_reason="login_required",
+        )
+    )
+
+    status = await supervisor.clear_dependency_interlock(
+        dependency="zendesk_browser_relay"
+    )
+
+    assert status["desired_state"] == "running"
+    assert status["dispatch_enabled"] is True
+    assert status["generation"] == 3
+    assert status["process_running"] is True
+    await supervisor.close()
+
+
+@pytest.mark.asyncio
 async def test_restart_preserves_preexisting_dependency_resume_intent(tmp_path) -> None:
     state_dir = tmp_path / ".state"
     queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
