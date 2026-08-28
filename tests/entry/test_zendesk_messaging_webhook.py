@@ -81,6 +81,45 @@ async def test_messaging_webhook_enqueues_end_user_actor(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_messaging_webhook_persists_context_before_skipping_system_actor(
+    tmp_path,
+):
+    payload = {
+        "id": "evt-system-context",
+        "app": {"id": "app-1"},
+        "detail": {"id": "4186"},
+        "event": {
+            "actor": {"type": "system"},
+            "conversation": {"id": "conv-4186"},
+            "message": {"id": "msg-system", "body": "internal status update"},
+        },
+        "subject": "zen:ticket:4186",
+        "type": "zen:event-type:messaging_ticket.message_added",
+    }
+    request = FakeRequest(payload, tmp_path / "dedup.json")
+
+    with (
+        patch(
+            "zd_agent.services.zendesk_messaging_webhook.time.time",
+            return_value=1780460000.0,
+        ),
+        patch(
+            "zd_agent.services.zendesk_messaging_webhook.save_messaging_context",
+        ) as save_context,
+    ):
+        response = await handle_zendesk_messaging_webhook(request)
+
+    assert response.status == 200
+    assert response.text == "skip non-user actor"
+    assert trigger_queue(request.app).empty()
+    save_context.assert_called_once_with(
+        ticket_id="4186",
+        conversation_id="conv-4186",
+        app_id="app-1",
+    )
+
+
+@pytest.mark.asyncio
 async def test_messaging_webhook_immediately_marks_active_session_context_dirty(
     tmp_path,
 ):

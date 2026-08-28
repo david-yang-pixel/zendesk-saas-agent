@@ -1,24 +1,3 @@
-:root {
-  --brand: #155eef;
-  --brand-strong: #004eeb;
-  --brand-soft: #eaf2ff;
-  --canvas: #f4f7fb;
-  --sidebar: #edf5ff;
-  --surface: #ffffff;
-  --surface-subtle: #f8fafc;
-  --ink: #172b4d;
-  --muted: #64748b;
-  --line: #d8e2ef;
-  --line-strong: #bdcce0;
-  --success: #138a4b;
-  --success-soft: #e9f8ef;
-  --control-radius: 6px;
-  --panel-radius: 8px;
-  --shadow-soft: 0 1px 2px rgba(15, 35, 70, 0.05), 0 8px 24px rgba(15, 35, 70, 0.06);
-  --shadow-strong: 0 18px 48px rgba(15, 35, 70, 0.14);
-  --sidebar-width: 156px;
-}
-
 html,
 body {
   min-height: 100%;
@@ -758,25 +737,39 @@ textarea,
   }
 }
 
-/* 2026 command-center redesign: restrained operational UI. */
+/* Unified monochrome operations design, grounded in the OpenAI developer UI. */
 :root {
-  --brand: #1769ff;
-  --brand-strong: #0757e8;
-  --brand-soft: #edf4ff;
-  --canvas: #fbfbfa;
-  --sidebar: #ffffff;
+  --brand: #171717;
+  --brand-strong: #000000;
+  --brand-soft: #f1f1ef;
+  --canvas: #ffffff;
+  --sidebar: #f7f7f5;
   --surface: #ffffff;
-  --surface-subtle: #f6f7f8;
-  --ink: #161719;
-  --muted: #6c7179;
-  --line: #e5e6e8;
-  --line-strong: #d7d9dd;
+  --surface-subtle: #f7f7f5;
+  --ink: #171717;
+  --muted: #737373;
+  --line: #e7e7e4;
+  --line-strong: #d4d4d0;
   --success: #11845b;
   --success-soft: #eaf8f2;
+  --warn: #9a5b13;
+  --warn-bg: #fff7e8;
+  --danger: #c53d3d;
+  --danger-bg: #fff1f1;
+  --blue-700: #171717;
+  --blue-600: #262626;
+  --blue-100: #deded9;
+  --blue-50: #f1f1ef;
+  --border: #e7e7e4;
+  --border-strong: #d4d4d0;
+  --bg: #ffffff;
+  --text: #171717;
+  --shadow: none;
   --control-radius: 8px;
-  --panel-radius: 12px;
+  --panel-radius: 10px;
   --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.025);
-  --shadow-strong: 0 20px 60px rgba(0, 0, 0, 0.12);
+  --shadow-strong: 0 18px 48px rgba(0, 0, 0, 0.14);
+  --sidebar-width: 220px;
 }
 
 body {
@@ -856,8 +849,8 @@ body {
 }
 
 .nav button.active {
-  background: #f0f4fb;
-  color: #125fdc;
+  background: #e9e9e6;
+  color: var(--ink);
   font-weight: 680;
 }
 
@@ -900,7 +893,7 @@ body {
 
 .page-header {
   align-items: flex-start;
-  background: rgba(251, 251, 250, 0.92);
+  background: rgba(255, 255, 255, 0.94);
   border-bottom: 0;
   min-height: 126px;
   padding: 31px 30px 19px;
@@ -961,9 +954,21 @@ body {
 }
 
 .content {
-  margin: 0;
-  max-width: none;
+  margin: 0 auto;
+  max-width: 1680px;
   padding: 10px 30px 42px;
+  width: 100%;
+}
+
+.page-header > * {
+  position: relative;
+  z-index: 1;
+}
+
+.page-header {
+  margin: 0 auto;
+  max-width: 1680px;
+  width: 100%;
 }
 
 .btn {
@@ -1106,8 +1111,8 @@ body {
 }
 
 .session-slot.active {
-  background: #f7faff;
-  border-color: #b9d1fb;
+  background: #f4f4f2;
+  border-color: #cecec9;
 }
 
 .session-slot.empty {
@@ -1116,8 +1121,8 @@ body {
 }
 
 .slot-pulse {
-  background: var(--brand);
-  border: 3px solid #dceaff;
+  background: #171717;
+  border: 3px solid #deded9;
   border-radius: 50%;
   height: 9px;
   position: absolute;
@@ -1136,7 +1141,7 @@ body {
 }
 
 .text-action:hover {
-  color: var(--brand);
+  color: #000;
 }
 
 .command-ticket-table {
@@ -1235,7 +1240,7 @@ body {
 }
 
 .activity-mark {
-  background: #66a0ff;
+  background: #a3a3a3;
   border-radius: 50%;
   height: 6px;
   width: 6px;
@@ -1355,8 +1360,8 @@ body {
 }
 
 .model-registry-note {
-  background: #f5f8fd;
-  border: 1px solid #dfe7f3;
+  background: #f7f7f5;
+  border: 1px solid #e4e4e0;
   border-radius: 12px;
   display: grid;
   gap: 16px;
@@ -1434,8 +1439,8 @@ body {
 
 .model-picker-trigger:hover,
 .model-picker-trigger[aria-expanded="true"] {
-  border-color: #8bb4f5;
-  box-shadow: 0 0 0 3px rgba(37, 109, 230, 0.08);
+  border-color: #9b9b96;
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.07);
 }
 
 .model-picker-trigger > span {
@@ -1601,7 +1606,7 @@ body {
 
 .model-option:hover,
 .model-option:focus-visible {
-  background: #f6f9fe;
+  background: #f3f3f1;
   outline: none;
 }
 
@@ -1862,5 +1867,392 @@ body {
 
   .secure-note {
     position: static;
+  }
+}
+
+/* Monochrome component normalization. Keep one visual language across every page. */
+.page-eyebrow {
+  display: none;
+}
+
+input,
+select,
+textarea {
+  background: #fff;
+  border-color: var(--line-strong);
+  border-radius: 8px;
+  box-shadow: none;
+  color: var(--ink);
+  min-height: 40px;
+}
+
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: #a8a8a3;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+button:focus-visible {
+  border-color: #73736f;
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.08);
+  outline: none;
+}
+
+.filter-panel {
+  background: #f7f7f5;
+  border: 0;
+  border-radius: 10px;
+  box-shadow: none;
+  gap: 8px;
+  padding: 10px;
+  position: static;
+}
+
+.metric-card,
+.stat {
+  background: #fff;
+  box-shadow: none;
+  min-height: 96px;
+  padding: 16px 18px;
+}
+
+.metric-card::before,
+.stat::before {
+  display: none;
+}
+
+.metric-label,
+.stat-label {
+  color: #777773;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.metric-value,
+.stat-value {
+  color: var(--ink);
+  font-size: 27px;
+  font-weight: 650;
+  letter-spacing: -0.035em;
+  margin-top: 6px;
+}
+
+.metric-description {
+  color: #8b8b86;
+  font-size: 11px;
+}
+
+.card,
+.filter-panel,
+.storage-card,
+.auth-method-card,
+.integration-card,
+.instruction-safety-card,
+.instruction-editor-card,
+.instruction-save-panel,
+.ticket-center-board,
+.run-record-card {
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.card-header {
+  background: #fff;
+  border-bottom-color: var(--line);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  padding: 13px 16px;
+}
+
+.card-body {
+  padding: 16px;
+}
+
+.chip,
+.trigger-chip,
+.round-chip {
+  background: #f1f1ef;
+  border: 1px solid #deded9;
+  border-radius: 999px;
+  color: #53534f;
+  font-size: 10px;
+  font-weight: 600;
+  min-height: 24px;
+  padding: 4px 8px;
+}
+
+.chip.enabled {
+  background: var(--success-soft);
+  border-color: #cdebd8;
+  color: var(--success);
+}
+
+.warn-chip,
+.status-badge.deferred,
+.status-badge.running,
+.status-badge.timeout {
+  background: var(--warn-bg);
+  border-color: #ecd8ae;
+  color: var(--warn);
+}
+
+.danger-chip,
+.status-badge.failed {
+  background: var(--danger-bg);
+  border-color: #eccaca;
+  color: var(--danger);
+}
+
+.status-badge.success {
+  background: var(--success-soft);
+  border-color: #cdebd8;
+  color: var(--success);
+}
+
+.status-badge {
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  min-height: 24px;
+  padding: 4px 8px;
+}
+
+.run-record-card {
+  overflow-x: auto;
+}
+
+.run-table-header,
+.run-record-row {
+  gap: 10px;
+  padding: 12px 16px;
+}
+
+.run-table-header {
+  background: #f7f7f5;
+  border-bottom-color: var(--line);
+  color: #777773;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.run-record-item {
+  border-bottom-color: #ededeb;
+}
+
+.run-record-row {
+  color: #4f4f4b;
+  font-size: 12px;
+  min-height: 52px;
+}
+
+.run-record-row:hover {
+  background: #fafaf9;
+}
+
+.record-expand {
+  border-radius: 7px;
+  color: #5f5f5b;
+}
+
+.record-expand:hover {
+  background: #eeeeeb;
+}
+
+.ticket-cell {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.trigger-chip {
+  border-radius: 7px;
+  max-width: 100%;
+}
+
+.run-record-detail {
+  background: #fafaf9;
+  border-top-color: var(--line);
+}
+
+.round-timeline {
+  border-left-color: #d8d8d3;
+}
+
+.round-block::before {
+  background: #fff;
+  border-color: #c7c7c2;
+}
+
+.round-badge,
+.tool-call-row,
+.tool-call-summary,
+.event-trace,
+.instruction-code,
+.readonly-code {
+  background: #fff;
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.tool-call-summary:hover,
+.tool-call-summary:focus-visible {
+  background: #f7f7f5;
+  border-color: #c9c9c4;
+}
+
+.tool-call-body,
+.tool-call-body pre {
+  background: #f7f7f5;
+  border-color: var(--line);
+}
+
+.model-registry-note,
+.instruction-hidden-reasoning,
+.integration-note-grid > div,
+.modal-config-summary,
+.manager-intro,
+.manager-item,
+.modal-reason-box {
+  background: #f7f7f5;
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.instruction-tab,
+.ticket-status-tab {
+  background: #fff;
+  border-color: var(--line-strong);
+  color: #5f5f5b;
+}
+
+.instruction-tab:hover,
+.ticket-status-tab:hover,
+.instruction-tab.active,
+.ticket-status-tab.active {
+  background: #e9e9e6;
+  border-color: #cecec9;
+  color: var(--ink);
+}
+
+.drawer-backdrop,
+.modal-backdrop {
+  background: rgba(0, 0, 0, 0.34);
+}
+
+.drawer,
+.modal {
+  border-color: var(--line);
+  box-shadow: var(--shadow-strong);
+}
+
+.drawer-header,
+.modal-header,
+.modal-actions {
+  border-color: var(--line);
+}
+
+.drawer-header h2,
+.modal-header h2 {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizer:focus-visible::after,
+.sidebar-resizing .sidebar-resizer::after {
+  background: #171717;
+  box-shadow: 0 0 0 1px rgba(23, 23, 23, 0.08);
+}
+
+.sidebar-backdrop {
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.sidebar-health strong,
+.config-section-picker-head span,
+.config-section-picker-head span:first-child,
+.module-guide strong,
+.integration-card-head strong {
+  color: #4f4f4b;
+}
+
+.empty-state {
+  background: #fafaf9;
+  border-color: var(--line-strong);
+  color: #777773;
+}
+
+code,
+.instruction-code,
+.readonly-code {
+  background: #f7f7f5;
+  border-color: var(--line);
+  color: #3f3f3c;
+}
+
+.config-section-tile {
+  background: #fff;
+  border: 1px solid var(--line);
+  box-shadow: none;
+  color: var(--ink);
+  transform: none;
+}
+
+.config-section-tile:hover {
+  background: #fafaf9;
+  border-color: #c9c9c4;
+  box-shadow: none;
+  transform: none;
+}
+
+.config-section-tile.active {
+  background: #f1f1ef;
+  border-color: #a8a8a3;
+  box-shadow: none;
+}
+
+.config-section-tile strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.config-section-tile-head span,
+.config-section-tile-foot span {
+  color: #5f5f5b;
+  font-weight: 600;
+}
+
+.config-section-tile.active .config-section-tile-head span,
+.config-section-tile.active .config-section-tile-foot span {
+  color: var(--ink);
+}
+
+.module-overview,
+.config-section-grid,
+.config-section-panel {
+  background: #fff;
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.skeleton,
+.run-record-skeleton {
+  background: linear-gradient(90deg, #f1f1ef 0%, #fafaf9 42%, #e9e9e6 72%);
+}
+
+:where(button, input, select, textarea, a, [role="button"], [role="separator"]):focus-visible {
+  outline-color: rgba(23, 23, 23, 0.32);
+}
+
+@media (max-width: 900px) {
+  .content,
+  .page-header {
+    max-width: none;
   }
 }

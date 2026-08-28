@@ -125,16 +125,6 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     conversation_id = _extract_conversation_id(event)
     messaging_app_id = _extract_messaging_app_id(event)
 
-    if actor_type not in _CUSTOMER_ACTOR_TYPES:
-        logger.info(
-            "zendesk_messaging_webhook_skip_non_user",
-            event_id=event_id,
-            actor_type=actor_type,
-            ticket_id=ticket_id,
-            msg_id=msg_id,
-        )
-        return web.Response(status=200, text="skip non-user actor")
-
     if not ticket_id:
         logger.warning(
             "zendesk_messaging_webhook_missing_ticket_id",
@@ -142,6 +132,35 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
             subject=event.get("subject"),
         )
         return web.Response(status=400, text="missing ticket_id")
+
+    # Conversation identity is transport metadata, not a customer-trigger
+    # decision.  Persist it for every authenticated Zendesk event before
+    # filtering actor type, lifecycle watermark, or Agent availability.  A
+    # later internal trigger may need this context to deliver through the
+    # Browser Relay even when the event itself must not enqueue Agent work.
+    try:
+        save_messaging_context(
+            ticket_id=ticket_id,
+            conversation_id=conversation_id,
+            app_id=messaging_app_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "messaging_context_save_failed",
+            ticket_id=ticket_id,
+            error=str(e)[:200],
+        )
+
+    if actor_type not in _CUSTOMER_ACTOR_TYPES:
+        logger.info(
+            "zendesk_messaging_webhook_skip_non_user",
+            event_id=event_id,
+            actor_type=actor_type,
+            ticket_id=ticket_id,
+            msg_id=msg_id,
+            has_conversation_id=bool(conversation_id),
+        )
+        return web.Response(status=200, text="skip non-user actor")
 
     dedup = webhook_dedup(request.app)
     event_key = (
@@ -183,19 +202,6 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
     )
     if offline is not None:
         return offline
-    try:
-        save_messaging_context(
-            ticket_id=ticket_id,
-            conversation_id=conversation_id,
-            app_id=messaging_app_id,
-        )
-    except Exception as e:
-        logger.warning(
-            "messaging_context_save_failed",
-            ticket_id=ticket_id,
-            error=str(e)[:200],
-        )
-
     queue = trigger_queue(request.app)
     message = with_trigger_delay(
         {

@@ -41,10 +41,10 @@ const PASSWORD_ICONS = {
 };
 
 const SIDEBAR_FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-const SIDEBAR_DEFAULT_WIDTH = 156;
-const SIDEBAR_MIN_WIDTH = 140;
+const SIDEBAR_DEFAULT_WIDTH = 220;
+const SIDEBAR_MIN_WIDTH = 184;
 const SIDEBAR_MAX_WIDTH = 360;
-const SIDEBAR_WIDTH_STORAGE_KEY = "zd-agent.sidebar-width";
+const SIDEBAR_WIDTH_STORAGE_KEY = "zd-agent.sidebar-width.monochrome";
 let sidebarReturnFocus = null;
 let drawerReturnFocus = null;
 let modalReturnFocus = null;
@@ -3372,60 +3372,49 @@ function renderAgentLifecycleCard(agent) {
 }
 
 function openAgentAction(action) {
-  if (action === "start" || action === "restart") {
-    void submitAgentAction(action, lifecycleAutomaticReason(action));
-    return;
-  }
-  const config = {
-    title: "关闭 Agent",
-    warning: "Agent Worker 将彻底退出。控制面继续在线，但停机期间收到的工单事件会被永久丢弃，重新开启后不会补跑。",
-    button: "确认关闭"
-  };
-  showModal(config.title, `
-    <div class="lifecycle-warning">${escapeHtml(config.warning)}</div>
-    <label class="field-stack" for="lifecycle-reason">
-      <span>操作原因</span>
-      <textarea id="lifecycle-reason" rows="3" maxlength="500" placeholder="请填写本次操作原因"></textarea>
-    </label>
-    <div id="lifecycle-action-error" class="form-message danger-text" role="alert"></div>
-  `, [
-    { label: "取消", className: "secondary", onClick: closeModal },
-    { label: config.button, className: action === "stop" ? "danger" : "primary", onClick: () => submitAgentAction(action) }
-  ]);
-  document.getElementById("lifecycle-reason")?.focus();
+  void submitAgentAction(action);
 }
 
 function lifecycleAutomaticReason(action) {
-  return action === "start" ? "管理后台单击开启 Agent" : "管理后台单击重启 Agent";
+  return ({
+    start: "管理后台单击开启 Agent",
+    stop: "管理后台单击关闭 Agent",
+    restart: "管理后台单击重启 Agent"
+  })[action] || "管理后台 Agent 生命周期操作";
 }
 
-async function submitAgentAction(action, automaticReason = "") {
+async function submitAgentAction(action) {
   if (lifecycleActionInFlight) return;
-  const reason = automaticReason || document.getElementById("lifecycle-reason")?.value?.trim() || "";
-  const errorNode = document.getElementById("lifecycle-action-error");
-  if (reason.length < 3) {
-    if (errorNode) errorNode.textContent = "请填写至少 3 个字符的操作原因";
-    return;
-  }
+  const reason = lifecycleAutomaticReason(action);
   const confirmation = {
     start: "START_AGENT",
     stop: "STOP_AGENT",
     restart: "RESTART_AGENT"
   }[action];
+  if (!confirmation) {
+    showToast("不支持的 Agent 操作", "danger");
+    return;
+  }
+  const progressMessage = {
+    start: "正在开启 Agent",
+    stop: "正在安全关闭 Agent",
+    restart: "正在安全重启 Agent"
+  }[action];
+  const successMessage = {
+    start: "Agent 正在开启",
+    stop: "Agent 正在关闭",
+    restart: "Agent 正在重启"
+  }[action];
   const operationId = globalThis.crypto?.randomUUID?.() || `op-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   lifecycleActionInFlight = true;
-  if (automaticReason) showToast(action === "start" ? "正在开启 Agent" : "正在安全重启 Agent");
+  showToast(progressMessage);
   try {
     await api("/admin/api/agent/actions", {
       method: "POST",
       headers: { "X-ZD-Agent-Action": "lifecycle" },
       body: JSON.stringify({ action, confirmation, reason, operation_id: operationId })
     });
-    if (automaticReason) {
-      showToast(action === "start" ? "Agent 正在开启" : "Agent 正在重启", "success");
-    } else {
-      closeModal();
-    }
+    showToast(successMessage, "success");
     await renderDeployStatus();
     scheduleLifecyclePoll();
   } catch (err) {
@@ -3436,8 +3425,7 @@ async function submitAgentAction(action, automaticReason = "") {
         : err.message === "lifecycle_operation_in_progress"
           ? "另一个 Agent 生命周期操作仍在进行，请等待当前操作完成"
         : err.message || "操作失败";
-    if (errorNode) errorNode.textContent = message;
-    else showToast(message, "danger");
+    showToast(message, "danger");
   } finally {
     lifecycleActionInFlight = false;
   }

@@ -106,6 +106,27 @@ def test_desktop_sidebar_can_be_resized_and_restored() -> None:
     assert ".sidebar-resizer" in css
 
 
+def test_admin_theme_has_one_monochrome_token_source() -> None:
+    shell_css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("shell.css")
+        .read_text(encoding="utf-8")
+    )
+    styles_css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("styles.css")
+        .read_text(encoding="utf-8")
+    )
+
+    combined_css = f"{styles_css}\n{shell_css}"
+    assert combined_css.count(":root") == 1
+    assert "--brand: #171717" in shell_css
+    assert "--canvas: #ffffff" in shell_css
+    assert "--sidebar: #f7f7f5" in shell_css
+    assert "--brand: #155eef" not in combined_css
+    assert "--blue-700: #0033ff" not in combined_css
+
+
 def test_agent_instructions_page_exposes_safe_layers_and_never_hidden_reasoning() -> (
     None
 ):

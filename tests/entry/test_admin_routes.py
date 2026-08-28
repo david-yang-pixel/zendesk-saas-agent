@@ -378,7 +378,7 @@ def test_admin_storage_config_page_is_not_blank() -> None:
         assert text in app_js
 
 
-def test_agent_start_and_restart_are_one_click_but_stop_still_requires_confirmation() -> None:
+def test_agent_lifecycle_actions_are_one_click_with_automatic_audit_reasons() -> None:
     app_js = (
         resources.files("zd_agent.admin_static")
         .joinpath("app.js")
@@ -390,10 +390,12 @@ def test_agent_start_and_restart_are_one_click_but_stop_still_requires_confirmat
             "function scheduleLifecyclePoll"
         )
     ]
-    assert 'if (action === "start" || action === "restart")' in lifecycle_actions
-    assert "lifecycleAutomaticReason(action)" in lifecycle_actions
-    assert 'title: "关闭 Agent"' in lifecycle_actions
-    assert 'button: "确认关闭"' in lifecycle_actions
+    assert "void submitAgentAction(action)" in lifecycle_actions
+    assert 'stop: "管理后台单击关闭 Agent"' in lifecycle_actions
+    assert "const reason = lifecycleAutomaticReason(action)" in lifecycle_actions
+    assert 'title: "关闭 Agent"' not in lifecycle_actions
+    assert 'button: "确认关闭"' not in lifecycle_actions
+    assert 'id="lifecycle-reason"' not in lifecycle_actions
     assert "确认开启" not in lifecycle_actions
     assert "确认重启" not in lifecycle_actions
 
