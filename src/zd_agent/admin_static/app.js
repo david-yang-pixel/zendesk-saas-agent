@@ -41,6 +41,10 @@ const PASSWORD_ICONS = {
 };
 
 const SIDEBAR_FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const SIDEBAR_DEFAULT_WIDTH = 156;
+const SIDEBAR_MIN_WIDTH = 140;
+const SIDEBAR_MAX_WIDTH = 360;
+const SIDEBAR_WIDTH_STORAGE_KEY = "zd-agent.sidebar-width";
 let sidebarReturnFocus = null;
 let drawerReturnFocus = null;
 let modalReturnFocus = null;
@@ -568,6 +572,64 @@ function handleSidebarKeydown(event) {
     event.preventDefault();
     first.focus();
   }
+}
+
+function setSidebarWidth(value, { persist = true } = {}) {
+  const width = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, Math.round(Number(value) || SIDEBAR_DEFAULT_WIDTH)));
+  const resizer = document.getElementById("sidebar-resizer");
+  document.documentElement.style.setProperty("--sidebar-width", `${width}px`);
+  resizer?.setAttribute("aria-valuenow", String(width));
+  if (!persist) return width;
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width));
+  } catch (_error) {
+    // Storage may be unavailable in hardened browsers; the live width still works.
+  }
+  return width;
+}
+
+function initializeSidebarResize() {
+  const resizer = document.getElementById("sidebar-resizer");
+  if (!resizer || resizer.dataset.initialized === "true") return;
+  resizer.dataset.initialized = "true";
+
+  let savedWidth = SIDEBAR_DEFAULT_WIDTH;
+  try {
+    savedWidth = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)) || SIDEBAR_DEFAULT_WIDTH;
+  } catch (_error) {
+    savedWidth = SIDEBAR_DEFAULT_WIDTH;
+  }
+  setSidebarWidth(savedWidth, { persist: false });
+
+  const finishResize = event => {
+    if (!resizer.hasPointerCapture?.(event.pointerId)) return;
+    resizer.releasePointerCapture(event.pointerId);
+    document.body.classList.remove("sidebar-resizing");
+    setSidebarWidth(event.clientX);
+  };
+
+  resizer.addEventListener("pointerdown", event => {
+    if (window.matchMedia("(max-width: 900px)").matches || event.button !== 0) return;
+    event.preventDefault();
+    resizer.setPointerCapture(event.pointerId);
+    document.body.classList.add("sidebar-resizing");
+  });
+  resizer.addEventListener("pointermove", event => {
+    if (!resizer.hasPointerCapture?.(event.pointerId)) return;
+    setSidebarWidth(event.clientX, { persist: false });
+  });
+  resizer.addEventListener("pointerup", finishResize);
+  resizer.addEventListener("pointercancel", finishResize);
+  resizer.addEventListener("keydown", event => {
+    let delta = 0;
+    if (event.key === "ArrowLeft") delta = -8;
+    else if (event.key === "ArrowRight") delta = 8;
+    else return;
+    event.preventDefault();
+    const current = Number(resizer.getAttribute("aria-valuenow")) || SIDEBAR_DEFAULT_WIDTH;
+    setSidebarWidth(current + delta);
+  });
+  resizer.addEventListener("dblclick", () => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH));
 }
 
 async function login() {
@@ -1286,13 +1348,21 @@ function renderRound(round, index) {
 
 function renderToolCall(tool) {
   const ok = tool.status !== "failed";
+  const argumentsText = JSON.stringify(redactLogValue(tool.arguments || {}), null, 2);
+  const resultText = tool.message || tool.error || "无结果摘要";
   return `
-    <div class="tool-call-row">
-      <span class="truncate"><span class="${ok ? "success-text" : "danger-text"}">${ok ? "✓" : "×"}</span> ${escapeHtml(tool.name || "unknown_tool")}</span>
-      <span>${escapeHtml(tool.duration || "--")}</span>
-      <span class="${ok ? "muted" : "danger-text"} truncate">${escapeHtml(tool.message || tool.error || "")}</span>
-      <span>›</span>
-    </div>
+    <details class="tool-call-detail">
+      <summary class="tool-call-summary">
+        <span class="truncate"><span class="${ok ? "success-text" : "danger-text"}">${ok ? "✓" : "×"}</span> ${escapeHtml(tool.name || "unknown_tool")}</span>
+        <span>${escapeHtml(tool.duration || "--")}</span>
+        <span class="${ok ? "muted" : "danger-text"} truncate">${escapeHtml(resultText)}</span>
+        <span class="tool-call-chevron" aria-hidden="true">›</span>
+      </summary>
+      <div class="tool-call-body">
+        <div><strong>参数</strong><pre>${escapeHtml(argumentsText)}</pre></div>
+        <div><strong>结果摘要</strong><pre>${escapeHtml(resultText)}</pre></div>
+      </div>
+    </details>
   `;
 }
 
@@ -1398,6 +1468,7 @@ function extractToolCalls(item) {
     status: runStatus(tool),
     duration: tool.duration || tool.elapsed || formatDuration(durationMsFromItem(tool)),
     message: tool.error || tool.message || tool.summary || "",
+    arguments: tool.arguments || tool.args || tool.function?.arguments || {},
     round: numberFromKeys(tool, ["round", "round_number"])
   }));
 }
@@ -1451,6 +1522,7 @@ function traceToolFromEvent(event) {
     status: runStatus(event),
     duration: event.duration || event.elapsed || formatDuration(durationMsFromItem(event)),
     message: event.error || event.status || event.module || "",
+    arguments: event.arguments || event.args || {},
     round: numberFromKeys(event, ["round", "round_number"])
   };
 }
@@ -3926,4 +3998,5 @@ window.addEventListener("resize", () => {
 });
 document.addEventListener("scroll", positionModelPicker, true);
 
+initializeSidebarResize();
 init();

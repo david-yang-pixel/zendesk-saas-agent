@@ -70,6 +70,7 @@ def test_public_reply_blocks_non_english_latin_language(body: str) -> None:
 @pytest.mark.parametrize(
     "body",
     (
+        "Yes.",
         "Request failed.",
         "Dify API quota.",
         "API quota exhausted.",

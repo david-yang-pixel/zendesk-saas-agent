@@ -11,6 +11,19 @@ from zd_agent.casework.policies.reply_quality import public_reply_language_block
 
 _LANGUAGE_SEGMENT_RE = re.compile(r"(?<=[.!?])\s+|[\r\n]+")
 _WORD_JOINERS = frozenset({"'", "’", "-"})
+_ENGLISH_ACKNOWLEDGEMENT_SEGMENTS = frozenset(
+    {
+        ("hello",),
+        ("hi",),
+        ("no",),
+        ("ok",),
+        ("okay",),
+        ("sure",),
+        ("thanks",),
+        ("thank", "you"),
+        ("yes",),
+    }
+)
 _ENGLISH_TECHNICAL_FRAGMENT_WORDS = frozenset(
     {
         "account",
@@ -175,6 +188,10 @@ def _is_known_english_technical_fragment(words: list[str]) -> bool:
     )
 
 
+def _is_known_english_acknowledgement(words: list[str]) -> bool:
+    return tuple(word.casefold() for word in words) in _ENGLISH_ACKNOWLEDGEMENT_SEGMENTS
+
+
 def _contains_detected_language_function_word(
     language: Language | None,
     words: list[str],
@@ -195,6 +212,8 @@ def public_reply_english_blockers(body: str) -> tuple[str, ...]:
         if not words:
             continue
         saw_words = True
+        if _is_known_english_acknowledgement(words):
+            continue
         language = _DETECTOR.detect_language_of(segment.strip())
         if language != Language.ENGLISH and (
             language not in _AMBIGUOUS_SHORT_ENGLISH_DETECTIONS

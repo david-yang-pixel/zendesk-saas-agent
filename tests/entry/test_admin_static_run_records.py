@@ -49,6 +49,63 @@ def test_run_records_treat_deferred_as_a_distinct_non_success_status() -> None:
     assert "summary.failed || summary.timeout || summary.deferred" in app_js
 
 
+def test_run_record_tool_calls_expand_to_redacted_details() -> None:
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+    css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("styles.css")
+        .read_text(encoding="utf-8")
+    )
+
+    render_tool_call = app_js[
+        app_js.index("function renderToolCall") : app_js.index(
+            "function renderEventTimeline"
+        )
+    ]
+
+    assert '<details class="tool-call-detail">' in render_tool_call
+    assert '<summary class="tool-call-summary">' in render_tool_call
+    assert "tool.arguments" in render_tool_call
+    assert "redactLogValue" in render_tool_call
+    assert "参数" in render_tool_call
+    assert "结果摘要" in render_tool_call
+    assert ".tool-call-detail" in css
+    assert ".tool-call-summary" in css
+
+
+def test_desktop_sidebar_can_be_resized_and_restored() -> None:
+    html = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("index.html")
+        .read_text(encoding="utf-8")
+    )
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+    css = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("shell.css")
+        .read_text(encoding="utf-8")
+    )
+
+    assert 'id="sidebar-resizer"' in html
+    assert 'role="separator"' in html
+    assert 'aria-orientation="vertical"' in html
+    assert "initializeSidebarResize" in app_js
+    assert "setSidebarWidth" in app_js
+    assert 'event.key === "ArrowLeft"' in app_js
+    assert 'event.key === "ArrowRight"' in app_js
+    assert 'addEventListener("dblclick"' in app_js
+    assert "--sidebar-width" in css
+    assert ".sidebar-resizer" in css
+
+
 def test_agent_instructions_page_exposes_safe_layers_and_never_hidden_reasoning() -> (
     None
 ):
