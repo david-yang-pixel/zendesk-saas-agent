@@ -543,6 +543,68 @@ async def test_investigator_rejects_schema_invalid_arguments_before_execution(
     assert docs.calls == []
 
 
+@pytest.mark.parametrize(("model_limit", "expected_limit"), [(40, 10), ("20", 10)])
+async def test_investigator_normalizes_bounded_pagination_limit_before_validation(
+    model_limit: object,
+    expected_limit: int,
+) -> None:
+    registry = ToolRegistry()
+    github = FakeTool(
+        "github_search_prs",
+        parameters={
+            "type": "object",
+            "properties": {
+                "repo": {"type": "string"},
+                "query": {"type": "string"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "default": 5,
+                },
+            },
+            "required": ["repo", "query"],
+        },
+    )
+    registry.register(github)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-github",
+                        name="github_search_prs",
+                        arguments=json.dumps(
+                            {
+                                "repo": "langgenius/dify",
+                                "query": "webhook dispatch",
+                                "limit": model_limit,
+                            },
+                        ),
+                    ),
+                ],
+            ),
+            _response(content=_final_assessment("call-github")),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    await investigator.investigate(_context())
+
+    assert github.calls == [
+        {
+            "repo": "langgenius/dify",
+            "query": "webhook dispatch",
+            "limit": expected_limit,
+        }
+    ]
+
+
 def test_model_controlled_sql_columns_cannot_create_target_provenance() -> None:
     item = tool_evidence(
         call_id="call-sql",

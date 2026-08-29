@@ -101,6 +101,9 @@ _INSPECTOR_PRIMARY_ARGUMENTS = frozenset(
     },
 )
 _MAX_CONCURRENT_TOOL_CALLS = 3
+_BOUNDED_PAGINATION_ARGUMENTS = frozenset(
+    {"limit", "max_results", "page_size", "per_page"}
+)
 
 
 class InvestigationProtocolError(RuntimeError):
@@ -322,6 +325,55 @@ def _validate_schema_value(
             raise InvestigationProtocolError(f"{path} must be >= {minimum}")
         if isinstance(maximum, (int, float)) and value > maximum:
             raise InvestigationProtocolError(f"{path} must be <= {maximum}")
+
+
+def _normalize_bounded_pagination_args(
+    args: dict[str, Any],
+    parameters: dict[str, Any],
+) -> dict[str, Any]:
+    """Repair harmless model pagination drift before strict validation.
+
+    Pagination counts do not change the evidence target or authorize a wider
+    capability.  Clamping them to the declared tool boundary is therefore safer
+    than aborting the entire investigation.  Every other schema violation stays
+    fail-closed.
+    """
+    raw_properties: object = parameters.get("properties", {})
+    if not isinstance(raw_properties, dict):
+        return args
+    properties = cast(dict[str, object], raw_properties)
+    normalized = dict(args)
+    for name in _BOUNDED_PAGINATION_ARGUMENTS & normalized.keys():
+        raw_schema = properties.get(name)
+        if not isinstance(raw_schema, dict):
+            continue
+        schema = cast(dict[str, object], raw_schema)
+        if schema.get("type") != "integer":
+            continue
+        minimum = schema.get("minimum")
+        maximum = schema.get("maximum")
+        if not isinstance(minimum, (int, float)) and not isinstance(
+            maximum, (int, float)
+        ):
+            continue
+        raw_value = normalized[name]
+        if isinstance(raw_value, bool):
+            continue
+        if isinstance(raw_value, int):
+            value = raw_value
+        elif isinstance(raw_value, str):
+            try:
+                value = int(raw_value.strip())
+            except ValueError:
+                continue
+        else:
+            continue
+        if isinstance(minimum, (int, float)):
+            value = max(value, int(minimum))
+        if isinstance(maximum, (int, float)):
+            value = min(value, int(maximum))
+        normalized[name] = value
+    return normalized
 
 
 def _is_tenant_data_tool(name: str) -> bool:
@@ -713,7 +765,10 @@ class BoundedToolCaseInvestigator:
             tool = self._tools_by_name[call.name]
             args = _bind_trusted_tool_scope(
                 tool_name=call.name,
-                args=_arguments(call),
+                args=_normalize_bounded_pagination_args(
+                    _arguments(call),
+                    tool.parameters,
+                ),
                 parameters=tool.parameters,
                 context=context,
             )
