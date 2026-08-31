@@ -8,6 +8,7 @@ Without this poller, a missed messaging webhook can leave a v2 ticket waiting
 forever even though the customer has already replied.
 
 Loop per ticket in (in_silence_window | awaiting_customer | waiting_for_form)
+and retry-exhausted ownership with an already-notified customer follow-up
 ----------------------------------------------------------------------------
 1. Re-fetch ticket + conversation_log
 2. Status / assignee guard:
@@ -55,6 +56,15 @@ _TARGET_STATES = (
 # state is the source of truth for whether automation is analysing or waiting;
 # pending/solved/closed remain outside its scope.
 _OPEN_STATUSES = ("new", "open")
+
+
+def _is_retry_exhausted_followup_replay_candidate(rec: TicketState) -> bool:
+    return bool(
+        rec.state == "owned"
+        and rec.ownership_reason == "automation_retry_exhausted"
+        and rec.last_verdict == "owned_customer_followup_notified"
+        and rec.last_customer_comment_id
+    )
 
 
 def _now() -> datetime:
@@ -133,6 +143,30 @@ async def _process_one(
                 my_uid=my_uid,
                 prev_state=rec.state,
             )
+        return
+
+    # Before this recovery path existed, an operational retry handoff advanced
+    # the customer cursor after notifying Support.  Re-submit that exact message
+    # once so a recovered Agent can answer it.  The durable queue key deduplicates
+    # repeated poll scans, and the handler re-checks the ownership generation.
+    if _is_retry_exhausted_followup_replay_candidate(rec):
+        if not msgs:
+            return
+        latest_cid = str(msgs[-1].get("id") or "")
+        if not latest_cid:
+            return
+        logger.info(
+            "waiting_poller_retry_exhausted_followup_replay",
+            ticket_id=ticket_id,
+            comment_id=latest_cid,
+        )
+        await trigger_queue.put(
+            {
+                "source": "poller_new_msg",
+                "ticket_id": ticket_id,
+                "_queue_key": (f"retry_exhausted_followup:{ticket_id}:{latest_cid}"),
+            }
+        )
         return
 
     # Step 3: did the customer send a new message since last evaluation?
@@ -228,6 +262,14 @@ async def scan_once(
     candidates: list[str] = []
     for s in _TARGET_STATES:
         candidates.extend(state.list_by_state(s))
+    candidates.extend(
+        ticket_id
+        for ticket_id in state.list_by_state("owned")
+        if (
+            (record := state.get(ticket_id)) is not None
+            and _is_retry_exhausted_followup_replay_candidate(record)
+        )
+    )
     processed = 0
     for tid_str in candidates:
         rec = state.get(tid_str)

@@ -413,20 +413,27 @@ async def handle_trigger_message(
     }:
         from zd_agent.services.owned_customer_followup import (
             notify_owned_customer_followup,
+            reopen_retry_exhausted_ownership,
         )
 
-        await notify_owned_customer_followup(
+        reopened = reopen_retry_exhausted_ownership(
             ticket_id=ticket_id,
             customer_msgs=customer_msgs,
             state=state,
-            state_dir=Path(state.path).parent,
         )
-        return TriggerMessageResult(
-            True,
-            "owned_customer_followup",
-            ticket_id,
-            source,
-        )
+        if not reopened:
+            await notify_owned_customer_followup(
+                ticket_id=ticket_id,
+                customer_msgs=customer_msgs,
+                state=state,
+                state_dir=Path(state.path).parent,
+            )
+            return TriggerMessageResult(
+                True,
+                "owned_customer_followup",
+                ticket_id,
+                source,
+            )
 
     if human_takeover_fn is None:
         raise RuntimeError("human_takeover_fn is required for trigger message handling")

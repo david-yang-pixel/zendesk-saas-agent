@@ -589,6 +589,182 @@ async def test_customer_message_enters_v2_without_legacy_classification(
 
 
 @pytest.mark.asyncio
+async def test_new_customer_message_reopens_retry_exhausted_ownership(
+    tmp_path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        12345,
+        TicketState(
+            state="owned",
+            first_seen=now - timedelta(days=1),
+            last_customer_comment_id="cid-old",
+            last_agent_finish_ts=now - timedelta(seconds=10),
+            consecutive_agent_failures=3,
+            ownership_action="support",
+            ownership_reason="automation_retry_exhausted",
+            ownership_effect_reference="casework-effect:old-failure",
+        ),
+    )
+    notify = AsyncMock(return_value=True)
+
+    with patch(
+        "zd_agent.services.owned_customer_followup.notify_owned_customer_followup",
+        notify,
+    ):
+        result = await handle_trigger_message(
+            msg={"ticket_id": 12345, "source": "messaging_webhook"},
+            manager=MagicMock(),
+            state=state,
+            cfg=_cfg(),
+            log_path=tmp_path / "trigger.jsonl",
+            fetch_customer_messages_fn=AsyncMock(
+                return_value=(
+                    [
+                        {
+                            "id": "cid-old",
+                            "body": "original question",
+                            "created_at": (now - timedelta(minutes=10)).isoformat(),
+                        },
+                        {
+                            "id": "cid-new",
+                            "body": "new question after recovery",
+                            "created_at": now.isoformat(),
+                        },
+                    ],
+                    {"id": 12345, "status": "open"},
+                ),
+            ),
+            human_takeover_fn=AsyncMock(),
+            detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+        )
+
+    assert result.action == "casework_queued"
+    reopened = state.get(12345)
+    assert reopened is not None
+    assert reopened.state == "in_silence_window"
+    assert reopened.last_customer_comment_id == "cid-new"
+    assert reopened.last_agent_finish_ts is None
+    assert reopened.consecutive_agent_failures == 0
+    assert reopened.ownership_action == ""
+    assert reopened.ownership_reason == ""
+    assert reopened.ownership_effect_reference == ""
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notified_retry_exhausted_message_reopens_when_poller_replays(
+    tmp_path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        12345,
+        TicketState(
+            state="owned",
+            first_seen=now - timedelta(days=1),
+            last_customer_comment_id="cid-current",
+            consecutive_agent_failures=3,
+            last_verdict="owned_customer_followup_notified",
+            ownership_action="support",
+            ownership_reason="automation_retry_exhausted",
+            ownership_effect_reference="casework-effect:old-failure",
+        ),
+    )
+    notify = AsyncMock(return_value=True)
+
+    with patch(
+        "zd_agent.services.owned_customer_followup.notify_owned_customer_followup",
+        notify,
+    ):
+        result = await handle_trigger_message(
+            msg={"ticket_id": 12345, "source": "poller_new_msg"},
+            manager=MagicMock(),
+            state=state,
+            cfg=_cfg(),
+            log_path=tmp_path / "trigger.jsonl",
+            fetch_customer_messages_fn=AsyncMock(
+                return_value=(
+                    [
+                        {
+                            "id": "cid-current",
+                            "body": "message consumed by the old handoff path",
+                            "created_at": now.isoformat(),
+                        }
+                    ],
+                    {"id": 12345, "status": "open"},
+                ),
+            ),
+            human_takeover_fn=AsyncMock(),
+            detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+        )
+
+    assert result.action == "casework_queued"
+    reopened = state.get(12345)
+    assert reopened is not None
+    assert reopened.state == "in_silence_window"
+    assert reopened.last_customer_comment_id == "cid-current"
+    assert reopened.consecutive_agent_failures == 0
+    assert reopened.ownership_reason == ""
+    notify.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_customer_message_keeps_confirmed_human_ownership(
+    tmp_path,
+) -> None:
+    now = datetime.now(timezone.utc)
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        12345,
+        TicketState(
+            state="owned",
+            first_seen=now - timedelta(days=1),
+            last_customer_comment_id="cid-old",
+            ownership_action="engineering",
+            ownership_reason="confirmed_platform_defect",
+            ownership_effect_reference="casework-effect:engineering",
+        ),
+    )
+    notify = AsyncMock(return_value=True)
+
+    with patch(
+        "zd_agent.services.owned_customer_followup.notify_owned_customer_followup",
+        notify,
+    ):
+        result = await handle_trigger_message(
+            msg={"ticket_id": 12345, "source": "messaging_webhook"},
+            manager=MagicMock(),
+            state=state,
+            cfg=_cfg(),
+            log_path=tmp_path / "trigger.jsonl",
+            fetch_customer_messages_fn=AsyncMock(
+                return_value=(
+                    [
+                        {
+                            "id": "cid-new",
+                            "body": "new evidence for engineering",
+                            "created_at": now.isoformat(),
+                        }
+                    ],
+                    {"id": 12345, "status": "open"},
+                ),
+            ),
+            human_takeover_fn=AsyncMock(),
+            detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+        )
+
+    assert result.action == "owned_customer_followup"
+    owned = state.get(12345)
+    assert owned is not None
+    assert owned.state == "owned"
+    assert owned.ownership_action == "engineering"
+    assert owned.ownership_reason == "confirmed_platform_defect"
+    notify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_casework_mode_queues_v2_without_legacy_verdict_or_public_template(
     tmp_path,
 ) -> None:

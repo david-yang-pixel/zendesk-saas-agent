@@ -393,6 +393,67 @@ async def test_in_silence_window_is_scanned_only_for_missed_message(state, queue
 
 
 @pytest.mark.asyncio
+async def test_notified_retry_exhausted_message_is_queued_for_one_replay(
+    state,
+    queue,
+):
+    state.set(
+        1,
+        TicketState(
+            state="owned",
+            first_seen=_now() - timedelta(days=1),
+            last_customer_comment_id="current",
+            last_verdict="owned_customer_followup_notified",
+            ownership_action="support",
+            ownership_reason="automation_retry_exhausted",
+        ),
+    )
+
+    processed, fetch = await _scan(
+        state,
+        queue,
+        messages=[{"id": "current", "body": "please try again"}],
+        ticket=_ticket(status="open"),
+    )
+
+    assert processed == 1
+    fetch.assert_awaited_once_with(1, log_success=False)
+    assert queue.get_nowait() == {
+        "source": "poller_new_msg",
+        "ticket_id": 1,
+        "_queue_key": "retry_exhausted_followup:1:current",
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_exhausted_replay_yields_to_real_human_assignee(state, queue):
+    state.set(
+        1,
+        TicketState(
+            state="owned",
+            first_seen=_now() - timedelta(days=1),
+            last_customer_comment_id="current",
+            last_verdict="owned_customer_followup_notified",
+            ownership_action="support",
+            ownership_reason="automation_retry_exhausted",
+        ),
+    )
+
+    await _scan(
+        state,
+        queue,
+        messages=[{"id": "current", "body": "please try again"}],
+        ticket=_ticket(status="open", assignee_id=99999),
+    )
+
+    record = state.get(1)
+    assert record is not None
+    assert record.state == "externally_owned"
+    assert record.ownership_reason == "human_assignee"
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_open_ticket_does_not_cancel_an_in_silence_retry(state, queue):
     """An operational retry remains owned by the silence waker, not status polling."""
     window_end = _now() + timedelta(minutes=2)

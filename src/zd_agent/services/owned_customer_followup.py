@@ -19,6 +19,75 @@ _OWNED_STATES = frozenset({"owned", "externally_owned", "escalated_to_human"})
 PushNotification = Callable[..., Awaitable[dict[str, Any]]]
 
 
+def reopen_retry_exhausted_ownership(
+    *,
+    ticket_id: int,
+    customer_msgs: list[dict[str, Any]],
+    state: Any,
+) -> bool:
+    """Release transient-failure ownership when the customer adds new work."""
+    current = state.get(ticket_id)
+    if (
+        current is None
+        or current.state != "owned"
+        or current.ownership_reason != "automation_retry_exhausted"
+        or not customer_msgs
+    ):
+        return False
+    latest_id = str(customer_msgs[-1].get("id") or "").strip()
+    cursor_already_advanced_by_old_handoff = bool(
+        latest_id
+        and latest_id == str(current.last_customer_comment_id or "")
+        and current.last_verdict == "owned_customer_followup_notified"
+    )
+    if not latest_id or (
+        latest_id == str(current.last_customer_comment_id or "")
+        and not cursor_already_advanced_by_old_handoff
+    ):
+        return False
+
+    def _release(record: Any) -> Any:
+        if (
+            record is None
+            or record.state != "owned"
+            or record.ownership_reason != "automation_retry_exhausted"
+        ):
+            raise RuntimeError("retry-exhausted ownership changed during reopen")
+        record.state = "processed"
+        record.active_session_id = ""
+        record.silence_window_end = None
+        record.last_agent_finish_ts = None
+        record.consecutive_agent_failures = 0
+        if cursor_already_advanced_by_old_handoff:
+            record.last_customer_comment_id = None
+        record.ownership_action = ""
+        record.ownership_reason = ""
+        record.ownership_effect_reference = ""
+        record.last_verdict = "retry_exhausted_customer_followup_reopened"
+        return record
+
+    committed = state.update_if_revision(
+        ticket_id,
+        expected_revision=current.state_revision,
+        expected_state="owned",
+        mutate=_release,
+    )
+    if committed is None:
+        logger.info(
+            "retry_exhausted_customer_followup_lost_generation",
+            ticket_id=ticket_id,
+            comment_id=latest_id,
+        )
+        return False
+    logger.info(
+        "retry_exhausted_customer_followup_reopened",
+        ticket_id=ticket_id,
+        comment_id=latest_id,
+        previous_effect_reference=current.ownership_effect_reference,
+    )
+    return True
+
+
 async def notify_owned_customer_followup(
     *,
     ticket_id: int,
