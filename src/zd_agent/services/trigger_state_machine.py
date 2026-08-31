@@ -569,6 +569,7 @@ def apply_session_finished(
         ticket_state.active_session_id = ""
         ticket_state.silence_window_end = finished_at
         ticket_state.consecutive_agent_failures = 0
+        ticket_state.last_agent_finish_ts = None
         ticket_state.last_verdict = "customer_context_refresh"
         state.set(session.ticket_id, ticket_state)
         return True

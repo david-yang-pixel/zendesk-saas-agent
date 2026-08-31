@@ -174,6 +174,27 @@ def test_failed_processing_schedules_bounded_v2_retry(tmp_path):
     assert record.consecutive_agent_failures == 1
 
 
+def test_customer_context_refresh_bypasses_post_agent_cooldown(tmp_path):
+    tracker = _state(tmp_path)
+    session = AgentSession(ticket_id=2824)
+    processing = _processing(session)
+    processing.consecutive_agent_failures = 2
+    tracker.set(2824, processing)
+    session.status = SessionStatus.DEFERRED
+    session.customer_context_dirty = True
+    session.error_message = "stale_context: customer added a newer message"
+
+    assert apply_session_finished(tracker, session, now=NOW) is True
+
+    record = tracker.get(2824)
+    assert record is not None
+    assert record.state == "in_silence_window"
+    assert record.silence_window_end == NOW
+    assert record.last_verdict == "customer_context_refresh"
+    assert record.consecutive_agent_failures == 0
+    assert record.last_agent_finish_ts is None
+
+
 def test_public_reply_kill_switch_archives_draft_without_retry_or_ownership(
     tmp_path,
 ):

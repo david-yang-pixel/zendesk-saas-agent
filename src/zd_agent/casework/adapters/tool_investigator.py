@@ -450,16 +450,6 @@ def _validate_signoz_capability(
     tool_name: str,
     args: dict[str, Any],
 ) -> None:
-    if tool_name == "signoz_traceback" and _normalized_string(args, "id"):
-        if _normalized_string(args, "tenant"):
-            raise InvestigationProtocolError(
-                "signoz_traceback cannot combine id and tenant because id lookup is "
-                "not tenant-scoped; it is not permitted by the current case capability",
-            )
-        _deny_current_case_capability(
-            tool_name,
-            "exact log ID lookup is not tenant-scoped",
-        )
     if not _normalized_string(args, "tenant"):
         _deny_current_case_capability(
             tool_name,

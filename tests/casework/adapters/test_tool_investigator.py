@@ -694,7 +694,7 @@ async def test_raw_sql_is_not_exposed_even_when_it_spoofs_tenant_column() -> Non
     assert sql.calls == []
 
 
-async def test_signoz_traceback_rejects_ignored_tenant_with_exact_id() -> None:
+async def test_signoz_traceback_exact_id_is_exposed_and_executes() -> None:
     parameters = {
         "type": "object",
         "properties": {
@@ -712,27 +712,41 @@ async def test_signoz_traceback_rejects_ignored_tenant_with_exact_id() -> None:
                     ToolCallRequest(
                         id="call-traceback",
                         name="signoz_traceback",
-                        arguments=json.dumps(
-                            {"id": "log-from-other-tenant", "tenant": TENANT},
-                        ),
+                        arguments=json.dumps({"id": "log-from-other-tenant"}),
                     ),
                 ],
             ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": ["request_id"],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
         ],
     )
+    session = AgentSession(ticket_id=4001)
     investigator = BoundedToolCaseInvestigator(
         provider=provider,
         registry=registry,
-        session=AgentSession(ticket_id=4001),
+        session=session,
         clock=FakeClock(),
     )
 
-    with pytest.raises(
-        InvestigationProtocolError, match="cannot combine id and tenant"
-    ):
-        await investigator.investigate(_context())
+    result = await investigator.investigate(_context())
 
-    assert traceback.calls == []
+    assert traceback.calls == [{"id": "log-from-other-tenant", "tenant": TENANT}]
+    assert result.proposal.answer_status is AnswerStatus.INSUFFICIENT
+    [schema] = provider.calls[0][1] or []
+    assert schema.name == "signoz_traceback"
+    assert "id" in schema.parameters["properties"]
+    result_message = provider.calls[1][0][-1]
+    assert result_message["role"] == "tool"
+    assert session.tool_call_log[-1]["success"] is True
+    assert session.tool_call_log[-1]["call_id"] == "call-traceback"
 
 
 @pytest.mark.parametrize(
@@ -874,17 +888,6 @@ async def test_resolved_identity_rejects_other_tenant_scope_before_execution() -
                 "required": ["traceId"],
             },
             {"traceId": "trace-from-another-tenant"},
-        ),
-        (
-            "signoz_traceback",
-            {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "tenant": {"type": "string"},
-                },
-            },
-            {"id": "log-from-another-tenant"},
         ),
         (
             "zendesk_get_ticket",

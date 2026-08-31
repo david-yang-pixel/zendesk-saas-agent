@@ -97,6 +97,30 @@ async def test_session_success_notification_contains_actual_reply_body(
 
 
 @pytest.mark.asyncio
+async def test_retriable_session_failure_does_not_send_human_alert(
+    tmp_path,
+    monkeypatch,
+):
+    from zd_agent.services import feishu_notifications
+    from zd_agent.session.agent_session import AgentSession, SessionStatus
+
+    cfg = MagicMock()
+    cfg.resources.base_dir = str(tmp_path)
+    cfg.resources.state_dir = ".state"
+    session = AgentSession(ticket_id=4, delivery_attempt_id="attempt-1")
+    session.casework_attempt = 1
+    session.status = SessionStatus.FAILED
+    session.error_message = "recoverable tool capability mismatch"
+    push = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(feishu_notifications, "push_notification_card", push)
+
+    sent = await feishu_notifications.notify_session_outcome_durable(session, cfg)
+
+    assert sent is False
+    push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_session_failure_notification_is_urgent_and_has_failure_stage(
     tmp_path,
     monkeypatch,
@@ -108,6 +132,7 @@ async def test_session_failure_notification_is_urgent_and_has_failure_stage(
     cfg.resources.base_dir = str(tmp_path)
     cfg.resources.state_dir = ".state"
     session = AgentSession(ticket_id=4, delivery_attempt_id="attempt-4")
+    session.casework_attempt = 3
     session.status = SessionStatus.FAILED
     session.error_message = "provider timeout"
     session.casework_delivery_state = "failed"

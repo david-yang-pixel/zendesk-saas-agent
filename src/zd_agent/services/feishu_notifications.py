@@ -28,6 +28,7 @@ _GREETING_RE = re.compile(
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？])\s+")
 _REPLY_DIGEST_MAX_CHARS = 320
+_MAX_AUTOMATION_ATTEMPTS = 3
 
 
 def _has_successful_ticket_done(session: Any) -> bool:
@@ -134,7 +135,8 @@ def _outcome_kind(session: Any) -> str:
         "failed",
         "ambiguous",
     }:
-        return "failed"
+        attempt = int(getattr(session, "casework_attempt", 1) or 1)
+        return "failed" if attempt >= _MAX_AUTOMATION_ATTEMPTS else ""
     return ""
 
 
