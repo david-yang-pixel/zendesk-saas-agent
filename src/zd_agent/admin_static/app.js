@@ -187,6 +187,17 @@ const FIELD_SECTIONS = {
       ]
     },
     {
+      title: "Subagent 独立模型",
+      description: "每个槽位拥有自己的完整模型配置，不继承主模型、Base URL 或 API Key。",
+      paths: [
+        "subagents.enabled",
+        "subagents.max_parallel",
+        "subagents.max_tasks_per_run",
+        "subagents.task_timeout_seconds",
+        "subagents.slots"
+      ]
+    },
+    {
       title: "运行边界",
       description: "调查轮次和工具调用不设上限，仅限制单工单运行时长。",
       paths: [
@@ -779,7 +790,7 @@ async function render() {
     } else if (state.activeMenu === "存储配置") {
       await renderStorageConfig();
     } else if (state.activeMenu === "模型与运行") {
-      renderModelManagement();
+      await renderModelManagement();
     } else if (state.activeMenu === "Agent 指令") {
       await renderAgentInstructions();
     } else if (state.activeMenu === "Agent 策略") {
@@ -1904,8 +1915,12 @@ async function submitInstructionReset() {
   }
 }
 
-function renderModelManagement() {
+async function renderModelManagement() {
   const fields = fieldsFor("模型与运行");
+  const [taskTree, memory] = await Promise.all([
+    api("/admin/api/subagents/tasks?limit=50").catch(() => ({ count: 0, roots: [] })),
+    api("/admin/api/memory?limit=50").catch(() => ({ count: 0, entries: [] }))
+  ]);
   setContent(`
     <section class="model-registry-note">
       <div>
@@ -1922,9 +1937,94 @@ function renderModelManagement() {
     </section>
     ${renderModuleOverview("模型与运行", fields)}
     ${renderForm("模型与运行", fields)}
+    ${renderSubagentSessionTree(taskTree)}
+    ${renderMemoryReview(memory)}
   `);
   syncProviderSecretVisibility();
   syncSelectedModelCapabilities();
+}
+
+function renderSubagentSessionTree(payload) {
+  const roots = Array.isArray(payload?.roots) ? payload.roots : [];
+  return `
+    <section class="card subagent-session-tree">
+      <div class="card-header"><span>Root / Subagent 会话树</span><span class="chip">${escapeHtml(payload?.count || 0)} 个子任务</span></div>
+      <div class="card-body">
+        ${roots.map(root => `
+          <div class="subagent-root-node">
+            <strong>Root ${escapeHtml(root.root_session_id)}</strong>
+            <div class="subagent-child-list">
+              ${(root.tasks || []).map(task => `
+                <div class="subagent-child-node">
+                  <span class="status-badge">${escapeHtml(task.status)}</span>
+                  <div><strong>${escapeHtml(task.slot_id)}</strong><small>${escapeHtml(task.objective)}</small></div>
+                  <code>${escapeHtml(task.model_snapshot?.model || "-")}</code>
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `).join("") || emptyHtml("暂无 Subagent 运行记录")}
+      </div>
+    </section>
+  `;
+}
+
+function renderMemoryReview(payload) {
+  const entries = Array.isArray(payload?.entries) ? payload.entries : [];
+  return `
+    <section class="card memory-review-panel">
+      <div class="card-header">
+        <div><span>长期记忆审核</span><p>仅审核通过的历史导航信息可被检索；仍不能作为当前工单证据。</p></div>
+        <span class="chip">${entries.length} 条</span>
+      </div>
+      <div class="card-body memory-review-list">
+        ${entries.map(entry => `
+          <article class="memory-review-item">
+            <div><span class="status-badge">${escapeHtml(entry.status)}</span><strong>${escapeHtml(entry.title)}</strong></div>
+            <p>${escapeHtml(entry.content)}</p>
+            <small>${escapeHtml(entry.kind)} · ${escapeHtml(entry.proposed_by || "-")}</small>
+            ${entry.status === "proposed" ? `
+              <div class="memory-review-actions">
+                <button class="btn primary" onclick='openMemoryReview(${escapeHtml(JSON.stringify(entry.id))}, "approve")'>审核通过</button>
+                <button class="btn danger" onclick='openMemoryReview(${escapeHtml(JSON.stringify(entry.id))}, "reject")'>拒绝</button>
+              </div>
+            ` : ""}
+          </article>
+        `).join("") || emptyHtml("暂无长期记忆")}
+      </div>
+    </section>
+  `;
+}
+
+function openMemoryReview(id, action) {
+  showModal(action === "approve" ? "审核通过长期记忆" : "拒绝长期记忆", `
+    <p>该操作只改变历史记忆的检索资格，不会把它升级为当前工单证据。</p>
+    <textarea id="memory-review-reason" placeholder="填写审核依据"></textarea>
+    <div id="memory-review-error" class="danger-text"></div>
+  `, [
+    { label: "取消", className: "secondary", onClick: closeModal },
+    { label: "确认", className: action === "approve" ? "primary" : "danger", onClick: () => reviewMemoryEntry(id, action) }
+  ]);
+}
+
+async function reviewMemoryEntry(id, action) {
+  const reason = document.getElementById("memory-review-reason")?.value.trim() || "";
+  const error = document.getElementById("memory-review-error");
+  if (!reason) {
+    if (error) error.textContent = "审核依据不能为空";
+    return;
+  }
+  try {
+    await api("/admin/api/memory/actions", {
+      method: "POST",
+      body: JSON.stringify({ id, action, reason })
+    });
+    closeModal();
+    await renderModelManagement();
+    showToast("长期记忆审核状态已更新", "success");
+  } catch (err) {
+    if (error) error.textContent = err.message || "审核失败";
+  }
 }
 
 function modelDiscoveryContext() {
@@ -2748,6 +2848,7 @@ function renderFieldRow(field) {
 
 function fieldHelpText(field) {
   if (field.secret) return "可替换密钥";
+  if (field.input === "subagent_models") return "每个槽位独立配置；新根会话生效";
   if (field.input === "model_picker") return "展开下拉框，按当前 Base URL 获取模型";
   if (field.input === "reasoning_effort") return "按所选模型限制档位；新会话立即生效";
   if (field.input === "vision_capability") return "由所选模型自动决定，不提供人工开关";
@@ -2799,6 +2900,9 @@ function renderInput(field) {
   if (field.input === "model_picker") {
     return renderModelPickerInput(field);
   }
+  if (field.input === "subagent_models") {
+    return renderSubagentModelsInput(field);
+  }
   if (field.input === "vision_capability") {
     return renderVisionCapabilityInput(field);
   }
@@ -2834,6 +2938,168 @@ function renderInput(field) {
     ? ' oninput="invalidateModelCatalog()"'
     : "";
   return `<input id="${id}" data-path="${field.path}" type="${inputType}" value="${escapeHtml(displayValue)}"${modelCatalogRefresh}>`;
+}
+
+function subagentSlotsValue() {
+  const value = state.values["subagents.slots"];
+  return Array.isArray(value) ? value : [];
+}
+
+function renderSubagentModelsInput(field) {
+  const slots = subagentSlotsValue();
+  return `
+    <div id="subagent-models-editor" class="subagent-models-editor">
+      <input
+        id="field-${field.path}"
+        data-path="${field.path}"
+        type="hidden"
+        value="${escapeHtml(JSON.stringify(slots))}"
+      >
+      <div class="subagent-models-note">
+        <strong>独立运行配置</strong>
+        <span>每个 Subagent 都有独立 Tool Loop、会话和模型；不继承主模型。API Key 仅写入 secret 存储。</span>
+      </div>
+      <div id="subagent-model-cards">${renderSubagentModelCards(slots)}</div>
+      <button type="button" class="btn secondary" onclick="addSubagentSlot()">新增 Subagent 模型槽位</button>
+    </div>
+  `;
+}
+
+function renderSubagentModelCards(slots) {
+  if (!slots.length) return `<div class="subagent-model-empty">尚未配置独立 Subagent 模型。</div>`;
+  return slots.map((slot, index) => renderSubagentModelCard(slot, index)).join("");
+}
+
+function renderSubagentModelCard(slot, index) {
+  const llm = slot.llm || {};
+  const provider = String(llm.provider || "openai").toLowerCase();
+  const keyConfigured = llm.api_key_configured === true;
+  const modelListId = `subagent-model-list-${index}`;
+  return `
+    <section class="subagent-model-card" data-subagent-index="${index}">
+      <div class="subagent-model-card-head">
+        <div><strong>${escapeHtml(slot.label || slot.id || `Subagent ${index + 1}`)}</strong><span>ZendeskCasework · 独立模型循环</span></div>
+        <button type="button" class="btn danger" onclick="removeSubagentSlot(${index})">删除</button>
+      </div>
+      <div class="subagent-model-grid" oninput="syncSubagentSlotsInput()" onchange="syncSubagentSlotsInput()">
+        <label>槽位 ID<input data-subagent-field="id" value="${escapeHtml(slot.id || "")}" placeholder="evidence-reader"></label>
+        <label>显示名称<input data-subagent-field="label" value="${escapeHtml(slot.label || "")}" placeholder="Evidence reader"></label>
+        <label>状态<select data-subagent-field="enabled"><option value="true" ${slot.enabled !== false ? "selected" : ""}>启用</option><option value="false" ${slot.enabled === false ? "selected" : ""}>停用</option></select></label>
+        <label>Provider<select data-subagent-llm="provider"><option value="openai" ${provider === "openai" ? "selected" : ""}>OpenAI Compatible</option><option value="anthropic" ${provider === "anthropic" ? "selected" : ""}>Anthropic</option></select></label>
+        <label class="wide">Base URL<input data-subagent-llm="base_url" value="${escapeHtml(llm.base_url || "")}" placeholder="https://api.example.com/v1"></label>
+        <label class="wide">独立 API Key<input data-subagent-llm="api_key" type="password" placeholder="${keyConfigured ? "已配置；留空保持不变" : "输入该槽位专用密钥"}"></label>
+        <label class="wide">模型
+          <div class="subagent-model-discovery-row">
+            <input data-subagent-llm="model" list="${modelListId}" value="${escapeHtml(llm.model || "")}" placeholder="选择或输入模型 ID">
+            <datalist id="${modelListId}"></datalist>
+            <button type="button" class="btn secondary" onclick="discoverSubagentModels(${index})">读取模型</button>
+          </div>
+          <small data-subagent-discovery-status>按本槽位 Base URL 与独立凭据读取</small>
+        </label>
+        <label>推理强度<input data-subagent-llm="reasoning_effort" value="${escapeHtml(llm.reasoning_effort || "")}" placeholder="low / medium / high"></label>
+        <label>温度<input data-subagent-llm="temperature" type="number" step="0.1" value="${escapeHtml(llm.temperature ?? 0.2)}"></label>
+        <label>请求超时<input data-subagent-llm="timeout" type="number" value="${escapeHtml(llm.timeout ?? 120)}"></label>
+        <label>最大输出 token<input data-subagent-llm="max_tokens" type="number" value="${escapeHtml(llm.max_tokens ?? 8192)}"></label>
+        <label>上下文窗口<input data-subagent-llm="context_window_tokens" type="number" value="${escapeHtml(llm.context_window_tokens ?? 272000)}"></label>
+        <label>视觉输入<select data-subagent-llm="enable_vision_input"><option value="true" ${llm.enable_vision_input !== false ? "selected" : ""}>支持</option><option value="false" ${llm.enable_vision_input === false ? "selected" : ""}>不支持</option></select></label>
+      </div>
+    </section>
+  `;
+}
+
+function collectSubagentSlots(root = document) {
+  return [...root.querySelectorAll("[data-subagent-index]")].map(card => {
+    const value = selector => card.querySelector(selector)?.value ?? "";
+    const integer = selector => Number.parseInt(value(selector), 10);
+    const number = selector => Number.parseFloat(value(selector));
+    const llm = {
+      provider: value('[data-subagent-llm="provider"]').trim(),
+      model: value('[data-subagent-llm="model"]').trim(),
+      reasoning_effort: value('[data-subagent-llm="reasoning_effort"]').trim(),
+      enable_vision_input: value('[data-subagent-llm="enable_vision_input"]') === "true",
+      temperature: number('[data-subagent-llm="temperature"]'),
+      base_url: value('[data-subagent-llm="base_url"]').trim() || null,
+      timeout: integer('[data-subagent-llm="timeout"]'),
+      max_tokens: integer('[data-subagent-llm="max_tokens"]'),
+      context_window_tokens: integer('[data-subagent-llm="context_window_tokens"]')
+    };
+    const apiKey = value('[data-subagent-llm="api_key"]').trim();
+    if (apiKey) llm.api_key = apiKey;
+    return {
+      id: value('[data-subagent-field="id"]').trim(),
+      label: value('[data-subagent-field="label"]').trim(),
+      enabled: value('[data-subagent-field="enabled"]') === "true",
+      llm
+    };
+  });
+}
+
+function syncSubagentSlotsInput(root = document) {
+  const hidden = root.querySelector('[data-path="subagents.slots"]');
+  if (hidden) hidden.value = JSON.stringify(collectSubagentSlots(root));
+}
+
+function replaceSubagentModelCards(slots) {
+  const cards = document.getElementById("subagent-model-cards");
+  if (!cards) return;
+  cards.innerHTML = renderSubagentModelCards(slots);
+  syncSubagentSlotsInput();
+}
+
+function addSubagentSlot() {
+  const slots = collectSubagentSlots();
+  let sequence = slots.length + 1;
+  let id = `subagent-${sequence}`;
+  while (slots.some(slot => slot.id === id)) id = `subagent-${++sequence}`;
+  slots.push({
+    id,
+    label: `Subagent ${sequence}`,
+    enabled: true,
+    llm: {
+      provider: "openai",
+      model: "",
+      reasoning_effort: "",
+      enable_vision_input: true,
+      temperature: 0.2,
+      base_url: null,
+      timeout: 120,
+      max_tokens: 8192,
+      context_window_tokens: 272000
+    }
+  });
+  replaceSubagentModelCards(slots);
+}
+
+function removeSubagentSlot(index) {
+  const slots = collectSubagentSlots();
+  slots.splice(index, 1);
+  replaceSubagentModelCards(slots);
+}
+
+async function discoverSubagentModels(index) {
+  const card = document.querySelector(`[data-subagent-index="${index}"]`);
+  if (!card) return;
+  const value = selector => card.querySelector(selector)?.value.trim() || "";
+  const status = card.querySelector("[data-subagent-discovery-status]");
+  if (status) status.textContent = "正在读取模型…";
+  try {
+    const result = await api("/admin/api/models/discover", {
+      method: "POST",
+      body: JSON.stringify({
+        provider: value('[data-subagent-llm="provider"]'),
+        base_url: value('[data-subagent-llm="base_url"]'),
+        api_key: value('[data-subagent-llm="api_key"]'),
+        credential_scope: "subagent",
+        credential_slot_id: value('[data-subagent-field="id"]')
+      })
+    });
+    const list = card.querySelector("datalist");
+    const models = Array.isArray(result.models) ? result.models : [];
+    if (list) list.innerHTML = models.map(item => `<option value="${escapeHtml(item.id)}"></option>`).join("");
+    if (status) status.textContent = `已读取 ${models.length} 个模型；未改动当前选择`;
+  } catch (err) {
+    if (status) status.textContent = err.message || "读取模型失败";
+  }
 }
 
 function renderModelPickerInput(field) {
@@ -3117,6 +3383,7 @@ function collectChanges() {
 }
 
 function collectChangesFrom(root) {
+  syncSubagentSlotsInput(root);
   const changes = {};
   root.querySelectorAll("[data-path]").forEach(input => {
     const path = input.getAttribute("data-path");

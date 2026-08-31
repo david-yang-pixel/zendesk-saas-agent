@@ -46,6 +46,9 @@ from zd_agent.services.app_context import (
     trigger_queue,
 )
 from zd_agent.services.agent_lifecycle import AgentLifecycleConflict
+from zd_agent.memory.models import MemoryStatus
+from zd_agent.memory.store import MemoryStore
+from zd_agent.subagents.store import SubagentStore
 
 SESSION_COOKIE = "zd_admin_session"
 ADMIN_HANDLERS_KEY = web.AppKey("zd_agent.admin_handlers", dict)
@@ -2370,7 +2373,16 @@ async def handle_admin_model_discovery(request: web.Request) -> web.Response:
 
     env = EnvSettings()
     api_key = str(payload.get("api_key") or "").strip()
-    if not api_key:
+    credential_scope = str(payload.get("credential_scope") or "main").strip()
+    if not api_key and credential_scope == "subagent":
+        slot_id = str(payload.get("credential_slot_id") or "").strip()
+        api_key = admin_config(request.app).subagent_api_key(
+            slot_id,
+            app_config(request.app),
+        )
+        if not api_key:
+            return _json_error("subagent_model_api_key_is_required", status=400)
+    elif not api_key:
         api_key = (
             env.anthropic_api_key if provider == "anthropic" else env.openai_api_key
         )
@@ -2449,6 +2461,99 @@ async def handle_admin_model_discovery(request: web.Request) -> web.Response:
             "latency_ms": round((time.monotonic() - started) * 1000),
         }
     )
+
+
+async def handle_admin_subagent_tasks(request: web.Request) -> web.Response:
+    """Return recent child sessions grouped by immutable root session ID."""
+
+    _, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        limit = int(request.query.get("limit", "100"))
+    except ValueError:
+        return _json_error("invalid_limit", status=400)
+    root_filter = str(request.query.get("root_session_id") or "").strip()
+    store = SubagentStore(admin_config(request.app).state_dir / "subagent_tasks.sqlite3")
+    tasks = store.list_recent(limit=limit, root_session_id=root_filter)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for task in tasks:
+        grouped.setdefault(task.root_session_id, []).append(
+            task.model_dump(mode="json")
+        )
+    roots = [
+        {"root_session_id": root_id, "tasks": root_tasks}
+        for root_id, root_tasks in grouped.items()
+    ]
+    return web.json_response({"count": len(tasks), "roots": roots})
+
+
+async def handle_admin_memory_entries(request: web.Request) -> web.Response:
+    """List review-gated long-term memories; working memory stays session-local."""
+
+    _, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    raw_status = str(request.query.get("status") or "").strip()
+    try:
+        status = MemoryStatus(raw_status) if raw_status else None
+        limit = int(request.query.get("limit", "100"))
+    except ValueError:
+        return _json_error("invalid_memory_filter", status=400)
+    store = MemoryStore(admin_config(request.app).state_dir / "casework_memory.sqlite3")
+    entries = store.list_entries(status=status, limit=limit)
+    return web.json_response(
+        {
+            "count": len(entries),
+            "authority": "historical_guidance",
+            "may_support_current_claims": False,
+            "entries": [entry.model_dump(mode="json") for entry in entries],
+        }
+    )
+
+
+async def handle_admin_memory_action(request: web.Request) -> web.Response:
+    """Approve or reject one proposed long-term memory with an audit record."""
+
+    username, unauthorized = _require_admin(request)
+    if unauthorized is not None:
+        return unauthorized
+    try:
+        payload = await request.json()
+    except Exception:
+        return _json_error("bad_request", status=400)
+    entry_id = str(payload.get("id") or "").strip()
+    action = str(payload.get("action") or "").strip().lower()
+    reason = str(payload.get("reason") or "").strip()
+    if not entry_id or action not in {"approve", "reject"}:
+        return _json_error("invalid_memory_action", status=400)
+    if not reason:
+        return _json_error("reason_is_required", status=400)
+    store = MemoryStore(admin_config(request.app).state_dir / "casework_memory.sqlite3")
+    before = store.get(entry_id, include_inactive=True)
+    if before is None:
+        return _json_error("memory_not_found", status=404)
+    entry = (
+        store.approve(entry_id, reviewer=username or "admin")
+        if action == "approve"
+        else store.reject(entry_id, reviewer=username or "admin")
+    )
+    admin_config(request.app).audit_event(
+        actor=username or "admin",
+        ip=_remote_ip(request),
+        action=f"memory_{action}",
+        reason=reason,
+        diff=[
+            {
+                "path": f"memory.entries.{entry_id}",
+                "label": "长期记忆审核",
+                "group": "存储配置",
+                "old": before.status.value,
+                "new": entry.status.value,
+            }
+        ],
+    )
+    return web.json_response({"ok": True, "entry": entry.model_dump(mode="json")})
 
 
 async def handle_admin_deploy_status(request: web.Request) -> web.Response:
@@ -2721,6 +2826,9 @@ def register_admin_routes(
         "integration_check": handle_admin_integration_check,
         "operations_status": handle_admin_operations_status,
         "model_discovery": handle_admin_model_discovery,
+        "subagent_tasks": handle_admin_subagent_tasks,
+        "memory_entries": handle_admin_memory_entries,
+        "memory_action": handle_admin_memory_action,
         "deploy_status": handle_admin_deploy_status,
         "agent_lifecycle": handle_admin_agent_lifecycle,
         "agent_action": handle_admin_agent_action,
@@ -2767,6 +2875,9 @@ def register_admin_routes(
     app.router.add_post("/admin/api/integrations/check", handle_admin_integration_check)
     app.router.add_get("/admin/api/operations/status", handle_admin_operations_status)
     app.router.add_post("/admin/api/models/discover", handle_admin_model_discovery)
+    app.router.add_get("/admin/api/subagents/tasks", handle_admin_subagent_tasks)
+    app.router.add_get("/admin/api/memory", handle_admin_memory_entries)
+    app.router.add_post("/admin/api/memory/actions", handle_admin_memory_action)
     app.router.add_get("/admin/api/deploy/status", handle_admin_deploy_status)
     app.router.add_get("/admin/api/agent/lifecycle", handle_admin_agent_lifecycle)
     app.router.add_post("/admin/api/agent/actions", handle_admin_agent_action)

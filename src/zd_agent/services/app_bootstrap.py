@@ -33,6 +33,7 @@ from zd_agent.services.public_reply_handoff_effects import (
 from zd_agent.services.webhook_dedup import WebhookDedup
 from zd_agent.services.v2_state_migration import migrate_ticket_state_to_v2
 from zd_agent.services.agent_lifecycle import NEW_EPOCH_ENV
+from zd_agent.subagents.store import SubagentStore
 from zd_agent.trigger.state_store import TicketStateTracker
 
 if TYPE_CHECKING:
@@ -85,6 +86,15 @@ def prepare_saas_app_runtime(
     state_dir = apply_saved_admin_config(cfg)
     verify_active_instance(state_dir)
 
+    interrupted_subagents = SubagentStore(
+        state_dir / "subagent_tasks.sqlite3"
+    ).recover_interrupted()
+    if interrupted_subagents:
+        logger.warning(
+            "interrupted_subagent_tasks_recovered",
+            count=interrupted_subagents,
+        )
+
     internal_note_path = state_dir / "post_public_internal_note_outbox.sqlite3"
     if not cfg.public_reply.internal_audit_note_enabled and internal_note_path.exists():
         discarded = PostPublicInternalNoteStore(internal_note_path).discard_all()
@@ -105,7 +115,7 @@ def prepare_saas_app_runtime(
         )
     recovered_ticket_ids: list[int] = []
     start_new_epoch = os.environ.get(NEW_EPOCH_ENV, "0") == "1"
-    for ticket_id in ([] if start_new_epoch else state.list_by_state("processing")):
+    for ticket_id in [] if start_new_epoch else state.list_by_state("processing"):
         try:
             numeric_ticket_id = int(ticket_id)
         except ValueError:

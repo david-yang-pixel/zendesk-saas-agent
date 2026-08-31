@@ -1,7 +1,7 @@
 from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 
 
-def test_casework_registry_exposes_only_approved_read_capabilities() -> None:
+def test_casework_registry_exposes_the_complete_safe_business_surface() -> None:
     registry = create_casework_tool_registry()
     names = {tool.name for tool in registry.list_tools()}
 

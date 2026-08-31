@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from zd_agent.config import AppConfig, CustomMcpServiceConfig
+from zd_agent.config import AppConfig, CustomMcpServiceConfig, SubagentSlotConfig
 from zd_agent.runtime.openai_reasoning import (
     reasoning_capabilities_manifest,
     validate_reasoning_effort,
@@ -63,6 +63,36 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         "活跃上下文窗口 token",
         "模型与运行",
         input="number",
+    ),
+    FieldSpec(
+        "subagents.enabled",
+        "启用 Subagent 编排",
+        "模型与运行",
+        input="boolean",
+    ),
+    FieldSpec(
+        "subagents.max_parallel",
+        "Subagent 并发上限",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "subagents.max_tasks_per_run",
+        "单次主会话 Subagent 任务上限",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "subagents.task_timeout_seconds",
+        "Subagent 单任务超时秒数",
+        "模型与运行",
+        input="number",
+    ),
+    FieldSpec(
+        "subagents.slots",
+        "独立 Subagent 模型",
+        "模型与运行",
+        input="subagent_models",
     ),
     FieldSpec("openai.api_key", "OpenAI API Key", "模型与运行", secret=True),
     FieldSpec("anthropic.api_key", "Anthropic API Key", "模型与运行", secret=True),
@@ -453,6 +483,8 @@ ADMIN_AUTH_DEFAULTS: dict[str, Any] = {
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,63}$")
 CUSTOM_MCP_PATH = "mcp_services.custom"
 CUSTOM_MCP_SECRET_PATH = "mcp_services.custom_api_keys"
+SUBAGENT_SLOTS_PATH = "subagents.slots"
+SUBAGENT_SECRET_PATH = "subagents.slot_api_keys"
 
 ADMIN_OVERRIDE_PATH_ALIASES = {
     "trigger_decider.silence_minutes_default": "intake.silence_minutes_default",
@@ -510,6 +542,8 @@ def _coerce_value(spec: FieldSpec, value: Any) -> Any:
         return _coerce_mention_aliases(value)
     if spec.path == "mcp_services.custom":
         return _coerce_custom_mcp_services(value)
+    if spec.path == SUBAGENT_SLOTS_PATH:
+        return _coerce_subagent_slots(value)
     if spec.input == "boolean":
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on", "开启"}
@@ -590,6 +624,25 @@ def _coerce_custom_mcp_services(value: Any) -> list[CustomMcpServiceConfig]:
     return services
 
 
+def _coerce_subagent_slots(value: Any) -> list[SubagentSlotConfig]:
+    payload = _json_payload(value, path=SUBAGENT_SLOTS_PATH)
+    if payload is None:
+        return []
+    if not isinstance(payload, list):
+        raise ValueError("subagents.slots must be a JSON array")
+    slots: list[SubagentSlotConfig] = []
+    seen: set[str] = set()
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("subagents.slots items must be JSON objects")
+        slot = SubagentSlotConfig.model_validate(item)
+        if slot.id in seen:
+            raise ValueError(f"duplicate subagent slot id: {slot.id}")
+        seen.add(slot.id)
+        slots.append(slot)
+    return slots
+
+
 def _public_custom_mcp_services(
     services: Any,
     *,
@@ -605,6 +658,26 @@ def _public_custom_mcp_services(
         name = str(data.get("name") or "")
         if include_secret_status:
             data["api_key_configured"] = bool(secret or (api_keys or {}).get(name, ""))
+        public.append(data)
+    return public
+
+
+def _public_subagent_slots(
+    slots: Any,
+    *,
+    api_keys: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    public: list[dict[str, Any]] = []
+    for slot in slots or []:
+        data = _jsonable(slot)
+        if not isinstance(data, dict):
+            continue
+        llm = data.get("llm")
+        if not isinstance(llm, dict):
+            continue
+        secret = str(llm.pop("api_key", "") or "")
+        slot_id = str(data.get("id") or "")
+        llm["api_key_configured"] = bool(secret or (api_keys or {}).get(slot_id, ""))
         public.append(data)
     return public
 
@@ -828,6 +901,32 @@ class AdminConfigStore:
                     keys.setdefault(service.name, service.mcp_api_key)
         return keys
 
+    def _subagent_api_keys(self, cfg: AppConfig | None = None) -> dict[str, str]:
+        secrets_data = self._read_yaml(self.secrets_path)
+        subagent_secrets = secrets_data.get("subagents")
+        stored = (
+            subagent_secrets.get("slot_api_keys")
+            if isinstance(subagent_secrets, dict)
+            else {}
+        )
+        keys = {
+            str(slot_id): str(value)
+            for slot_id, value in (
+                stored.items() if isinstance(stored, dict) else []
+            )
+            if value
+        }
+        if cfg is not None:
+            for slot in cfg.subagents.slots:
+                if slot.llm.api_key:
+                    keys.setdefault(slot.id, slot.llm.api_key)
+        return keys
+
+    def subagent_api_key(self, slot_id: str, cfg: AppConfig | None = None) -> str:
+        """Return one child credential for server-side model discovery only."""
+
+        return self._subagent_api_keys(cfg).get(slot_id, "")
+
     def _redact_legacy_custom_mcp_audit_history(
         self,
         api_keys: dict[str, str],
@@ -876,6 +975,13 @@ class AdminConfigStore:
                     source,
                     api_keys=self._custom_mcp_api_keys(cfg),
                 )
+            elif spec.path == SUBAGENT_SLOTS_PATH:
+                override = self._override_value(spec.path)
+                source = override if override is not None else cfg.subagents.slots
+                values[spec.path] = _public_subagent_slots(
+                    source,
+                    api_keys=self._subagent_api_keys(cfg),
+                )
             else:
                 override = self._override_value(spec.path)
                 values[spec.path] = _jsonable(
@@ -916,6 +1022,27 @@ class AdminConfigStore:
                         merged["mcp_api_key"] = existing_keys.get(original_name, "")
                     merged_services.append(merged)
                 normalized_value = _coerce_custom_mcp_services(merged_services)
+            elif spec.path == SUBAGENT_SLOTS_PATH:
+                raw_slots = _json_payload(value, path=SUBAGENT_SLOTS_PATH)
+                if not isinstance(raw_slots, list):
+                    raise ValueError("subagents.slots must be a JSON array")
+                existing_keys = self._subagent_api_keys(cfg)
+                merged_slots: list[Any] = []
+                for item in raw_slots:
+                    if not isinstance(item, dict):
+                        merged_slots.append(item)
+                        continue
+                    merged = dict(item)
+                    original_id = str(
+                        merged.pop("_original_id", "") or merged.get("id") or ""
+                    )
+                    llm = dict(merged.get("llm") or {})
+                    llm.pop("api_key_configured", None)
+                    if not str(llm.get("api_key") or ""):
+                        llm["api_key"] = existing_keys.get(original_id, "")
+                    merged["llm"] = llm
+                    merged_slots.append(merged)
+                normalized_value = _coerce_subagent_slots(merged_slots)
             else:
                 normalized_value = _coerce_value(spec, value)
             _validate_normalized_value(spec, normalized_value)
@@ -1006,6 +1133,12 @@ class AdminConfigStore:
                     api_keys=self._custom_mcp_api_keys(cfg),
                 )
                 shown_new = _public_custom_mcp_services(new_value)
+            elif path == SUBAGENT_SLOTS_PATH:
+                old_value = _public_subagent_slots(
+                    _get_attr(cfg, path),
+                    api_keys=self._subagent_api_keys(cfg),
+                )
+                shown_new = _public_subagent_slots(new_value)
             else:
                 old_value = _jsonable(_get_attr(cfg, path))
                 shown_new = _jsonable(new_value)
@@ -1070,6 +1203,23 @@ class AdminConfigStore:
                         service.name: service.mcp_api_key
                         for service in value
                         if service.mcp_api_key
+                    },
+                )
+            elif path == SUBAGENT_SLOTS_PATH:
+                _deep_set(overrides, path, _public_subagent_slots(value))
+                public_slots = _flatten(overrides).get(path, [])
+                for slot in public_slots:
+                    llm = slot.get("llm") if isinstance(slot, dict) else None
+                    if isinstance(llm, dict):
+                        llm.pop("api_key_configured", None)
+                _deep_set(overrides, path, public_slots)
+                _deep_set(
+                    secrets_data,
+                    SUBAGENT_SECRET_PATH,
+                    {
+                        slot.id: slot.llm.api_key
+                        for slot in value
+                        if slot.llm.api_key
                     },
                 )
             else:
@@ -1221,6 +1371,18 @@ class AdminConfigStore:
                             update={"mcp_api_key": api_keys.get(service.name, "")}
                         )
                         for service in coerced
+                    ]
+                elif path == SUBAGENT_SLOTS_PATH:
+                    api_keys = self._subagent_api_keys(cfg)
+                    coerced = [
+                        slot.model_copy(
+                            update={
+                                "llm": slot.llm.model_copy(
+                                    update={"api_key": api_keys.get(slot.id, "")}
+                                )
+                            }
+                        )
+                        for slot in coerced
                     ]
                 nonsecret_values[path] = coerced
 

@@ -14,6 +14,15 @@ llm:
   max_tokens: 0
   # 单次活跃请求上下文容量；整单只受 agent 运行时限约束。
   context_window_tokens: 272000
+
+# ZendeskCasework 只有一种 Agent 类型。Subagent 是独立子会话/Tool Loop，
+# 每个槽位必须在管理后台配置完整模型与独立凭据，不继承上面的主模型。
+subagents:
+  enabled: false
+  max_parallel: 2
+  max_tasks_per_run: 6
+  task_timeout_seconds: 600
+  slots: []
 resources:
   base_dir: /opt/zd-agent/resources
   saas_codebase_dir: saas源代码

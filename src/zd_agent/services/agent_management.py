@@ -87,6 +87,25 @@ def build_agent_config_manifest(
         "agent": {
             "max_concurrent_sessions": cfg.agent.max_concurrent_sessions,
         },
+        "subagents": {
+            "enabled": cfg.subagents.enabled,
+            "max_parallel": cfg.subagents.max_parallel,
+            "max_tasks_per_run": cfg.subagents.max_tasks_per_run,
+            "task_timeout_seconds": cfg.subagents.task_timeout_seconds,
+            "slots": [
+                {
+                    "id": slot.id,
+                    "label": slot.label,
+                    "enabled": slot.enabled,
+                    "provider": slot.llm.provider,
+                    "model": slot.llm.model,
+                    "base_url": slot.llm.base_url,
+                    "reasoning_effort": slot.llm.reasoning_effort or None,
+                    "api_key_configured": _configured(slot.llm.api_key),
+                }
+                for slot in cfg.subagents.slots
+            ],
+        },
         "casework": {
             "mode": cfg.casework.mode.value,
         },
@@ -102,12 +121,12 @@ def build_agent_config_manifest(
                 ),
             },
         },
-        "hindsight": {
-            "enabled": False,
-            "base_url": "",
-            "bank_id": "",
-            "recall_budget": "",
-            "api_key_configured": False,
+        "memory": {
+            "enabled": True,
+            "working_memory": "shared_per_root_session",
+            "long_term_memory": "review_gated",
+            "authority": "historical_guidance",
+            "may_support_current_claims": False,
         },
         "zendesk": {
             "subdomain": cfg.zendesk.subdomain,

@@ -88,6 +88,12 @@ def test_auto_archive_hashes_dot_segment_session_id(tmp_path, monkeypatch) -> No
 
 def test_archive_meta_retains_typed_casework_and_exact_evidence_calls() -> None:
     session = AgentSession(ticket_id=3798, session_id="evidence-session")
+    session.root_session_id = "root-session"
+    session.parent_session_id = "root-session"
+    session.session_kind = "subagent"
+    session.subagent_task_id = "task-1"
+    session.subagent_slot_id = "reader"
+    session.runtime_config_digest = "digest-1"
     session.status = SessionStatus.COMPLETED
     session.casework_disposition = "engineering_escalation"
     session.casework_reply_kind = "solution"
@@ -113,6 +119,14 @@ def test_archive_meta_retains_typed_casework_and_exact_evidence_calls() -> None:
     )
 
     assert meta["casework_phase"] == "complete"
+    assert meta["orchestration"] == {
+        "root_session_id": "root-session",
+        "parent_session_id": "root-session",
+        "session_kind": "subagent",
+        "subagent_task_id": "task-1",
+        "subagent_slot_id": "reader",
+        "runtime_config_digest": "digest-1",
+    }
     assert meta["casework"] == {
         "disposition": "engineering_escalation",
         "reply_kind": "solution",

@@ -38,6 +38,8 @@ def evidence_contract(
     tool_name: str,
 ) -> tuple[EvidenceAuthority, tuple[ClaimRole, ...]]:
     lowered = tool_name.casefold()
+    if lowered.startswith(("memory_", "subagent_")):
+        return EvidenceAuthority.HISTORICAL_GUIDANCE, ()
     if lowered == "sql_query":
         return EvidenceAuthority.CURRENT_AUTHORITATIVE, (
             ClaimRole.PRODUCT_FACT,

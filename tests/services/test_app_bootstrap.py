@@ -30,6 +30,8 @@ from zd_agent.services.casework_effect_store import (
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
 from zd_agent.services.public_reply_internal_note import PostPublicInternalNoteStore
 from zd_agent.session.agent_session import AgentSession, SessionStatus
+from zd_agent.subagents.models import SubagentTaskStatus
+from zd_agent.subagents.store import SubagentStore
 from zd_agent.tools.public_reply_delivery import PublicReplyTransportError
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
 
@@ -86,6 +88,33 @@ def test_prepare_runtime_discards_disabled_internal_audit_note_intents(
     )
 
     assert PostPublicInternalNoteStore(note_store.path).pending_count() == 0
+
+
+def test_prepare_runtime_recovers_interrupted_subagent_tasks(tmp_path) -> None:
+    cfg = _cfg(tmp_path)
+    state_dir = tmp_path / ".state"
+    store = SubagentStore(state_dir / "subagent_tasks.sqlite3")
+    task = store.create(
+        root_session_id="root-1",
+        parent_session_id="root-1",
+        ticket_id=4001,
+        slot_id="reader",
+        objective="Inspect logs",
+        idempotency_key="logs",
+        config_digest="digest-1",
+    )
+    store.mark_running(task.id, session_id="child-1")
+
+    prepare_saas_app_runtime(
+        app=web.Application(),
+        cfg=cfg,
+        manager=MagicMock(),
+    )
+
+    recovered = SubagentStore(store.path).get(task.id)
+    assert recovered is not None
+    assert recovered.status is SubagentTaskStatus.FAILED
+    assert recovered.error_code == "process_interrupted"
 
 
 def test_configured_session_manager_loads_saved_concurrency_before_creation(

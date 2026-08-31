@@ -27,6 +27,9 @@ from zd_agent.services.app_context import (
     install_agent_lifecycle,
 )
 from zd_agent.services.agent_lifecycle import AgentLifecycleStore
+from zd_agent.memory.models import MemoryKind, MemoryStatus
+from zd_agent.memory.store import MemoryStore
+from zd_agent.subagents.store import SubagentStore
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
 TEST_ADMIN_PASSWORD = "test-admin-password"
@@ -111,6 +114,9 @@ def test_register_admin_routes_installs_expected_routes(tmp_path) -> None:
     assert "/admin/api/integrations/check" in route_paths
     assert "/admin/api/operations/status" in route_paths
     assert "/admin/api/models/discover" in route_paths
+    assert "/admin/api/subagents/tasks" in route_paths
+    assert "/admin/api/memory" in route_paths
+    assert "/admin/api/memory/actions" in route_paths
     assert "/admin/api/agent/lifecycle" in route_paths
     assert "/admin/api/agent/actions" in route_paths
     assert "/admin/static/{name}" in route_paths
@@ -355,7 +361,16 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "reasoningUnsupportedReason" in app_js
     assert "reasoning_capabilities" in app_js
     assert "trigger_decider" not in app_js
-    assert "llm.subagent" not in app_js
+    assert "subagents.slots" in app_js
+    assert "renderSubagentModelsInput" in app_js
+    assert "collectSubagentSlots" in app_js
+    assert "discoverSubagentModels" in app_js
+    assert "不继承主模型" in app_js
+    assert "独立 API Key" in app_js
+    assert "renderSubagentSessionTree" in app_js
+    assert "/admin/api/subagents/tasks" in app_js
+    assert "reviewMemoryEntry" in app_js
+    assert "/admin/api/memory/actions" in app_js
     assert "skills.enabled" not in app_js
     assert "skills.custom" not in app_js
 
@@ -2090,6 +2105,96 @@ async def test_admin_model_discovery_prefers_unsaved_key_without_exposing_it(
     assert response.status == 200
     assert "unsaved-model-secret" not in response.text
     assert "unsaved-model-secret" not in audit.text
+
+
+@pytest.mark.asyncio
+async def test_subagent_model_discovery_never_falls_back_to_main_environment_key(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "main-model-secret")
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    response = await app[ADMIN_HANDLERS_KEY]["model_discovery"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "provider": "openai",
+                "base_url": "https://models.example.test",
+                "credential_scope": "subagent",
+                "credential_slot_id": "unconfigured-child",
+            },
+        )
+    )
+
+    assert response.status == 400
+    assert json.loads(response.text) == {
+        "ok": False,
+        "error": "subagent_model_api_key_is_required",
+    }
+
+
+@pytest.mark.asyncio
+async def test_admin_lists_subagent_session_tree_and_reviews_memory(tmp_path) -> None:
+    app = _app(tmp_path)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+    state_dir = admin_config(app).state_dir
+    task = SubagentStore(state_dir / "subagent_tasks.sqlite3").create(
+        root_session_id="root-1",
+        parent_session_id="root-1",
+        ticket_id=4001,
+        slot_id="reader",
+        objective="Inspect logs",
+        idempotency_key="logs",
+        config_digest="digest-1",
+    )
+    memory_store = MemoryStore(state_dir / "casework_memory.sqlite3")
+    memory = memory_store.propose(
+        kind=MemoryKind.EPISODIC,
+        title="Prior timeout",
+        content="Historical guidance requiring review.",
+        proposed_by="child-1",
+    )
+
+    tasks_response = await app[ADMIN_HANDLERS_KEY]["subagent_tasks"](
+        _Request(app=app, cookies=cookie, query={})
+    )
+    memory_response = await app[ADMIN_HANDLERS_KEY]["memory_entries"](
+        _Request(app=app, cookies=cookie, query={"status": "proposed"})
+    )
+    review_response = await app[ADMIN_HANDLERS_KEY]["memory_action"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "id": memory.id,
+                "action": "approve",
+                "reason": "verified reusable guidance",
+            },
+        )
+    )
+
+    tasks_body = json.loads(tasks_response.text)
+    memory_body = json.loads(memory_response.text)
+    assert tasks_response.status == 200
+    assert tasks_body["roots"][0]["root_session_id"] == "root-1"
+    assert tasks_body["roots"][0]["tasks"][0]["id"] == task.id
+    assert memory_body["entries"][0]["status"] == "proposed"
+    assert review_response.status == 200
+    assert memory_store.get(memory.id).status is MemoryStatus.ACTIVE
 
 
 def test_discovered_model_capabilities_are_model_specific_and_tri_state() -> None:

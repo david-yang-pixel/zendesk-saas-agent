@@ -67,10 +67,12 @@ class FakeTool(Tool):
         write: bool = False,
         output: str = "current tool evidence",
         parameters: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.name = name
         self.is_write_operation = write
         self.output = output
+        self.metadata = dict(metadata or {})
         if parameters is not None:
             self.parameters = parameters
         self.calls: list[dict[str, Any]] = []
@@ -82,7 +84,7 @@ class FakeTool(Tool):
     ) -> ToolResult:
         _ = session
         self.calls.append(args)
-        return ToolResult(success=True, output=self.output)
+        return ToolResult(success=True, output=self.output, metadata=self.metadata)
 
 
 class FakeProvider(LLMProvider):
@@ -112,6 +114,22 @@ class FakeProvider(LLMProvider):
             "name": name,
             "content": content,
         }
+
+
+def test_casework_tool_surface_includes_bounded_harness_writes_only() -> None:
+    registry = ToolRegistry()
+    registry.register(FakeTool("zendesk_get_ticket"))
+    registry.register(FakeTool("memory_working_put", write=True))
+    registry.register(FakeTool("subagent_spawn", write=True))
+    registry.register(FakeTool("dangerous_external_write", write=True))
+
+    names = {tool.name for tool in approved_read_tools(registry)}
+
+    assert names == {
+        "zendesk_get_ticket",
+        "memory_working_put",
+        "subagent_spawn",
+    }
 
 
 def _response(
@@ -318,6 +336,66 @@ async def test_investigator_calls_tools_itself_and_returns_typed_evidence() -> N
     assert "all customer-useful confirmed facts" in system_prompt
     assert "recovery or next step" in system_prompt
     assert "Do not stop at the first plausible explanation" in system_prompt
+
+
+async def test_investigator_merges_child_tool_evidence_not_child_summary() -> None:
+    child_evidence = tool_evidence(
+        call_id="subagent:task-1:call-docs",
+        tool_name="official_docs_search",
+        args={"query": "supported behavior"},
+        allowed_target_arguments=frozenset({"query"}),
+        observed_at=NOW,
+        success=True,
+        output="Published product behavior",
+        error="",
+    )
+    registry = ToolRegistry()
+    registry.register(
+        FakeTool(
+            "subagent_wait",
+            output='{"summary":"delegated analysis only"}',
+            metadata={
+                "casework_evidence_items": [child_evidence.model_dump(mode="json")]
+            },
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task_ids": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["task_ids"],
+            },
+        )
+    )
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="wait-1",
+                        name="subagent_wait",
+                        arguments='{"task_ids":["task-1"]}',
+                    )
+                ]
+            ),
+            _response(content=_final_assessment("subagent:task-1:call-docs")),
+        ]
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    result = await investigator.investigate(_context())
+
+    by_id = {item.evidence_id: item for item in result.evidence}
+    assert by_id["wait-1"].authority.value == "historical_guidance"
+    assert by_id["wait-1"].supports_roles == ()
+    assert by_id["subagent:task-1:call-docs"].source == "official_docs_search"
+    assert result.proposal.proposed_claims[0].supporting_evidence_ids == (
+        "subagent:task-1:call-docs",
+    )
 
 
 async def test_investigator_executes_independent_tool_batch_in_parallel() -> None:
@@ -534,6 +612,66 @@ async def test_investigator_rejects_schema_invalid_arguments_before_execution(
     )
 
     with pytest.raises(InvestigationProtocolError, match=error_match):
+        await investigator.investigate(_context())
+
+    assert docs.calls == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"query": "", "ids": ["one"]},
+        {"query": "toolong", "ids": ["one"]},
+        {"query": "valid", "ids": []},
+        {"query": "valid", "ids": ["one", "two", "three"]},
+    ],
+)
+async def test_investigator_enforces_declared_string_and_array_bounds(
+    arguments: dict[str, Any],
+) -> None:
+    registry = ToolRegistry()
+    docs = FakeTool(
+        "official_docs_search",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 5,
+                },
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 2,
+                },
+            },
+            "required": ["query", "ids"],
+        },
+    )
+    registry.register(docs)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-docs",
+                        name="official_docs_search",
+                        arguments=json.dumps(arguments),
+                    )
+                ]
+            )
+        ]
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    with pytest.raises(InvestigationProtocolError):
         await investigator.investigate(_context())
 
     assert docs.calls == []

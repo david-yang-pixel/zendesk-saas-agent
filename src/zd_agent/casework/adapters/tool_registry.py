@@ -75,7 +75,7 @@ def _casework_tools() -> tuple[Tool, ...]:
 
 
 def create_casework_tool_registry() -> ToolRegistry:
-    """Build the complete v2 read surface without constructing mutation tools."""
+    """Build the canonical ZendeskCasework business-tool surface."""
     registry = ToolRegistry()
     for tool in _casework_tools():
         if tool.is_write_operation or tool.requires_sandbox:

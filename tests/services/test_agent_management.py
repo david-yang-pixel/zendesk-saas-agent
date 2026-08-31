@@ -4,7 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from zd_agent.config import AppConfig
+from zd_agent.config import (
+    AppConfig,
+    SubagentConfig,
+    SubagentLLMConfig,
+    SubagentSlotConfig,
+)
 from zd_agent.services.agent_management import (
     _fetch_openai_compatible_models,
     build_agent_config_manifest,
@@ -27,12 +32,39 @@ def test_build_agent_config_manifest_redacts_secrets() -> None:
     cfg.public_reply.browser_relay_api_key = "relay-secret"
     cfg.db_gateway.api_key = "db-secret"
     cfg.signoz.mcp_api_key = "signoz-secret"
+    cfg.subagents = SubagentConfig(
+        enabled=True,
+        slots=[
+            SubagentSlotConfig(
+                id="reader",
+                llm=SubagentLLMConfig(
+                    provider="openai",
+                    model="child-model",
+                    api_key="child-secret",
+                ),
+            )
+        ],
+    )
 
     manifest = build_agent_config_manifest(cfg)
 
     assert manifest["llm"]["model"] == "gpt-5.5"
     assert manifest["llm"]["reasoning_effort"] == "high"
     assert "subagent" not in manifest
+    assert manifest["subagents"]["enabled"] is True
+    assert manifest["subagents"]["slots"] == [
+        {
+            "id": "reader",
+            "label": "",
+            "enabled": True,
+            "provider": "openai",
+            "model": "child-model",
+            "base_url": None,
+            "reasoning_effort": None,
+            "api_key_configured": True,
+        }
+    ]
+    assert manifest["memory"]["authority"] == "historical_guidance"
     assert manifest["llm"]["base_url"] == "https://llm.example.test/v1"
     assert manifest["llm"]["api_key_configured"] is False
     assert manifest["zendesk"]["subdomain"] == "langgenius"
@@ -97,6 +129,7 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert cfg.public_reply.silence_window_seconds == 45
     assert cfg.waiting_poller.customer_wait_timeout_hours == 36
     assert "subagent" not in manifest
+    assert manifest["subagents"]["enabled"] is False
     assert cfg.zendesk.poll_interval_seconds == 180
     assert cfg.zendesk.mention_trigger == "@saas-agent"
     assert cfg.zendesk.api_token == ""
@@ -162,7 +195,9 @@ def test_update_agent_config_trims_model_ids() -> None:
     )
 
     assert cfg.llm.model == "gpt-5.6-terra"
-    assert "subagent" not in build_agent_config_manifest(cfg)
+    manifest = build_agent_config_manifest(cfg)
+    assert "subagent" not in manifest
+    assert manifest["subagents"]["slots"] == []
 
 
 def test_build_agent_tools_manifest_includes_metadata() -> None:

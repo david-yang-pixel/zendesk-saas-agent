@@ -17,7 +17,6 @@ from zd_agent.casework.adapters.ticket import (
     VisualAnalyzer,
     ZendeskCurrentTicketLoader,
 )
-from zd_agent.casework.adapters.tool_investigator import BoundedToolCaseInvestigator
 from zd_agent.casework.adapters.vision import LlmVisualAnalyzer, ZendeskImageLoader
 from zd_agent.casework.application.build_context import CaseContextBuilder
 from zd_agent.casework.application.compose_reply import ReplyComposer
@@ -37,11 +36,13 @@ from zd_agent.casework.domain.models import (
     VisualObservation,
 )
 from zd_agent.casework.policies.routing import billing_context_required
-from zd_agent.config import AppConfig
+from zd_agent.config import AppConfig, EnvSettings
+from zd_agent.runtime.config_snapshot import build_casework_runtime_snapshot
 from zd_agent.runtime.llm.types import LLMProvider
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.services.instruction_store import InstructionStore
 from zd_agent.tools.base import ToolRegistry
+from zd_agent.subagents.harness_investigator import HarnessCaseInvestigator
 
 
 def _snapshot_session(
@@ -74,6 +75,13 @@ async def execute_casework_v2(
     registry: ToolRegistry,
 ) -> CaseworkExecution:
     clock = SystemClock()
+    runtime_snapshot = build_casework_runtime_snapshot(
+        cfg,
+        env=EnvSettings(),
+        registry=registry,
+    )
+    session.root_session_id = session.root_session_id or session.session_id
+    session.runtime_config_digest = runtime_snapshot.config_digest
     customer_messages, raw_ticket = await ZendeskCurrentTicketLoader().load(
         session.ticket_id,
     )
@@ -102,19 +110,17 @@ async def execute_casework_v2(
         billing_reader=InspectorBillingReader(caller, now=clock.now),
         clock=clock,
     )
-    investigator = BoundedToolCaseInvestigator(
+    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
+    instruction_store = InstructionStore(state_dir)
+    investigator = HarnessCaseInvestigator(
         provider=provider,
-        registry=registry,
+        business_registry=registry,
         session=session,
         clock=clock,
-        context_window_tokens=cfg.llm.context_window_tokens,
-        context_compaction_soft_ratio=(cfg.casework.context_compaction_soft_ratio),
-        context_compaction_hard_ratio=(cfg.casework.context_compaction_hard_ratio),
-        context_checkpoint_max_tokens=(cfg.casework.context_checkpoint_max_tokens),
-        context_retain_recent_rounds=(cfg.casework.context_retain_recent_rounds),
-        instruction_store=InstructionStore(
-            Path(cfg.resources.base_dir) / cfg.resources.state_dir
-        ),
+        cfg=cfg,
+        snapshot=runtime_snapshot,
+        state_dir=state_dir,
+        instruction_store=instruction_store,
     )
     orchestrator = CaseworkOrchestrator(
         context_builder=context_builder,
@@ -125,7 +131,6 @@ async def execute_casework_v2(
         ),
         clock=clock,
     )
-    state_dir = Path(cfg.resources.base_dir) / cfg.resources.state_dir
     executor = CaseworkExecutor(
         orchestrator=orchestrator,
         effects=configured_casework_effects(

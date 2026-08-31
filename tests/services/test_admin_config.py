@@ -47,7 +47,12 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert not any(path.startswith("trigger_decider.") for path in by_path)
     assert not any(path.startswith("skills.") for path in by_path)
     assert not any(path.startswith("prompts.") for path in by_path)
-    assert not any("subagent" in path for path in by_path)
+    assert by_path["subagents.enabled"]["input"] == "boolean"
+    assert by_path["subagents.max_parallel"]["input"] == "number"
+    assert by_path["subagents.max_tasks_per_run"]["input"] == "number"
+    assert by_path["subagents.task_timeout_seconds"]["input"] == "number"
+    assert by_path["subagents.slots"]["input"] == "subagent_models"
+    assert by_path["subagents.slots"]["group"] == "模型与运行"
     assert schema["reasoning_capabilities"][0]["model_prefix"] == "gpt-5.6-sol"
 
 
@@ -77,6 +82,57 @@ def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
     assert by_path["webhook.listen_port"]["restart_required"] is True
     assert by_path["logging.jsonl_enabled"]["input"] == "boolean"
     assert by_path["intake.post_agent_cooldown_seconds"]["group"] == "触发配置"
+
+
+def test_apply_subagent_slots_persists_api_keys_only_in_secret_storage(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+    slots = [
+        {
+            "id": "evidence-reader",
+            "label": "Evidence reader",
+            "enabled": True,
+            "llm": {
+                "provider": "openai",
+                "model": "gpt-5.6-luna",
+                "reasoning_effort": "low",
+                "api_key": "child-secret",
+                "base_url": "https://child.example.test/v1",
+            },
+        }
+    ]
+
+    store.apply(
+        cfg,
+        {
+            "changes": {
+                "subagents.enabled": True,
+                "subagents.slots": slots,
+            },
+            "reason": "configure independent child model",
+        },
+        actor="admin",
+        ip="127.0.0.1",
+    )
+
+    overrides = store.overrides_path.read_text(encoding="utf-8")
+    secrets = store.secrets_path.read_text(encoding="utf-8")
+    effective = store.effective_config(cfg)["values"]["subagents.slots"]
+
+    assert "child-secret" not in overrides
+    assert "child-secret" in secrets
+    assert "child-secret" not in store.audit_path.read_text(encoding="utf-8")
+    assert "child-secret" not in json.dumps(effective)
+    assert effective[0]["llm"]["api_key_configured"] is True
+    assert cfg.subagents.enabled is True
+    assert cfg.subagents.slots[0].llm.model == "gpt-5.6-luna"
+    assert cfg.subagents.slots[0].llm.api_key == "child-secret"
+
+    restarted = AppConfig()
+    store.apply_saved(restarted)
+    assert restarted.subagents.enabled is True
+    assert restarted.subagents.slots[0].llm.model == "gpt-5.6-luna"
+    assert restarted.subagents.slots[0].llm.api_key == "child-secret"
 
 
 def test_v2_config_has_no_prompt_skill_or_trigger_classifier_surface() -> None:

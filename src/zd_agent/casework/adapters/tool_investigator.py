@@ -27,6 +27,7 @@ from zd_agent.casework.adapters.investigation_skill import (
 from zd_agent.casework.adapters.token_budget import (
     CaseworkTokenBudget,
 )
+from zd_agent.casework.adapters.tool_loop import CaseworkToolLoop, ContinueToolLoop
 from zd_agent.casework.domain.enums import (
     EvidenceAuthority,
     EvidenceResultStatus,
@@ -75,11 +76,22 @@ _APPROVED_EXACT_NAMES = frozenset(
 _APPROVED_PREFIXES = (
     "git_",
     "github_",
+    "memory_",
     "official_docs_",
     "signoz_",
+    "subagent_",
     "ticket_record_",
     "zendesk_get_",
     "zendesk_search",
+)
+_APPROVED_HARNESS_WRITES = frozenset(
+    {
+        "memory_feedback",
+        "memory_propose",
+        "memory_working_put",
+        "subagent_cancel",
+        "subagent_spawn",
+    }
 )
 _DISABLED_RAW_QUERY_TOOLS: frozenset[str] = frozenset()
 _SCOPED_QUERY_TOOLS = frozenset({"sql_query", "signoz_query"})
@@ -119,7 +131,7 @@ def _approved_name(name: str) -> bool:
 
 
 def approved_read_tools(registry: ToolRegistry) -> tuple[Tool, ...]:
-    """Expose an explicit fail-closed subset, independent of tool metadata alone."""
+    """Expose business reads plus bounded harness-state writes, fail closed."""
     return tuple(
         tool
         for tool in registry.list_tools()
@@ -129,7 +141,7 @@ def approved_read_tools(registry: ToolRegistry) -> tuple[Tool, ...]:
             tool.name not in _SCOPED_QUERY_TOOLS
             or getattr(tool, "casework_scope_enforced", False) is True
         )
-        and not tool.is_write_operation
+        and (not tool.is_write_operation or tool.name in _APPROVED_HARNESS_WRITES)
         and not tool.requires_sandbox
     )
 
@@ -310,13 +322,32 @@ def _validate_schema_value(
             )
 
     if isinstance(value, list):
+        array_value = cast(list[object], value)
+        min_items = schema.get("minItems")
+        max_items = schema.get("maxItems")
+        if isinstance(min_items, int) and len(array_value) < min_items:
+            raise InvestigationProtocolError(f"{path} must contain >= {min_items} items")
+        if isinstance(max_items, int) and len(array_value) > max_items:
+            raise InvestigationProtocolError(f"{path} must contain <= {max_items} items")
         raw_items: object = schema.get("items")
         if raw_items is not None:
             if not isinstance(raw_items, dict):
                 raise InvestigationProtocolError(f"invalid items schema at {path}")
             items = cast(dict[str, Any], raw_items)
-            for index, item in enumerate(cast(list[object], value)):
+            for index, item in enumerate(array_value):
                 _validate_schema_value(item, items, path=f"{path}[{index}]")
+
+    if isinstance(value, str):
+        min_length = schema.get("minLength")
+        max_length = schema.get("maxLength")
+        if isinstance(min_length, int) and len(value) < min_length:
+            raise InvestigationProtocolError(
+                f"{path} must contain >= {min_length} characters"
+            )
+        if isinstance(max_length, int) and len(value) > max_length:
+            raise InvestigationProtocolError(
+                f"{path} must contain <= {max_length} characters"
+            )
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         minimum = schema.get("minimum")
@@ -781,7 +812,7 @@ class BoundedToolCaseInvestigator:
         *,
         args: dict[str, Any],
         round_index: int,
-    ) -> tuple[EvidenceItem, str]:
+    ) -> tuple[tuple[EvidenceItem, ...], str]:
         tool = self._tools_by_name[call.name]
         result = await self._registry.execute(
             call.name,
@@ -814,7 +845,19 @@ class BoundedToolCaseInvestigator:
             output=result.output,
             error=result.error or "",
         )
-        return item, _tool_result_body(call.id, result)
+        delegated: list[EvidenceItem] = []
+        raw_delegated = result.metadata.get("casework_evidence_items", [])
+        if call.name == "subagent_wait" and isinstance(raw_delegated, list):
+            for raw_item in cast(list[object], raw_delegated):
+                if not isinstance(raw_item, dict):
+                    continue
+                candidate = EvidenceItem.model_validate(raw_item)
+                if not candidate.evidence_id.startswith("subagent:"):
+                    continue
+                if candidate.source.startswith(("subagent_", "memory_")):
+                    continue
+                delegated.append(candidate)
+        return (item, *delegated), _tool_result_body(call.id, result)
 
     async def _execute_calls(
         self,
@@ -822,7 +865,7 @@ class BoundedToolCaseInvestigator:
         *,
         validated_args: dict[str, dict[str, Any]],
         round_index: int,
-    ) -> list[tuple[EvidenceItem, str]]:
+    ) -> list[tuple[tuple[EvidenceItem, ...], str]]:
         """Execute one model batch concurrently only when every read is safe."""
         if len(calls) > 1 and all(
             self._tools_by_name[call.name].concurrency_safe for call in calls
@@ -831,7 +874,7 @@ class BoundedToolCaseInvestigator:
 
             async def execute_limited(
                 call: ToolCallRequest,
-            ) -> tuple[EvidenceItem, str]:
+            ) -> tuple[tuple[EvidenceItem, ...], str]:
                 async with semaphore:
                     return await self._execute_call(
                         call,
@@ -843,7 +886,7 @@ class BoundedToolCaseInvestigator:
                 await asyncio.gather(*(execute_limited(call) for call in calls))
             )
 
-        results: list[tuple[EvidenceItem, str]] = []
+        results: list[tuple[tuple[EvidenceItem, ...], str]] = []
         for call in calls:
             results.append(
                 await self._execute_call(
@@ -999,86 +1042,109 @@ class BoundedToolCaseInvestigator:
             },
         ]
         schemas = _tool_schemas(self._tools)
-        used_ids: set[str] = set()
-        round_index = 0
-        while True:
-            round_index += 1
+
+        async def prepare_messages(
+            active_messages: list[dict[str, Any]],
+            active_schemas: list[ToolSchema] | None,
+        ) -> list[dict[str, Any]]:
             self._ensure_tokens_available()
-            messages = await self._prepare_active_context(
+            return await self._prepare_active_context(
                 context=context,
                 evidence=evidence,
-                messages=messages,
-                tools=schemas,
+                messages=active_messages,
+                tools=active_schemas,
             )
-            response = await self._provider.chat(
-                messages,
-                tools=schemas,
-                temperature=0.0,
-            )
-            self._record_tokens(response)
-            messages.append(_assistant_message(response))
-            if not response.tool_calls:
-                content = response.content or ""
-                try:
-                    result = investigation_result_from_content(
-                        context=context,
-                        evidence=tuple(evidence),
-                        content=content,
-                    )
-                    missing = missing_completion_roles(
-                        result.proposal.question,
-                        _completion_eligible_claims(
-                            result.proposal.proposed_claims,
-                            tuple(evidence),
-                        ),
-                    )
-                    if (
-                        missing
-                        and result.proposal.answer_status.value
-                        in {"supported", "bounded"}
-                        and not result.proposal.proposed_customer_fields
-                        and result.proposal.action_proposal is None
-                    ):
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "The investigation is incomplete and cannot end yet. "
-                                    "Continue with authoritative tools. Missing material "
-                                    "claim roles: "
-                                    + ", ".join(role.value for role in missing)
-                                ),
-                            },
-                        )
-                        continue
-                    return result
-                except ModelOutputError as error:
-                    corrected = await self._correct_terminal_output(
-                        messages=messages,
-                        error=error,
-                    )
-                    return investigation_result_from_content(
-                        context=context,
-                        evidence=tuple(evidence),
-                        content=corrected,
-                    )
-            validated_args = self._validate_calls(
-                response.tool_calls,
+
+        def validate_calls(
+            calls: list[ToolCallRequest],
+            used_ids: set[str],
+        ) -> dict[str, dict[str, Any]]:
+            return self._validate_calls(
+                calls,
                 context=context,
                 used_ids=used_ids,
             )
-            call_results = await self._execute_calls(
-                response.tool_calls,
+
+        async def execute_calls(
+            calls: list[ToolCallRequest],
+            validated_args: dict[str, dict[str, Any]],
+            round_index: int,
+        ) -> list[tuple[tuple[EvidenceItem, ...], str]]:
+            return await self._execute_calls(
+                calls,
                 validated_args=validated_args,
                 round_index=round_index,
             )
-            for call, (item, body) in zip(
-                response.tool_calls,
-                call_results,
-                strict=True,
-            ):
+
+        def format_call_result(
+            call: ToolCallRequest,
+            result: tuple[tuple[EvidenceItem, ...], str],
+        ) -> dict[str, Any]:
+            items, body = result
+            existing_ids = {item.evidence_id for item in evidence}
+            for item in items:
+                if item.evidence_id in existing_ids:
+                    raise InvestigationProtocolError(
+                        f"duplicate evidence ID from tool result: {item.evidence_id}"
+                    )
                 evidence.append(item)
-                messages.append(
-                    self._provider.format_tool_result(call.id, call.name, body)
+                existing_ids.add(item.evidence_id)
+            return self._provider.format_tool_result(call.id, call.name, body)
+
+        async def handle_terminal(
+            active_messages: list[dict[str, Any]],
+            content: str,
+        ) -> InvestigationResult | ContinueToolLoop:
+            try:
+                result = investigation_result_from_content(
+                    context=context,
+                    evidence=tuple(evidence),
+                    content=content,
                 )
-                used_ids.add(call.id)
+                missing = missing_completion_roles(
+                    result.proposal.question,
+                    _completion_eligible_claims(
+                        result.proposal.proposed_claims,
+                        tuple(evidence),
+                    ),
+                )
+                if (
+                    missing
+                    and result.proposal.answer_status.value
+                    in {"supported", "bounded"}
+                    and not result.proposal.proposed_customer_fields
+                    and result.proposal.action_proposal is None
+                ):
+                    return ContinueToolLoop(
+                        "The investigation is incomplete and cannot end yet. "
+                        "Continue with authoritative tools. Missing material "
+                        "claim roles: "
+                        + ", ".join(role.value for role in missing)
+                    )
+                return result
+            except ModelOutputError as error:
+                corrected = await self._correct_terminal_output(
+                    messages=active_messages,
+                    error=error,
+                )
+                return investigation_result_from_content(
+                    context=context,
+                    evidence=tuple(evidence),
+                    content=corrected,
+                )
+
+        loop = CaseworkToolLoop[
+            InvestigationResult, tuple[tuple[EvidenceItem, ...], str]
+        ](
+            provider=self._provider,
+            schemas=schemas,
+            prepare_messages=prepare_messages,
+            validate_calls=validate_calls,
+            execute_calls=execute_calls,
+            format_call_result=format_call_result,
+            handle_terminal=handle_terminal,
+            record_response=self._record_tokens,
+            assistant_message=_assistant_message,
+            temperature=0.0,
+        )
+        return await loop.run(messages)

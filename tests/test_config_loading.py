@@ -7,9 +7,13 @@ import yaml
 from pydantic import ValidationError
 
 from zd_agent.config import (
+    AppConfig,
     IntakeConfig,
     LLMConfig,
     PublicReplyConfig,
+    SubagentConfig,
+    SubagentLLMConfig,
+    SubagentSlotConfig,
     ZendeskConfig,
     load_config,
 )
@@ -152,6 +156,67 @@ def test_llm_config_defaults_to_provider_managed_reasoning() -> None:
     assert IntakeConfig().post_agent_cooldown_seconds == 180
 
 
+def test_subagent_slots_use_explicit_model_configuration_without_main_fallback() -> None:
+    cfg = AppConfig(
+        llm=LLMConfig(provider="openai", model="main-model"),
+        subagents=SubagentConfig(
+            enabled=True,
+            slots=[
+                SubagentSlotConfig(
+                    id="evidence-reader",
+                    label="Evidence reader",
+                    llm=SubagentLLMConfig(
+                        provider="anthropic",
+                        model="child-model",
+                        api_key="child-secret",
+                        base_url="https://child.example.test/v1",
+                    ),
+                )
+            ],
+        ),
+    )
+
+    slot = cfg.subagents.slots[0]
+    assert slot.llm.provider == "anthropic"
+    assert slot.llm.model == "child-model"
+    assert slot.llm.api_key == "child-secret"
+    assert slot.llm.base_url == "https://child.example.test/v1"
+    assert slot.llm.model != cfg.llm.model
+
+
+def test_enabled_subagent_slot_rejects_missing_explicit_provider_or_model() -> None:
+    with pytest.raises(ValidationError):
+        AppConfig.model_validate(
+            {
+                "subagents": {
+                    "enabled": True,
+                    "slots": [
+                        {
+                            "id": "missing-provider",
+                            "llm": {"model": "child-model", "api_key": "secret"},
+                        }
+                    ],
+                }
+            }
+        )
+
+
+def test_subagent_config_rejects_duplicate_slot_ids() -> None:
+    slot = {
+        "id": "duplicate",
+        "llm": {
+            "provider": "openai",
+            "model": "child-model",
+            "api_key": "secret",
+        },
+    }
+
+    with pytest.raises(ValidationError, match="duplicate subagent slot id"):
+        AppConfig.model_validate(
+            {"subagents": {"enabled": True, "slots": [slot, slot]}}
+        )
+
+
 def test_repository_config_enables_v2_visual_evidence() -> None:
     config_path = Path(__file__).resolve().parents[1] / "config.yaml"
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -159,6 +224,8 @@ def test_repository_config_enables_v2_visual_evidence() -> None:
     assert raw["llm"]["enable_vision_input"] is True
     assert "trigger_decider" not in raw
     assert raw["intake"]["post_agent_cooldown_seconds"] == 180
+    assert raw["subagents"]["enabled"] is False
+    assert raw["subagents"]["slots"] == []
 
 
 def test_repository_config_persists_agent_archives_under_resources_mount() -> None:

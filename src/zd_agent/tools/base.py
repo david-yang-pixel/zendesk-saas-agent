@@ -34,6 +34,9 @@ class Tool(ABC):
     max_output_tokens: int = 0
     requires_sandbox: bool = False
     is_write_operation: bool = False
+    # Harness control tools are exposed only to the root Agent. Business tools
+    # and memory tools remain available to independent child loops.
+    root_only: bool = False
 
     @abstractmethod
     async def execute(

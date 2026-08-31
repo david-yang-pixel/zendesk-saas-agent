@@ -49,6 +49,60 @@ class LLMConfig(BaseModel):
         return validate_reasoning_effort(str(info.data.get("model") or ""), value)
 
 
+class SubagentLLMConfig(LLMConfig):
+    """Complete child-model configuration; values never fall back to ``llm``."""
+
+    provider: str
+    model: str
+    api_key: str = ""
+
+    @field_validator("provider", "model", mode="before")
+    @classmethod
+    def _require_explicit_identity(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("subagent provider and model must be configured explicitly")
+        return normalized
+
+    @field_validator("api_key", mode="before")
+    @classmethod
+    def _normalize_api_key(cls, value: object) -> str:
+        normalized = str(value or "")
+        if "\0" in normalized:
+            raise ValueError("subagent API key must not contain NUL bytes")
+        return normalized
+
+
+class SubagentSlotConfig(BaseModel):
+    """One independently configured ZendeskCasework child execution slot."""
+
+    id: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z][A-Za-z0-9_-]+$")
+    label: str = ""
+    enabled: bool = True
+    llm: SubagentLLMConfig
+
+
+class SubagentConfig(BaseModel):
+    """Root-controlled child execution limits and explicit model slots."""
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    enabled: bool = False
+    max_parallel: int = Field(default=2, ge=1, le=12)
+    max_tasks_per_run: int = Field(default=6, ge=1, le=12)
+    task_timeout_seconds: int = Field(default=600, ge=30, le=1_440)
+    slots: list[SubagentSlotConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_slots(self) -> SubagentConfig:
+        ids = [slot.id for slot in self.slots]
+        if len(ids) != len(set(ids)):
+            raise ValueError("duplicate subagent slot id")
+        if self.enabled and not any(slot.enabled for slot in self.slots):
+            raise ValueError("enabled subagent orchestration requires an enabled slot")
+        return self
+
+
 class RetryPolicyOverrideConfig(BaseModel):
     """模块级重试覆盖配置；为空时继承全局默认值"""
 
@@ -382,7 +436,9 @@ class CaseworkConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_context_compaction_thresholds(self) -> CaseworkConfig:
         if self.context_compaction_soft_ratio >= self.context_compaction_hard_ratio:
-            raise ValueError("context compaction soft ratio must be lower than hard ratio")
+            raise ValueError(
+                "context compaction soft ratio must be lower than hard ratio"
+            )
         return self
 
     @field_validator("mode", mode="before")
@@ -396,6 +452,7 @@ class AppConfig(BaseModel):
 
     agent: AgentConfig = Field(default_factory=AgentConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    subagents: SubagentConfig = Field(default_factory=SubagentConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     zendesk: ZendeskConfig = Field(default_factory=ZendeskConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)

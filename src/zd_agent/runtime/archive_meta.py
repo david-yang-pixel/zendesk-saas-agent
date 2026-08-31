@@ -47,6 +47,14 @@ def build_archive_meta(
         "session_id": session.session_id,
         "status": session.status.value,
         "casework_phase": _current_casework_phase(session),
+        "orchestration": {
+            "root_session_id": session.root_session_id or session.session_id,
+            "parent_session_id": session.parent_session_id or None,
+            "session_kind": session.session_kind,
+            "subagent_task_id": session.subagent_task_id or None,
+            "subagent_slot_id": session.subagent_slot_id or None,
+            "runtime_config_digest": session.runtime_config_digest or None,
+        },
         "casework": {
             "disposition": session.casework_disposition or None,
             "reply_kind": session.casework_reply_kind or None,

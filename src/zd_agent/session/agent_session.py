@@ -35,6 +35,12 @@ class AgentSession:
 
     ticket_id: int
     session_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    root_session_id: str = ""
+    parent_session_id: str = ""
+    session_kind: str = "root"
+    subagent_task_id: str = ""
+    subagent_slot_id: str = ""
+    runtime_config_digest: str = ""
     trigger_type: str = "cli"
     delivery_attempt_id: str = ""
     status: SessionStatus = SessionStatus.QUEUED

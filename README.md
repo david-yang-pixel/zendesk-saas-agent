@@ -1,8 +1,10 @@
 # Zendesk Agent v2
 
-`zd-agent` 是 Dify SaaS 支持工单的证据驱动处理服务。当前代码只有一套生产决策核心：**Casework v2**。它从 Zendesk 获取最新对话，先在支持侧解析工作空间和 Billing，再进行有界、只读调查，最后独立决定客户回复、工单归属和生命周期状态。
+`zd-agent` 是 Dify SaaS 支持工单的证据驱动 Agent Harness。系统只有一种业务 Agent：**ZendeskCasework**。每个会话通过 provider-neutral Tool Loop 反复选择、校验和调用工具；主 Agent 可按需启动多个独立 Subagent 会话，汇总它们的证据后再决定客户回复、工单归属和生命周期状态。
 
-旧版 verdict 分类器、通用 tool loop、subagent 编排、prompt 规则树和 `reply_type=handoff` 决策链已经移除。冻结的历史 outbox/state 只做幂等迁移或传输补偿，不能生成新的 v1 决策。
+当前 Subagent 不是岗位或 Policy Profile：主/子会话都运行 ZendeskCasework，并共享同一套经租户边界批准的业务工具。只有主 Agent 额外拥有 `subagent_spawn / wait / status / cancel` 编排工具。每个 Subagent 槽位在管理后台配置完整 provider、model、Base URL、API Key 和运行参数；子模型不继承主模型或全局凭据。
+
+旧版 verdict 分类器、prompt 规则树和 `reply_type=handoff` 决策链已经移除。冻结的历史 outbox/state 只做幂等迁移或传输补偿，不能生成新的 v1 决策。
 
 > 本仓库状态只代表本地实现。生产启用必须先通过无客户写入 replay、live dry-run 和小范围 canary；不要把本地 `casework` 配置当作已经部署的证据。
 
@@ -23,8 +25,11 @@ flowchart LR
     Z["Zendesk webhook / poller"] --> Q["Durable queue + generation fence"]
     Q --> I["v2 intake + latest snapshot"]
     I --> C["CaseContext: identity + Billing + images"]
-    C --> R["Bounded read-only investigation"]
-    R --> E["Evidence ledger + assessment"]
+    C --> R["Root ZendeskCasework Tool Loop"]
+    R --> A["Independent Subagent Tool Loops"]
+    A --> M["Evidence-constrained aggregation"]
+    R --> M
+    M --> E["Evidence ledger + assessment"]
     E --> D["Deterministic disposition policy"]
     D --> P["Reliable public delivery"]
     D --> O["Typed ownership effects"]
@@ -37,14 +42,23 @@ flowchart LR
 1. **Intake**：合并 Zendesk Messaging、表单和 requester 信息，刷新最新客户游标并去抖。
 2. **Context**：按表单邮箱 → requester 邮箱解析 membership；只有多候选、冲突或无 membership 才可能要求客户消歧。
 3. **Billing binding**：只接受与已解析 tenant 相同的 Billing 结果；target mismatch 直接 fail closed。
-4. **Investigation**：按问题路由调用批准的只读工具，并区分当前事实、支持性证据、对照基线和历史导航。
-5. **Assessment**：每个客户可见 claim 都绑定 evidence ID、时效、目标和 causal role。
-6. **Disposition**：纯策略产生 `resolved`、`awaiting_customer`、`retry_pending` 或具体的人类/工程/SRE/安全动作。
-7. **Effects**：公开回复经 freshness check、idempotency 和 durable outbox；归属命令使用 allowlist reason code 单独持久化。
+4. **Tool Loop**：主/子会话分别维护 provider、messages、轮次、token、上下文压缩和 checkpoint，反复调用批准工具直到形成结构化终态。
+5. **Subagent orchestration**：主 Agent 只做一层拆分；子任务使用独立模型、独立会话和独立并发池，状态持久化为 `queued/running/completed/failed/cancelled/timed_out`。
+6. **Aggregation**：Subagent 摘要本身没有当前证据权威；只有子会话实际工具产生的 typed evidence 会使用带 task 前缀的新 evidence ID 合入主账本。
+7. **Assessment**：每个客户可见 claim 都绑定 evidence ID、时效、目标和 causal role。
+8. **Disposition**：纯策略产生 `resolved`、`awaiting_customer`、`retry_pending` 或具体的人类/工程/SRE/安全动作。
+9. **Effects**：最终客户写入仍只发生在主 Agent 汇总和 deterministic policy 之后，并经过 freshness check、idempotency 和 durable outbox。
+
+## 记忆层
+
+- **Working memory**：以 `root_session_id` 隔离，主 Agent 和其 Subagent 共享；其他工单不可见。
+- **Episodic / semantic memory**：长期记忆由 Agent 通过 `memory_propose` 提交，默认 `proposed`，经管理后台审核后才可检索。
+- **证据边界**：`memory_search` / `memory_get` 始终返回 `historical_guidance`，并明确 `may_support_current_claims=false`；任何当前结论都必须重新调用权威业务工具验证。
+- **反馈与审计**：使用反馈、审核人、审核原因和状态变更均持久化；管理后台可查看和审核。
 
 ## 工具能力
 
-v2 调查 registry 在构造时拒绝任何 `is_write_operation` 或 `requires_sandbox` 工具。当前生产调查面包括：
+ZendeskCasework 的 canonical registry 在构造时拒绝 sandbox 和未批准写工具。主/子 Agent 共享完整的安全业务面；记忆写入和 Subagent 调度是受限的 Harness 状态写入，不直接触发客户或 Zendesk effect。当前生产调查面包括：
 
 - Zendesk：仅当前工单及其附件、Help Center；禁止任意用户读取和跨工单搜索；
 - DB/Inspector：只允许已解析 tenant，或当前 requester 的 membership 解析；不向模型暴露原始 SQL；
@@ -55,6 +69,8 @@ v2 调查 registry 在构造时拒绝任何 `is_write_operation` 或 `requires_s
 - 历史工单记录，仅用于导航和对照，不作为当前根因依据。
 
 Custom MCP 连接可以由管理面维护，但不会自动进入 v2 生产 registry。任何新的调查工具必须先满足只读、结构化结果、目标绑定和架构测试。
+
+管理后台“模型管理”页面提供 Subagent 槽位卡片、独立模型发现、Root/Subagent 会话树和长期记忆审核。配置保存后只影响新根会话；在跑会话继续使用启动时冻结的 config digest 和 tool registry。
 
 ## 决策和状态
 
@@ -144,7 +160,10 @@ src/zd_agent/
     replay/        sanitized deterministic replay
   runtime/
     casework_v2.py v2 runtime assembly
+    config_snapshot.py immutable main/subagent model and tool snapshot
     runner.py      single production runner
+  subagents/       durable scheduler, child runner and root control tools
+  memory/          shared working memory and review-gated long-term memory
   services/
     trigger_*      queue intake and lifecycle fencing
     reliable_public_reply.py
