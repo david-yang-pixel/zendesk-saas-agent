@@ -228,6 +228,13 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
     ),
     FieldSpec("public_reply.enabled", "自动 public reply", "回复策略", input="boolean"),
     FieldSpec(
+        "public_reply.internal_audit_note_enabled",
+        "Zendesk 内部审计备注",
+        "回复策略",
+        input="boolean",
+        restart_required=True,
+    ),
+    FieldSpec(
         "public_reply.silent_initial_wait_seconds",
         "初始等待窗口",
         "回复策略",

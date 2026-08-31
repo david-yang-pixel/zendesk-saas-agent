@@ -297,6 +297,10 @@ class PublicReplyConfig(BaseModel):
     # prevents Browser Relay delivery; it does not invoke a legacy fallback.
     enabled: bool = False
 
+    # Keep the full decision/evidence audit in the local run archive.  Zendesk
+    # private audit notes are optional because they add noise to the ticket UI.
+    internal_audit_note_enabled: bool = False
+
     # SaaS 工单创建后立即读取完整表单/会话；缺少问题描述时立刻询问。
     silent_initial_wait_seconds: int = 0
 

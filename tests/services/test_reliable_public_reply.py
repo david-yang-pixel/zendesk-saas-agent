@@ -33,6 +33,7 @@ def _config(tmp_path) -> AppConfig:
     cfg = AppConfig(
         public_reply=PublicReplyConfig(
             enabled=True,
+            internal_audit_note_enabled=True,
             browser_relay_url=("https://relay.example.test/zendesk-reply-mcp"),
             browser_relay_api_key="relay-secret",
             freshness_callback_url=(
@@ -77,6 +78,35 @@ def _patch_safe_boundaries(
         zendesk,
     )
     return relay, zendesk
+
+
+@pytest.mark.asyncio
+async def test_disabled_internal_audit_note_only_sends_public_reply(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    cfg.public_reply.internal_audit_note_enabled = False
+    relay, zendesk = _patch_safe_boundaries(monkeypatch, cfg=cfg)
+
+    result = await send_casework_public_reply_with_freshness(
+        ticket_id=TICKET_ID,
+        body="Please tell us the affected workspace name.",
+        reply_type="ask",
+        conversation_id="conversation-4101",
+        snapshot_customer_message_count=6,
+        snapshot_customer_last_message_id="m6",
+        delivery_attempt_id=ATTEMPT_ID,
+        internal_analysis="This audit remains in the local run archive only.",
+    )
+
+    assert result.success is True
+    assert "internal analysis note" not in result.message
+    relay.assert_awaited_once()
+    assert "add_internal_note" not in [call.args[0] for call in zendesk.await_args_list]
+    assert not (
+        tmp_path / ".state" / "post_public_internal_note_outbox.sqlite3"
+    ).exists()
 
 
 @pytest.mark.asyncio

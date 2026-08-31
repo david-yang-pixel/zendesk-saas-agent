@@ -94,7 +94,7 @@ class PreparedPublicReplyDelivery:
     accepted_snapshot_count: int | None
     accepted_snapshot_last_id: str | None
     delivery_store: PublicReplyDeliveryStore
-    note_store: PostPublicInternalNoteStore
+    note_store: PostPublicInternalNoteStore | None
     delivery_key: str
     migrated_from_v1: bool
     already_delivered: bool
@@ -420,18 +420,20 @@ async def prepare_reliable_public_reply(
         raise ReliablePublicReplyRejected(
             "Frozen public reply lacks a customer-message snapshot; delivery is blocked."
         )
-    note_store = PostPublicInternalNoteStore(
-        delivery_store.path.parent / "post_public_internal_note_outbox.sqlite3"
-    )
-    note_store.prepare(
-        ticket_id=ticket_id,
-        delivery_attempt_id=delivery_attempt_id,
-        reply_type=effective_reply_type,
-        body_with_footer=attempt.body,
-        internal_analysis=attempt.internal_analysis,
-        public_delivery_confirmed=attempt.delivered,
-        accept_legacy_reference=attempt.migrated_from_v1,
-    )
+    note_store: PostPublicInternalNoteStore | None = None
+    if cfg.public_reply.internal_audit_note_enabled:
+        note_store = PostPublicInternalNoteStore(
+            delivery_store.path.parent / "post_public_internal_note_outbox.sqlite3"
+        )
+        note_store.prepare(
+            ticket_id=ticket_id,
+            delivery_attempt_id=delivery_attempt_id,
+            reply_type=effective_reply_type,
+            body_with_footer=attempt.body,
+            internal_analysis=attempt.internal_analysis,
+            public_delivery_confirmed=attempt.delivered,
+            accept_legacy_reference=attempt.migrated_from_v1,
+        )
     checked_count, checked_last_id = _accepted_snapshot(
         check,
         snapshot_count=snapshot_count,
@@ -750,26 +752,28 @@ async def deliver_prepared_public_reply(
             definitely_unsent=isinstance(error, BrowserRelayDefiniteUnsentError),
         )
 
-    try:
-        internal_note_sent = await ensure_post_public_internal_note(
-            ticket_id=prepared.ticket_id,
-            delivery_attempt_id=prepared.delivery_attempt_id,
-            reply_type=prepared.effective_reply_type,
-            body_with_footer=prepared.body_with_footer,
-            internal_analysis=prepared.internal_analysis,
-            zendesk_tool_caller=caller,
-            note_store=prepared.note_store,
-            public_delivery_confirmed=True,
-            accept_legacy_reference=prepared.migrated_from_v1,
-        )
-    except Exception as error:
-        internal_note_sent = False
-        logger.error(
-            "reliable_public_reply_internal_note_failed",
-            ticket_id=prepared.ticket_id,
-            error=str(error)[:200],
-            exc_info=True,
-        )
+    internal_note_sent = True
+    if prepared.note_store is not None:
+        try:
+            internal_note_sent = await ensure_post_public_internal_note(
+                ticket_id=prepared.ticket_id,
+                delivery_attempt_id=prepared.delivery_attempt_id,
+                reply_type=prepared.effective_reply_type,
+                body_with_footer=prepared.body_with_footer,
+                internal_analysis=prepared.internal_analysis,
+                zendesk_tool_caller=caller,
+                note_store=prepared.note_store,
+                public_delivery_confirmed=True,
+                accept_legacy_reference=prepared.migrated_from_v1,
+            )
+        except Exception as error:
+            internal_note_sent = False
+            logger.error(
+                "reliable_public_reply_internal_note_failed",
+                ticket_id=prepared.ticket_id,
+                error=str(error)[:200],
+                exc_info=True,
+            )
 
     try:
         from zd_agent.observability.metrics import emit_agent_public_reply_sent

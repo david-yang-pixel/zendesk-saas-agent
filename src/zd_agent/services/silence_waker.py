@@ -117,6 +117,7 @@ async def run_silence_waker(
 async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> None:
     """Run one bounded reconciliation pass without delaying silence scans."""
     try:
+        from zd_agent.config import get_config
         from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
         from zd_agent.services.public_reply_internal_note import (
             PostPublicInternalNoteStore,
@@ -138,8 +139,12 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
             reconcile_notifications,
         )
 
-        note_store = PostPublicInternalNoteStore(
-            state.path.parent / "post_public_internal_note_outbox.sqlite3"
+        note_store = (
+            PostPublicInternalNoteStore(
+                state.path.parent / "post_public_internal_note_outbox.sqlite3"
+            )
+            if get_config().public_reply.internal_audit_note_enabled
+            else None
         )
         handoff_store = PostPublicHandoffStore(
             state.path.parent / "post_public_handoff_outbox.sqlite3"
@@ -153,7 +158,7 @@ async def _reconcile_post_public_internal_notes(state: TicketStateTracker) -> No
         notification_store = NotificationOutbox(
             state.path.parent / "notification_outbox.sqlite3"
         )
-        if note_store.pending(limit=1):
+        if note_store is not None and note_store.pending(limit=1):
             await asyncio.wait_for(
                 reconcile_pending_post_public_internal_notes(
                     note_store=note_store,

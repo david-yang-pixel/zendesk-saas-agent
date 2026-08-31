@@ -35,7 +35,7 @@ class PendingPostPublicInternalNote:
 
 
 class PostPublicInternalNoteStore:
-    """Durable outbox for the mandatory note following a public reply."""
+    """Durable outbox for the optional note following a public reply."""
 
     def __init__(
         self,
@@ -189,6 +189,14 @@ class PostPublicInternalNoteStore:
                 "SELECT COUNT(*) FROM post_public_internal_notes",
             ).fetchone()
         return int(row[0]) if row is not None else 0
+
+    def discard_all(self) -> int:
+        """Retire every unsent note intent when the feature is disabled."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM post_public_internal_notes",
+            )
+        return max(0, int(cursor.rowcount))
 
     def claim(self, reference: str) -> str | None:
         now = time.time()

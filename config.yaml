@@ -50,6 +50,8 @@ public_reply:
   # 客户写入总开关。false 时 v2 仍调查并生成草稿，但不会调用 Browser Relay，
   # 也不会回落到旧 Internal Note / handoff 决策链。
   enabled: true
+  # 完整审计仍保留在本地 run archive；不再向 Zendesk 写入 Internal Analysis 私有备注。
+  internal_audit_note_enabled: false
   # SaaS 工单创建/客户补充后立即读取完整会话；最终发送前仍会再次刷新。
   silent_initial_wait_seconds: 0
   silence_window_seconds: 0

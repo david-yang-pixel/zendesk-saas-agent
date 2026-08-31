@@ -5,7 +5,7 @@ not cover:
 
 * a public reply can reach Zendesk before the trigger-state callback runs;
 * a retry can regenerate different prose while the outbox still owns body A;
-* the mandatory post-public internal note can fail after the public send.
+* the optional post-public internal note can fail after the public send when enabled.
 
 All three side effects must remain tied to one durable logical delivery attempt.
 """
@@ -149,6 +149,7 @@ def _config(tmp_path) -> AppConfig:
     cfg = AppConfig(
         public_reply=PublicReplyConfig(
             enabled=True,
+            internal_audit_note_enabled=True,
             browser_relay_url="https://relay.example.test/zendesk-reply-mcp",
             browser_relay_api_key="relay-secret",
             freshness_callback_url=(

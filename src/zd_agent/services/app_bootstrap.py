@@ -85,6 +85,15 @@ def prepare_saas_app_runtime(
     state_dir = apply_saved_admin_config(cfg)
     verify_active_instance(state_dir)
 
+    internal_note_path = state_dir / "post_public_internal_note_outbox.sqlite3"
+    if not cfg.public_reply.internal_audit_note_enabled and internal_note_path.exists():
+        discarded = PostPublicInternalNoteStore(internal_note_path).discard_all()
+        if discarded:
+            logger.info(
+                "disabled_internal_audit_note_intents_discarded",
+                count=discarded,
+            )
+
     trigger_queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
     state = TicketStateTracker(state_dir / "tickets.json")
     migration = migrate_ticket_state_to_v2(state)
@@ -170,13 +179,17 @@ def prepare_saas_app_runtime(
         try:
             from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 
-            note_store = PostPublicInternalNoteStore(
-                state_dir / "post_public_internal_note_outbox.sqlite3"
+            note_store = (
+                PostPublicInternalNoteStore(
+                    state_dir / "post_public_internal_note_outbox.sqlite3"
+                )
+                if cfg.public_reply.internal_audit_note_enabled
+                else None
             )
             handoff_store = PostPublicHandoffStore(
                 state_dir / "post_public_handoff_outbox.sqlite3"
             )
-            note_pending = bool(note_store.pending(limit=1))
+            note_pending = bool(note_store and note_store.pending(limit=1))
             handoff_pending = bool(handoff_store.pending(limit=1))
             casework_pending = bool(casework_store.pending_ownership(limit=1))
             casework_state_pending = bool(state.list_by_state("ownership_pending"))
@@ -202,6 +215,7 @@ def prepare_saas_app_runtime(
             reconciled_handoffs = 0
             reconciled_casework = 0
             if note_pending:
+                assert note_store is not None
                 reconciled_notes = await asyncio.wait_for(
                     reconcile_pending_post_public_internal_notes(
                         note_store=note_store,

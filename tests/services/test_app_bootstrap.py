@@ -28,6 +28,7 @@ from zd_agent.services.casework_effect_store import (
     casework_effect_reference,
 )
 from zd_agent.services.durable_trigger_queue import DurableTriggerQueue
+from zd_agent.services.public_reply_internal_note import PostPublicInternalNoteStore
 from zd_agent.session.agent_session import AgentSession, SessionStatus
 from zd_agent.tools.public_reply_delivery import PublicReplyTransportError
 from zd_agent.trigger.state_store import TicketState, TicketStateTracker
@@ -57,6 +58,34 @@ def test_prepare_saas_app_runtime_installs_context(tmp_path) -> None:
     assert ticket_state(app) is runtime.state
     assert webhook_dedup(app) is not None
     assert session_manager(app) is manager
+
+
+def test_prepare_runtime_discards_disabled_internal_audit_note_intents(
+    tmp_path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    assert cfg.public_reply.internal_audit_note_enabled is False
+    state_dir = tmp_path / ".state"
+    note_store = PostPublicInternalNoteStore(
+        state_dir / "post_public_internal_note_outbox.sqlite3"
+    )
+    note_store.prepare(
+        ticket_id=3726,
+        delivery_attempt_id="old-delivery",
+        reply_type="solution",
+        body_with_footer="Previously delivered customer reply.",
+        internal_analysis="Do not send this old audit note.",
+        public_delivery_confirmed=True,
+    )
+    assert note_store.pending_count() == 1
+
+    prepare_saas_app_runtime(
+        app=web.Application(),
+        cfg=cfg,
+        manager=MagicMock(),
+    )
+
+    assert PostPublicInternalNoteStore(note_store.path).pending_count() == 0
 
 
 def test_configured_session_manager_loads_saved_concurrency_before_creation(
