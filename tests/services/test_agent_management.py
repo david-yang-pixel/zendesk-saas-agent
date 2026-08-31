@@ -103,6 +103,24 @@ def test_update_agent_config_applies_only_whitelisted_runtime_fields() -> None:
     assert "session_timeout_seconds" not in manifest["agent"]
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"features": {"auto_public_reply": {"enabled": "false"}}},
+        {"features": {"customer_event_recovery": {"enabled": "false"}}},
+        {"public_reply": {"enabled": "false"}},
+    ],
+)
+def test_update_agent_config_rejects_non_boolean_enabled_values(payload) -> None:
+    cfg = AppConfig()
+
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        update_agent_config(cfg, payload)
+
+    assert cfg.public_reply.enabled is False
+    assert cfg.waiting_poller.poll_new_messages is True
+
+
 def test_update_agent_config_rejects_invalid_public_reply_atomically() -> None:
     cfg = AppConfig()
     cfg.llm.model = "gpt-5.4"

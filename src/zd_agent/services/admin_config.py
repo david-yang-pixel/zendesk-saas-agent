@@ -444,6 +444,8 @@ ADMIN_AUTH_DEFAULTS: dict[str, Any] = {
 }
 
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,63}$")
+CUSTOM_MCP_PATH = "mcp_services.custom"
+CUSTOM_MCP_SECRET_PATH = "mcp_services.custom_api_keys"
 
 ADMIN_OVERRIDE_PATH_ALIASES = {
     "trigger_decider.silence_minutes_default": "intake.silence_minutes_default",
@@ -553,6 +555,8 @@ def _coerce_custom_mcp_services(value: Any) -> list[CustomMcpServiceConfig]:
         if not isinstance(item, dict):
             raise ValueError("mcp_services.custom items must be JSON objects")
         service = CustomMcpServiceConfig(**item)
+        if "\0" in service.mcp_api_key:
+            raise ValueError("mcp_services.custom API keys must not contain NUL bytes")
         name = service.name.strip()
         if not NAME_RE.match(name):
             raise ValueError(f"invalid custom MCP service name: {name or '<empty>'}")
@@ -577,6 +581,54 @@ def _coerce_custom_mcp_services(value: Any) -> list[CustomMcpServiceConfig]:
         )
         seen.add(name)
     return services
+
+
+def _public_custom_mcp_services(
+    services: Any,
+    *,
+    api_keys: dict[str, str] | None = None,
+    include_secret_status: bool = True,
+) -> list[dict[str, Any]]:
+    public: list[dict[str, Any]] = []
+    for service in services or []:
+        data = _jsonable(service)
+        if not isinstance(data, dict):
+            continue
+        secret = str(data.pop("mcp_api_key", "") or "")
+        name = str(data.get("name") or "")
+        if include_secret_status:
+            data["api_key_configured"] = bool(secret or (api_keys or {}).get(name, ""))
+        public.append(data)
+    return public
+
+
+def _redact_legacy_custom_mcp_audit_value(
+    value: Any,
+    *,
+    secrets: tuple[str, ...],
+) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, nested in value.items():
+            if key == "mcp_api_key":
+                redacted["api_key_configured"] = bool(nested)
+                continue
+            redacted[key] = _redact_legacy_custom_mcp_audit_value(
+                nested,
+                secrets=secrets,
+            )
+        return redacted
+    if isinstance(value, list):
+        return [
+            _redact_legacy_custom_mcp_audit_value(item, secrets=secrets)
+            for item in value
+        ]
+    if isinstance(value, str):
+        redacted_text = value
+        for secret in secrets:
+            redacted_text = redacted_text.replace(secret, "[REDACTED]")
+        return redacted_text
+    return value
 
 
 def _coerce_mention_aliases(value: Any) -> list[str]:
@@ -752,7 +804,50 @@ class AdminConfigStore:
     def _override_value(self, path: str) -> Any:
         return _flatten(self._read_yaml(self.overrides_path)).get(path)
 
+    def _custom_mcp_api_keys(self, cfg: AppConfig | None = None) -> dict[str, str]:
+        secrets_data = self._read_yaml(self.secrets_path)
+        mcp_secrets = secrets_data.get("mcp_services")
+        stored = (
+            mcp_secrets.get("custom_api_keys") if isinstance(mcp_secrets, dict) else {}
+        )
+        keys = {
+            str(name): str(value)
+            for name, value in (stored.items() if isinstance(stored, dict) else [])
+            if value
+        }
+        if cfg is not None:
+            for service in cfg.mcp_services.custom:
+                if service.mcp_api_key:
+                    keys.setdefault(service.name, service.mcp_api_key)
+        return keys
+
+    def _redact_legacy_custom_mcp_audit_history(
+        self,
+        api_keys: dict[str, str],
+    ) -> None:
+        if not self.audit_path.exists():
+            return
+        original = self.audit_path.read_text(encoding="utf-8")
+        secrets = tuple(value for value in api_keys.values() if value)
+        lines: list[str] = []
+        for raw_line in original.splitlines():
+            try:
+                item = json.loads(raw_line)
+            except json.JSONDecodeError:
+                lines.append(raw_line)
+                continue
+            redacted = _redact_legacy_custom_mcp_audit_value(
+                item,
+                secrets=secrets,
+            )
+            lines.append(json.dumps(redacted, ensure_ascii=False, sort_keys=True))
+        sanitized = "\n".join(lines) + ("\n" if lines else "")
+        if sanitized != original:
+            atomic_write_text(self.audit_path, sanitized)
+
     def _virtual_value(self, path: str) -> Any:
+        if path == "admin_auth.password_login_enabled":
+            return True
         value = self._override_value(path)
         if value is not None:
             return value
@@ -767,6 +862,13 @@ class AdminConfigStore:
                 values[spec.path] = self._virtual_value(spec.path)
             elif spec.path.startswith(("openai.", "anthropic.")):
                 values[spec.path] = None
+            elif spec.path == CUSTOM_MCP_PATH:
+                override = self._override_value(spec.path)
+                source = override if override is not None else cfg.mcp_services.custom
+                values[spec.path] = _public_custom_mcp_services(
+                    source,
+                    api_keys=self._custom_mcp_api_keys(cfg),
+                )
             else:
                 override = self._override_value(spec.path)
                 values[spec.path] = _jsonable(
@@ -789,8 +891,32 @@ class AdminConfigStore:
                 continue
             if spec.secret and (value is None or str(value) == ""):
                 continue
-            normalized_value = _coerce_value(spec, value)
+            if spec.path == CUSTOM_MCP_PATH:
+                raw_services = _json_payload(value, path=CUSTOM_MCP_PATH)
+                if not isinstance(raw_services, list):
+                    raise ValueError("mcp_services.custom must be a JSON array")
+                existing_keys = self._custom_mcp_api_keys(cfg)
+                merged_services: list[Any] = []
+                for item in raw_services:
+                    if not isinstance(item, dict):
+                        merged_services.append(item)
+                        continue
+                    merged = dict(item)
+                    original_name = str(
+                        merged.pop("_original_name", "") or merged.get("name") or ""
+                    )
+                    if not str(merged.get("mcp_api_key") or ""):
+                        merged["mcp_api_key"] = existing_keys.get(original_name, "")
+                    merged_services.append(merged)
+                normalized_value = _coerce_custom_mcp_services(merged_services)
+            else:
+                normalized_value = _coerce_value(spec, value)
             _validate_normalized_value(spec, normalized_value)
+            if (
+                spec.path == "admin_auth.password_login_enabled"
+                and normalized_value is not True
+            ):
+                raise ValueError("password_login_required")
             normalized[spec.path] = normalized_value
         if cfg is not None:
             main_model = str(normalized.get("llm.model", cfg.llm.model))
@@ -867,6 +993,12 @@ class AdminConfigStore:
             elif path.startswith("admin_auth."):
                 old_value = self._virtual_value(path)
                 shown_new = new_value
+            elif path == CUSTOM_MCP_PATH:
+                old_value = _public_custom_mcp_services(
+                    _get_attr(cfg, path),
+                    api_keys=self._custom_mcp_api_keys(cfg),
+                )
+                shown_new = _public_custom_mcp_services(new_value)
             else:
                 old_value = _jsonable(_get_attr(cfg, path))
                 shown_new = _jsonable(new_value)
@@ -915,6 +1047,24 @@ class AdminConfigStore:
             spec = self._specs[path]
             if spec.secret:
                 _deep_set(secrets_data, path, value)
+            elif path == CUSTOM_MCP_PATH:
+                _deep_set(
+                    overrides,
+                    path,
+                    _public_custom_mcp_services(
+                        value,
+                        include_secret_status=False,
+                    ),
+                )
+                _deep_set(
+                    secrets_data,
+                    CUSTOM_MCP_SECRET_PATH,
+                    {
+                        service.name: service.mcp_api_key
+                        for service in value
+                        if service.mcp_api_key
+                    },
+                )
             else:
                 _deep_set(overrides, path, _jsonable(value))
 
@@ -971,6 +1121,79 @@ class AdminConfigStore:
         normalized_overrides, migrations = _canonicalize_admin_overrides(
             raw_overrides,
         )
+        raw_custom_services = _flatten(normalized_overrides).get(CUSTOM_MCP_PATH)
+        legacy_custom_services = (
+            _coerce_custom_mcp_services(raw_custom_services)
+            if isinstance(raw_custom_services, list)
+            else []
+        )
+        legacy_custom_keys = {
+            service.name: service.mcp_api_key
+            for service in legacy_custom_services
+            if service.mcp_api_key
+        }
+        if legacy_custom_keys:
+            secrets_data = self._read_yaml(self.secrets_path)
+            current_keys = self._custom_mcp_api_keys()
+            for name, value in legacy_custom_keys.items():
+                current_keys.setdefault(name, value)
+            _deep_set(secrets_data, CUSTOM_MCP_SECRET_PATH, current_keys)
+            _deep_set(
+                normalized_overrides,
+                CUSTOM_MCP_PATH,
+                _public_custom_mcp_services(
+                    legacy_custom_services,
+                    include_secret_status=False,
+                ),
+            )
+            persisted_paths = (self.overrides_path, self.secrets_path)
+            snapshots = {
+                path: path.read_bytes() if path.exists() else None
+                for path in persisted_paths
+            }
+            audit_snapshot = (
+                self.audit_path.read_bytes() if self.audit_path.exists() else None
+            )
+            try:
+                self._write_yaml(self.overrides_path, normalized_overrides)
+                self._write_yaml(self.secrets_path, secrets_data, secret=True)
+                self._write_audit(
+                    actor="system",
+                    ip="local",
+                    action="custom_mcp_secret_migration",
+                    reason="move custom MCP API keys to secret storage",
+                    diff=[
+                        {
+                            "path": CUSTOM_MCP_PATH,
+                            "label": "自定义 MCP 服务",
+                            "group": "工具与集成",
+                            "old": {"secret_storage": "legacy_override"},
+                            "new": {
+                                "secret_storage": "admin_secrets",
+                                "migrated_count": len(legacy_custom_keys),
+                            },
+                            "secret": True,
+                            "restart_required": False,
+                        }
+                    ],
+                )
+            except Exception:
+                for path, content in snapshots.items():
+                    if content is None:
+                        path.unlink(missing_ok=True)
+                        continue
+                    atomic_write_text(path, content.decode("utf-8"))
+                    if path == self.secrets_path:
+                        path.chmod(0o600)
+                if audit_snapshot is None:
+                    self.audit_path.unlink(missing_ok=True)
+                else:
+                    atomic_write_text(
+                        self.audit_path,
+                        audit_snapshot.decode("utf-8"),
+                    )
+                raise
+        self._redact_legacy_custom_mcp_audit_history(legacy_custom_keys)
         flattened_overrides = _flatten(normalized_overrides)
         unknown_paths = sorted(
             path for path in flattened_overrides if path not in self._specs
@@ -984,6 +1207,14 @@ class AdminConfigStore:
             spec = self._specs.get(path)
             if spec and not spec.secret and not path.startswith("admin_auth."):
                 coerced = _coerce_value(spec, value)
+                if path == CUSTOM_MCP_PATH:
+                    api_keys = self._custom_mcp_api_keys(cfg)
+                    coerced = [
+                        service.model_copy(
+                            update={"mcp_api_key": api_keys.get(service.name, "")}
+                        )
+                        for service in coerced
+                    ]
                 nonsecret_values[path] = coerced
 
         candidate = (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -20,6 +21,15 @@ logger = get_logger(module="services.intake_poller")
 ZendeskCallFn = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 _MAX_SEARCH_PAGES = 10
 _REVISION_CACHE_FILE = "intake_revisions.json"
+
+
+@dataclass
+class IntakeSearchProgress:
+    """Bounded pagination state carried across intake scan cycles."""
+
+    next_page: int = 1
+    visible_ticket_ids: set[int] = field(default_factory=set)
+    baseline_existing_revisions: bool = False
 
 
 def _load_revision_cache(path: Path) -> dict[int, str]:
@@ -52,13 +62,15 @@ def _save_revision_cache(path: Path, cache: dict[int, str]) -> None:
     path.chmod(0o600)
 
 
-async def _search_all_active_tickets(
+async def _search_active_ticket_batch(
     *,
     query: str,
     call_fn: ZendeskCallFn,
-) -> list[dict[str, Any]]:
+    start_page: int = 1,
+) -> tuple[list[dict[str, Any]], int | None]:
     results: list[dict[str, Any]] = []
-    for page in range(1, _MAX_SEARCH_PAGES + 1):
+    stop_page = start_page + _MAX_SEARCH_PAGES
+    for page in range(start_page, stop_page):
         payload = await call_fn(
             "search_tickets",
             {"query": query, "page": page, "per_page": 100},
@@ -70,8 +82,8 @@ async def _search_all_active_tickets(
             item for item in (data.get("results") or []) if isinstance(item, dict)
         )
         if not data.get("next_page"):
-            return results
-    raise RuntimeError(f"active ticket search exceeded {_MAX_SEARCH_PAGES} pages")
+            return results, None
+    return results, stop_page
 
 
 async def scan_once(
@@ -80,10 +92,16 @@ async def scan_once(
     query: str,
     ticket_update_cache: dict[int, str],
     call_fn: ZendeskCallFn = call_zendesk_tool,
+    search_progress: IntakeSearchProgress | None = None,
 ) -> int:
     """Search active tickets and durably enqueue each newly observed revision."""
+    progress = search_progress or IntakeSearchProgress()
     try:
-        results = await _search_all_active_tickets(query=query, call_fn=call_fn)
+        results, next_page = await _search_active_ticket_batch(
+            query=query,
+            call_fn=call_fn,
+            start_page=progress.next_page,
+        )
     except Exception as error:  # noqa: BLE001 - one failed scan retries next cycle.
         logger.warning(
             "intake_backfill_search_failed",
@@ -103,7 +121,9 @@ async def scan_once(
         revision = str(ticket.get("updated_at") or "unknown").strip() or "unknown"
         if ticket_update_cache.get(ticket_id) == revision:
             continue
-        if not is_after_online_watermark(ticket.get("updated_at")):
+        if progress.baseline_existing_revisions or not is_after_online_watermark(
+            ticket.get("updated_at")
+        ):
             # Prime the cache without creating work for the offline interval.
             ticket_update_cache[ticket_id] = revision
             continue
@@ -126,9 +146,16 @@ async def scan_once(
         if inserted is not False:
             inserted_count += 1
 
-    for ticket_id in tuple(ticket_update_cache):
-        if ticket_id not in visible_ticket_ids:
-            ticket_update_cache.pop(ticket_id, None)
+    progress.visible_ticket_ids.update(visible_ticket_ids)
+    if next_page is None:
+        for ticket_id in tuple(ticket_update_cache):
+            if ticket_id not in progress.visible_ticket_ids:
+                ticket_update_cache.pop(ticket_id, None)
+        progress.next_page = 1
+        progress.visible_ticket_ids.clear()
+        progress.baseline_existing_revisions = False
+    else:
+        progress.next_page = next_page
     return inserted_count
 
 
@@ -142,13 +169,15 @@ async def run_intake_poller(
     queue_path = Path(getattr(trigger_queue, "path", Path("trigger_queue.sqlite3")))
     cache_path = queue_path.parent / _REVISION_CACHE_FILE
     ticket_update_cache = _load_revision_cache(cache_path)
+    search_progress = IntakeSearchProgress()
     logger.info(
         "intake_backfill_started",
         query=query,
         interval_s=poll_interval_seconds,
     )
     try:
-        results = await _search_all_active_tickets(
+        boundary = accept_after_unix()
+        results, next_page = await _search_active_ticket_batch(
             query=query,
             call_fn=call_zendesk_tool,
         )
@@ -161,9 +190,13 @@ async def run_intake_poller(
             revision = str(updated_at or "unknown").strip() or "unknown"
             # Baseline only revisions that provably predate this online epoch.
             # Newer revisions must flow through scan_once and be enqueued.
-            boundary = accept_after_unix()
             if boundary <= 0 or not is_after_online_watermark(updated_at):
                 ticket_update_cache[ticket_id] = revision
+            if next_page is not None:
+                search_progress.visible_ticket_ids.add(ticket_id)
+        if next_page is not None:
+            search_progress.next_page = next_page
+            search_progress.baseline_existing_revisions = boundary <= 0
         _save_revision_cache(cache_path, ticket_update_cache)
         logger.info("intake_backfill_baseline_primed", tickets=len(ticket_update_cache))
     except Exception as error:  # noqa: BLE001 - next cycle remains available.
@@ -177,6 +210,8 @@ async def run_intake_poller(
                 trigger_queue=trigger_queue,
                 query=query,
                 ticket_update_cache=ticket_update_cache,
+                call_fn=call_zendesk_tool,
+                search_progress=search_progress,
             )
             if inserted:
                 logger.info("intake_backfill_cycle_done", enqueued=inserted)

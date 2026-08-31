@@ -104,6 +104,185 @@ class TestDetected:
         assert detected is True
         assert "footer" in reason or "missing" in reason
 
+    @pytest.mark.asyncio
+    async def test_latest_public_reply_is_read_from_the_last_comment_page(self) -> None:
+        """Oldest-first page 1 must not masquerade as the latest ticket reply."""
+
+        async def fake_call(name: str, arguments: dict) -> dict:
+            assert name == "get_ticket_comments"
+            if arguments["page"] == 1:
+                return {
+                    "success": True,
+                    "data": {
+                        "comments": [
+                            {
+                                "id": 100,
+                                "author_id": CUSTOMER_UID,
+                                "public": True,
+                                "body": "older customer reply",
+                            }
+                        ],
+                        "count": 101,
+                        "next_page": "https://zendesk.example/comments?page=2",
+                    },
+                }
+            assert arguments["page"] == 2
+            return {
+                "success": True,
+                "data": {
+                    "comments": [
+                        {
+                            "id": 101,
+                            "author_id": OTHER_SE_UID,
+                            "public": True,
+                            "body": "newest SE reply",
+                        }
+                    ],
+                    "count": 101,
+                    "next_page": None,
+                },
+            }
+
+        with patch(
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=fake_call,
+        ):
+            detected, reason = await detect_human_takeover(
+                ticket_id=1234,
+                ticket_info=_ticket(),
+                agent_user_id=AGENT_UID,
+            )
+
+        assert detected is True
+        assert str(OTHER_SE_UID) in reason
+
+    @pytest.mark.asyncio
+    async def test_latest_public_reply_is_found_beyond_recent_private_pages(
+        self,
+    ) -> None:
+        requested_pages: list[int] = []
+
+        async def fake_call(name: str, arguments: dict) -> dict:
+            assert name == "get_ticket_comments"
+            page = arguments["page"]
+            requested_pages.append(page)
+            if page == 1:
+                return {
+                    "success": True,
+                    "data": {
+                        "comments": [
+                            {
+                                "id": 1,
+                                "author_id": CUSTOMER_UID,
+                                "public": False,
+                                "body": "old private note",
+                            }
+                        ],
+                        "count": 1001,
+                        "next_page": "page-2",
+                    },
+                }
+            if page == 2:
+                comments = [
+                    {
+                        "id": 101,
+                        "author_id": OTHER_SE_UID,
+                        "public": True,
+                        "body": "latest public SE reply",
+                    }
+                ]
+            else:
+                comments = [
+                    {
+                        "id": page * 100,
+                        "author_id": OTHER_SE_UID,
+                        "public": False,
+                        "body": "newer private note",
+                    }
+                ]
+            return {
+                "success": True,
+                "data": {
+                    "comments": comments,
+                    "count": 1001,
+                    "next_page": None if page == 11 else f"page-{page + 1}",
+                },
+            }
+
+        with patch(
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=fake_call,
+        ):
+            detected, reason = await detect_human_takeover(
+                ticket_id=1234,
+                ticket_info=_ticket(),
+                agent_user_id=AGENT_UID,
+            )
+
+        assert detected is True
+        assert str(OTHER_SE_UID) in reason
+        assert 2 in requested_pages
+
+    @pytest.mark.asyncio
+    async def test_latest_public_reply_handles_comment_page_growth_during_scan(
+        self,
+    ) -> None:
+        newest_se_uid = 88888888
+
+        async def fake_call(name: str, arguments: dict) -> dict:
+            assert name == "get_ticket_comments"
+            page = arguments["page"]
+            if page == 1:
+                return {
+                    "success": True,
+                    "data": {"comments": [], "count": 200, "next_page": "page-2"},
+                }
+            if page == 2:
+                return {
+                    "success": True,
+                    "data": {
+                        "comments": [
+                            {
+                                "id": 200,
+                                "author_id": OTHER_SE_UID,
+                                "public": True,
+                                "body": "older SE reply",
+                            }
+                        ],
+                        "count": 201,
+                        "next_page": "page-3",
+                    },
+                }
+            assert page == 3
+            return {
+                "success": True,
+                "data": {
+                    "comments": [
+                        {
+                            "id": 201,
+                            "author_id": newest_se_uid,
+                            "public": True,
+                            "body": "concurrent newest SE reply",
+                        }
+                    ],
+                    "count": 201,
+                    "next_page": None,
+                },
+            }
+
+        with patch(
+            "zd_agent.services.human_takeover.call_zendesk_tool",
+            side_effect=fake_call,
+        ):
+            detected, reason = await detect_human_takeover(
+                ticket_id=1234,
+                ticket_info=_ticket(),
+                agent_user_id=AGENT_UID,
+            )
+
+        assert detected is True
+        assert str(newest_se_uid) in reason
+
 
 # ---------------------------------------------------------------------------
 # 不该误判

@@ -501,6 +501,138 @@ async def test_scan_once_searches_with_overlap_window(queue, tracker):
 
 
 @pytest.mark.asyncio
+async def test_scan_once_paginates_ticket_search_before_dispatch(queue, tracker):
+    search_pages: list[int] = []
+
+    async def fake_call(name: str, arguments: dict) -> dict:
+        if name == "search_tickets":
+            page = arguments.get("page", 1)
+            search_pages.append(page)
+            return {
+                "success": True,
+                "data": {
+                    "results": [] if page == 1 else [_ticket(2317)],
+                    "next_page": "page-2" if page == 1 else None,
+                },
+            }
+        assert name == "get_ticket_comments"
+        return {
+            "success": True,
+            "data": {"comments": [_comment("c-page-2", "@saas-agent please check")]},
+        }
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+
+        dispatched, _ = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=time.time() - 600,
+        )
+
+    assert search_pages == [1, 2]
+    assert dispatched == 1
+    assert queue.get_nowait()["ticket_id"] == 2317
+
+
+@pytest.mark.asyncio
+async def test_scan_once_keeps_cursor_and_dispatches_nothing_if_later_page_fails(
+    queue,
+    tracker,
+):
+    async def fake_call(name: str, arguments: dict) -> dict:
+        assert name == "search_tickets"
+        if arguments.get("page", 1) == 1:
+            return {
+                "success": True,
+                "data": {
+                    "results": [_ticket(2316)],
+                    "next_page": "page-2",
+                },
+            }
+        return {
+            "success": False,
+            "code": "ZENDESK_API_ERROR",
+            "error": "page 2 failed",
+        }
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+        old_cursor = time.time() - 600
+
+        dispatched, new_cursor = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=old_cursor,
+        )
+
+    assert dispatched == 0
+    assert new_cursor == old_cursor
+    assert queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_scan_once_bounds_broken_never_ending_search_pagination(
+    queue,
+    tracker,
+):
+    requested_pages: list[int] = []
+
+    async def fake_call(name: str, arguments: dict) -> dict:
+        assert name == "search_tickets"
+        requested_pages.append(arguments["page"])
+        return {
+            "success": True,
+            "data": {
+                "results": [],
+                "next_page": f"page-{arguments['page'] + 1}",
+            },
+        }
+
+    with (
+        patch("zd_agent.services.mention_poller.get_config") as cfg_mock,
+        patch(
+            "zd_agent.services.mention_poller.call_zendesk_tool",
+            side_effect=fake_call,
+        ),
+        patch("zd_agent.services.mention_poller._MAX_SEARCH_PAGES", 3),
+    ):
+        cfg = MagicMock()
+        cfg.zendesk.mention_trigger = "@saas-agent"
+        cfg.zendesk.mention_aliases = []
+        cfg_mock.return_value = cfg
+        old_cursor = time.time() - 600
+
+        dispatched, new_cursor = await scan_once(
+            trigger_queue=queue,
+            tracker=tracker,
+            last_poll_unix=old_cursor,
+        )
+
+    assert dispatched == 0
+    assert new_cursor == old_cursor
+    assert requested_pages == [1, 2, 3]
+
+
+@pytest.mark.asyncio
 async def test_five_second_polling_does_not_refetch_unchanged_ticket_comments(
     queue,
     tracker,

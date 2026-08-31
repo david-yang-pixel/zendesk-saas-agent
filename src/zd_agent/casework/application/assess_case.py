@@ -50,11 +50,10 @@ def _admit_claims(
         )
         for claim in proposal.proposed_claims
     )
-    accepted_ids = {
-        admission.claim_id for admission in admissions if admission.accepted
-    }
     claims = tuple(
-        claim for claim in proposal.proposed_claims if claim.claim_id in accepted_ids
+        claim
+        for claim, admission in zip(proposal.proposed_claims, admissions)
+        if admission.accepted
     )
     return admissions, claims
 

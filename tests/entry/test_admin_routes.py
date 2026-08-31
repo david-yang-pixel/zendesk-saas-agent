@@ -400,6 +400,21 @@ def test_agent_lifecycle_actions_are_one_click_with_automatic_audit_reasons() ->
     assert "确认重启" not in lifecycle_actions
 
 
+def test_admin_ui_preserves_redacted_custom_mcp_key_and_warns_on_reload_conflict() -> (
+    None
+):
+    app_js = (
+        resources.files("zd_agent.admin_static")
+        .joinpath("app.js")
+        .read_text(encoding="utf-8")
+    )
+
+    assert "service.api_key_configured" in app_js
+    assert "existing.mcp_api_key" not in app_js
+    assert "worker_reload_pending" in app_js
+    assert "配置已保存，但尚未在 Agent Worker 中生效，需重启 Agent" in app_js
+
+
 @pytest.mark.asyncio
 async def test_admin_static_asset_serves_known_files_and_rejects_unknown(
     tmp_path,
@@ -454,28 +469,61 @@ async def test_admin_login_sets_session_cookie(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_admin_login_honors_password_login_disabled(tmp_path) -> None:
+async def test_admin_config_rejects_disabling_only_implemented_login(tmp_path) -> None:
     app = _app(tmp_path)
-    admin_config(app).apply(
-        app_config(app),
-        {
-            "reason": "disable password login",
-            "changes": {"admin_auth.password_login_enabled": False},
-        },
-        actor="test",
-        ip="127.0.0.1",
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
     )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
 
-    response = await app[ADMIN_HANDLERS_KEY]["login"](
+    response = await app[ADMIN_HANDLERS_KEY]["config_apply"](
         _Request(
             app=app,
-            payload={"username": "admin", "password": TEST_ADMIN_PASSWORD},
+            cookies=cookie,
+            payload={
+                "reason": "disable password login",
+                "changes": {"admin_auth.password_login_enabled": False},
+            },
         ),
     )
 
-    assert response.status == 403
-    assert json.loads(response.text)["error"] == "password_login_disabled"
-    assert "zd_admin_session" not in response.cookies
+    assert response.status == 400
+    assert json.loads(response.text)["error"] == "password_login_required"
+    assert (
+        admin_config(app).effective_config(app_config(app))["values"][
+            "admin_auth.password_login_enabled"
+        ]
+        is True
+    )
+
+
+@pytest.mark.asyncio
+async def test_anonymous_logout_does_not_write_audit(tmp_path) -> None:
+    app = _app(tmp_path)
+
+    anonymous = await app[ADMIN_HANDLERS_KEY]["logout"](_Request(app=app))
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    authenticated = await app[ADMIN_HANDLERS_KEY]["logout"](
+        _Request(
+            app=app,
+            cookies={
+                "zd_admin_session": login_response.cookies["zd_admin_session"].value
+            },
+        )
+    )
+
+    assert anonymous.status == 200
+    assert authenticated.status == 200
+    audit = admin_config(app).list_audit_logs(action="admin_logout")
+    assert audit["summary"]["filtered"] == 1
+    assert audit["items"][0]["actor"] == "admin"
 
 
 @pytest.mark.asyncio
@@ -2073,6 +2121,7 @@ def test_discovered_model_capabilities_are_model_specific_and_tri_state() -> Non
         "high",
         "xhigh",
         "max",
+        "ultra",
     ]
     assert reasoning_vision["vision"] == "supported"
     assert non_reasoning_vision["reasoning"] == "unsupported"
@@ -2133,6 +2182,48 @@ async def test_admin_deploy_status_includes_runtime_metadata_and_pending_restart
     assert body["image"]["tag"] == "sha-test"
     assert body["image"]["commit_sha"] == "abc123"
     assert body["pending_restart"] is True
+
+
+@pytest.mark.asyncio
+async def test_config_apply_reports_worker_reload_conflict_as_not_effective(
+    tmp_path,
+) -> None:
+    app = _app(tmp_path)
+    lifecycle = MagicMock()
+    lifecycle.status.return_value = {"status": "running", "desired_state": "running"}
+    lifecycle.restart = AsyncMock(
+        side_effect=admin_routes.AgentLifecycleConflict(
+            "active_sessions",
+            active_sessions=1,
+        )
+    )
+    install_agent_lifecycle(app=app, lifecycle=lifecycle)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    response = await app[ADMIN_HANDLERS_KEY]["config_apply"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "changes": {"llm.temperature": 0.3},
+                "reason": "adjust runtime config",
+            },
+        )
+    )
+
+    body = json.loads(response.text)
+    assert response.status == 200
+    assert body["ok"] is True
+    assert body["worker_reload_started"] is False
+    assert body["worker_reload_pending"] is True
+    assert body["runtime_effective"] is False
+    assert body["worker_reload_error"] == "active_sessions"
 
 
 @pytest.mark.asyncio
@@ -2290,3 +2381,67 @@ async def test_admin_noop_stop_returns_completed_once(tmp_path) -> None:
     lifecycle.stop.assert_awaited_once()
     audit = admin_config(app).list_audit_logs(action="agent_stop_completed")
     assert audit["summary"]["filtered"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transition_status", "expected_status"),
+    [("blocked", 409), ("error", 500)],
+)
+async def test_admin_lifecycle_idempotent_retry_preserves_terminal_failure(
+    tmp_path,
+    transition_status,
+    expected_status,
+) -> None:
+    app = _app(tmp_path)
+    lifecycle = MagicMock()
+    lifecycle.store = AgentLifecycleStore(tmp_path / ".state")
+    lifecycle.store.write(
+        {
+            "desired_state": "running",
+            "dispatch_enabled": True,
+            "dispatch_generation": 1,
+            "generation": 1,
+            "accept_after": 0,
+            "last_operation_id": "operation-retry-1",
+            "last_operation_action": "restart",
+            "transition_status": transition_status,
+            "transition_error": "unsafe_outbox",
+            "transition_blockers": {"public_reply_ambiguous": 1},
+        }
+    )
+    lifecycle.status.return_value = {
+        "status": "running",
+        "desired_state": "running",
+        "transition_status": transition_status,
+    }
+    install_agent_lifecycle(app=app, lifecycle=lifecycle)
+    login_response = await app[ADMIN_HANDLERS_KEY]["login"](
+        _Request(
+            app=app, payload={"username": "admin", "password": TEST_ADMIN_PASSWORD}
+        )
+    )
+    cookie = {"zd_admin_session": login_response.cookies["zd_admin_session"].value}
+    cookie = await _change_default_password(app, cookie)
+
+    response = await app[ADMIN_HANDLERS_KEY]["agent_action"](
+        _Request(
+            app=app,
+            cookies=cookie,
+            payload={
+                "action": "restart",
+                "confirmation": "RESTART_AGENT",
+                "reason": "retry failed operation",
+                "operation_id": "operation-retry-1",
+            },
+            headers={"X-ZD-Agent-Action": "lifecycle"},
+        )
+    )
+
+    body = json.loads(response.text)
+    assert response.status == expected_status
+    assert body["ok"] is False
+    assert body["idempotent"] is True
+    assert body["error"] == "unsafe_outbox"
+    assert body["blockers"] == {"public_reply_ambiguous": 1}
+    lifecycle.restart.assert_not_called()

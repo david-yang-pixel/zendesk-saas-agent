@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 from typing import Any, TYPE_CHECKING
 
+from sqlglot import exp, parse
+from sqlglot.errors import ParseError
+
 from zd_agent.config import get_config
 from zd_agent.integrations.db_gateway_mcp import query_db_gateway_mcp
 from zd_agent.tools.base import Tool, ToolResult
@@ -38,6 +41,33 @@ _FORBIDDEN_KEYWORDS = [
 ]
 _DOLLAR_QUOTE_START = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
 _MAX_ERROR_SQL_CHARS = 800
+_POSTGRES_SAFE_ANONYMOUS_FUNCTIONS = frozenset(
+    {
+        "age",
+        "array_length",
+        "cardinality",
+        "col_description",
+        "concat",
+        "concat_ws",
+        "current_database",
+        "current_setting",
+        "date_part",
+        "format_type",
+        "json_array_length",
+        "json_extract_path_text",
+        "json_typeof",
+        "jsonb_array_length",
+        "jsonb_extract_path_text",
+        "jsonb_object_keys",
+        "jsonb_typeof",
+        "obj_description",
+        "pg_typeof",
+        "regexp_matches",
+        "split_part",
+        "string_agg",
+        "to_char",
+    }
+)
 
 
 def _strip_comments_and_string_literals(sql: str) -> str:
@@ -125,7 +155,42 @@ def _validate_read_only_sql(sql: str) -> str | None:
     fw = first_word.group(1).upper() if first_word else ""
     if fw not in ("SELECT", "WITH"):
         return f"SQL must start with SELECT or WITH, got: {fw or '(empty)'}"
+    function_error = _validate_postgres_functions(sql)
+    if function_error:
+        return function_error
     return None
+
+
+def _validate_postgres_functions(sql: str) -> str | None:
+    try:
+        expressions = parse(sql, read="postgres")
+    except ParseError as error:
+        return f"invalid PostgreSQL SQL: {error}"
+    if len(expressions) != 1 or expressions[0] is None:
+        return "SQL must contain exactly one statement"
+    return _validate_postgres_expression_functions(expressions[0])
+
+
+def _validate_postgres_expression_functions(
+    expression: exp.Expression,
+) -> str | None:
+    if next(expression.find_all(exp.Into), None) is not None:
+        return "SELECT INTO is not allowed at the read-only boundary"
+    if next(expression.find_all(exp.Lock), None) is not None:
+        return "locking clauses are not allowed at the read-only boundary"
+    rejected: set[str] = set()
+    for function in expression.find_all(exp.Anonymous):
+        name = function.name.casefold()
+        if isinstance(function.parent, exp.Dot) or (
+            name not in _POSTGRES_SAFE_ANONYMOUS_FUNCTIONS
+        ):
+            rejected.add(name or "(unknown)")
+    if not rejected:
+        return None
+    return (
+        "unknown or qualified PostgreSQL function is not allowed at the read-only "
+        f"boundary: {', '.join(sorted(rejected))}"
+    )
 
 
 def _compact_sql_for_error(sql: str) -> str:

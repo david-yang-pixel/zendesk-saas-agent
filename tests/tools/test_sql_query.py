@@ -38,6 +38,49 @@ async def test_sql_query_rejects_write(fake_session, sql_cfg):
 
 
 @pytest.mark.asyncio
+async def test_sql_query_rejects_unknown_postgres_function_before_gateway(
+    fake_session, sql_cfg
+):
+    gateway = AsyncMock()
+    with patch("zd_agent.tools.sql_query.query_db_gateway_mcp", gateway):
+        result = await SqlQuery().execute(
+            {"database": "prod", "sql": "SELECT public.record_support_access()"},
+            fake_session,
+        )
+
+    assert result.success is False
+    assert "function" in (result.error or "").lower()
+    gateway.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 1 INTO TEMP support_probe",
+        "SELECT 1 INTO UNLOGGED support_probe",
+        "WITH x AS (SELECT 1) SELECT * INTO TEMP support_probe FROM x",
+        "SELECT * FROM tenants FOR SHARE",
+        "SELECT * FROM tenants FOR KEY SHARE",
+    ],
+)
+async def test_sql_query_rejects_select_side_effects_before_gateway(
+    fake_session,
+    sql_cfg,
+    sql,
+):
+    gateway = AsyncMock()
+    with patch("zd_agent.tools.sql_query.query_db_gateway_mcp", gateway):
+        result = await SqlQuery().execute(
+            {"database": "prod", "sql": sql},
+            fake_session,
+        )
+
+    assert result.success is False
+    gateway.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_sql_query_allows_forbidden_words_inside_string_literals(
     fake_session, sql_cfg
 ):

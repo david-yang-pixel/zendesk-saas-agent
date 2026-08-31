@@ -18,7 +18,7 @@ from zd_agent.services.webhook_dedup import WebhookDedup
 class FakeRequest:
     def __init__(
         self,
-        payload: dict,
+        payload,
         dedup_path,
         secret: str = "secret",
         timestamp: str = "1780460000",
@@ -47,6 +47,29 @@ class FakeRequest:
 
     async def read(self) -> bytes:
         return self._body
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["not", "an", "object"],
+        {"detail": [], "event": "not-an-object"},
+        {"detail": {"id": "4186"}, "event": {"actor": []}},
+        {"detail": {"id": "4186"}, "event": {"actor": {}, "message": []}},
+    ],
+)
+async def test_messaging_webhook_rejects_malformed_payload_shapes(tmp_path, payload):
+    request = FakeRequest(payload, tmp_path / "dedup.json")
+
+    with patch(
+        "zd_agent.services.zendesk_messaging_webhook.time.time",
+        return_value=1780460000.0,
+    ):
+        response = await handle_zendesk_messaging_webhook(request)
+
+    assert response.status == 400
+    assert response.text == "bad payload"
 
 
 @pytest.mark.asyncio

@@ -181,6 +181,7 @@ _LLM_PROMPT_TEMPLATE = """你判断客户在工单里新发的这条短消息是
 async def is_substantive_llm(
     body: str,
     *,
+    provider: str = "openai",
     model: str,
     api_key: str,
     reasoning_effort: str = "",
@@ -192,44 +193,71 @@ async def is_substantive_llm(
     出错（超时 / API 失败 / 解析失败）默认返回 ``True``（保守，宁可 abort 重新分析）。
     """
     prompt = _LLM_PROMPT_TEMPLATE.format(body=body[:500])
+    provider_name = provider.strip().casefold()
 
     try:
-        request_json = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_completion_tokens": reasoning_completion_token_limit(
-                60,
-                reasoning_effort,
-            ),
-            "response_format": {"type": "json_object"},
-        }
-        if reasoning_effort:
-            request_json["reasoning_effort"] = reasoning_effort
         effective_timeout = reasoning_timeout_seconds(timeout, reasoning_effort)
-        async with httpx.AsyncClient(timeout=effective_timeout) as client:
-            resp = await client.post(
-                chat_completions_url(base_url),
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=request_json,
+        if provider_name == "anthropic":
+            from zd_agent.runtime.llm.anthropic_provider import AnthropicProvider
+
+            llm = AnthropicProvider(
+                api_key=api_key,
+                model=model,
+                max_tokens=256,
+                timeout=max(1, int(effective_timeout)),
             )
+            response = await llm.chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.0,
+            )
+            raw = response.content
+        elif provider_name == "openai":
+            request_json = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_completion_tokens": reasoning_completion_token_limit(
+                    60,
+                    reasoning_effort,
+                ),
+                "response_format": {"type": "json_object"},
+            }
+            if reasoning_effort:
+                request_json["reasoning_effort"] = reasoning_effort
+            async with httpx.AsyncClient(timeout=effective_timeout) as client:
+                resp = await client.post(
+                    chat_completions_url(base_url),
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=request_json,
+                )
+            if resp.status_code != 200:
+                logger.warning(
+                    "pre_send_llm_bad_status",
+                    status=resp.status_code,
+                    body=resp.text[:200],
+                )
+                return True
+            data = resp.json()
+            raw = data["choices"][0]["message"]["content"]
+        else:
+            logger.warning(
+                "pre_send_llm_unsupported_provider",
+                provider=provider_name,
+            )
+            return True
     except Exception as e:
-        logger.warning("pre_send_llm_http_error", error=str(e)[:200])
+        logger.warning(
+            "pre_send_llm_http_error",
+            provider=provider_name,
+            error=str(e)[:200],
+        )
         return True  # 保守：把灰区当实质
 
-    if resp.status_code != 200:
-        logger.warning(
-            "pre_send_llm_bad_status",
-            status=resp.status_code,
-            body=resp.text[:200],
-        )
-        return True
-
     try:
-        data = resp.json()
-        raw = data["choices"][0]["message"]["content"]
+        if not isinstance(raw, str):
+            raise TypeError("LLM returned non-text content")
         parsed = json.loads(raw)
         substantive = bool(parsed.get("substantive", True))
         logger.info(
@@ -258,6 +286,7 @@ async def pre_send_check_or_abort(
     snapshot_count: int,
     snapshot_last_id: str | None,
     fetch_messages_fn: FetchMessagesFn,
+    provider: str = "openai",
     model: str = "gpt-5.4-mini",
     api_key: str = "",
     reasoning_effort: str = "",
@@ -271,8 +300,9 @@ async def pre_send_check_or_abort(
         snapshot_count: agent dispatch 起跑时的客户消息条数
         snapshot_last_id: agent dispatch 起跑时的最后一条客户消息 id
         fetch_messages_fn: async 函数，返回**最新**的客户消息列表
+        provider: LLM judge 使用的 provider（openai / anthropic）
         model: LLM judge 用的模型（默认 gpt-5.4-mini）
-        api_key: OpenAI api key
+        api_key: 对应 provider 的 API key
         skip_llm: True 时灰区按 True 保守处理（不调 LLM），用于离线测试
 
     Returns:
@@ -390,6 +420,7 @@ async def pre_send_check_or_abort(
             body = (msg.get("body") or "").strip()
             substantive = await is_substantive_llm(
                 body,
+                provider=provider,
                 model=model,
                 api_key=api_key,
                 reasoning_effort=reasoning_effort,

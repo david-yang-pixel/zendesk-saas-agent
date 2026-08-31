@@ -302,8 +302,18 @@ def _dedupe_entries(entries: list[OfficialDocEntry]) -> list[OfficialDocEntry]:
 
 
 def _is_allowed_url(url: str) -> bool:
-    host = urlparse(url).hostname or ""
-    return host in ALLOWED_HOSTS
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme.casefold() == "https"
+        and (parsed.hostname or "").casefold() in ALLOWED_HOSTS
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 class _HTMLTextExtractor(HTMLParser):

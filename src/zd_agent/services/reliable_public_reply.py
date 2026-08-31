@@ -625,15 +625,20 @@ async def _check_public_reply_readiness(
         check = FreshnessResult(continue_send=True, reason="no_snapshot_required")
     else:
         env = EnvSettings()
+        llm_provider = cfg.llm.provider.strip().casefold()
+        llm_api_key = (
+            env.anthropic_api_key if llm_provider == "anthropic" else env.openai_api_key
+        )
         check = await pre_send_check_or_abort(
             ticket_id=ticket_id,
             snapshot_count=snapshot_count,
             snapshot_last_id=snapshot_last_id,
             fetch_messages_fn=_fetch,
+            provider=llm_provider,
             model=cfg.llm.model,
-            api_key=env.openai_api_key,
+            api_key=llm_api_key,
             reasoning_effort=cfg.llm.reasoning_effort,
-            base_url=cfg.llm.base_url,
+            base_url=cfg.llm.base_url if llm_provider == "openai" else None,
             skip_llm=skip_llm,
         )
     if not check.continue_send:

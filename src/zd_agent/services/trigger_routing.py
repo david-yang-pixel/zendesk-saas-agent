@@ -92,7 +92,7 @@ def is_duplicate_customer_comment(
     latest_cid: object,
 ) -> bool:
     """Return whether the newest customer comment was already evaluated."""
-    return bool(existing and existing.last_customer_comment_id == latest_cid)
+    return bool(existing and str(existing.last_customer_comment_id) == str(latest_cid))
 
 
 def customer_reopen_metric(

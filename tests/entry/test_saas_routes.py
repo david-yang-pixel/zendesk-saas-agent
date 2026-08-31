@@ -596,6 +596,43 @@ async def test_agent_config_update_rejects_invalid_reasoning_combination(
 
 
 @pytest.mark.asyncio
+async def test_agent_config_update_rejects_string_false_for_enabled(
+    monkeypatch,
+) -> None:
+    class _Env:
+        hc_client_api_key = "hc-secret"
+        openai_api_key = ""
+        anthropic_api_key = ""
+
+    monkeypatch.setattr("zd_agent.services.saas_routes.EnvSettings", lambda: _Env())
+    app = web.Application()
+    cfg = AppConfig()
+    install_saas_app_context(
+        app=app,
+        cfg=cfg,
+        manager=MagicMock(),
+        trigger_queue=MagicMock(),
+        state=MagicMock(),
+        webhook_dedup=MagicMock(),
+    )
+
+    response = await handle_update_agent_config(
+        _Request(
+            app=app,
+            headers={"Authorization": "Bearer hc-secret"},
+            payload={"public_reply": {"enabled": "false"}},
+        )
+    )
+
+    assert response.status == 400
+    assert json.loads(response.text) == {
+        "ok": False,
+        "error": "public_reply.enabled must be a boolean",
+    }
+    assert cfg.public_reply.enabled is False
+
+
+@pytest.mark.asyncio
 async def test_agent_models_rejects_request_level_base_url_override(
     monkeypatch,
 ) -> None:

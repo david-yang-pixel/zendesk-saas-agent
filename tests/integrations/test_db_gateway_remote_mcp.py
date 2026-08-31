@@ -9,10 +9,67 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from zd_agent.integrations.db_gateway_mcp import query_db_gateway_mcp
+from zd_agent.integrations.db_gateway_mcp import (
+    _parse_tool_result,
+    query_db_gateway_mcp,
+)
 
 
 REAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+def test_parse_tool_result_finds_the_only_json_object_across_text_blocks() -> None:
+    result = _parse_tool_result(
+        {
+            "content": [
+                {"type": "image", "data": "ignored"},
+                {"type": "text", "text": "human-readable preface"},
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "success": True,
+                            "csv": "ok\n1\n",
+                            "row_count": 1,
+                            "elapsed_ms": 2,
+                            "truncated": False,
+                        }
+                    ),
+                },
+            ]
+        }
+    )
+
+    assert result.success is True
+    assert result.csv == "ok\n1\n"
+
+
+def test_parse_tool_result_rejects_ambiguous_or_non_boolean_flags() -> None:
+    ambiguous = _parse_tool_result(
+        {
+            "content": [
+                {"type": "text", "text": '{"success": true}'},
+                {"type": "text", "text": '{"success": false}'},
+            ]
+        }
+    )
+    string_flags = _parse_tool_result(
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": '{"success": "false", "truncated": "false"}',
+                }
+            ]
+        }
+    )
+
+    assert ambiguous.success is False
+    assert ambiguous.code == "MCP_BAD_RESPONSE"
+    assert "ambiguous" in (ambiguous.error or "").lower()
+    assert string_flags.success is False
+    assert string_flags.code == "MCP_BAD_RESPONSE"
+    assert "boolean" in (string_flags.error or "").lower()
 
 
 @pytest.mark.asyncio

@@ -68,8 +68,18 @@ def is_git_repo(path: Path) -> bool:
 
 
 def resolve_repo(repo_name: str) -> Path | None:
-    """解析仓库名到本地路径，支持 bare 和 normal repo"""
-    path = _repo_dir(repo_name)
+    """解析已配置仓库名，并确保真实路径位于仓库根目录内。"""
+    cfg = get_config()
+    if repo_name not in {entry.name for entry in cfg.repos.repositories}:
+        return None
+    base_dir = Path(cfg.repos.base_dir).resolve()
+    path = (base_dir / repo_name).resolve()
+    try:
+        path.relative_to(base_dir)
+    except ValueError:
+        return None
+    if path == base_dir:
+        return None
     return path if is_git_repo(path) else None
 
 
@@ -161,6 +171,8 @@ def clone_repo(entry: RepoEntry) -> tuple[bool, str]:
 
 def _update_remote_url(repo_path: Path, url: str) -> None:
     """更新已有仓库的 remote URL（GITHUB_TOKEN 变更时自动同步）"""
+    if not url.strip():
+        return
     code, current_url, _ = _run_git_sync(
         str(repo_path),
         "remote",

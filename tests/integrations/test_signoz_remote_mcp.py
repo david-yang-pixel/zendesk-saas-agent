@@ -112,7 +112,7 @@ async def test_run_signoz_sz_parses_sse_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_signoz_sz_returns_none_on_mcp_error() -> None:
+async def test_run_signoz_sz_preserves_mcp_error_contract() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -152,7 +152,12 @@ async def test_run_signoz_sz_returns_none_on_mcp_error() -> None:
     ):
         result = await run_signoz_sz("query", "bad", cfg=cfg)
 
-    assert result is None
+    assert result == {
+        "success": False,
+        "code": "SZ_NONZERO",
+        "error": "bad query",
+    }
+    assert not result
 
 
 @pytest.mark.asyncio
@@ -223,4 +228,33 @@ async def test_run_signoz_sz_requires_remote_mcp_url() -> None:
 
     result = await run_signoz_sz("services", cfg=cfg)
 
-    assert result is None
+    assert result == {
+        "success": False,
+        "code": "SIGNOZ_MCP_URL_MISSING",
+        "error": "signoz-mcp MCP URL is not configured",
+    }
+    assert not result
+
+
+@pytest.mark.asyncio
+async def test_run_signoz_sz_reports_invalid_success_data() -> None:
+    cfg = SimpleNamespace(
+        signoz=SimpleNamespace(
+            mcp_url="https://ops.example.com/signoz-mcp",
+            mcp_api_key="secret",
+            request_timeout_seconds=35,
+        ),
+    )
+
+    with patch(
+        "zd_agent.integrations.signoz_mcp.call_signoz_tool",
+        return_value={"success": True, "data": "not rows"},
+    ):
+        result = await run_signoz_sz("services", cfg=cfg)
+
+    assert result == {
+        "success": False,
+        "code": "SIGNOZ_MCP_BAD_DATA",
+        "error": "SigNoz MCP sz_run returned non-list/dict data",
+    }
+    assert not result

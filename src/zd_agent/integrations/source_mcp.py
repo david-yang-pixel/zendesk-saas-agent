@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpx
 
 from zd_agent.config import get_config
 from zd_agent.integrations.mcp_response import load_json_or_sse_response
+from zd_agent.integrations.tool_service_mcp import _extract_json_object_text_payload
 from zd_agent.log import get_logger
 
 logger = get_logger(module="integrations.source_mcp")
@@ -122,28 +122,11 @@ async def call_source_tool(
 
 
 def _parse_text_payload(raw: dict[str, Any]) -> dict[str, Any]:
-    content = raw.get("content", [])
-    if not isinstance(content, list) or not content:
-        return {
-            "success": False,
-            "code": "SOURCE_MCP_BAD_CONTENT",
-            "error": "Source MCP returned no text content",
-        }
-    first = content[0]
-    if not isinstance(first, dict) or first.get("type") != "text":
-        return {
-            "success": False,
-            "code": "SOURCE_MCP_BAD_CONTENT",
-            "error": "Source MCP returned invalid text content",
-        }
-    try:
-        payload = json.loads(first.get("text") or "{}")
-    except json.JSONDecodeError as e:
-        return {"success": False, "code": "SOURCE_MCP_BAD_JSON", "error": str(e)}
-    if isinstance(payload, dict):
+    payload, error_code, error = _extract_json_object_text_payload(raw)
+    if payload is not None:
         return payload
     return {
         "success": False,
-        "code": "SOURCE_MCP_BAD_PAYLOAD",
-        "error": "Source MCP text payload is not an object",
+        "code": f"SOURCE_MCP_{error_code}",
+        "error": f"Source MCP {error}",
     }

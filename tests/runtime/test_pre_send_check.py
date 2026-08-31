@@ -16,15 +16,19 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from zd_agent.config import AppConfig
 from zd_agent.runtime.pre_send_check import (
+    FreshnessResult,
     is_substantive_heuristic,
     is_substantive_llm,
     pre_send_check_or_abort,
 )
+from zd_agent.services.reliable_public_reply import _check_public_reply_readiness
 
 
 # ============================================================================
@@ -155,6 +159,41 @@ class TestHeuristicGreyZone:
 
 
 class TestLLMJudge:
+    @pytest.mark.asyncio
+    async def test_anthropic_provider_uses_anthropic_client_contract(self) -> None:
+        provider = MagicMock()
+        provider.chat = AsyncMock(
+            return_value=SimpleNamespace(
+                content='{"substantive": false, "reason": "pure acknowledgement"}'
+            )
+        )
+
+        with (
+            patch(
+                "zd_agent.runtime.llm.anthropic_provider.AnthropicProvider",
+                return_value=provider,
+            ) as provider_cls,
+            patch(
+                "zd_agent.runtime.pre_send_check.httpx.AsyncClient",
+            ) as openai_client,
+        ):
+            result = await is_substantive_llm(
+                "still there?",
+                provider="anthropic",
+                model="claude-sonnet-4-5",
+                api_key="anthropic-secret",
+                base_url="https://openai-proxy.example.com/v1",
+            )
+
+        assert result is False
+        provider_cls.assert_called_once_with(
+            api_key="anthropic-secret",
+            model="claude-sonnet-4-5",
+            max_tokens=256,
+            timeout=8.0,
+        )
+        openai_client.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_substantive_true_response(self) -> None:
         mock_resp = AsyncMock()
@@ -467,3 +506,42 @@ class TestPreSendCheckOrAbort:
         )
         assert result.continue_send is False
         assert "fetch_error" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_public_reply_readiness_uses_configured_anthropic_credentials() -> None:
+    cfg = AppConfig()
+    cfg.llm.provider = "anthropic"
+    cfg.llm.model = "claude-sonnet-4-5"
+    cfg.llm.base_url = "https://openai-proxy.example.com/v1"
+    captured: dict = {}
+
+    async def fake_check(**kwargs):
+        captured.update(kwargs)
+        return FreshnessResult(continue_send=False, reason="test-stop")
+
+    with (
+        patch(
+            "zd_agent.services.reliable_public_reply.EnvSettings",
+            return_value=SimpleNamespace(
+                openai_api_key="openai-secret",
+                anthropic_api_key="anthropic-secret",
+            ),
+        ),
+        patch(
+            "zd_agent.runtime.pre_send_check.pre_send_check_or_abort",
+            side_effect=fake_check,
+        ),
+    ):
+        result = await _check_public_reply_readiness(
+            ticket_id=1,
+            snapshot_count=1,
+            snapshot_last_id="m1",
+            skip_llm=False,
+            cfg=cfg,
+        )
+
+    assert result.reason == "test-stop"
+    assert captured["provider"] == "anthropic"
+    assert captured["api_key"] == "anthropic-secret"
+    assert captured["base_url"] is None

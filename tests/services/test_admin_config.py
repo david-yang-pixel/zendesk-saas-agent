@@ -48,7 +48,7 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert not any(path.startswith("skills.") for path in by_path)
     assert not any(path.startswith("prompts.") for path in by_path)
     assert not any("subagent" in path for path in by_path)
-    assert schema["reasoning_capabilities"][0]["model_prefix"] == "gpt-5.6"
+    assert schema["reasoning_capabilities"][0]["model_prefix"] == "gpt-5.6-sol"
 
 
 def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
@@ -321,6 +321,169 @@ def test_apply_parses_custom_mcp_services(tmp_path) -> None:
     assert (
         store.effective_config(cfg)["values"]["mcp_services.custom"][0]["name"]
         == "linear_mcp"
+    )
+
+
+def test_custom_mcp_api_keys_are_secret_and_can_be_preserved_on_edit(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+    payload = {
+        "changes": {
+            "mcp_services.custom": [
+                {
+                    "name": "linear_mcp",
+                    "label": "Linear MCP",
+                    "mcp_url": "https://linear.example.test/mcp",
+                    "mcp_api_key": "linear-secret",
+                    "enabled": True,
+                }
+            ]
+        },
+        "reason": "add custom mcp",
+    }
+
+    result = store.apply(cfg, payload, actor="admin", ip="127.0.0.1")
+
+    assert "linear-secret" not in json.dumps(result)
+    assert "mcp_api_key" not in json.dumps(result)
+    custom_effective = store.effective_config(cfg)["values"]["mcp_services.custom"]
+    assert "linear-secret" not in json.dumps(custom_effective)
+    assert "mcp_api_key" not in json.dumps(custom_effective)
+    assert "linear-secret" not in store.overrides_path.read_text()
+    assert "linear-secret" in store.secrets_path.read_text()
+    assert "linear-secret" not in store.audit_path.read_text()
+    service = store.effective_config(cfg)["values"]["mcp_services.custom"][0]
+    assert service["api_key_configured"] is True
+
+    store.apply(
+        cfg,
+        {
+            "changes": {
+                "mcp_services.custom": [
+                    {
+                        **service,
+                        "label": "Linear Issues",
+                        "mcp_api_key": "",
+                    }
+                ]
+            },
+            "reason": "rename custom mcp",
+        },
+        actor="admin",
+        ip="127.0.0.1",
+    )
+
+    assert cfg.mcp_services.custom[0].label == "Linear Issues"
+    assert cfg.mcp_services.custom[0].mcp_api_key == "linear-secret"
+    restarted_cfg = AppConfig()
+    store.apply_saved(restarted_cfg)
+    assert restarted_cfg.mcp_services.custom[0].mcp_api_key == "linear-secret"
+
+
+def test_apply_saved_migrates_legacy_custom_mcp_key_out_of_overrides(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+    store.overrides_path.write_text(
+        "mcp_services:\n"
+        "  custom:\n"
+        "    - name: linear_mcp\n"
+        "      label: Linear MCP\n"
+        "      mcp_url: https://linear.example.test/mcp\n"
+        "      mcp_api_key: legacy-linear-secret\n"
+        "      enabled: true\n",
+        encoding="utf-8",
+    )
+    store.audit_path.write_text(
+        json.dumps(
+            {
+                "id": "audit_legacy",
+                "ts": 1,
+                "actor": "admin",
+                "ip": "127.0.0.1",
+                "action": "config_apply",
+                "reason": "legacy custom MCP save",
+                "diff": [
+                    {
+                        "path": "mcp_services.custom",
+                        "old": [],
+                        "new": [
+                            {
+                                "name": "linear_mcp",
+                                "mcp_api_key": "legacy-linear-secret",
+                            }
+                        ],
+                    }
+                ],
+                "status": "success",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store.apply_saved(cfg)
+
+    assert cfg.mcp_services.custom[0].mcp_api_key == "legacy-linear-secret"
+    assert "legacy-linear-secret" not in store.overrides_path.read_text()
+    assert "mcp_api_key" not in store.overrides_path.read_text()
+    assert "legacy-linear-secret" in store.secrets_path.read_text()
+    assert store.secrets_path.stat().st_mode & 0o777 == 0o600
+    assert "legacy-linear-secret" not in store.audit_path.read_text()
+    assert "legacy custom MCP save" in store.audit_path.read_text()
+    assert "api_key_configured" in store.audit_path.read_text()
+    audit = store.list_audit_logs(action="custom_mcp_secret_migration")
+    assert audit["summary"]["filtered"] == 1
+    assert "legacy-linear-secret" not in store.audit_path.read_text()
+
+
+def test_apply_saved_redacts_deleted_custom_mcp_key_from_legacy_audit(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+    store.overrides_path.write_text("mcp_services:\n  custom: []\n", encoding="utf-8")
+    store.audit_path.write_text(
+        json.dumps(
+            {
+                "id": "audit_deleted_mcp",
+                "action": "config_apply",
+                "diff": [
+                    {
+                        "path": "mcp_services.custom",
+                        "old": [{"mcp_api_key": "deleted-service-secret"}],
+                        "new": [],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store.apply_saved(cfg)
+
+    audit_text = store.audit_path.read_text()
+    assert "deleted-service-secret" not in audit_text
+    assert "mcp_api_key" not in audit_text
+    assert "api_key_configured" in audit_text
+
+
+def test_password_login_cannot_be_disabled_until_sso_is_implemented(tmp_path) -> None:
+    cfg = AppConfig()
+    store = AdminConfigStore(tmp_path)
+
+    with pytest.raises(ValueError, match="password_login_required"):
+        store.apply(
+            cfg,
+            {
+                "changes": {"admin_auth.password_login_enabled": False},
+                "reason": "disable password login",
+            },
+            actor="admin",
+            ip="127.0.0.1",
+        )
+
+    assert (
+        store.effective_config(cfg)["values"]["admin_auth.password_login_enabled"]
+        is True
     )
 
 

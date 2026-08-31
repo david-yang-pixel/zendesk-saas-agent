@@ -17,6 +17,8 @@ from zd_agent.runtime.llm.types import (
 from zd_agent.runtime.openai_reasoning import (
     model_requires_responses_api,
     normalized_model_id,
+    reasoning_completion_token_limit,
+    reasoning_timeout_seconds,
     validate_reasoning_effort,
 )
 
@@ -253,6 +255,7 @@ class OpenAIProvider(LLMProvider):
         self._client = AsyncOpenAI(**kwargs)
         self._model = model
         self._max_tokens = max_tokens
+        self._timeout = float(timeout)
         self._reasoning_effort = validate_reasoning_effort(model, reasoning_effort)
 
     def _uses_responses_api(
@@ -281,6 +284,10 @@ class OpenAIProvider(LLMProvider):
             "input": _messages_to_responses_input(messages),
             "store": False,
             "include": ["reasoning.encrypted_content"],
+            "timeout": reasoning_timeout_seconds(
+                self._timeout,
+                self._reasoning_effort,
+            ),
         }
         if self._reasoning_effort:
             request["reasoning"] = {"effort": self._reasoning_effort}
@@ -291,6 +298,10 @@ class OpenAIProvider(LLMProvider):
             request["max_output_tokens"] = max(
                 self._max_tokens,
                 25_000 if has_reasoning else self._max_tokens,
+            )
+            request["max_output_tokens"] = reasoning_completion_token_limit(
+                request["max_output_tokens"],
+                self._reasoning_effort,
             )
         if tools:
             request["tools"] = _tool_schemas_to_responses(tools)
@@ -311,6 +322,10 @@ class OpenAIProvider(LLMProvider):
         req: dict[str, Any] = {
             "model": self._model,
             "messages": messages,
+            "timeout": reasoning_timeout_seconds(
+                self._timeout,
+                self._reasoning_effort,
+            ),
         }
         # gpt-5 系列**只支持 default temperature (1.0)**，传 0.2 会 400
         # "Unsupported value: 'temperature' does not support 0.2 with this model"
@@ -321,7 +336,10 @@ class OpenAIProvider(LLMProvider):
         if not normalized_model_id(self._model).startswith("gpt-5"):
             req["temperature"] = temperature
         if self._max_tokens > 0:
-            req["max_completion_tokens"] = self._max_tokens
+            req["max_completion_tokens"] = reasoning_completion_token_limit(
+                self._max_tokens,
+                self._reasoning_effort,
+            )
         if self._reasoning_effort:
             req["reasoning_effort"] = self._reasoning_effort
         if tools:

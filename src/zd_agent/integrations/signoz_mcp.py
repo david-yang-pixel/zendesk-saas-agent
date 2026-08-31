@@ -10,9 +10,16 @@ from zd_agent.integrations.tool_service_mcp import call_mcp_tool, mcp_endpoint
 SERVICE = "signoz-mcp"
 
 
+class SigNozSzFailure(dict[str, Any]):
+    """Structured sz failure that remains falsey for legacy callers."""
+
+    def __bool__(self) -> bool:
+        return False
+
+
 def signoz_mcp_enabled(cfg: Any | None = None) -> bool:
-    cfg = cfg or get_config()
-    return bool(mcp_endpoint(cfg.signoz.mcp_url))
+    effective_cfg = cfg if cfg is not None else get_config()
+    return bool(mcp_endpoint(effective_cfg.signoz.mcp_url))
 
 
 async def call_signoz_tool(
@@ -22,8 +29,8 @@ async def call_signoz_tool(
     cfg: Any | None = None,
 ) -> dict[str, Any]:
     """Call one remote SigNoz MCP tool and preserve structured failures."""
-    cfg = cfg or get_config()
-    service_cfg = cfg.signoz
+    effective_cfg = cfg if cfg is not None else get_config()
+    service_cfg = effective_cfg.signoz
     return await call_mcp_tool(
         service=SERVICE,
         mcp_url=service_cfg.mcp_url,
@@ -38,10 +45,22 @@ async def call_signoz_tool(
 async def run_signoz_sz(
     *args: str,
     cfg: Any | None = None,
-) -> list[Any] | dict[str, Any] | None:
-    """Compatibility wrapper for legacy sz-based tools."""
+) -> list[Any] | dict[str, Any]:
+    """Compatibility wrapper preserving remote failures as falsey mappings."""
     payload = await call_signoz_tool("sz_run", {"args": list(args)}, cfg=cfg)
     if not payload.get("success"):
-        return None
+        failure = dict(payload)
+        failure.setdefault("success", False)
+        failure.setdefault("code", "SIGNOZ_MCP_FAILED")
+        failure.setdefault("error", "SigNoz MCP sz_run failed")
+        return SigNozSzFailure(failure)
     data = payload.get("data")
-    return data if isinstance(data, (list, dict)) else None
+    if isinstance(data, (list, dict)):
+        return data
+    return SigNozSzFailure(
+        {
+            "success": False,
+            "code": "SIGNOZ_MCP_BAD_DATA",
+            "error": "SigNoz MCP sz_run returned non-list/dict data",
+        }
+    )

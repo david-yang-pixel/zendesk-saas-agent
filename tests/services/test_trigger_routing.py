@@ -119,6 +119,13 @@ def test_duplicate_customer_comment_matches_existing_last_comment_id() -> None:
     assert is_duplicate_customer_comment(None, "cid-1") is False
 
 
+def test_duplicate_customer_comment_normalizes_numeric_ids() -> None:
+    existing = _state()
+    existing.last_customer_comment_id = "12345"
+
+    assert is_duplicate_customer_comment(existing, 12345) is True
+
+
 def test_customer_reopen_metric_returns_hours_since_processed() -> None:
     existing = _state()
     existing.state = "processed"

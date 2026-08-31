@@ -61,7 +61,7 @@ def _build_app(tmp_path) -> web.Application:
 
 async def _post(
     app: web.Application,
-    body: dict,
+    body,
     *,
     timestamp: str | None = None,
 ) -> web.Response:
@@ -155,6 +155,16 @@ async def test_missing_ticket_id_400(tmp_path):
     app = _build_app(tmp_path)
     r = await _post(app, {"some": "thing"})
     assert r.status == 400
+
+
+@pytest.mark.asyncio
+async def test_signed_non_object_payload_is_rejected_as_bad_request(tmp_path):
+    app = _build_app(tmp_path)
+
+    response = await _post(app, ["not", "an", "object"])
+
+    assert response.status == 400
+    assert response.text == "bad payload"
 
 
 @pytest.mark.asyncio

@@ -118,9 +118,27 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
         )
         return web.Response(status=400, text="bad json")
 
+    if not isinstance(event, dict):
+        return web.Response(status=400, text="bad payload")
+    raw_event_body = event.get("event")
+    raw_detail = event.get("detail")
+    if (raw_event_body is not None and not isinstance(raw_event_body, dict)) or (
+        raw_detail is not None and not isinstance(raw_detail, dict)
+    ):
+        return web.Response(status=400, text="bad payload")
+    event_body = raw_event_body or {}
+    raw_actor = event_body.get("actor")
+    raw_message_body = event_body.get("message")
+    if (raw_actor is not None and not isinstance(raw_actor, dict)) or (
+        raw_message_body is not None and not isinstance(raw_message_body, dict)
+    ):
+        return web.Response(status=400, text="bad payload")
+    actor = raw_actor or {}
+    message_body = raw_message_body or {}
+
     event_id = event.get("id") or ""
-    actor_type = (event.get("event", {}).get("actor", {}).get("type", "") or "").lower()
-    msg_id = event.get("event", {}).get("message", {}).get("id") or ""
+    actor_type = str(actor.get("type") or "").lower()
+    msg_id = message_body.get("id") or ""
     ticket_id = _extract_ticket_id(event)
     conversation_id = _extract_conversation_id(event)
     messaging_app_id = _extract_messaging_app_id(event)
@@ -175,8 +193,6 @@ async def handle_zendesk_messaging_webhook(request: web.Request) -> web.Response
             msg_id=msg_id,
         )
         return web.Response(status=200, text="dup")
-    event_body = event.get("event") or {}
-    message_body = event_body.get("message") or {}
     occurred_at = (
         message_body.get("created_at")
         or event_body.get("created_at")

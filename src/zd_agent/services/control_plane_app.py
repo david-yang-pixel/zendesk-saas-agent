@@ -60,7 +60,7 @@ async def handle_control_plane_health(request: web.Request) -> web.Response:
     )
     return web.json_response(
         {
-            "ok": True,
+            "ok": ready,
             "ready": ready,
             "service": "zd-agent-control-plane",
             "version": __version__,

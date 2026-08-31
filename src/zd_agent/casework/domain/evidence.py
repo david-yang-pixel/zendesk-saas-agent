@@ -198,6 +198,13 @@ class AssessmentProposal(FrozenModel):
     evidence_ids: tuple[str, ...] = ()
     close_after_reply: bool = False
 
+    @model_validator(mode="after")
+    def _validate_claim_ids(self) -> AssessmentProposal:
+        claim_ids = [claim.claim_id for claim in self.proposed_claims]
+        if len(claim_ids) != len(set(claim_ids)):
+            raise ValueError("assessment proposal cannot contain duplicate claim IDs")
+        return self
+
 
 class AssessmentBuild(FrozenModel):
     assessment: CaseAssessment

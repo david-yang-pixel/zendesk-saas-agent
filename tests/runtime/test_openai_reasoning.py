@@ -29,6 +29,7 @@ def test_normalized_model_id_supports_provider_namespaces() -> None:
         ("high", 8192),
         ("xhigh", 16384),
         ("max", 25000),
+        ("ultra", 32768),
     ],
 )
 def test_reasoning_completion_token_limit_scales_with_effort(
@@ -49,6 +50,7 @@ def test_reasoning_completion_token_limit_scales_with_effort(
         ("high", 120.0),
         ("xhigh", 180.0),
         ("max", 300.0),
+        ("ultra", 600.0),
     ],
 )
 def test_reasoning_timeout_scales_with_effort(
@@ -63,10 +65,14 @@ def test_reasoning_timeout_scales_with_effort(
     [
         (
             "gpt-5.6-terra",
-            ("none", "low", "medium", "high", "xhigh", "max"),
+            ("none", "low", "medium", "high", "xhigh", "max", "ultra"),
         ),
         (
             " GPT-5.6-SOL ",
+            ("none", "low", "medium", "high", "xhigh", "max", "ultra"),
+        ),
+        (
+            "gpt-5.6-luna",
             ("none", "low", "medium", "high", "xhigh", "max"),
         ),
         (
@@ -101,6 +107,12 @@ def test_supported_reasoning_efforts_are_model_specific(
 def test_validate_reasoning_effort_accepts_default_and_supported_value() -> None:
     assert validate_reasoning_effort("gpt-5.6-terra", "") == ""
     assert validate_reasoning_effort("gpt-5.6-terra", "max") == "max"
+    assert validate_reasoning_effort("gpt-5.6-terra", "ultra") == "ultra"
+
+
+def test_validate_reasoning_effort_rejects_ultra_for_luna() -> None:
+    with pytest.raises(ValueError, match="does not support reasoning effort 'ultra'"):
+        validate_reasoning_effort("gpt-5.6-luna", "ultra")
 
 
 def test_validate_reasoning_effort_rejects_model_mismatch() -> None:
@@ -134,7 +146,7 @@ def test_codex_models_require_responses_api(model: str) -> None:
 def test_reasoning_capabilities_manifest_exposes_backend_rules() -> None:
     manifest = reasoning_capabilities_manifest()
 
-    assert manifest[0]["model_prefix"] == "gpt-5.6"
+    assert manifest[0]["model_prefix"] == "gpt-5.6-sol"
     assert manifest[0]["efforts"] == [
         "none",
         "low",
@@ -142,6 +154,7 @@ def test_reasoning_capabilities_manifest_exposes_backend_rules() -> None:
         "high",
         "xhigh",
         "max",
+        "ultra",
     ]
     assert manifest[0]["model_pattern"]
     assert manifest[-1]["model_prefix"] == "gpt-5"

@@ -198,6 +198,21 @@ def _set_float_if_present(target: Any, payload: dict[str, Any], attr: str) -> No
     setattr(target, attr, value_float)
 
 
+def _set_bool_if_present(
+    target: Any,
+    payload: dict[str, Any],
+    attr: str,
+    *,
+    path: str,
+) -> None:
+    if attr not in payload:
+        return
+    value = payload[attr]
+    if not isinstance(value, bool):
+        raise ValueError(f"{path} must be a boolean")
+    setattr(target, attr, value)
+
+
 def update_agent_config(
     cfg: AppConfig,
     payload: dict[str, Any],
@@ -236,11 +251,19 @@ def update_agent_config(
     _set_positive_int_if_present(cfg.agent, agent, "max_concurrent_sessions")
     features = _as_mapping(update.get("features"))
     auto_public_reply = _as_mapping(features.get("auto_public_reply"))
-    if "enabled" in auto_public_reply:
-        cfg.public_reply.enabled = bool(auto_public_reply["enabled"])
+    _set_bool_if_present(
+        cfg.public_reply,
+        auto_public_reply,
+        "enabled",
+        path="features.auto_public_reply.enabled",
+    )
     customer_event_recovery = _as_mapping(features.get("customer_event_recovery"))
     if "enabled" in customer_event_recovery:
-        cfg.waiting_poller.poll_new_messages = bool(customer_event_recovery["enabled"])
+        if not isinstance(customer_event_recovery["enabled"], bool):
+            raise ValueError(
+                "features.customer_event_recovery.enabled must be a boolean"
+            )
+        cfg.waiting_poller.poll_new_messages = customer_event_recovery["enabled"]
     if "debounce_seconds" in customer_event_recovery:
         _set_positive_int_if_present(
             cfg.public_reply,
@@ -275,8 +298,12 @@ def update_agent_config(
         "browser_relay_timeout_seconds",
     ):
         _set_positive_int_if_present(cfg.public_reply, public_reply, attr)
-    if "enabled" in public_reply:
-        cfg.public_reply.enabled = bool(public_reply["enabled"])
+    _set_bool_if_present(
+        cfg.public_reply,
+        public_reply,
+        "enabled",
+        path="public_reply.enabled",
+    )
     _set_if_present(cfg.public_reply, public_reply, "browser_relay_url")
 
     from zd_agent.tools.public_reply_delivery import (

@@ -84,6 +84,8 @@ async def handle_zendesk_webhook(request: web.Request) -> web.Response:
         event = json.loads(body)
     except Exception:
         return web.Response(status=400, text="bad json")
+    if not isinstance(event, dict):
+        return web.Response(status=400, text="bad payload")
 
     ticket_id = str(event.get("ticket_id") or "")
     if not ticket_id:

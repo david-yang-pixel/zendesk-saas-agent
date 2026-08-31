@@ -6,6 +6,7 @@ from zd_agent.tools.official_docs import (
     OfficialDocEntry,
     OfficialDocsRead,
     OfficialDocsSearch,
+    _is_allowed_url,
     parse_llms_index,
     search_doc_entries,
 )
@@ -177,6 +178,20 @@ class OfficialDocsSearchTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OfficialDocsReadTest(unittest.IsolatedAsyncioTestCase):
+    def test_read_url_policy_requires_https_default_port_and_no_credentials(
+        self,
+    ) -> None:
+        self.assertTrue(_is_allowed_url("https://docs.dify.ai/guide"))
+        self.assertTrue(_is_allowed_url("https://docs.dify.ai:443/guide"))
+        for url in (
+            "http://docs.dify.ai/guide",
+            "file://docs.dify.ai/etc/passwd",
+            "https://user:secret@docs.dify.ai/guide",
+            "https://docs.dify.ai:8443/guide",
+        ):
+            with self.subTest(url=url):
+                self.assertFalse(_is_allowed_url(url))
+
     async def test_read_rejects_missing_url(self) -> None:
         tool = OfficialDocsRead()
 

@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, ValidationError
 from zd_agent.casework.domain.base import FrozenModel, TargetReference
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
-    BillingBindingStatus,
     ClaimRole,
     ClaimStatus,
     OwnershipAction,
@@ -218,12 +217,6 @@ def _bind_claim_to_context(context: CaseContext, claim: Claim) -> Claim:
         ),
     )
     evidence_ids = [*claim.supporting_evidence_ids, *context.identity.evidence_ids]
-    if (
-        claim.role is ClaimRole.CURRENT_STATE
-        and context.billing is not None
-        and context.billing.status is BillingBindingStatus.RESOLVED
-    ):
-        evidence_ids.extend(context.billing.evidence_ids)
     return claim.model_copy(
         update={
             "targets": targets,

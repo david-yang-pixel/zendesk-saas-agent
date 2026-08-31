@@ -98,6 +98,30 @@ def test_postgres_scope_rejects_multiple_statements_mutating_cte_and_unsafe_func
         raise AssertionError(f"unsafe SQL was accepted: {sql}")
 
 
+def test_postgres_scope_rejects_unknown_function_but_keeps_common_read_functions() -> (
+    None
+):
+    try:
+        scope_postgres_sql(
+            "SELECT public.record_support_access()",
+            tenant=TENANT,
+            known_ids=set(),
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unknown PostgreSQL function was accepted")
+
+    scoped = scope_postgres_sql(
+        f"SELECT count(d.id), max(d.created_at), now() FROM documents d "
+        f"WHERE d.tenant_id='{TENANT}'",
+        tenant=TENANT,
+        known_ids=set(),
+    )
+    assert "COUNT(d.id)" in scoped
+    assert "MAX(d.created_at)" in scoped
+
+
 def test_signoz_scope_rewrites_each_source_with_tenant_and_time() -> None:
     scoped = scope_signoz_sql(
         "SELECT severity_text, body FROM signoz_logs.distributed_logs_v2 "

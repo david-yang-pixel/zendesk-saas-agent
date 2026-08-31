@@ -10,7 +10,7 @@ from sqlglot.errors import ParseError
 from zd_agent.integrations.signoz_mcp import run_signoz_sz
 from zd_agent.tools.base import Tool, ToolResult
 from zd_agent.tools.signoz_tools import _rows_to_text
-from zd_agent.tools.sql_query import SqlQuery
+from zd_agent.tools.sql_query import SqlQuery, _validate_postgres_expression_functions
 
 if TYPE_CHECKING:
     from zd_agent.session.agent_session import AgentSession
@@ -352,6 +352,8 @@ def scope_postgres_sql(
 ) -> str:
     expression = _read_expression(sql, "postgres")
     _reject_unsafe_functions(expression, forbidden=_POSTGRES_UNSAFE_FUNCTIONS)
+    if function_error := _validate_postgres_expression_functions(expression):
+        raise ScopedQueryError(function_error)
     _validate_known_ids(sql, tenant=tenant, known_ids=known_ids)
     physical_tables = _physical_tables(expression)
     data_tables = tuple(
@@ -527,7 +529,7 @@ class TenantScopedSignozQuery(Tool):
         except (TypeError, ValueError, ScopedQueryError) as error:
             return ToolResult(success=False, error=str(error))
         rows = await run_signoz_sz("query", scoped, "--hours", str(hours))
-        if rows is None:
+        if rows is None or (isinstance(rows, dict) and rows.get("success") is False):
             return ToolResult(success=False, error="SigNoz MCP query failed")
         output = _rows_to_text(rows)
         remember_investigation_ids(session, output)

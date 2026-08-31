@@ -35,6 +35,7 @@ logger = get_logger(module="services.mention_poller")
 # Zendesk search has eventual-consistency lag. Keep a generous overlap and let
 # MentionTracker's comment-id idempotency prevent duplicate dispatch.
 _SEARCH_LOOKBACK_SECONDS = 30 * 60
+_MAX_SEARCH_PAGES = 100
 
 
 def _now_unix() -> float:
@@ -50,6 +51,31 @@ async def _fetch_ticket_comments_for_mentions(ticket_id: int) -> list[dict]:
     return list(
         await fetch_recent_ticket_comments(ticket_id, call_fn=call_zendesk_tool)
     )
+
+
+async def _search_recent_tickets(query: str) -> list[dict]:
+    """Return every ticket page so a successful cursor covers the whole query."""
+    results: list[dict] = []
+    seen_next_pages: set[str] = set()
+    for page in range(1, _MAX_SEARCH_PAGES + 1):
+        payload = await call_zendesk_tool(
+            "search_tickets",
+            {"query": query, "page": page, "per_page": 100},
+        )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        data = payload.get("data") or {}
+        results.extend(
+            item for item in (data.get("results") or []) if isinstance(item, dict)
+        )
+        next_page = data.get("next_page")
+        if not next_page:
+            return results
+        marker = str(next_page)
+        if marker in seen_next_pages:
+            raise RuntimeError("mention ticket search returned a repeated next_page")
+        seen_next_pages.add(marker)
+    raise RuntimeError(f"mention ticket search exceeded {_MAX_SEARCH_PAGES} pages")
 
 
 async def scan_once(
@@ -80,15 +106,11 @@ async def scan_once(
 
     query = f"status<solved updated>{since_iso}"
     try:
-        payload = await call_zendesk_tool("search_tickets", {"query": query})
-        if not payload.get("success"):
-            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
-        data = payload.get("data") or {}
+        results = await _search_recent_tickets(query)
     except Exception as e:
         logger.warning("mention_poller_search_failed", error=str(e))
         return 0, last_poll_unix  # don't advance cursor on failure
 
-    results = data.get("results", []) or []
     dispatched = 0
     visible_ticket_ids: set[int] = set()
 

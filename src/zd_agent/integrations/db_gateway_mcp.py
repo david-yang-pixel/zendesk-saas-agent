@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from zd_agent.integrations.mcp_response import load_json_or_sse_response
+from zd_agent.integrations.tool_service_mcp import _extract_json_object_text_payload
 
 
 @dataclass
@@ -37,33 +37,27 @@ def _mcp_endpoint(url: str) -> str:
 
 
 def _parse_tool_result(raw: dict[str, Any]) -> DbGatewayResult:
-    content = raw.get("content", [])
-    if not isinstance(content, list) or not content:
+    data, error_code, error = _extract_json_object_text_payload(raw)
+    if data is None:
+        return DbGatewayResult(
+            success=False,
+            code="MCP_BAD_JSON" if error_code == "BAD_JSON" else "MCP_BAD_RESPONSE",
+            error=(
+                f"invalid MCP JSON response: {error}"
+                if error_code == "BAD_JSON"
+                else f"unexpected MCP response: {error}"
+            ),
+        )
+    success = data.get("success")
+    truncated = data.get("truncated", False)
+    if not isinstance(success, bool) or not isinstance(truncated, bool):
         return DbGatewayResult(
             success=False,
             code="MCP_BAD_RESPONSE",
-            error=f"unexpected MCP response: {raw}",
-        )
-    first_content = content[0]
-    if not isinstance(first_content, dict) or first_content.get("type") != "text":
-        return DbGatewayResult(
-            success=False,
-            code="MCP_BAD_RESPONSE",
-            error=f"unexpected MCP response: {raw}",
-        )
-    try:
-        data = json.loads(first_content.get("text") or "{}")
-    except json.JSONDecodeError as e:
-        return DbGatewayResult(
-            success=False,
-            code="MCP_BAD_JSON",
-            error=f"invalid MCP JSON response: {e}",
-        )
-    if not isinstance(data, dict):
-        return DbGatewayResult(
-            success=False,
-            code="MCP_BAD_RESPONSE",
-            error=f"unexpected MCP tool result: {data}",
+            error=(
+                "Invalid DB Gateway MCP boolean field: "
+                f"success={success!r} truncated={truncated!r}"
+            ),
         )
     row_count = _coerce_int(data.get("row_count"))
     elapsed_ms = _coerce_int(data.get("elapsed_ms"))
@@ -79,11 +73,11 @@ def _parse_tool_result(raw: dict[str, Any]) -> DbGatewayResult:
         )
 
     return DbGatewayResult(
-        success=bool(data.get("success")),
+        success=success,
         csv=str(data.get("csv") or ""),
         row_count=row_count,
         elapsed_ms=elapsed_ms,
-        truncated=bool(data.get("truncated")),
+        truncated=truncated,
         code=str(data.get("code") or ""),
         error=data.get("error"),
     )

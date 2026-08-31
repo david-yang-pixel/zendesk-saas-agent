@@ -98,6 +98,29 @@ async def test_unchanged_customer_context_within_window_is_noop(state, queue):
 
 
 @pytest.mark.asyncio
+async def test_numeric_comment_id_matches_persisted_string_cursor(state, queue):
+    state.set(
+        1,
+        TicketState(
+            state="awaiting_customer",
+            first_seen=_now() - timedelta(minutes=5),
+            last_agent_finish_ts=_now() - timedelta(minutes=5),
+            last_customer_comment_id="12345",
+        ),
+    )
+
+    await _scan(
+        state,
+        queue,
+        messages=[{"id": 12345, "body": "waiting"}],
+        ticket=_ticket(),
+    )
+
+    assert queue.empty()
+    assert state.get(1).state == "awaiting_customer"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["pending", "solved"])
 async def test_out_of_scope_zendesk_status_stops_automation(state, queue, status):
     state.set(

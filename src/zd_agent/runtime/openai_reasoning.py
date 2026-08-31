@@ -16,6 +16,21 @@ class _ReasoningCapability:
 
 _CAPABILITIES: tuple[_ReasoningCapability, ...] = (
     _ReasoningCapability(
+        "gpt-5.6-sol",
+        r"^gpt-5\.6-sol(?:-|$)",
+        ("none", "low", "medium", "high", "xhigh", "max", "ultra"),
+    ),
+    _ReasoningCapability(
+        "gpt-5.6-terra",
+        r"^gpt-5\.6-terra(?:-|$)",
+        ("none", "low", "medium", "high", "xhigh", "max", "ultra"),
+    ),
+    _ReasoningCapability(
+        "gpt-5.6-luna",
+        r"^gpt-5\.6-luna(?:-|$)",
+        ("none", "low", "medium", "high", "xhigh", "max"),
+    ),
+    _ReasoningCapability(
         "gpt-5.6",
         r"^gpt-5\.6(?:-|$)",
         ("none", "low", "medium", "high", "xhigh", "max"),
@@ -102,6 +117,7 @@ _REASONING_COMPLETION_TOKEN_LIMITS = {
     "high": 8192,
     "xhigh": 16384,
     "max": 25000,
+    "ultra": 32768,
 }
 
 _REASONING_TIMEOUT_SECONDS = {
@@ -111,6 +127,7 @@ _REASONING_TIMEOUT_SECONDS = {
     "high": 120.0,
     "xhigh": 180.0,
     "max": 300.0,
+    "ultra": 600.0,
 }
 
 

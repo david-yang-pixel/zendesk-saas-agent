@@ -2,12 +2,108 @@
 
 from __future__ import annotations
 
+from math import ceil
+from typing import Any
+
 from zd_agent.config import get_config
 from zd_agent.integrations.zendesk_mcp import call_zendesk_tool
 from zd_agent.log import get_logger
 from zd_agent.services.assignee import is_human_assignee
 
 logger = get_logger(module="services.human_takeover")
+
+_COMMENT_PAGE_SIZE = 100
+_MAX_TAKEOVER_COMMENT_PAGES = 1_000
+
+
+class _TakeoverCommentHistoryTruncated(RuntimeError):
+    pass
+
+
+async def _latest_public_comment(ticket_id: int) -> dict[str, Any] | None:
+    async def fetch_page(page: int) -> dict[str, Any]:
+        payload = await call_zendesk_tool(
+            "get_ticket_comments",
+            {"ticket_id": ticket_id, "page": page, "per_page": _COMMENT_PAGE_SIZE},
+        )
+        if not payload.get("success"):
+            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            raise RuntimeError("Zendesk comments response must be an object")
+        return data
+
+    def newest_public(data: dict[str, Any]) -> dict[str, Any] | None:
+        comments = data.get("comments") or []
+        if not isinstance(comments, list):
+            raise RuntimeError("Zendesk comments must be a list")
+        return next(
+            (
+                comment
+                for comment in reversed(comments)
+                if isinstance(comment, dict) and comment.get("public")
+            ),
+            None,
+        )
+
+    first = await fetch_page(1)
+    if not first.get("next_page"):
+        return newest_public(first)
+
+    try:
+        count = int(first.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    if count > _COMMENT_PAGE_SIZE:
+        last_page = ceil(count / _COMMENT_PAGE_SIZE)
+        if last_page > _MAX_TAKEOVER_COMMENT_PAGES:
+            raise _TakeoverCommentHistoryTruncated(
+                f"ticket comment history has {last_page} pages"
+            )
+        fetched_tail: dict[int, dict[str, Any]] = {}
+        page = last_page
+        data = await fetch_page(page)
+        fetched_tail[page] = data
+        seen_next_pages: set[str] = set()
+        while next_page := data.get("next_page"):
+            marker = str(next_page)
+            if marker in seen_next_pages:
+                raise _TakeoverCommentHistoryTruncated(
+                    "ticket comments returned a repeated next_page"
+                )
+            seen_next_pages.add(marker)
+            page += 1
+            if page > _MAX_TAKEOVER_COMMENT_PAGES:
+                raise _TakeoverCommentHistoryTruncated(
+                    "ticket comment history exceeded the takeover scan limit"
+                )
+            data = await fetch_page(page)
+            fetched_tail[page] = data
+        actual_last_page = page
+        for page in range(actual_last_page, 0, -1):
+            if page == 1:
+                data = first
+            else:
+                data = fetched_tail.get(page) or await fetch_page(page)
+            comment = newest_public(data)
+            if comment is not None:
+                return comment
+        return None
+
+    latest: dict[str, Any] | None = newest_public(first)
+    data = first
+    for page in range(2, _MAX_TAKEOVER_COMMENT_PAGES + 1):
+        data = await fetch_page(page)
+        if comment := newest_public(data):
+            latest = comment
+        if not data.get("next_page"):
+            return latest
+    if data.get("next_page"):
+        raise _TakeoverCommentHistoryTruncated(
+            "ticket comment history exceeded the takeover scan limit"
+        )
+    return latest
+
 
 AGENT_REPLY_MARKERS = (
     "This reply was sent by Dify AI Agent.",
@@ -35,13 +131,14 @@ async def detect_human_takeover(
         return False, ""
 
     try:
-        payload = await call_zendesk_tool(
-            "get_ticket_comments",
-            {"ticket_id": ticket_id, "page": 1, "per_page": 100},
+        last_public = await _latest_public_comment(ticket_id)
+    except _TakeoverCommentHistoryTruncated as error:
+        logger.warning(
+            "takeover_comment_history_truncated",
+            ticket_id=ticket_id,
+            error=str(error),
         )
-        if not payload.get("success"):
-            raise RuntimeError(f"{payload.get('code')}: {payload.get('error')}")
-        comments_resp = payload.get("data") or {}
+        return True, "human takeover check stopped: comment history truncated"
     except Exception as e:
         logger.warning(
             "takeover_fetch_comments_failed",
@@ -49,13 +146,6 @@ async def detect_human_takeover(
             error=str(e)[:200],
         )
         return False, ""
-
-    comments = (comments_resp or {}).get("comments") or []
-    last_public = None
-    for comment in reversed(comments):
-        if comment.get("public"):
-            last_public = comment
-            break
 
     if last_public is None:
         return False, ""

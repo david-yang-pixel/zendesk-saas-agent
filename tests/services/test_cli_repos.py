@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
+from types import SimpleNamespace
+
+from zd_agent.repos import _update_remote_url, resolve_repo
 
 
 @dataclass(frozen=True)
@@ -17,6 +21,61 @@ class FakeRepoStatus:
     tag_count: int = 0
     branch_count: int = 0
     last_fetch: datetime | None = None
+
+
+def test_resolve_repo_accepts_only_configured_names_inside_base_dir(
+    tmp_path, monkeypatch
+):
+    base_dir = tmp_path / "repos"
+    configured = base_dir / "dify"
+    configured.mkdir(parents=True)
+    (configured / "HEAD").write_text("ref: refs/heads/main\n")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "HEAD").write_text("ref: refs/heads/main\n")
+    (base_dir / "linked").symlink_to(outside, target_is_directory=True)
+
+    cfg = SimpleNamespace(
+        repos=SimpleNamespace(
+            base_dir=str(base_dir),
+            repositories=[
+                SimpleNamespace(name="dify"),
+                SimpleNamespace(name="linked"),
+                SimpleNamespace(name="../outside"),
+            ],
+        )
+    )
+    monkeypatch.setattr("zd_agent.repos.get_config", lambda: cfg)
+
+    assert resolve_repo("dify") == configured.resolve()
+    assert resolve_repo(str(outside)) is None
+    assert resolve_repo("missing") is None
+    assert resolve_repo("linked") is None
+    assert resolve_repo("../outside") is None
+
+
+def test_empty_repo_url_does_not_clear_existing_origin(tmp_path):
+    repo = tmp_path / "dify"
+    original_url = "https://github.com/langgenius/dify.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(repo)], check=True, capture_output=True
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", original_url],
+        check=True,
+        capture_output=True,
+    )
+
+    _update_remote_url(repo, "")
+
+    result = subprocess.run(
+        ["git", "-C", str(repo), "remote", "get-url", "origin"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == original_url
 
 
 def test_run_repo_fetch_selects_requested_repos_and_reports_missing():

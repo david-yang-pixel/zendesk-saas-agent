@@ -208,7 +208,7 @@ def _final_assessment(evidence_id: str) -> str:
     )
 
 
-def test_terminal_claims_are_deterministically_bound_to_resolved_context() -> None:
+def test_terminal_claims_are_bound_without_implicit_billing_evidence() -> None:
     context = _context().model_copy(
         update={
             "billing_required": True,
@@ -239,11 +239,7 @@ def test_terminal_claims_are_deterministically_bound_to_resolved_context() -> No
     assert tuple(target.model_dump() for target in claim.targets) == (
         {"kind": "tenant_id", "value": TENANT},
     )
-    assert claim.supporting_evidence_ids == (
-        "ev-runtime",
-        "ev-identity",
-        "ev-billing",
-    )
+    assert claim.supporting_evidence_ids == ("ev-runtime", "ev-identity")
 
 
 def test_approved_tool_surface_is_explicit_and_write_closed() -> None:
@@ -1220,7 +1216,7 @@ async def test_investigator_compacts_large_active_context_before_next_round() ->
     registry = ToolRegistry()
     docs = FakeTool(
         "official_docs_search",
-        output="published behavior " * 5000,
+        output="published behavior " * 13_000,
     )
     registry.register(docs)
     checkpoint = json.dumps(
@@ -1281,10 +1277,15 @@ async def test_investigator_compacts_large_active_context_before_next_round() ->
     assert "INVESTIGATION_CHECKPOINT" in str(compacted_messages)
     assert len(str(compacted_messages)) < len(str(checkpoint_messages))
     assert session.context_compaction_count == 1
-    assert session.context_compaction_log[0]["tokens_after"] < session.context_compaction_log[0]["tokens_before"]
+    assert (
+        session.context_compaction_log[0]["tokens_after"]
+        < session.context_compaction_log[0]["tokens_before"]
+    )
 
 
-async def test_investigator_stops_before_another_model_call_when_customer_context_is_dirty() -> None:
+async def test_investigator_stops_before_another_model_call_when_customer_context_is_dirty() -> (
+    None
+):
     registry = ToolRegistry()
     provider = FakeProvider([_response(content=_final_assessment("ev-identity"))])
     session = AgentSession(ticket_id=4001)

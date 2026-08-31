@@ -13,6 +13,49 @@ from zd_agent.log import get_logger
 logger = get_logger(module="integrations.tool_service_mcp")
 
 
+def _extract_json_object_text_payload(
+    raw: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None, str]:
+    content = raw.get("content", [])
+    if not isinstance(content, list) or not content:
+        return None, "BAD_CONTENT", "returned no text content"
+
+    objects: list[dict[str, Any]] = []
+    saw_text = False
+    saw_non_object = False
+    last_json_error = ""
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if not isinstance(text, str):
+            continue
+        saw_text = True
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as error:
+            last_json_error = str(error)
+            continue
+        if isinstance(payload, dict):
+            objects.append(payload)
+        else:
+            saw_non_object = True
+
+    if len(objects) == 1:
+        return objects[0], None, ""
+    if len(objects) > 1:
+        return (
+            None,
+            "AMBIGUOUS_CONTENT",
+            "returned ambiguous multiple JSON object text payloads",
+        )
+    if not saw_text:
+        return None, "BAD_CONTENT", "returned no valid text content"
+    if saw_non_object:
+        return None, "BAD_PAYLOAD", "text payload is not an object"
+    return None, "BAD_JSON", last_json_error or "text payload is not valid JSON"
+
+
 def mcp_endpoint(url: str) -> str:
     base = (url or "").rstrip("/")
     if not base:
@@ -138,28 +181,11 @@ def _parse_text_payload(
     prefix: str,
     service: str,
 ) -> dict[str, Any]:
-    content = raw.get("content", [])
-    if not isinstance(content, list) or not content:
-        return {
-            "success": False,
-            "code": f"{prefix}_BAD_CONTENT",
-            "error": f"{service} MCP returned no text content",
-        }
-    first = content[0]
-    if not isinstance(first, dict) or first.get("type") != "text":
-        return {
-            "success": False,
-            "code": f"{prefix}_BAD_CONTENT",
-            "error": f"{service} MCP returned invalid text content",
-        }
-    try:
-        payload = json.loads(first.get("text") or "{}")
-    except json.JSONDecodeError as e:
-        return {"success": False, "code": f"{prefix}_BAD_JSON", "error": str(e)}
-    if isinstance(payload, dict):
+    payload, error_code, error = _extract_json_object_text_payload(raw)
+    if payload is not None:
         return payload
     return {
         "success": False,
-        "code": f"{prefix}_BAD_PAYLOAD",
-        "error": f"{service} MCP text payload is not an object",
+        "code": f"{prefix}_{error_code}",
+        "error": f"{service} MCP {error}",
     }

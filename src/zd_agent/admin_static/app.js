@@ -307,7 +307,7 @@ const FIELD_SECTIONS = {
   "部署状态": [
     {
       title: "账号密码登录",
-      description: "后台默认登录方式，支持开启或关闭。",
+      description: "后台当前唯一可用登录方式；SSO 完整上线前不可关闭。",
       paths: ["admin_auth.password_login_enabled"]
     },
     {
@@ -2474,7 +2474,7 @@ function renderMcpFieldGrid(service = {}) {
       <input data-mcp-field="mcp_url" value="${escapeHtml(service.mcp_url || "")}" placeholder="https://example.com/mcp">
       <span class="muted">支持 http(s)</span>
       <label>API Key</label>
-      <input data-mcp-field="mcp_api_key" type="password" placeholder="${service.mcp_api_key ? "已配置，留空保持不变" : "可选"}">
+      <input data-mcp-field="mcp_api_key" type="password" placeholder="${service.api_key_configured ? "已配置，留空保持不变" : "可选"}">
       <span class="muted">保存后用于 Authorization</span>
       <label>超时秒数</label>
       <input data-mcp-field="request_timeout_seconds" type="number" value="${escapeHtml(service.request_timeout_seconds || 35)}">
@@ -2556,18 +2556,17 @@ function removeManagerItem(button) {
 }
 
 function collectMcpManagerServices(root) {
-  const existingByName = new Map(customMcpServices().map(service => [service.name, service]));
   return Array.from(root.querySelectorAll("[data-mcp-item]")).map(item => {
     const field = name => item.querySelector(`[data-mcp-field='${name}']`);
     const originalName = item.getAttribute("data-original-name") || "";
-    const existing = existingByName.get(originalName) || {};
     const newKey = field("mcp_api_key").value.trim();
     return {
+      _original_name: originalName,
       name: field("name").value.trim(),
       label: field("label").value.trim(),
       description: field("description").value.trim(),
       mcp_url: field("mcp_url").value.trim(),
-      mcp_api_key: newKey || existing.mcp_api_key || "",
+      mcp_api_key: newKey,
       request_timeout_seconds: Number(field("request_timeout_seconds").value || 35),
       enabled: field("enabled").value === "true"
     };
@@ -3207,10 +3206,11 @@ async function applyChanges(changes) {
     await loadConfig();
     closeModal();
     await render();
-    showModal("保存成功", `
+    showModal(result.worker_reload_pending ? "配置已保存，尚未生效" : "保存成功", `
       <p>配置已保存。</p>
       <p><strong>Audit ID</strong> ${escapeHtml(result.audit_id || "-")}</p>
       ${result.worker_reload_started ? "<p>Agent Worker 正在安全重载，新配置将在替换进程启动后生效。</p>" : ""}
+      ${result.worker_reload_pending ? "<p class=\"warn-text\">配置已保存，但尚未在 Agent Worker 中生效，需重启 Agent。</p>" : ""}
       ${result.restart_required ? "<p class=\"warn-text\">本次变更包含需重启生效的配置。</p>" : ""}
     `, [
       { label: "关闭", className: "secondary", onClick: closeModal }
@@ -3250,10 +3250,11 @@ async function applyConfigPayload(changes, reason, errorNode) {
     await loadConfig();
     closeModal();
     await render();
-    showModal("保存成功", `
+    showModal(result.worker_reload_pending ? "配置已保存，尚未生效" : "保存成功", `
       <p>配置已保存。</p>
       <p><strong>Audit ID</strong> ${escapeHtml(result.audit_id || "-")}</p>
       ${result.worker_reload_started ? "<p>Agent Worker 正在安全重载，新配置将在替换进程启动后生效。</p>" : ""}
+      ${result.worker_reload_pending ? "<p class=\"warn-text\">配置已保存，但尚未在 Agent Worker 中生效，需重启 Agent。</p>" : ""}
       ${result.restart_required ? "<p class=\"warn-text\">本次变更包含需重启生效的配置。</p>" : ""}
     `, [
       { label: "关闭", className: "secondary", onClick: closeModal }

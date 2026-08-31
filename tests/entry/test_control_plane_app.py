@@ -52,6 +52,7 @@ async def test_corrupt_lifecycle_state_makes_control_plane_health_unready(
 
     body = json.loads(response.text)
     assert response.status == 503
+    assert body["ok"] is False
     assert body["ready"] is False
     assert body["agent"]["status"] == "failed"
 
@@ -104,4 +105,6 @@ async def test_stopped_health_requires_worker_process_to_be_absent(tmp_path) -> 
     response = await handle_control_plane_health(SimpleNamespace(app=app))
 
     assert response.status == 503
-    assert json.loads(response.text)["ready"] is False
+    body = json.loads(response.text)
+    assert body["ok"] is False
+    assert body["ready"] is False

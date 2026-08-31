@@ -12,6 +12,7 @@ from zd_agent.casework.adapters.model import (
 )
 from zd_agent.casework.domain.enums import (
     AnswerStatus,
+    BillingBindingStatus,
     ClaimRole,
     ClaimStatus,
     Disposition,
@@ -22,6 +23,8 @@ from zd_agent.casework.domain.enums import (
     ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
+    BillingBinding,
+    BillingSnapshot,
     CaseAssessment,
     CaseContext,
     Claim,
@@ -95,6 +98,59 @@ def test_model_identity_evidence_is_only_a_target_binding() -> None:
     assert claim.supporting_evidence_ids == ("ev-identity",)
     assert identity_evidence.authority.value == "target_binding"
     assert identity_evidence.supports_roles == ()
+
+
+def test_model_does_not_attach_billing_evidence_to_unrelated_current_state() -> None:
+    context = _resolved_context()
+    snapshot = BillingSnapshot(
+        tenant_id=TENANT,
+        identity_tenant_id=TENANT,
+        plan="professional",
+        subscription_status="active",
+        observed_at=NOW,
+        evidence_ids=("ev-identity", "ev-billing"),
+    )
+    context = context.model_copy(
+        update={
+            "billing_required": True,
+            "billing": BillingBinding(
+                status=BillingBindingStatus.RESOLVED,
+                snapshot=snapshot,
+                evidence_ids=snapshot.evidence_ids,
+            ),
+        },
+    )
+    content = json.dumps(
+        {
+            "answer_status": "supported",
+            "proposed_claims": [
+                {
+                    "statement": "The runtime has recovered.",
+                    "role": "current_state",
+                    "status": "confirmed",
+                    "supporting_evidence_ids": ["ev-runtime"],
+                    "targets": [],
+                },
+                {
+                    "statement": "The Professional subscription is active.",
+                    "role": "current_state",
+                    "status": "confirmed",
+                    "supporting_evidence_ids": ["ev-billing"],
+                    "targets": [],
+                },
+            ],
+        },
+    )
+
+    result = investigation_result_from_content(
+        context=context,
+        evidence=build_case_context_evidence(context),
+        content=content,
+    )
+
+    unrelated, billing = result.proposal.proposed_claims
+    assert unrelated.supporting_evidence_ids == ("ev-runtime", "ev-identity")
+    assert billing.supporting_evidence_ids == ("ev-billing", "ev-identity")
 
 
 def test_model_keeps_original_issue_after_workspace_clarification() -> None:

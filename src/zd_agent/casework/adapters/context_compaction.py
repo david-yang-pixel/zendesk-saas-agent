@@ -4,11 +4,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from functools import lru_cache
 import json
-import math
 from typing import Any
 
 from pydantic import Field, model_validator
+import tiktoken
 
 from zd_agent.casework.domain.base import FrozenModel
 from zd_agent.casework.domain.enums import (
@@ -146,7 +147,49 @@ def estimate_active_context_tokens(
         separators=(",", ":"),
         default=str,
     )
-    return math.ceil(len(serialized) / 4) + 512
+    return _conservative_token_estimate(serialized) + 512
+
+
+def _conservative_token_estimate(serialized: str) -> int:
+    """Estimate with a conservative tokenizer margin without byte-level blowups."""
+    tokenizer = _context_tokenizer()
+    if tokenizer is None:
+        return _offline_token_estimate(serialized)
+    tokens = sum(
+        len(tokenizer.encode_ordinary(serialized[start : start + 8_192]))
+        for start in range(0, len(serialized), 8_192)
+    )
+    return (tokens * 11 + 9) // 10
+
+
+@lru_cache(maxsize=1)
+def _context_tokenizer() -> tiktoken.Encoding | None:
+    try:
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:  # noqa: BLE001 - offline containers need a local fallback.
+        return None
+
+
+def _offline_token_estimate(serialized: str) -> int:
+    ascii_alphanumeric = 0
+    ascii_whitespace = 0
+    ascii_symbols = 0
+    non_ascii_bytes = 0
+    for character in serialized:
+        if not character.isascii():
+            non_ascii_bytes += len(character.encode("utf-8"))
+        elif character.isalnum():
+            ascii_alphanumeric += 1
+        elif character.isspace():
+            ascii_whitespace += 1
+        else:
+            ascii_symbols += 1
+    return (
+        (ascii_alphanumeric * 2 + 2) // 3
+        + (ascii_whitespace + 1) // 2
+        + ascii_symbols
+        + non_ascii_bytes
+    )
 
 
 def validate_checkpoint_evidence(
@@ -176,8 +219,7 @@ def validate_checkpoint_evidence(
             else claim.supporting_evidence_ids
         )
         compatible = any(
-            (item := by_id[evidence_id]).result_status
-            is EvidenceResultStatus.SUCCESS
+            (item := by_id[evidence_id]).result_status is EvidenceResultStatus.SUCCESS
             and item.authority in _CURRENT_EVIDENCE_AUTHORITIES
             and claim.role in item.supports_roles
             for evidence_id in evidence_ids
@@ -250,7 +292,7 @@ async def create_structured_checkpoint(
             )
             validate_checkpoint_evidence(checkpoint, evidence)
             serialized = checkpoint.model_dump_json()
-            if math.ceil(len(serialized) / 4) > max_checkpoint_tokens:
+            if _conservative_token_estimate(serialized) > max_checkpoint_tokens:
                 raise ValueError("checkpoint exceeds maximum token budget")
             return checkpoint
         except ValueError as error:
@@ -274,7 +316,9 @@ async def create_structured_checkpoint(
     )
 
 
-def _recent_tool_round(messages: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
+def _recent_tool_round(
+    messages: list[dict[str, Any]], count: int
+) -> list[dict[str, Any]]:
     if count <= 0:
         return []
     starts = [

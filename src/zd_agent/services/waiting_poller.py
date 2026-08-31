@@ -148,7 +148,7 @@ async def _process_one(
     # 心更足后可以关掉。
     cfg = get_config()
     if cfg.waiting_poller.poll_new_messages and msgs:
-        latest_cid = msgs[-1].get("id")
+        latest_cid = str(msgs[-1].get("id") or "")
         if latest_cid and latest_cid != rec.last_customer_comment_id:
             if not is_after_online_watermark(msgs[-1].get("created_at")):
                 observed_at = timestamp_unix(msgs[-1].get("created_at"))
@@ -156,7 +156,7 @@ async def _process_one(
                 def _discard_offline_cursor(current: TicketState | None) -> TicketState:
                     if current is None:
                         raise RuntimeError("waiting poller state disappeared")
-                    current.last_customer_comment_id = str(latest_cid)
+                    current.last_customer_comment_id = latest_cid
                     if observed_at is not None:
                         current.last_comment_ts = datetime.fromtimestamp(
                             observed_at,

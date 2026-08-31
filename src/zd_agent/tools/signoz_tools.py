@@ -399,7 +399,7 @@ class SignozErrors(Tool):
         sz_args += ["--hours", str(hours)]
         sz_args += ["--limit", str(limit)]
         rows = await run_signoz_sz(*sz_args)
-        if rows is None:
+        if rows is None or (isinstance(rows, dict) and rows.get("success") is False):
             return ToolResult(
                 success=False,
                 error="远程 sz MCP errors 查询失败（SigNoz MCP 不可达或查询错误）",
@@ -456,7 +456,7 @@ class SignozTraceback(Tool):
         sz_args += ["--hours", str(hours)]
         sz_args += ["--limit", str(limit)]
         rows = await run_signoz_sz(*sz_args)
-        if rows is None:
+        if rows is None or (isinstance(rows, dict) and rows.get("success") is False):
             return ToolResult(success=False, error="远程 sz MCP traceback 查询失败")
         return ToolResult(output=_rows_to_text(rows))
 
@@ -497,7 +497,7 @@ class SignozServices(Tool):
             str(limit),
         ]
         rows = await run_signoz_sz(*sz_args)
-        if rows is None:
+        if rows is None or (isinstance(rows, dict) and rows.get("success") is False):
             return ToolResult(success=False, error="远程 sz MCP services 查询失败")
         return ToolResult(output=_rows_to_text(rows))
 
@@ -536,7 +536,7 @@ class SignozQuery(Tool):
         if isinstance(hours, ToolResult):
             return hours
         rows = await run_signoz_sz("query", sql, "--hours", str(hours))
-        if rows is None:
+        if rows is None or (isinstance(rows, dict) and rows.get("success") is False):
             return ToolResult(
                 success=False,
                 error="远程 sz MCP query 执行失败（SQL 错误或 SigNoz MCP 不可达）",

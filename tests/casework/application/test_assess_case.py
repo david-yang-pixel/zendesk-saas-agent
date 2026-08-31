@@ -267,6 +267,28 @@ def test_rejected_extra_claim_keeps_an_evidence_bounded_answer() -> None:
     assert decide_disposition(result.assessment).disposition is Disposition.RESOLVED
 
 
+def test_claim_admission_pairs_results_by_position_not_duplicate_id_set() -> None:
+    accepted = _claim()
+    rejected = _claim("missing-evidence").model_copy(
+        update={"statement": "The runtime has recovered."},
+    )
+    proposal = AssessmentProposal.model_construct(
+        question="What is the current state?",
+        answer_status=AnswerStatus.SUPPORTED,
+        proposed_claims=(accepted, rejected),
+    )
+
+    result = build_case_assessment(
+        context=_context(_resolved_identity()),
+        proposal=proposal,
+        evidence=(_evidence(),),
+        as_of=NOW,
+    )
+
+    assert tuple(admission.accepted for admission in result.admissions) == (True, False)
+    assert result.assessment.admitted_claims == (accepted,)
+
+
 def test_claim_for_another_tenant_is_rejected_even_when_evidence_matches_it() -> None:
     other_target = TargetReference(kind="tenant_id", value=TENANT_2)
     wrong_claim = _claim().model_copy(update={"targets": (other_target,)})

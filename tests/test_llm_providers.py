@@ -437,6 +437,64 @@ async def test_responses_reasoning_raises_minimum_configured_output_budget() -> 
     assert create.await_args.kwargs["max_output_tokens"] == 25000
 
 
+async def test_ultra_reasoning_scales_responses_budget_and_timeout() -> None:
+    response = SimpleNamespace(
+        status="completed",
+        output=[],
+        output_text="Done",
+        usage=None,
+        incomplete_details=None,
+        error=None,
+    )
+    create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.6-terra",
+        reasoning_effort="ultra",
+        max_tokens=8192,
+        timeout=120,
+    )
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(create=create),
+        chat=SimpleNamespace(completions=SimpleNamespace(create=AsyncMock())),
+    )
+
+    await provider.chat(
+        [{"role": "user", "content": "Analyze"}],
+        tools=[ToolSchema(name="lookup", description="Lookup", parameters={})],
+    )
+
+    assert create.await_args.kwargs["max_output_tokens"] == 32768
+    assert create.await_args.kwargs["timeout"] == 600.0
+
+
+async def test_ultra_reasoning_scales_chat_completion_budget_and_timeout() -> None:
+    message = MagicMock()
+    message.content = "Done"
+    message.tool_calls = []
+    message.model_dump.return_value = {"role": "assistant", "content": "Done"}
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message, finish_reason="stop")],
+        usage=None,
+    )
+    create = AsyncMock(return_value=response)
+    provider = OpenAIProvider(
+        api_key="sk-test",
+        model="gpt-5.6-sol",
+        reasoning_effort="ultra",
+        max_tokens=8192,
+        timeout=120,
+    )
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    await provider.chat([{"role": "user", "content": "Analyze"}])
+
+    assert create.await_args.kwargs["max_completion_tokens"] == 32768
+    assert create.await_args.kwargs["timeout"] == 600.0
+
+
 async def test_incomplete_responses_result_raises_instead_of_silent_stop() -> None:
     response = SimpleNamespace(
         status="incomplete",

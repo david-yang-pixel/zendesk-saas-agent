@@ -4,6 +4,9 @@ import pytest
 from pydantic import ValidationError
 
 from zd_agent.casework.domain.enums import (
+    AnswerStatus,
+    ClaimRole,
+    ClaimStatus,
     Disposition,
     EvidenceAuthority,
     EvidenceResultStatus,
@@ -14,7 +17,9 @@ from zd_agent.casework.domain.enums import (
     ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
+    AssessmentProposal,
     BillingSnapshot,
+    Claim,
     DispositionDecision,
     EvidenceItem,
     IdentityResolution,
@@ -25,6 +30,27 @@ from zd_agent.casework.domain.models import (
 
 
 NOW = datetime(2026, 8, 11, 2, 0, tzinfo=timezone.utc)
+
+
+def test_assessment_proposal_rejects_duplicate_claim_ids() -> None:
+    claim = Claim(
+        claim_id="claim-duplicate",
+        statement="The workspace is active.",
+        role=ClaimRole.CURRENT_STATE,
+        status=ClaimStatus.CONFIRMED,
+        supporting_evidence_ids=("ev-current",),
+        public_allowed=True,
+    )
+
+    with pytest.raises(ValidationError, match="duplicate claim IDs"):
+        AssessmentProposal(
+            question="What is the current state?",
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(
+                claim,
+                claim.model_copy(update={"statement": "The runtime recovered."}),
+            ),
+        )
 
 
 def test_identity_resolution_is_immutable_and_target_bound() -> None:

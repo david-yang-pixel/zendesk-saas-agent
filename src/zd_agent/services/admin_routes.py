@@ -1855,15 +1855,16 @@ async def handle_admin_login(request: web.Request) -> web.Response:
 
 
 async def handle_admin_logout(request: web.Request) -> web.Response:
-    username = _current_admin(request) or "anonymous"
+    username = _current_admin(request)
     admin_auth(request.app).revoke_session(_session_token(request))
     response = web.json_response({"ok": True})
     response.del_cookie(SESSION_COOKIE, path="/")
-    admin_config(request.app).audit_event(
-        actor=username,
-        ip=_remote_ip(request),
-        action="admin_logout",
-    )
+    if username is not None:
+        admin_config(request.app).audit_event(
+            actor=username,
+            ip=_remote_ip(request),
+            action="admin_logout",
+        )
     return response
 
 
@@ -1991,6 +1992,8 @@ async def handle_admin_config_apply(request: web.Request) -> web.Response:
             # still needs a lifecycle restart instead of claiming hot reload.
             result["worker_reload_started"] = False
             result["worker_reload_error"] = exc.reason
+            result["worker_reload_pending"] = True
+            result["runtime_effective"] = False
     return web.json_response(result)
 
 
@@ -2565,6 +2568,21 @@ async def handle_admin_agent_action(request: web.Request) -> web.Response:
             persisted.get("last_operation_id") == operation_id
             and persisted.get("last_operation_action") == action
         ):
+            transition_status = str(persisted.get("transition_status") or "")
+            if transition_status in {"blocked", "error", "failed"}:
+                return web.json_response(
+                    {
+                        "ok": False,
+                        "idempotent": True,
+                        "error": str(
+                            persisted.get("transition_error")
+                            or "lifecycle_action_failed"
+                        ),
+                        "blockers": persisted.get("transition_blockers") or {},
+                        "agent": lifecycle.status(),
+                    },
+                    status=409 if transition_status == "blocked" else 500,
+                )
             return web.json_response(
                 {"ok": True, "idempotent": True, "agent": lifecycle.status()}
             )
