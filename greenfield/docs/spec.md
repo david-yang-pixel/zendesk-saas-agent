@@ -74,11 +74,11 @@ pnpm --dir apps/admin-web test
 pnpm --dir apps/admin-web build
 pnpm --dir apps/admin-web e2e
 
-docker build --target ingress -t casework-ingress:dev .
-docker build --target harness -t casework-harness:dev .
-docker build --target sandbox -t casework-sandbox:dev .
-docker build --target admin -t casework-admin:dev .
-docker compose up --build
+docker build -f deploy/Dockerfile --target ingress -t casework-ingress:dev .
+docker build -f deploy/Dockerfile --target harness -t casework-harness:dev .
+docker build -f deploy/Dockerfile --target sandbox -t casework-sandbox:dev .
+docker build -f deploy/Dockerfile --target admin -t casework-admin:dev .
+docker compose -f deploy/compose.yaml up --build
 ```
 
 ## Project Structure

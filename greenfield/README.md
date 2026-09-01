@@ -24,4 +24,11 @@ corepack enable
 pnpm --dir apps/admin-web install
 pnpm --dir apps/admin-web test
 pnpm --dir apps/admin-web build
+
+docker build -f deploy/Dockerfile --target sandbox -t casework-sandbox:dev .
+docker compose -f deploy/compose.yaml up --build
 ```
+
+`casework-sandbox` is an image only, not a long-running Compose service. The
+Harness creates a fresh container for each run and removes it on every terminal
+path. Build that image before starting the long-running services.
