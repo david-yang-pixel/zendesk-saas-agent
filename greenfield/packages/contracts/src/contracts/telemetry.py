@@ -102,6 +102,8 @@ class ContextCheckpointTelemetry(ContractModel):
     exact_identifiers: tuple[str, ...] = ()
     retained_rounds: tuple[str, ...] = ()
     summary: str | None = Field(default=None, max_length=4096)
+    working_memory_fact_keys: tuple[str, ...] = Field(default=(), max_length=128)
+    working_memory_fact_count: int = Field(default=0, ge=0, le=128)
 
     @field_validator("exact_identifiers")
     @classmethod
@@ -109,6 +111,19 @@ class ContextCheckpointTelemetry(ContractModel):
         cls, value: tuple[str, ...]
     ) -> tuple[str, ...]:
         return _unique(value, "checkpoint exact_identifiers")
+
+    @field_validator("working_memory_fact_keys")
+    @classmethod
+    def _unique_working_memory_keys(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        return _unique(value, "working memory fact keys")
+
+    @model_validator(mode="after")
+    def _working_memory_count_matches(self) -> ContextCheckpointTelemetry:
+        if self.working_memory_fact_count != len(self.working_memory_fact_keys):
+            raise ValueError("working memory fact count does not match fact keys")
+        return self
 
 
 class SandboxLifecycleEvent(ContractModel):
@@ -136,6 +151,8 @@ class SandboxResultTelemetry(ContractModel):
     artifact_refs: tuple[ArtifactReference, ...] = ()
     context_checkpoint: ContextCheckpointTelemetry | None = None
     sandbox_lifecycle: tuple[SandboxLifecycleEvent, ...] = ()
+    working_memory_fact_keys: tuple[str, ...] = Field(default=(), max_length=128)
+    working_memory_fact_count: int = Field(default=0, ge=0, le=128)
 
     @field_validator("evidence_ids")
     @classmethod
@@ -143,6 +160,13 @@ class SandboxResultTelemetry(ContractModel):
         cls, value: tuple[str, ...]
     ) -> tuple[str, ...]:
         return _unique(value, "run telemetry evidence_ids")
+
+    @field_validator("working_memory_fact_keys")
+    @classmethod
+    def _unique_working_memory_keys(
+        cls, value: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        return _unique(value, "working memory fact keys")
 
     @model_validator(mode="after")
     def _bounded_cardinality(self) -> SandboxResultTelemetry:
@@ -156,6 +180,8 @@ class SandboxResultTelemetry(ContractModel):
         ):
             if len(values) > limit:
                 raise ValueError(f"{name} exceeds telemetry limit")
+        if self.working_memory_fact_count != len(self.working_memory_fact_keys):
+            raise ValueError("working memory fact count does not match fact keys")
         return self
 
 

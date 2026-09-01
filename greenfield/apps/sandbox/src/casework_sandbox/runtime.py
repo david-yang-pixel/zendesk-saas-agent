@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -13,6 +14,7 @@ from casework_agent_core.domain import (
     resolve_active_question,
 )
 from casework_agent_core.evidence import EvidenceGate
+from casework_agent_core.memory import WorkingMemory
 from casework_agent_core.skills import LoadedSkill, SkillLoader
 from casework_agent_core.subagents import SubagentReport, SubagentTask
 from casework_agent_core.todo import TodoPlan
@@ -116,6 +118,9 @@ class SandboxAgent:
                 bootstrap.hard_checkpoint_percent if bootstrap is not None else 80
             ),
         )
+        # Working memory is deliberately scoped to this invocation.  It is
+        # never shared between sessions and is reclaimed with the sandbox.
+        working_memory = WorkingMemory()
         try:
             snapshot = await self._zendesk.fetch_ticket(ticket_id)
             if snapshot.ticket_id != ticket_id:
@@ -165,7 +170,9 @@ class SandboxAgent:
                                 "orchestrator is configured"
                             ),
                             plan=plan,
-                            checkpoint=context.checkpoint(active_question=question),
+                            checkpoint=self._checkpoint(
+                                context, question, working_memory
+                            ),
                             telemetry=self._telemetry(
                                 question=question,
                                 plan=plan,
@@ -174,9 +181,10 @@ class SandboxAgent:
                                 evidence_ids=tuple(
                                     item.evidence_id for item in gate.records()
                                 ),
-                                checkpoint=context.checkpoint(
-                                    active_question=question
+                                checkpoint=self._checkpoint(
+                                    context, question, working_memory
                                 ),
+                                working_memory=working_memory,
                             ),
                         )
                     child_task = SubagentTask(
@@ -188,6 +196,11 @@ class SandboxAgent:
                         task.assigned_to, child_task
                     )
                     gate.admit_subagent_report(task_id=task.task_id, report=report)
+                    working_memory.record(
+                        key=self._memory_key("subagent", task.task_id),
+                        value=f"evidence:{report.evidence_ids[0]}",
+                        evidence_ids=report.evidence_ids,
+                    )
                     subagent_telemetry.append(
                         SubagentTaskTelemetry(
                             subagent_id=task.task_id,
@@ -198,7 +211,10 @@ class SandboxAgent:
                         )
                     )
                     plan.mark_completed(task.task_id)
-                    context.add(report.summary, tokens=max(1, len(report.summary) // 4))
+                    context.add(
+                        "subagent evidence " + ",".join(report.evidence_ids),
+                        tokens=max(1, len(report.evidence_ids) * 2),
+                    )
                     context.compact_if_needed(active_question=question)
                     continue
                 if not task.suggested_tools:
@@ -230,6 +246,13 @@ class SandboxAgent:
                     tool_name=task.suggested_tools[0],
                     result=result,
                 )
+                evidence_id = result.evidence_id
+                assert evidence_id is not None
+                working_memory.record(
+                    key=self._memory_key("tool", task.task_id),
+                    value=f"evidence:{evidence_id}",
+                    evidence_ids=(evidence_id,),
+                )
                 tool_telemetry.append(
                     ToolCallTelemetry(
                         call_id=call_id,
@@ -239,18 +262,21 @@ class SandboxAgent:
                             if result.status.value == "failure"
                             else "succeeded"
                         ),
-                        summary=result.summary[:2048],
+                        summary=self._safe_summary(result.summary),
                         evidence_ids=(
-                            (result.evidence_id,) if result.evidence_id else ()
+                            (evidence_id,)
                         ),
                         artifact_refs=self._artifact_refs(result.artifacts),
                     )
                 )
                 plan.mark_completed(task.task_id)
-                context.add(result.summary, tokens=max(1, len(result.summary) // 4))
+                context.add(
+                    f"tool evidence {evidence_id}",
+                    tokens=max(1, len(evidence_id) // 2),
+                )
                 context.compact_if_needed(active_question=question)
             evidence_ids = tuple(item.evidence_id for item in gate.records())
-            checkpoint = context.checkpoint(active_question=question)
+            checkpoint = self._checkpoint(context, question, working_memory)
             telemetry = self._telemetry(
                 question=question,
                 plan=plan,
@@ -258,6 +284,7 @@ class SandboxAgent:
                 subagent_tasks=subagent_telemetry,
                 evidence_ids=evidence_ids,
                 checkpoint=checkpoint,
+                working_memory=working_memory,
             )
             answer = await self._model.compose_answer(snapshot, question, evidence_ids)
             if not gate.can_answer(answer=answer, evidence_ids=evidence_ids):
@@ -311,6 +338,44 @@ class SandboxAgent:
             ),
         )
 
+    @staticmethod
+    def _memory_key(prefix: str, task_id: str) -> str:
+        identifier = re.sub(r"[^a-z0-9_.-]+", "-", task_id.casefold()).strip("-")
+        return f"{prefix}.{identifier or 'task'}"
+
+    @staticmethod
+    def _safe_summary(value: str) -> str:
+        """Keep operator telemetry bounded and free of obvious secret text."""
+
+        normalized = value.casefold()
+        if any(
+            marker in normalized
+            for marker in (
+                "hidden_reasoning",
+                "chain_of_thought",
+                "raw_secret",
+                "api_key",
+                "authorization:",
+                "bearer ",
+                "sk-",
+            )
+        ):
+            return "Tool result admitted as evidence."
+        return value[:2048]
+
+    @staticmethod
+    def _checkpoint(
+        context: ContextGovernance,
+        question: ActiveQuestion,
+        working_memory: WorkingMemory,
+    ) -> ContextCheckpoint:
+        checkpoint = context.checkpoint(active_question=question)
+        return replace(
+            checkpoint,
+            working_memory_fact_keys=working_memory.fact_keys(),
+            working_memory_fact_count=working_memory.fact_count(),
+        )
+
     @classmethod
     def _outcome(
         cls,
@@ -355,7 +420,10 @@ class SandboxAgent:
         subagent_tasks: list[SubagentTaskTelemetry],
         evidence_ids: tuple[str, ...],
         checkpoint: ContextCheckpoint,
+        working_memory: WorkingMemory,
     ) -> SandboxResultTelemetry:
+        fact_keys = working_memory.fact_keys()
+        fact_count = working_memory.fact_count()
         return SandboxResultTelemetry(
             active_question=ActiveQuestionTelemetry(
                 original_event_id=question.original_event_id,
@@ -384,5 +452,9 @@ class SandboxAgent:
                     round_[:2048] for round_ in checkpoint.retained_rounds
                 ),
                 summary=checkpoint.summary[:4096] or None,
+                working_memory_fact_keys=fact_keys,
+                working_memory_fact_count=fact_count,
             ),
+            working_memory_fact_keys=fact_keys,
+            working_memory_fact_count=fact_count,
         )

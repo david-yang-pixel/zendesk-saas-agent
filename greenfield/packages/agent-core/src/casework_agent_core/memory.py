@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+
+_FACT_KEY = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+_MAX_FACTS = 128
+_FORBIDDEN_VALUE_MARKERS = (
+    "hidden_reasoning",
+    "chain_of_thought",
+    "api_key=",
+    "authorization:",
+    "bearer ",
+    "sk-",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,15 +35,26 @@ class WorkingMemory:
     def record(
         self, *, key: str, value: str, evidence_ids: tuple[str, ...]
     ) -> WorkingFact:
-        if not key.strip() or not value.strip():
+        normalized_key = key.strip().casefold()
+        normalized_value = value.strip()
+        if not _FACT_KEY.fullmatch(normalized_key):
+            raise ValueError("working-memory key must be a controlled identifier")
+        if not normalized_value:
             raise ValueError("working-memory key and value are required")
+        if len(normalized_value) > 512:
+            raise ValueError("working-memory value exceeds 512 characters")
+        folded_value = normalized_value.casefold()
+        if any(marker in folded_value for marker in _FORBIDDEN_VALUE_MARKERS):
+            raise ValueError("working-memory value contains forbidden sensitive data")
         if not evidence_ids or any(not item.strip() for item in evidence_ids):
             raise ValueError("working-memory fact requires evidence")
         if len(set(evidence_ids)) != len(evidence_ids):
             raise ValueError("working-memory evidence IDs must be unique")
+        if len(self._facts) >= _MAX_FACTS and normalized_key not in self._facts:
+            raise ValueError("working-memory fact limit exceeded")
         fact = WorkingFact(
-            key=key.strip(),
-            value=value.strip(),
+            key=normalized_key,
+            value=normalized_value,
             evidence_ids=evidence_ids,
         )
         self._facts[fact.key] = fact
@@ -39,6 +62,14 @@ class WorkingMemory:
 
     def snapshot(self) -> tuple[WorkingFact, ...]:
         return tuple(self._facts[key] for key in sorted(self._facts))
+
+    def fact_keys(self) -> tuple[str, ...]:
+        """Return only bounded, non-sensitive identifiers for observability."""
+
+        return tuple(sorted(self._facts))
+
+    def fact_count(self) -> int:
+        return len(self._facts)
 
 
 class MemoryProposalStatus(StrEnum):

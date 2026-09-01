@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from casework_agent_core.context_budget import CompactionLevel, ContextBudget
 from casework_agent_core.domain import ActiveQuestion
@@ -17,6 +17,8 @@ class ContextCheckpoint:
     exact_identifiers: tuple[str, ...]
     retained_rounds: tuple[str, ...]
     summary: str
+    working_memory_fact_keys: tuple[str, ...] = ()
+    working_memory_fact_count: int = 0
 
 
 class ContextGovernance:
@@ -104,7 +106,12 @@ class ContextGovernance:
                 break
             self._items.append((text, tokens))
             self._used_tokens += tokens
-        return self.checkpoint(active_question=checkpoint.active_question)
+        rebuilt = self.checkpoint(active_question=checkpoint.active_question)
+        return replace(
+            rebuilt,
+            working_memory_fact_keys=checkpoint.working_memory_fact_keys,
+            working_memory_fact_count=checkpoint.working_memory_fact_count,
+        )
 
     def _bounded_summary(self, values: list[str]) -> str:
         summary = " ".join(values)

@@ -119,3 +119,6 @@ async def test_sandbox_agent_dispatches_assigned_todo_to_depth_one_child(
     assert orchestrator.calls[0][0] == "logs"
     assert outcome.evidence_ids == ("child-ev",)
     assert outcome.todo_summary.completed == 1
+    assert outcome.telemetry is not None
+    assert outcome.telemetry.working_memory_fact_keys == ("subagent.child-task",)
+    assert outcome.telemetry.working_memory_fact_count == 1
