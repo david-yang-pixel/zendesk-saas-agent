@@ -10,17 +10,20 @@ socket.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any, Protocol, cast
 
 from casework_harness.sandbox_controller import (
+    SandboxEngine,
     SandboxExecution,
     SandboxExecutionStatus,
     SandboxResourceExhaustedError,
 )
+from casework_harness.sandbox_policy import SandboxResourcePolicy
 
 _SANDBOX_PORT = 8103
 _SANDBOX_TIMEOUT_SECONDS = 30 * 60
@@ -53,9 +56,18 @@ class DockerContainerCollectionPort(Protocol):
     def list(self, **kwargs: Any) -> Sequence[DockerContainerPort]: ...
 
 
+class DockerImageCollectionPort(Protocol):
+    def get(self, image: str) -> object: ...
+
+
 class DockerClientPort(Protocol):
     @property
     def containers(self) -> DockerContainerCollectionPort: ...
+
+    @property
+    def images(self) -> DockerImageCollectionPort: ...
+
+    def ping(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +149,136 @@ class DockerOrphanSweepReport:
     destroyed: tuple[str, ...]
     skipped: int = 0
     failed: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxProbeResult:
+    """Safe Harness readiness result for one launch probe."""
+
+    ready: bool
+    reason: str
+    cached: bool = False
+
+
+class SandboxLaunchProbe:
+    """Check the sandbox image and protocol without running any casework.
+
+    A launch probe creates a short-lived default-resource sandbox, waits only
+    for ``/readyz``, and destroys it.  It deliberately never calls
+    ``/v1/runs`` and carries no ticket identifier.  Results are cached and
+    concurrent checks are coalesced so an operator polling ``/readyz`` does
+    not continuously rebuild containers.
+    """
+
+    def __init__(
+        self,
+        *,
+        client: DockerClientPort,
+        engine: SandboxEngine,
+        image: str,
+        cache_ttl_seconds: float = 30.0,
+        failure_retry_seconds: float = 5.0,
+        monotonic_clock: Callable[[], float] | None = None,
+    ) -> None:
+        if not image.strip():
+            raise ValueError("sandbox image is required")
+        if cache_ttl_seconds <= 0:
+            raise ValueError("cache_ttl_seconds must be positive")
+        if failure_retry_seconds < 0:
+            raise ValueError("failure_retry_seconds must not be negative")
+        self._client = client
+        self._engine = engine
+        self._image = image
+        self._cache_ttl_seconds = cache_ttl_seconds
+        self._failure_retry_seconds = failure_retry_seconds
+        self._monotonic = monotonic_clock or time.monotonic
+        self._lock = asyncio.Lock()
+        self._cached: tuple[float, SandboxProbeResult] | None = None
+        self._probe_number = 0
+
+    async def check(self) -> bool:
+        """Return whether the last launch probe or a fresh probe is healthy."""
+        return (await self.probe()).ready
+
+    async def probe(self) -> SandboxProbeResult:
+        cached = self._usable_cached(self._monotonic())
+        if cached is not None:
+            return replace(cached, cached=True)
+        async with self._lock:
+            cached = self._usable_cached(self._monotonic())
+            if cached is not None:
+                return replace(cached, cached=True)
+            result = await self._run_probe()
+            self._cached = (self._monotonic(), result)
+            return result
+
+    def _usable_cached(self, now: float) -> SandboxProbeResult | None:
+        if self._cached is None:
+            return None
+        checked_at, result = self._cached
+        ttl = self._cache_ttl_seconds if result.ready else self._failure_retry_seconds
+        if now - checked_at < ttl:
+            return result
+        return None
+
+    async def _run_probe(self) -> SandboxProbeResult:
+        try:
+            if not await _call_sync(self._client.ping):
+                return SandboxProbeResult(ready=False, reason="docker_unavailable")
+        except Exception as error:
+            if _is_permission_denied(error):
+                return SandboxProbeResult(
+                    ready=False, reason="docker_permission_denied"
+                )
+            return SandboxProbeResult(ready=False, reason="docker_unavailable")
+        try:
+            await _call_sync(self._client.images.get, self._image)
+        except Exception as error:
+            if _is_permission_denied(error):
+                return SandboxProbeResult(
+                    ready=False, reason="docker_permission_denied"
+                )
+            return SandboxProbeResult(
+                ready=False, reason="sandbox_image_unavailable"
+            )
+
+        self._probe_number += 1
+        probe_id = f"launch-probe-{self._probe_number}"
+        sandbox_id: str | None = None
+        result = SandboxProbeResult(ready=False, reason="launch_failed")
+        try:
+            try:
+                sandbox_id = await self._engine.create(
+                    image=self._image,
+                    limits=SandboxResourcePolicy()
+                    .allocation_for(attempt=1)
+                    .docker_limits(),
+                    labels={
+                        "casework.managed": "true",
+                        "casework.probe": "true",
+                        "casework.run_id": probe_id,
+                        "casework.job_id": probe_id,
+                        "casework.session_id": f"{probe_id}-session",
+                        "casework.attempt": "1",
+                    },
+                )
+                await self._engine.wait_ready(
+                    sandbox_id, timeout_seconds=30 * 60
+                )
+                result = SandboxProbeResult(ready=True, reason="ready")
+            except SandboxResourceExhaustedError:
+                result = SandboxProbeResult(
+                    ready=False, reason="resource_exhausted"
+                )
+            except Exception:
+                result = SandboxProbeResult(ready=False, reason="readiness_failed")
+        finally:
+            if sandbox_id is not None:
+                try:
+                    await self._engine.destroy(sandbox_id)
+                except Exception:
+                    result = SandboxProbeResult(ready=False, reason="cleanup_failed")
+        return result
 
 
 def _http_response(response: Any) -> SandboxHttpResponse:
@@ -229,6 +371,14 @@ def _is_not_found(error: BaseException) -> bool:
         return True
     status_code = getattr(error, "status_code", None)
     return status_code == 404
+
+
+def _is_permission_denied(error: BaseException) -> bool:
+    if isinstance(error, PermissionError):
+        return True
+    if error.__class__.__name__.casefold() in {"forbidden", "permissionerror"}:
+        return True
+    return getattr(error, "status_code", None) == 403
 
 
 class DockerSandboxEngine:
