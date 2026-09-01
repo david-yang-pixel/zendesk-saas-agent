@@ -86,4 +86,44 @@ describe('Admin API client', () => {
       }),
     })
   })
+
+  it('preserves unknown persisted run activity as null instead of inventing zeros', async () => {
+    const transport = transportFor({
+      '/api/runs': {
+        total: 1,
+        items: [{
+          ticket_id: 3726,
+          subject: 'Ticket #3726',
+          status: 'completed',
+          status_label: '已完成',
+          started_at: '2026-09-01T00:00:00Z',
+          duration: '1m 0s',
+          steps: null,
+          session_id: 'session-3726',
+          question: null,
+          todo_completed: null,
+          todo_total: null,
+          tool_calls: null,
+          subagents: null,
+          evidence: null,
+          checkpoint: null,
+          sandbox: 'destroyed',
+          outcome: 'completed',
+        }],
+      },
+    })
+
+    const result = await createAdminApiClient(transport).getRuns()
+
+    expect(result.items[0]).toMatchObject({
+      question: null,
+      todoCompleted: null,
+      todoTotal: null,
+      toolCalls: null,
+      subagents: null,
+      evidence: null,
+      checkpoint: null,
+      steps: null,
+    })
+  })
 })

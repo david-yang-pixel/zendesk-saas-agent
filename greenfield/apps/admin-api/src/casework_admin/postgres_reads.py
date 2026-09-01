@@ -90,15 +90,17 @@ def _record(row: CaseJobRow) -> RunRecord:
         status_label=_status_label(status),
         started_at=_timestamp(row.created_at),
         duration=_duration(row),
-        steps=0,
+        # The queue row does not persist runtime activity.  Do not turn
+        # unavailable Todo/tool/evidence/checkpoint data into fake zeros.
+        steps=None,
         session_id=row.session_id,
-        question="",
-        todo_completed=0,
-        todo_total=0,
-        tool_calls=0,
-        subagents=0,
-        evidence=0,
-        checkpoint="",
+        question=None,
+        todo_completed=None,
+        todo_total=None,
+        tool_calls=None,
+        subagents=None,
+        evidence=None,
+        checkpoint=None,
         sandbox="running" if row.status in _ACTIVE else "destroyed",
         outcome=row.status,
     )
@@ -112,7 +114,7 @@ def _configured_ids(value: object) -> tuple[str, ...]:
 
 
 class PostgresAdminReadRepository:
-    """Project only fields currently persisted; unknown activity remains zero/empty."""
+    """Project only fields currently persisted; unknown activity stays null."""
 
     def __init__(self, *, transaction_scope: TransactionScope) -> None:
         self._transaction_scope = transaction_scope

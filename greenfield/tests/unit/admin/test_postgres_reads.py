@@ -114,8 +114,12 @@ async def test_postgres_admin_reads_truthful_job_and_registry_projections(
 
     assert runs.total == 2
     assert {run.ticket_id for run in runs.items} == {3726, 3727}
-    assert all(run.question == "" for run in runs.items)
-    assert all(run.todo_total == 0 for run in runs.items)
+    assert all(run.question is None for run in runs.items)
+    assert all(run.todo_completed is None for run in runs.items)
+    assert all(run.todo_total is None for run in runs.items)
+    assert all(run.tool_calls is None for run in runs.items)
+    assert all(run.evidence is None for run in runs.items)
+    assert all(run.checkpoint is None for run in runs.items)
     assert sum(item.count for item in overview.queue_health) == 2
     assert [item.id for item in registry.skills] == ["core-casework"]
     assert [item.id for item in registry.tools] == ["zendesk_ticket"]

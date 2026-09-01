@@ -53,18 +53,18 @@ class RecentRun(_ReadModel):
     status_label: str
     started_at: str
     duration: str
-    steps: int = Field(ge=0)
+    steps: int | None = Field(default=None, ge=0)
 
 
 class RunRecord(RecentRun):
     session_id: str
-    question: str
-    todo_completed: int = Field(ge=0)
-    todo_total: int = Field(ge=0)
-    tool_calls: int = Field(ge=0)
-    subagents: int = Field(ge=0)
-    evidence: int = Field(ge=0)
-    checkpoint: str
+    question: str | None = None
+    todo_completed: int | None = Field(default=None, ge=0)
+    todo_total: int | None = Field(default=None, ge=0)
+    tool_calls: int | None = Field(default=None, ge=0)
+    subagents: int | None = Field(default=None, ge=0)
+    evidence: int | None = Field(default=None, ge=0)
+    checkpoint: str | None = None
     sandbox: Literal["destroyed", "running"]
     outcome: str
 

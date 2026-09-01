@@ -1,6 +1,6 @@
 export type AgentDesiredState = 'running' | 'paused'
 export type StatusTone = 'success' | 'warning' | 'danger' | 'neutral' | 'info'
-export type RunStatus = 'running' | 'awaiting_customer' | 'completed' | 'human_takeover' | 'failed'
+export type RunStatus = 'running' | 'awaiting_customer' | 'completed' | 'human_takeover' | 'failed' | 'cancelled'
 
 export interface NavItem {
   readonly label: string
@@ -69,7 +69,7 @@ export interface RecentRun {
   readonly statusLabel: string
   readonly startedAt: string
   readonly duration: string
-  readonly steps: number
+  readonly steps: number | null
 }
 
 export interface HarnessConfig {
@@ -189,13 +189,13 @@ export interface ToolRecord {
 
 export interface RunRecord extends RecentRun {
   readonly sessionId: string
-  readonly question: string
-  readonly todoCompleted: number
-  readonly todoTotal: number
-  readonly toolCalls: number
-  readonly subagents: number
-  readonly evidence: number
-  readonly checkpoint: string
+  readonly question: string | null
+  readonly todoCompleted: number | null
+  readonly todoTotal: number | null
+  readonly toolCalls: number | null
+  readonly subagents: number | null
+  readonly evidence: number | null
+  readonly checkpoint: string | null
   readonly sandbox: 'destroyed' | 'running'
   readonly outcome: string
 }

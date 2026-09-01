@@ -196,7 +196,7 @@ onMounted(() => { void refreshOverview() })
               <td><StatusBadge :label="run.statusLabel" :tone="statusTone(run.status)" /></td>
               <td class="muted-cell">{{ run.startedAt }}</td>
               <td class="mono-cell">{{ run.duration }}</td>
-              <td class="mono-cell">{{ run.steps }}</td>
+              <td class="mono-cell">{{ run.steps ?? '未知' }}</td>
               <td><button type="button" class="icon-button icon-button--small" aria-label="打开运行详情"><AppIcon name="chevron" :size="15" /></button></td>
             </tr>
           </tbody>

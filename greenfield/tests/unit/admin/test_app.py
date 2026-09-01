@@ -14,6 +14,7 @@ from casework_admin.config import (
     ModelConfig,
     ProcessingRulesConfig,
 )
+from casework_admin.read_models import InMemoryAdminReadRepository, RunRecord
 
 
 class _Client(Protocol):
@@ -152,3 +153,40 @@ def test_registry_connection_test_is_a_typed_read_only_probe() -> None:
         "status": "untested",
         "latency_ms": None,
     }
+
+
+def test_admin_api_keeps_unpersisted_run_activity_as_json_null() -> None:
+    reads = InMemoryAdminReadRepository(
+        runs=(
+            RunRecord(
+                ticket_id=3726,
+                subject="Ticket #3726",
+                status="completed",
+                status_label="已完成",
+                started_at="2026-09-01T00:00:00Z",
+                duration="1m 0s",
+                session_id="session-3726",
+                sandbox="destroyed",
+                outcome="completed",
+            ),
+        )
+    )
+    client = cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                read_repository=reads,
+            )
+        ),
+    )
+
+    run = client.get("/api/runs").json()["items"][0]
+
+    assert run["question"] is None
+    assert run["steps"] is None
+    assert run["todo_completed"] is None
+    assert run["todo_total"] is None
+    assert run["tool_calls"] is None
+    assert run["evidence"] is None
+    assert run["checkpoint"] is None

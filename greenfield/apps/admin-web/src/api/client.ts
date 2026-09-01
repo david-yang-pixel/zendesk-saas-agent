@@ -122,13 +122,13 @@ interface ApiRecentRun {
 
 interface ApiRunRecord extends ApiRecentRun {
   session_id: string
-  question: string
-  todo_completed: number
-  todo_total: number
-  tool_calls: number
-  subagents: number
-  evidence: number
-  checkpoint: string
+  question: string | null
+  todo_completed: number | null
+  todo_total: number | null
+  tool_calls: number | null
+  subagents: number | null
+  evidence: number | null
+  checkpoint: string | null
   sandbox: RunRecord['sandbox']
   outcome: string
 }
