@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Literal
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
@@ -91,3 +93,33 @@ class RuntimeBootstrap(ContractModel):
     def enabled_child_slots(self) -> tuple[ChildModelBinding, ...]:
         return self.child_models
 
+
+def runtime_model_digest(
+    root: ModelBinding, children: tuple[ChildModelBinding, ...]
+) -> str:
+    """Return the canonical cross-service digest for explicit model bindings."""
+
+    return registry_digest(
+        {
+            "root": root.model_dump(mode="json"),
+            "children": [child.model_dump(mode="json") for child in children],
+        }
+    )
+
+
+def registry_digest(value: object) -> str:
+    """Hash one JSON-compatible immutable registry projection."""
+
+    encoded = json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+__all__ = [
+    "ChildModelBinding",
+    "ModelBinding",
+    "RuntimeBootstrap",
+    "registry_digest",
+    "runtime_model_digest",
+]

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Literal, cast
@@ -30,6 +28,12 @@ from casework_persistence.repositories import (
     JobRepository,
     SessionPort,
 )
+from contracts.runtime import (
+    ChildModelBinding,
+    ModelBinding,
+    registry_digest,
+    runtime_model_digest,
+)
 
 
 class _Projection(BaseModel):
@@ -45,6 +49,9 @@ class _ModelConfig(_Projection):
 class _SubagentConfig(_ModelConfig):
     slot_id: str = Field(min_length=1)
     enabled: bool = True
+    context_window_tokens: int = Field(default=32_000, gt=0, le=1_000_000)
+    max_tool_rounds: int = Field(default=12, gt=0, le=100)
+    max_parallel: int = Field(default=1, ge=1, le=8)
 
 
 class _RulesConfig(_Projection):
@@ -177,25 +184,19 @@ class PostgresAdmission:
         enabled_children = tuple(
             slot for slot in runtime.subagent_slots if slot.enabled
         )
-        model_payload = {
-            "root": runtime.root_model.model_dump(mode="json"),
-            "children": [slot.model_dump(mode="json") for slot in enabled_children],
-        }
+        root_binding = ModelBinding.model_validate(runtime.root_model.model_dump())
+        child_bindings = tuple(
+            ChildModelBinding.model_validate(slot.model_dump())
+            for slot in enabled_children
+        )
         return ConfigSnapshot(
             config_revision=revision,
             root_model_config_id="root",
             child_model_config_ids=tuple(slot.slot_id for slot in enabled_children),
-            model_digest=cls._digest(model_payload),
-            skill_digest=cls._digest(runtime.enabled_skills),
-            tool_digest=cls._digest(runtime.enabled_tools),
+            model_digest=runtime_model_digest(root_binding, child_bindings),
+            skill_digest=registry_digest(runtime.enabled_skills),
+            tool_digest=registry_digest(runtime.enabled_tools),
         )
-
-    @staticmethod
-    def _digest(value: object) -> str:
-        encoded = json.dumps(
-            value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-        ).encode()
-        return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 __all__ = ["PostgresAdmission", "postgres_transaction_scope"]

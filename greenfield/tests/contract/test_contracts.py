@@ -7,6 +7,7 @@ from contracts.event import Event, HumanCancel
 from contracts.evidence import Evidence
 from contracts.job import CaseJob, JobStatus
 from contracts.outcome import Outcome, OutcomeKind
+from contracts.runtime import ModelBinding, RuntimeBootstrap
 from contracts.sandbox import (
     Sandbox,
     SandboxCancelRequest,
@@ -29,6 +30,15 @@ CONFIG = {
     "skill_digest": "skill-sha256",
     "tool_digest": "tool-sha256",
 }
+BOOTSTRAP = RuntimeBootstrap(
+    config_revision="cfg-01",
+    root_model=ModelBinding(
+        provider="openai", model="root", credential_ref="secret/root"
+    ),
+    model_digest="model-sha256",
+    skill_digest="skill-sha256",
+    tool_digest="tool-sha256",
+)
 
 
 def test_event_and_job_keep_business_input_minimal_and_json_stable() -> None:
@@ -212,6 +222,7 @@ def test_harness_sandbox_protocol_messages_are_typed() -> None:
         model_digest=CONFIG["model_digest"],
         skill_digest=CONFIG["skill_digest"],
         tool_digest=CONFIG["tool_digest"],
+        bootstrap=BOOTSTRAP,
     )
     cancel = SandboxCancelRequest(
         sandbox_id=start.sandbox_id,

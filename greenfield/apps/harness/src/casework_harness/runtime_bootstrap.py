@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from contracts.runtime import ChildModelBinding, ModelBinding, RuntimeBootstrap
+from contracts.runtime import (
+    ChildModelBinding,
+    ModelBinding,
+    RuntimeBootstrap,
+    registry_digest,
+    runtime_model_digest,
+)
 
 
 class RuntimeBootstrapUnavailable(RuntimeError):
@@ -62,32 +66,33 @@ def runtime_bootstrap_from_config(
                 provider=_string(child, "provider"),
                 model=_string(child, "model"),
                 credential_ref=_string(child, "credential_ref"),
+                context_window_tokens=_integer(
+                    child.get("context_window_tokens"),
+                    32_000,
+                    "context_window_tokens",
+                ),
+                max_tool_rounds=_integer(
+                    child.get("max_tool_rounds"), 12, "max_tool_rounds"
+                ),
                 max_parallel=int(child.get("max_parallel", 1)),
             )
         )
     skills = _strings(config.get("enabled_skills", ()), "enabled_skills")
     tools = _strings(config.get("enabled_tools", ()), "enabled_tools")
-    model_payload = {
-        "root": root,
-        "children": [
-            _mapping(raw, "subagent_slots[]")
-            for raw in raw_children
-            if bool(_mapping(raw, "subagent_slots[]").get("enabled", True))
-        ],
-    }
+    root_binding = ModelBinding(
+        provider=_string(root, "provider"),
+        model=_string(root, "model"),
+        credential_ref=_string(root, "credential_ref"),
+    )
     return RuntimeBootstrap(
         config_revision=revision,
-        root_model=ModelBinding(
-            provider=_string(root, "provider"),
-            model=_string(root, "model"),
-            credential_ref=_string(root, "credential_ref"),
-        ),
+        root_model=root_binding,
         child_models=tuple(children),
         enabled_skills=skills,
         enabled_tools=tools,
-        model_digest=_digest(model_payload),
-        skill_digest=_digest(skills),
-        tool_digest=_digest(tools),
+        model_digest=runtime_model_digest(root_binding, tuple(children)),
+        skill_digest=registry_digest(skills),
+        tool_digest=registry_digest(tools),
         context_window_tokens=_integer(
             config.get("context_window_tokens"), 128_000, "context_window_tokens"
         ),
@@ -132,13 +137,6 @@ def _integer(value: object, default: int, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise RuntimeBootstrapUnavailable(f"{field} must be an integer")
     return value
-
-
-def _digest(value: object) -> str:
-    encoded = json.dumps(
-        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ).encode()
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 __all__ = [

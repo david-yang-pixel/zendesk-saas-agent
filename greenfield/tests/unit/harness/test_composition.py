@@ -23,6 +23,16 @@ class _ReadyDocker:
         return True
 
 
+class _ReadySandboxProbe:
+    def __init__(self, result: bool = True) -> None:
+        self.result = result
+        self.calls = 0
+
+    async def check(self) -> bool:
+        self.calls += 1
+        return self.result
+
+
 def test_production_harness_factory_requires_database_and_sandbox_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -44,8 +54,6 @@ def test_sandbox_environment_is_explicit_and_never_contains_database_url() -> No
             "ZENDESK_EMAIL": "agent@example.com",
             "ZENDESK_API_TOKEN": "token",
             "CASEWORK_MODEL_BASE_URL": "https://model.example.com",
-            "CASEWORK_MODEL_API_KEY": "model-token",
-            "CASEWORK_MODEL_NAME": "root-model",
             "CASEWORK_TOOL_CONFIG": "[]",
             "UNRELATED_SECRET": "must-not-cross-boundary",
         }
@@ -56,8 +64,6 @@ def test_sandbox_environment_is_explicit_and_never_contains_database_url() -> No
         "ZENDESK_EMAIL",
         "ZENDESK_API_TOKEN",
         "CASEWORK_MODEL_BASE_URL",
-        "CASEWORK_MODEL_API_KEY",
-        "CASEWORK_MODEL_NAME",
         "CASEWORK_TOOL_CONFIG",
     }
 
@@ -93,6 +99,32 @@ async def test_live_without_sender_is_not_ready_but_dry_run_can_be_ready() -> No
         )
         canary.attach_tasks(task)
         assert await canary.check() is False
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_harness_readiness_requires_the_cached_sandbox_launch_probe() -> None:
+    stop = asyncio.Event()
+    task = asyncio.create_task(stop.wait())
+    probe = _ReadySandboxProbe()
+    try:
+        readiness = HarnessReadiness(
+            database=_ReadyDatabase(),
+            docker_client=_ReadyDocker(),
+            delivery_ready=True,
+            sandbox_probe=probe,
+        )
+        readiness.attach_tasks(task)
+
+        assert await readiness.check() is True
+        assert probe.calls == 1
+
+        probe.result = False
+        assert await readiness.check() is False
+        assert probe.calls == 2
     finally:
         task.cancel()
         with suppress(asyncio.CancelledError):

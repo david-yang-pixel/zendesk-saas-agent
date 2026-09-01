@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from casework_sandbox.service import create_app
 from contracts.outcome import Outcome, OutcomeKind
+from contracts.runtime import ModelBinding, RuntimeBootstrap
 from contracts.sandbox import (
     SandboxCancelRequest,
     SandboxResources,
@@ -16,6 +17,15 @@ from contracts.sandbox import (
 )
 
 NOW = datetime(2026, 9, 1, tzinfo=UTC)
+BOOTSTRAP = RuntimeBootstrap(
+    config_revision="config-1",
+    root_model=ModelBinding(
+        provider="openai", model="root", credential_ref="secret/root"
+    ),
+    model_digest="model-sha",
+    skill_digest="skill-sha",
+    tool_digest="tool-sha",
+)
 
 
 class _Client(Protocol):
@@ -58,6 +68,7 @@ def _start() -> SandboxStartRequest:
         model_digest="model-sha",
         skill_digest="skill-sha",
         tool_digest="tool-sha",
+        bootstrap=BOOTSTRAP,
     )
 
 
