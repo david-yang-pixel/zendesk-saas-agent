@@ -11,6 +11,7 @@ if (!injectedApi) throw new Error('Admin API client is not provided')
 const api: AdminApiClient = injectedApi
 const activeTab = ref<'skills' | 'tools'>('skills')
 const testedTool = ref<string | null>(null)
+const probeDetails = ref<Record<string, string>>({})
 const registry = ref<RegistryData>({ skills: [], tools: [] })
 const loading = ref(true)
 const errorMessage = ref('')
@@ -46,6 +47,13 @@ async function testConnection(toolId: string) {
         latency: result.latencyMs === null ? '—' : `${result.latencyMs} ms`,
       } : tool),
     }
+    if (result.detail) {
+      probeDetails.value = { ...probeDetails.value, [toolId]: result.detail }
+    } else {
+      const nextDetails = { ...probeDetails.value }
+      delete nextDetails[toolId]
+      probeDetails.value = nextDetails
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '连接测试失败'
   } finally {
@@ -77,7 +85,7 @@ onMounted(() => { void loadRegistry() })
         <table class="data-table registry-table"><thead><tr><th>Skill</th><th>描述</th><th>版本</th><th>分配范围</th><th>状态</th><th>最近更新</th><th /></tr></thead><tbody><tr v-for="skill in registry.skills" :key="skill.id"><td><div class="resource-name"><span class="resource-icon resource-icon--skill"><AppIcon name="spark" :size="14" /></span><div><strong>{{ skill.name }}</strong><small>{{ skill.id }}</small></div></div></td><td class="description-cell">{{ skill.description }}</td><td><span class="version-pill">{{ skill.version }}</span></td><td class="muted-cell">{{ skill.assignedTodos }}</td><td><StatusBadge :label="skill.status === 'core' ? 'Core' : skill.status === 'enabled' ? 'Enabled' : 'Disabled'" :tone="skill.status === 'disabled' ? 'neutral' : skill.status === 'core' ? 'info' : 'success'" /></td><td class="muted-cell">{{ skill.updatedAt }}</td><td><button type="button" class="icon-button icon-button--small" :aria-label="`打开 ${skill.name}`"><AppIcon name="chevron" :size="15" /></button></td></tr></tbody></table>
       </div>
       <div v-else class="table-wrap">
-        <table class="data-table registry-table"><thead><tr><th>Tool</th><th>描述</th><th>可用范围</th><th>Contract</th><th>连接</th><th>延迟</th><th /></tr></thead><tbody><tr v-for="tool in registry.tools" :key="tool.id"><td><div class="resource-name"><span class="resource-icon resource-icon--tool"><AppIcon name="terminal" :size="14" /></span><div><strong>{{ tool.name }}</strong><small>{{ tool.id }}</small></div></div></td><td class="description-cell">{{ tool.description }}</td><td class="muted-cell">{{ tool.scope }}</td><td><span class="version-pill">{{ tool.contract }}</span></td><td><StatusBadge :label="testedTool === tool.id ? '测试中…' : tool.connection === 'connected' ? 'Connected' : tool.connection === 'degraded' ? 'Degraded' : 'Untested'" :tone="testedTool === tool.id ? 'info' : connectionTone(tool.connection)" /></td><td class="mono-cell">{{ tool.latency }}</td><td><button type="button" class="text-button text-button--compact" @click="testConnection(tool.id)">{{ testedTool === tool.id ? '运行中' : '测试连接' }}</button></td></tr></tbody></table>
+        <table class="data-table registry-table"><thead><tr><th>Tool</th><th>描述</th><th>可用范围</th><th>Contract</th><th>连接</th><th>延迟</th><th /></tr></thead><tbody><tr v-for="tool in registry.tools" :key="tool.id"><td><div class="resource-name"><span class="resource-icon resource-icon--tool"><AppIcon name="terminal" :size="14" /></span><div><strong>{{ tool.name }}</strong><small>{{ tool.id }}</small><small v-if="probeDetails[tool.id]" class="table-subtext">{{ probeDetails[tool.id] }}</small></div></div></td><td class="description-cell">{{ tool.description }}</td><td class="muted-cell">{{ tool.scope }}</td><td><span class="version-pill">{{ tool.contract }}</span></td><td><StatusBadge :label="testedTool === tool.id ? '测试中…' : tool.connection === 'connected' ? 'Connected' : tool.connection === 'degraded' ? 'Degraded' : 'Untested'" :tone="testedTool === tool.id ? 'info' : connectionTone(tool.connection)" /></td><td class="mono-cell">{{ tool.latency }}</td><td><button type="button" class="text-button text-button--compact" @click="testConnection(tool.id)">{{ testedTool === tool.id ? '运行中' : '测试连接' }}</button></td></tr></tbody></table>
       </div>
     </section>
 

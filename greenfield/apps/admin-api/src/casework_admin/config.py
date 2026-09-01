@@ -67,6 +67,13 @@ class AdminConfig(_ConfigModel):
     hard_checkpoint_percent: int = Field(default=80, ge=40, le=95)
     max_tool_rounds: int = Field(default=24, ge=1, le=100)
 
+    @model_validator(mode="after")
+    def _independent_subagent_slots(self) -> AdminConfig:
+        slot_ids = tuple(slot.slot_id for slot in self.subagent_slots)
+        if len(slot_ids) != len(set(slot_ids)):
+            raise ValueError("subagent slot ids must be unique")
+        return self
+
 
 class ConfigSnapshot(_ConfigModel):
     revision: str = Field(min_length=1)

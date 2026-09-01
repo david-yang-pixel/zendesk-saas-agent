@@ -114,6 +114,7 @@ async def test_postgres_admin_reads_truthful_job_and_registry_projections(
 
     assert runs.total == 2
     assert {run.ticket_id for run in runs.items} == {3726, 3727}
+    assert all(run.config_revision == "cfg-1" for run in runs.items)
     assert all(run.question is None for run in runs.items)
     assert all(run.todo_completed is None for run in runs.items)
     assert all(run.todo_total is None for run in runs.items)

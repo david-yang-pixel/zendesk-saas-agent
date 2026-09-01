@@ -23,8 +23,10 @@ from casework_admin.read_models import (
     RunListResponse,
     RunRecord,
     SkillRecord,
+    ToolProbe,
     ToolRecord,
 )
+from casework_admin.tool_probes import HttpToolProbe
 
 __all__ = [
     "AdminConfig",
@@ -35,6 +37,7 @@ __all__ = [
     "ConnectionProbeResponse",
     "DashboardMetric",
     "FailureItem",
+    "HttpToolProbe",
     "InMemoryAdminReadRepository",
     "InMemoryConfigRepository",
     "ModelConfig",
@@ -47,5 +50,6 @@ __all__ = [
     "RunRecord",
     "SkillRecord",
     "SubagentSlotConfig",
+    "ToolProbe",
     "ToolRecord",
 ]

@@ -23,6 +23,7 @@ from casework_admin.read_models import (
     RunRecord,
     RunStatus,
     SkillRecord,
+    ToolProbe,
     ToolRecord,
 )
 from casework_persistence.models import CaseJobRow
@@ -101,6 +102,7 @@ def _record(row: CaseJobRow) -> RunRecord:
         subagents=None,
         evidence=None,
         checkpoint=None,
+        config_revision=row.config_revision,
         sandbox="running" if row.status in _ACTIVE else "destroyed",
         outcome=row.status,
     )
@@ -116,8 +118,14 @@ def _configured_ids(value: object) -> tuple[str, ...]:
 class PostgresAdminReadRepository:
     """Project only fields currently persisted; unknown activity stays null."""
 
-    def __init__(self, *, transaction_scope: TransactionScope) -> None:
+    def __init__(
+        self,
+        *,
+        transaction_scope: TransactionScope,
+        tool_probe: ToolProbe | None = None,
+    ) -> None:
         self._transaction_scope = transaction_scope
+        self._tool_probe = tool_probe
 
     async def _jobs(self) -> tuple[CaseJobRow, ...]:
         async with self._transaction_scope() as session:
@@ -229,6 +237,7 @@ class PostgresAdminReadRepository:
                     "subagents",
                     "evidence",
                     "checkpoint",
+                    "config_revision",
                     "sandbox",
                     "outcome",
                 }))
@@ -300,10 +309,22 @@ class PostgresAdminReadRepository:
     async def probe_tool(self, *, tool_id: str) -> ConnectionProbeResponse:
         registry = await self.registry()
         configured = any(tool.id == tool_id for tool in registry.tools)
+        if not configured:
+            return ConnectionProbeResponse(
+                tool_id=tool_id,
+                status="untested",
+                latency_ms=None,
+                error_code="unknown_tool",
+                detail="Tool is not registered",
+            )
+        if self._tool_probe is not None:
+            return await self._tool_probe.probe(tool_id)
         return ConnectionProbeResponse(
             tool_id=tool_id,
-            status="untested" if configured else "degraded",
+            status="untested",
             latency_ms=None,
+            error_code="not_configured",
+            detail="No probe endpoint is configured for this tool",
         )
 
 

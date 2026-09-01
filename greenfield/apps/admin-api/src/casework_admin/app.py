@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 from typing import Protocol
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
 from starlette.types import Lifespan
 
@@ -70,6 +72,19 @@ def create_app(
     reads = read_repository or InMemoryAdminReadRepository()
     service = AdminConfigService(repository=configs)
     app = FastAPI(title="casework-admin", lifespan=lifespan)
+
+    async def validation_error(
+        _request: Request, _error: Exception
+    ) -> JSONResponse:
+        # FastAPI's default 422 serializer includes the invalid ``input``
+        # value.  That is unsafe for a rejected credential accidentally sent
+        # to this boundary, so return only a stable, non-sensitive message.
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "invalid admin configuration"},
+        )
+
+    app.add_exception_handler(RequestValidationError, validation_error)
 
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}

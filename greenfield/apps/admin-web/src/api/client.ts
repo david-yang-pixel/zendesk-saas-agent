@@ -117,11 +117,12 @@ interface ApiRecentRun {
   status_label: string
   started_at: string
   duration: string
-  steps: number
+  steps: number | null
 }
 
 interface ApiRunRecord extends ApiRecentRun {
   session_id: string
+  config_revision: string | null
   question: string | null
   todo_completed: number | null
   todo_total: number | null
@@ -183,6 +184,8 @@ interface ApiConnectionProbe {
   tool_id: string
   status: 'connected' | 'degraded' | 'untested'
   latency_ms: number | null
+  error_code: ConnectionProbe['errorCode']
+  detail: string | null
 }
 
 function toRecentRun(value: ApiRecentRun): RecentRun {
@@ -201,6 +204,7 @@ function toRun(value: ApiRunRecord): RunRecord {
   return {
     ...toRecentRun(value),
     sessionId: value.session_id,
+    configRevision: value.config_revision,
     question: value.question,
     todoCompleted: value.todo_completed,
     todoTotal: value.todo_total,
@@ -376,7 +380,13 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
     },
     async testTool(toolId) {
       const value = await transport.request<ApiConnectionProbe>(`/api/registry/tools/${encodeURIComponent(toolId)}/test`, { method: 'POST' })
-      return { toolId: value.tool_id, status: value.status, latencyMs: value.latency_ms }
+      return {
+        toolId: value.tool_id,
+        status: value.status,
+        latencyMs: value.latency_ms,
+        errorCode: value.error_code,
+        detail: value.detail,
+      }
     },
   }
 }

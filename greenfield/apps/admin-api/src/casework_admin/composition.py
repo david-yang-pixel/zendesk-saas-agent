@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import cast
 
 from fastapi import FastAPI
 
@@ -18,12 +20,39 @@ from casework_admin.postgres_reads import (
     PostgresAdminReadRepository,
     postgres_read_transaction_scope,
 )
+from casework_admin.tool_probes import HttpToolProbe
 from casework_persistence import (
     SCHEMA_HEAD,
     DatabaseReadiness,
     create_engine,
     create_session_factory,
 )
+
+
+def tool_probe_from_environment() -> HttpToolProbe | None:
+    """Build optional HTTPS-only probes without accepting any credential data."""
+    raw = os.environ.get("CASEWORK_TOOL_PROBE_ENDPOINTS", "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            "CASEWORK_TOOL_PROBE_ENDPOINTS must be valid JSON"
+        ) from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("CASEWORK_TOOL_PROBE_ENDPOINTS must map tool ids to URLs")
+    entries = cast(dict[object, object], payload)
+    if not all(
+        isinstance(tool_id, str) and isinstance(endpoint, str)
+        for tool_id, endpoint in entries.items()
+    ):
+        raise RuntimeError("CASEWORK_TOOL_PROBE_ENDPOINTS must map tool ids to URLs")
+    endpoints = {
+        cast(str, tool_id): cast(str, endpoint)
+        for tool_id, endpoint in entries.items()
+    }
+    return HttpToolProbe(endpoints)
 
 
 def create_app() -> FastAPI:
@@ -37,8 +66,10 @@ def create_app() -> FastAPI:
     configs = PostgresConfigRepository(
         gateway_scope=postgres_gateway_scope(sessions)
     )
+    tool_probe = tool_probe_from_environment()
     reads = PostgresAdminReadRepository(
-        transaction_scope=postgres_read_transaction_scope(sessions)
+        transaction_scope=postgres_read_transaction_scope(sessions),
+        tool_probe=tool_probe,
     )
 
     @asynccontextmanager
@@ -49,6 +80,8 @@ def create_app() -> FastAPI:
             await configs.bootstrap(initial=default_config())
             yield
         finally:
+            if tool_probe is not None:
+                await tool_probe.aclose()
             await engine.dispose()
 
     return create_admin_app(
@@ -59,4 +92,4 @@ def create_app() -> FastAPI:
     )
 
 
-__all__ = ["create_app"]
+__all__ = ["create_app", "tool_probe_from_environment"]

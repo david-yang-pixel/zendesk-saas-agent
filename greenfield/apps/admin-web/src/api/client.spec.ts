@@ -100,6 +100,7 @@ describe('Admin API client', () => {
           duration: '1m 0s',
           steps: null,
           session_id: 'session-3726',
+          config_revision: 'cfg-1',
           question: null,
           todo_completed: null,
           todo_total: null,
@@ -116,6 +117,7 @@ describe('Admin API client', () => {
     const result = await createAdminApiClient(transport).getRuns()
 
     expect(result.items[0]).toMatchObject({
+      configRevision: 'cfg-1',
       question: null,
       todoCompleted: null,
       todoTotal: null,
@@ -125,5 +127,28 @@ describe('Admin API client', () => {
       checkpoint: null,
       steps: null,
     })
+  })
+
+  it('maps safe typed tool probe diagnostics without exposing a response body', async () => {
+    const transport = transportFor({
+      '/api/registry/tools/zendesk%2Fticket/test': {
+        tool_id: 'zendesk/ticket',
+        status: 'degraded',
+        latency_ms: 37,
+        error_code: 'unavailable',
+        detail: 'Tool endpoint is unavailable',
+      },
+    })
+
+    const result = await createAdminApiClient(transport).testTool('zendesk/ticket')
+
+    expect(result).toEqual({
+      toolId: 'zendesk/ticket',
+      status: 'degraded',
+      latencyMs: 37,
+      errorCode: 'unavailable',
+      detail: 'Tool endpoint is unavailable',
+    })
+    expect(JSON.stringify(result)).not.toContain('Bearer')
   })
 })

@@ -100,6 +100,32 @@ def test_subagent_requires_an_independent_model_configuration() -> None:
         )
 
 
+def test_subagent_slot_ids_must_be_unique_for_independent_editors() -> None:
+    with pytest.raises(ValueError, match="subagent slot ids"):
+        AdminConfig(
+            root_model=ModelConfig(
+                provider="openai", model="gpt-root", credential_ref="secret/root"
+            ),
+            subagent_slots=(
+                SubagentSlotConfig(
+                    slot_id="investigator",
+                    provider="openai",
+                    model="gpt-child-a",
+                    credential_ref="secret/child-a",
+                ),
+                SubagentSlotConfig(
+                    slot_id="investigator",
+                    provider="openai",
+                    model="gpt-child-b",
+                    credential_ref="secret/child-b",
+                ),
+            ),
+            rules=ProcessingRulesConfig(
+                saas_tag="saas", saas_assignee="saas-support"
+            ),
+        )
+
+
 def test_model_configuration_accepts_references_but_not_raw_secret_material() -> None:
     with pytest.raises(ValueError, match="credential_ref"):
         ModelConfig(provider="openai", model="gpt-root", credential_ref="sk-live-token")

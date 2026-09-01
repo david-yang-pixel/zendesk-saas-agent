@@ -14,7 +14,13 @@ from casework_admin.config import (
     ModelConfig,
     ProcessingRulesConfig,
 )
-from casework_admin.read_models import InMemoryAdminReadRepository, RunRecord
+from casework_admin.read_models import (
+    ConnectionProbeResponse,
+    InMemoryAdminReadRepository,
+    RegistryResponse,
+    RunRecord,
+    ToolRecord,
+)
 
 
 class _Client(Protocol):
@@ -152,7 +158,81 @@ def test_registry_connection_test_is_a_typed_read_only_probe() -> None:
         "tool_id": "sql",
         "status": "untested",
         "latency_ms": None,
+        "error_code": "unknown_tool",
+        "detail": "Tool is not registered",
     }
+
+
+class _Probe:
+    async def probe(self, tool_id: str) -> ConnectionProbeResponse:
+        return ConnectionProbeResponse(
+            tool_id=tool_id,
+            status="connected",
+            latency_ms=12,
+        )
+
+
+def test_registry_connection_test_uses_injected_typed_probe() -> None:
+    reads = InMemoryAdminReadRepository(
+        registry=RegistryResponse(
+            tools=(
+                ToolRecord(
+                    id="sql",
+                    name="SQL",
+                    description="read-only",
+                    scope="root only",
+                    contract="typed",
+                    connection="untested",
+                    latency="—",
+                ),
+            )
+        ),
+        tool_probe=_Probe(),
+    )
+    client = cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                read_repository=reads,
+            )
+        ),
+    )
+
+    response = client.post("/api/registry/tools/sql/test")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "tool_id": "sql",
+        "status": "connected",
+        "latency_ms": 12,
+        "error_code": None,
+        "detail": None,
+    }
+
+
+def test_config_validation_does_not_echo_rejected_credential_material() -> None:
+    client = _client()
+    current = client.get("/api/config").json()
+    secret = "sk-live-should-never-be-returned"
+
+    response = client.put(
+        "/api/config",
+        json={
+            "expected_revision": current["revision"],
+            "config": {
+                **current["config"],
+                "root_model": {
+                    **current["config"]["root_model"],
+                    "credential_ref": secret,
+                },
+            },
+        },
+        headers={"X-Admin-Actor": "operator@example.com"},
+    )
+
+    assert response.status_code == 422
+    assert secret not in response.text
 
 
 def test_admin_api_keeps_unpersisted_run_activity_as_json_null() -> None:

@@ -12,6 +12,7 @@ const unknownRun = {
   duration: '1m 0s',
   steps: null,
   sessionId: 'session-3726',
+  configRevision: null,
   question: null,
   todoCompleted: null,
   todoTotal: null,
@@ -32,7 +33,7 @@ function apiFixture(): AdminApiClient {
     getRuns: async () => ({ items: [unknownRun], total: 1 }),
     getRun: async () => unknownRun,
     getRegistry: async () => ({ skills: [], tools: [] }),
-    testTool: async () => ({ toolId: 'unknown', status: 'untested', latencyMs: null }),
+    testTool: async () => ({ toolId: 'unknown', status: 'untested', latencyMs: null, errorCode: 'unknown_tool' as const, detail: 'Tool is not registered' }),
   }
 }
 
@@ -46,7 +47,9 @@ describe('RunsPage evidence honesty', () => {
 
     await wrapper.get('.run-table-row').trigger('click')
     expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('Evidence 未持久化')
+    expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('Subagents')
     expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('Checkpoint')
     expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('未知（尚未持久化）')
+    expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('Config revision')
   })
 })

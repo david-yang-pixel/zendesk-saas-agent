@@ -155,6 +155,8 @@ export interface ConnectionProbe {
   toolId: string
   status: 'connected' | 'degraded' | 'untested'
   latencyMs: number | null
+  errorCode: 'timeout' | 'unavailable' | 'not_configured' | 'unknown_tool' | null
+  detail: string | null
 }
 
 export interface ProcessingRules {
@@ -189,6 +191,7 @@ export interface ToolRecord {
 
 export interface RunRecord extends RecentRun {
   readonly sessionId: string
+  readonly configRevision: string | null
   readonly question: string | null
   readonly todoCompleted: number | null
   readonly todoTotal: number | null

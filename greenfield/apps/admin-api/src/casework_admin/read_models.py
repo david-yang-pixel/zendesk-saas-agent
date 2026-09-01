@@ -44,6 +44,12 @@ class FailureItem(_ReadModel):
 RunStatus = Literal[
     "running", "awaiting_customer", "completed", "human_takeover", "failed", "cancelled"
 ]
+ProbeDetail = Literal[
+    "Tool connection probe timed out",
+    "Tool endpoint is unavailable",
+    "No probe endpoint is configured for this tool",
+    "Tool is not registered",
+]
 
 
 class RecentRun(_ReadModel):
@@ -58,6 +64,9 @@ class RecentRun(_ReadModel):
 
 class RunRecord(RecentRun):
     session_id: str
+    # The queue snapshot pins each run to an immutable config revision.  Local
+    # fixtures may omit it, so absence remains explicitly unknown.
+    config_revision: str | None = None
     question: str | None = None
     todo_completed: int | None = Field(default=None, ge=0)
     todo_total: int | None = Field(default=None, ge=0)
@@ -113,6 +122,14 @@ class ConnectionProbeResponse(_ReadModel):
     tool_id: str
     status: Literal["connected", "degraded", "untested"]
     latency_ms: int | None = Field(default=None, ge=0)
+    error_code: Literal[
+        "timeout", "unavailable", "not_configured", "unknown_tool"
+    ] | None = None
+    detail: ProbeDetail | None = None
+
+
+class ToolProbe(Protocol):
+    async def probe(self, tool_id: str) -> ConnectionProbeResponse: ...
 
 
 class AdminReadRepository(Protocol):
@@ -146,6 +163,7 @@ class InMemoryAdminReadRepository:
         recent_runs: tuple[RecentRun, ...] = (),
         runs: tuple[RunRecord, ...] = (),
         registry: RegistryResponse | None = None,
+        tool_probe: ToolProbe | None = None,
     ) -> None:
         self._metrics = metrics
         self._queue_health = queue_health
@@ -153,6 +171,7 @@ class InMemoryAdminReadRepository:
         self._recent_runs = recent_runs
         self._runs = runs
         self._registry = registry or RegistryResponse()
+        self._tool_probe = tool_probe
 
     async def overview(
         self,
@@ -198,9 +217,17 @@ class InMemoryAdminReadRepository:
         return self._registry
 
     async def probe_tool(self, *, tool_id: str) -> ConnectionProbeResponse:
+        if self._tool_probe is not None:
+            return await self._tool_probe.probe(tool_id)
         tool = next((item for item in self._registry.tools if item.id == tool_id), None)
         return ConnectionProbeResponse(
             tool_id=tool_id,
             status=tool.connection if tool is not None else "untested",
             latency_ms=None,
+            error_code="not_configured" if tool is not None else "unknown_tool",
+            detail=(
+                "No probe endpoint is configured for this tool"
+                if tool is not None
+                else "Tool is not registered"
+            ),
         )
