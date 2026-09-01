@@ -43,10 +43,10 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-        if not await readiness.check():
-            raise RuntimeError("PostgreSQL schema is not ready")
-        await configs.bootstrap(initial=default_config())
         try:
+            if not await readiness.check():
+                raise RuntimeError("PostgreSQL schema is not ready")
+            await configs.bootstrap(initial=default_config())
             yield
         finally:
             await engine.dispose()
