@@ -35,6 +35,7 @@ def _config(*, root_model: str = "gpt-root") -> AdminConfig:
 
 class _Gateway:
     def __init__(self) -> None:
+        self.bootstrap_revisions: list[str] = []
         self.current_row = ConfigRevisionRow(
             revision="cfg-1",
             config=_config().model_dump(mode="json"),
@@ -52,6 +53,7 @@ class _Gateway:
         config: dict[str, object],
         actor: str,
     ) -> ConfigRevisionRow:
+        self.bootstrap_revisions.append(revision)
         return self.current_row
 
     async def append(
@@ -95,6 +97,19 @@ async def test_postgres_admin_adapter_round_trips_typed_config() -> None:
     assert updated.config.root_model.model == "gpt-root-v2"
     assert updated.actor == "operator@example.com"
     assert updated.revision != current.revision
+
+
+@pytest.mark.asyncio
+async def test_postgres_admin_bootstrap_uses_a_stable_revision() -> None:
+    gateway = _Gateway()
+    repository = PostgresConfigRepository(
+        gateway_scope=lambda: _gateway_scope(gateway)
+    )
+
+    snapshot = await repository.bootstrap(initial=_config())
+
+    assert snapshot.revision == "cfg-1"
+    assert gateway.bootstrap_revisions == ["bootstrap-v1"]
 
 
 @pytest.mark.asyncio

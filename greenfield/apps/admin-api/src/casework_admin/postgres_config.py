@@ -61,7 +61,7 @@ class PostgresConfigRepository:
     async def bootstrap(self, *, initial: AdminConfig) -> ConfigSnapshot:
         async with self._gateway_scope() as revisions:
             row = await revisions.bootstrap(
-                revision=str(uuid4()),
+                revision="bootstrap-v1",
                 config=initial.model_dump(mode="json"),
                 actor="bootstrap",
             )
