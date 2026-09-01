@@ -37,6 +37,14 @@ class SandboxCleanupError(RuntimeError):
     """Raised when a managed sandbox cannot be confirmed destroyed."""
 
 
+class SandboxResourceExhaustedError(RuntimeError):
+    """Raised by an engine when a sandbox cannot continue due to its limits."""
+
+    def __init__(self, error_code: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
 class SandboxEngine(Protocol):
     async def create(
         self, *, image: str, limits: dict[str, int], labels: dict[str, str]
@@ -98,14 +106,20 @@ class SandboxController:
         )
         execution: SandboxExecution
         try:
-            await self._engine.wait_ready(
-                sandbox_id, timeout_seconds=allocation.timeout_seconds
-            )
-            execution = await self._engine.execute(
-                sandbox_id,
-                request=request,
-                timeout_seconds=allocation.timeout_seconds,
-            )
+            try:
+                await self._engine.wait_ready(
+                    sandbox_id, timeout_seconds=allocation.timeout_seconds
+                )
+                execution = await self._engine.execute(
+                    sandbox_id,
+                    request=request,
+                    timeout_seconds=allocation.timeout_seconds,
+                )
+            except SandboxResourceExhaustedError as error:
+                execution = SandboxExecution(
+                    status=SandboxExecutionStatus.RESOURCE_EXHAUSTED,
+                    error_code=error.error_code,
+                )
         finally:
             try:
                 await self._engine.destroy(sandbox_id)

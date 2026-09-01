@@ -9,6 +9,7 @@ from casework_harness.sandbox_controller import (
     SandboxController,
     SandboxExecution,
     SandboxExecutionStatus,
+    SandboxResourceExhaustedError,
 )
 
 
@@ -167,3 +168,33 @@ async def test_cleanup_failure_is_never_reported_as_success() -> None:
 
     with pytest.raises(SandboxCleanupError, match="sandbox-1"):
         await controller.run(start_request())
+
+
+@pytest.mark.asyncio
+async def test_readiness_resource_exhaustion_also_gets_one_retry() -> None:
+    class ReadinessOomEngine(FakeSandboxEngine):
+        def __init__(self) -> None:
+            super().__init__(
+                [
+                    SandboxExecution(
+                        status=SandboxExecutionStatus.SUCCEEDED,
+                        result={"ok": True},
+                    )
+                ]
+            )
+            self.readiness_calls = 0
+
+        async def wait_ready(self, sandbox_id: str, *, timeout_seconds: int) -> None:
+            del sandbox_id, timeout_seconds
+            self.readiness_calls += 1
+            if self.readiness_calls == 1:
+                raise SandboxResourceExhaustedError("container_oom_killed")
+
+    engine = ReadinessOomEngine()
+    controller = SandboxController(engine=engine, image="casework-sandbox:sha")
+
+    result = await controller.run(start_request())
+
+    assert result.status is SandboxExecutionStatus.SUCCEEDED
+    assert result.attempt == 2
+    assert engine.destroyed == ["sandbox-1", "sandbox-2"]
