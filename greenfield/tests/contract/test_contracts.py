@@ -10,6 +10,7 @@ from contracts.outcome import Outcome, OutcomeKind
 from contracts.sandbox import (
     Sandbox,
     SandboxCancelRequest,
+    SandboxHeartbeat,
     SandboxResources,
     SandboxResultMessage,
     SandboxStartRequest,
@@ -17,6 +18,7 @@ from contracts.sandbox import (
 )
 from contracts.session import Session, SessionStatus
 from contracts.subagent import Subagent, SubagentStatus
+from contracts.ticket import ActiveQuestion, TicketMessage, TicketSnapshot
 from contracts.todo import Todo, TodoStatus
 from contracts.tool import ToolResult, ToolResultStatus
 
@@ -199,8 +201,12 @@ def test_event_requires_origin_and_source_and_human_cancel_is_not_a_job() -> Non
 def test_harness_sandbox_protocol_messages_are_typed() -> None:
     start = SandboxStartRequest(
         sandbox_id="sandbox-01",
+        job_id="job-01",
         session_id="session-01",
         ticket_id=1,
+        generation=3,
+        resource_attempt=1,
+        deadline=NOW,
         resources=SandboxResources(),
         config_revision=CONFIG["config_revision"],
         model_digest=CONFIG["model_digest"],
@@ -210,7 +216,13 @@ def test_harness_sandbox_protocol_messages_are_typed() -> None:
     cancel = SandboxCancelRequest(
         sandbox_id=start.sandbox_id,
         session_id=start.session_id,
+        generation=start.generation,
         reason="human takeover",
+    )
+    heartbeat = SandboxHeartbeat(
+        sandbox_id=start.sandbox_id,
+        session_id=start.session_id,
+        observed_at=NOW,
     )
     result = SandboxResultMessage(
         sandbox_id=start.sandbox_id,
@@ -221,10 +233,56 @@ def test_harness_sandbox_protocol_messages_are_typed() -> None:
             ticket_id=1,
             kind=OutcomeKind.ASK,
             question="Which workspace is affected?",
+            reply_locale="en",
+            snapshot_cursor="cursor-01",
+            delivery_eligible=True,
         ),
     )
     assert cancel.reason == "human takeover"
+    assert heartbeat.observed_at == NOW
     assert result.outcome.kind is OutcomeKind.ASK
+
+
+def test_ticket_snapshot_and_active_question_preserve_original_request() -> None:
+    snapshot = TicketSnapshot(
+        ticket_id=3726,
+        status="open",
+        requester_id=99,
+        assignee_id=7,
+        tags=("saas",),
+        form_fields={"environment": "production"},
+        messages=(
+            TicketMessage(
+                event_id="event-original",
+                author_origin="customer",
+                public=True,
+                body="Why did my workflow fail?",
+                created_at=NOW,
+            ),
+            TicketMessage(
+                event_id="event-clarification",
+                author_origin="customer",
+                public=True,
+                body="It is workspace A.",
+                created_at=NOW,
+            ),
+        ),
+        locale="en",
+        latest_customer_cursor="cursor-02",
+        complete=True,
+        fetched_at=NOW,
+    )
+    question = ActiveQuestion(
+        original_event_id="event-original",
+        original_request="Why did my workflow fail?",
+        clarification_event_ids=("event-clarification",),
+        current_facts=("workspace=A",),
+    )
+
+    assert snapshot.messages[-1].body == "It is workspace A."
+    assert question.original_request == "Why did my workflow fail?"
+    with pytest.raises(ValidationError, match="complete"):
+        TicketSnapshot.model_validate({**snapshot.model_dump(), "complete": False})
 
 
 def test_subagent_is_depth_one_and_has_independent_model_configuration() -> None:
@@ -260,6 +318,9 @@ def test_outcome_requires_fields_for_each_disposition() -> None:
         ticket_id=1,
         kind=OutcomeKind.ANSWER,
         answer="The app is configured correctly.",
+        reply_locale="en",
+        snapshot_cursor="cursor-01",
+        delivery_eligible=True,
         evidence_ids=("ev-01",),
     )
     assert answer.kind is OutcomeKind.ANSWER

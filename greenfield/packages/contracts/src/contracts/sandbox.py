@@ -86,13 +86,29 @@ class SandboxStartRequest(ContractModel):
     """Harness-to-sandbox start message with an immutable runtime snapshot."""
 
     sandbox_id: str = Field(min_length=1)
+    job_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     ticket_id: StrictInt = Field(gt=0)
+    generation: StrictInt = Field(ge=1)
+    resource_attempt: StrictInt = Field(ge=1, le=2)
+    deadline: datetime
     resources: SandboxResources = Field(default_factory=SandboxResources)
     config_revision: str = Field(min_length=1)
     model_digest: str = Field(min_length=1)
     skill_digest: str = Field(min_length=1)
     tool_digest: str = Field(min_length=1)
+
+    @field_validator("deadline")
+    @classmethod
+    def _aware_deadline(cls, value: datetime) -> datetime:
+        return require_aware(value, "sandbox start deadline")
+
+    @model_validator(mode="after")
+    def _attempt_matches_resources(self) -> SandboxStartRequest:
+        expected_cpu = 1.0 if self.resource_attempt == 2 else 0.5
+        if self.resources.cpu != expected_cpu:
+            raise ValueError("sandbox start attempt does not match resources")
+        return self
 
 
 class SandboxCancelRequest(ContractModel):
@@ -100,6 +116,7 @@ class SandboxCancelRequest(ContractModel):
 
     sandbox_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    generation: StrictInt = Field(ge=1)
     reason: str = Field(min_length=1)
     requested_at: datetime | None = None
 
@@ -111,6 +128,17 @@ class SandboxCancelRequest(ContractModel):
             if value is None
             else require_aware(value, "sandbox cancel requested_at")
         )
+
+
+class SandboxHeartbeat(ContractModel):
+    sandbox_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    observed_at: datetime
+
+    @field_validator("observed_at")
+    @classmethod
+    def _aware_observed_at(cls, value: datetime) -> datetime:
+        return require_aware(value, "sandbox heartbeat observed_at")
 
 
 class SandboxResultMessage(ContractModel):

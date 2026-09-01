@@ -35,6 +35,7 @@ from contracts.sandbox import (
     Sandbox,
     SandboxCancel,
     SandboxCancelRequest,
+    SandboxHeartbeat,
     SandboxResources,
     SandboxResult,
     SandboxResultMessage,
@@ -57,6 +58,12 @@ from contracts.subagent import (
     SubagentTask,
     SubagentTaskStatus,
 )
+from contracts.ticket import (
+    ActiveQuestion,
+    TicketAttachment,
+    TicketMessage,
+    TicketSnapshot,
+)
 from contracts.todo import Todo, TodoItem, TodoState, TodoStatus
 from contracts.tool import (
     ToolCall,
@@ -68,6 +75,7 @@ from contracts.tool import (
 )
 
 __all__ = [
+    "ActiveQuestion",
     "AgentSession",
     "CaseJob",
     "CaseworkOutcome",
@@ -93,6 +101,7 @@ __all__ = [
     "Sandbox",
     "SandboxCancel",
     "SandboxCancelRequest",
+    "SandboxHeartbeat",
     "SandboxResources",
     "SandboxResult",
     "SandboxResultMessage",
@@ -109,7 +118,10 @@ __all__ = [
     "SubagentStatus",
     "SubagentTask",
     "SubagentTaskStatus",
+    "TicketAttachment",
     "TicketEvent",
+    "TicketMessage",
+    "TicketSnapshot",
     "Todo",
     "TodoItem",
     "TodoState",
