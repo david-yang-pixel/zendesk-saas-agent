@@ -1,6 +1,7 @@
 """PostgreSQL persistence ports for ZendeskCasework."""
 
 from casework_persistence.db import (
+    SCHEMA_HEAD,
     DatabaseReadiness,
     create_engine,
     create_session_factory,
@@ -37,6 +38,7 @@ from casework_persistence.repositories import (
 
 __all__ = [
     "ACTIVE_JOB_STATUSES",
+    "SCHEMA_HEAD",
     "Base",
     "CaseJobRow",
     "CaseworkPersistence",

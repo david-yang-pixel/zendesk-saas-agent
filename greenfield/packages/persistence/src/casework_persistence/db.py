@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+SCHEMA_HEAD = "0003_config_revisions"
+
 
 def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
     """Create a pooled PostgreSQL async engine from configuration."""
@@ -65,6 +67,7 @@ async def session_scope(
 
 
 __all__ = [
+    "SCHEMA_HEAD",
     "DatabaseReadiness",
     "create_engine",
     "create_session_factory",

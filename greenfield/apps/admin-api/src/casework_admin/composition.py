@@ -15,12 +15,11 @@ from casework_admin.postgres_config import (
     postgres_gateway_scope,
 )
 from casework_persistence import (
+    SCHEMA_HEAD,
     DatabaseReadiness,
     create_engine,
     create_session_factory,
 )
-
-SCHEMA_REVISION = "0003_config_revisions"
 
 
 def create_app() -> FastAPI:
@@ -30,7 +29,7 @@ def create_app() -> FastAPI:
 
     engine = create_engine(database_url)
     sessions = create_session_factory(engine)
-    readiness = DatabaseReadiness(sessions, expected_revision=SCHEMA_REVISION)
+    readiness = DatabaseReadiness(sessions, expected_revision=SCHEMA_HEAD)
     configs = PostgresConfigRepository(
         gateway_scope=postgres_gateway_scope(sessions)
     )

@@ -77,6 +77,7 @@ class ProcessingRuleConfig:
 
     saas_tag: str | None
     saas_assignee: str | int | None
+    statuses: tuple[str, ...] = ("new", "open")
     human_aliases: tuple[str, ...] = ()
     # ``human`` remains a fixed keyword; this field allows future configured
     # keywords without changing the ordinary ticket eligibility conditions.
@@ -88,6 +89,10 @@ class ProcessingRuleConfig:
         if self.saas_assignee is None or not _normalise_text(self.saas_assignee):
             raise ValueError("saas_assignee must not be empty")
         object.__setattr__(self, "saas_tag", _normalise_text(self.saas_tag))
+        statuses = tuple(_normalise_text(status) for status in self.statuses)
+        if not statuses or any(status not in _ACTIVE_STATUSES for status in statuses):
+            raise ValueError("statuses must contain only new and open")
+        object.__setattr__(self, "statuses", tuple(dict.fromkeys(statuses)))
         object.__setattr__(
             self, "human_aliases", _normalise_human_strings(self.human_aliases)
         )
@@ -179,7 +184,7 @@ def evaluate_processing_rules(
     if _normalise_text(event.assignee) != _normalise_text(config.saas_assignee):
         return _decision("ignore", event, "saas_assignee_mismatch")
 
-    if event.status not in _ACTIVE_STATUSES:
+    if event.status not in config.statuses:
         return _decision("ignore", event, "status_out_of_scope")
 
     return _decision("enqueue", event, "eligible")

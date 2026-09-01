@@ -12,6 +12,7 @@ from casework_ingress.fakes import (
     InMemoryIdempotency,
     InMemoryJobSink,
 )
+from casework_ingress.ports import AdmissionEvent, AdmissionResult
 from casework_ingress.processing_rules import ProcessingRuleConfig
 
 
@@ -21,6 +22,27 @@ class _TypedTestClient(Protocol):
     def get(self, url: str) -> httpx.Response: ...
 
     def post(self, url: str, *, json: object) -> httpx.Response: ...
+
+
+class _Admission:
+    def __init__(self) -> None:
+        self.events: list[AdmissionEvent] = []
+
+    async def admit(self, event: AdmissionEvent) -> AdmissionResult:
+        self.events.append(event)
+        return AdmissionResult(
+            action="enqueue",
+            reason="eligible",
+            ticket_id=event.normalized.ticket_id,
+        )
+
+
+class _Readiness:
+    def __init__(self, ready: bool) -> None:
+        self.ready = ready
+
+    async def check(self) -> bool:
+        return self.ready
 
 
 def _app() -> tuple[_TypedTestClient, InMemoryJobSink, InMemoryCancelSink]:
@@ -61,6 +83,13 @@ def test_healthz_reports_ingress_ready() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_readyz_fails_closed_without_postgres() -> None:
+    client = cast(_TypedTestClient, TestClient(create_app(readiness=_Readiness(False))))
+
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/readyz").status_code == 503
+
+
 def test_metrics_reports_webhook_decisions_without_ticket_identifiers() -> None:
     client, _, _ = _app()
     client.post("/webhook/zendesk", json=_payload())
@@ -99,6 +128,21 @@ def test_matching_webhook_submits_only_ticket_id_and_event_metadata() -> None:
     assert jobs.submitted[0].ticket_id == 3726
     assert jobs.submitted[0].event_id == "evt-01"
     assert cancellations.cancelled == []
+
+
+def test_durable_admission_owns_the_complete_webhook_transaction() -> None:
+    admission = _Admission()
+    client = cast(
+        _TypedTestClient,
+        TestClient(create_app(admission=admission)),
+    )
+
+    response = client.post("/webhook/zendesk", json=_payload())
+
+    assert response.json()["action"] == "enqueue"
+    assert len(admission.events) == 1
+    assert admission.events[0].event_id == "evt-01"
+    assert admission.events[0].normalized.ticket_id == 3726
 
 
 def test_duplicate_matching_webhook_is_deduplicated_by_event_id() -> None:

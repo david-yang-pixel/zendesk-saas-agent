@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Literal, Protocol
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from starlette.types import Lifespan
 
 from .fakes import InMemoryCancelSink, InMemoryIdempotency, InMemoryJobSink
 from .metrics import IngressMetricsPort, InMemoryIngressMetrics
-from .ports import CancelSink, IdempotencyPort, JobSink
+from .ports import AdmissionEvent, AdmissionPort, CancelSink, IdempotencyPort, JobSink
 from .processing_rules import (
     NormalizedZendeskEvent,
     ProcessingDecision,
@@ -118,6 +120,10 @@ class WebhookResponse(BaseModel):
     ticket_id: int
 
 
+class ReadinessPort(Protocol):
+    async def check(self) -> bool: ...
+
+
 def _response(
     *, action: Action, reason: str, ticket_id: int
 ) -> WebhookResponse:
@@ -130,6 +136,9 @@ def create_app(
     cancel_sink: CancelSink | None = None,
     idempotency: IdempotencyPort | None = None,
     metrics: IngressMetricsPort | None = None,
+    admission: AdmissionPort | None = None,
+    readiness: ReadinessPort | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     """Build the ingress app with injected side-effect destinations.
 
@@ -145,7 +154,7 @@ def create_app(
     event_ids = idempotency or InMemoryIdempotency()
     ingress_metrics = metrics or InMemoryIngressMetrics()
 
-    app = FastAPI(title="casework-ingress")
+    app = FastAPI(title="casework-ingress", lifespan=lifespan)
     app.state.job_sink = jobs
     app.state.cancel_sink = cancellations
     app.state.idempotency = event_ids
@@ -153,6 +162,11 @@ def create_app(
 
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    async def readyz() -> dict[str, str]:
+        if readiness is not None and not await readiness.check():
+            raise HTTPException(status_code=503, detail="postgres_not_ready")
+        return {"status": "ready"}
 
     async def metrics_endpoint() -> PlainTextResponse:
         return PlainTextResponse(
@@ -165,6 +179,20 @@ def create_app(
         return _response(action=action, reason=reason, ticket_id=ticket_id)
 
     async def webhook(payload: ZendeskWebhookPayload) -> WebhookResponse:
+        if admission is not None:
+            admitted = await admission.admit(
+                AdmissionEvent(
+                    event_id=payload.event_id,
+                    received_at=datetime.now(UTC),
+                    normalized=payload.to_normalized_event(),
+                    raw_payload=payload.model_dump(mode="json"),
+                )
+            )
+            return respond(
+                action=admitted.action,
+                reason=admitted.reason,
+                ticket_id=admitted.ticket_id,
+            )
         if not await event_ids.claim(payload.event_id):
             return respond(
                 action="duplicate",
@@ -204,6 +232,7 @@ def create_app(
         )
 
     app.add_api_route("/healthz", healthz, methods=["GET"])
+    app.add_api_route("/readyz", readyz, methods=["GET"])
     app.add_api_route("/metrics", metrics_endpoint, methods=["GET"])
     app.add_api_route(
         WEBHOOK_PATH,
