@@ -40,5 +40,9 @@ ephemeral Sandbox containers. Release manifests render image, source and
 configuration revisions; database credentials remain externally injected.
 
 The Harness forwards only the explicit Sandbox adapter allowlist
-(`ZENDESK_*`, `CASEWORK_MODEL_*`, and `CASEWORK_TOOL_CONFIG`) to each ephemeral
-container. It never forwards `DATABASE_URL` or unrelated process secrets.
+(`ZENDESK_*`, `CASEWORK_MODEL_BASE_URL`, `CASEWORK_TOOL_CONFIG`, and
+`CASEWORK_CREDENTIAL_*`) to each ephemeral container. Model configuration stores
+only credential references. Put the corresponding namespaced values in the
+file selected by `CASEWORK_CREDENTIAL_ENV_FILE`; do not put provider keys in
+the Admin API or release manifest. The Harness never forwards `DATABASE_URL`
+or unrelated process secrets.

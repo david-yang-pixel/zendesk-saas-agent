@@ -61,9 +61,10 @@ services:
       ZENDESK_EMAIL: ${ZENDESK_EMAIL:-unconfigured@example.invalid}
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:-unconfigured}
       CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://example.invalid}
-      CASEWORK_MODEL_API_KEY: ${CASEWORK_MODEL_API_KEY:-unconfigured}
-      CASEWORK_MODEL_NAME: ${CASEWORK_MODEL_NAME:-unconfigured}
       CASEWORK_TOOL_CONFIG: ${CASEWORK_TOOL_CONFIG:-[]}
+    env_file:
+      - path: ${CASEWORK_CREDENTIAL_ENV_FILE:-./credentials.env}
+        required: false
     ports:
       - "8102:8102"
     volumes:
