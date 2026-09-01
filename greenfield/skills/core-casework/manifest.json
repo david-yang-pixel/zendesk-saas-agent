@@ -1,0 +1,9 @@
+{
+  "name": "core-casework",
+  "version": "1.0.0",
+  "description": "Resolve the active customer question and bind every answer to evidence.",
+  "dependencies": [],
+  "compatible_tools": [],
+  "selection_predicates": ["always"],
+  "max_context_tokens": 2000
+}

@@ -1,0 +1,9 @@
+{
+  "name": "app-run-investigation",
+  "version": "1.0.0",
+  "description": "Investigate a Dify application run and its workspace context.",
+  "dependencies": ["core-casework"],
+  "compatible_tools": ["workspace_lookup", "run_lookup"],
+  "selection_predicates": ["ticket mentions an app or run"],
+  "max_context_tokens": 4000
+}
