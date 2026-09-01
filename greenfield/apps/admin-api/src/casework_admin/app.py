@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Protocol
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.staticfiles import StaticFiles
+from starlette.types import Lifespan
 
 from casework_admin.config import (
     AdminConfig,
@@ -38,7 +40,11 @@ class ConfigUpdateRequest(BaseModel):
     config: AdminConfig
 
 
-def _default_config() -> AdminConfig:
+class ReadinessPort(Protocol):
+    async def check(self) -> bool: ...
+
+
+def default_config() -> AdminConfig:
     return AdminConfig(
         desired_state="paused",
         root_model=ModelConfig(
@@ -57,14 +63,21 @@ def _default_config() -> AdminConfig:
 def create_app(
     repository: ConfigRepository | None = None,
     read_repository: AdminReadRepository | None = None,
+    readiness: ReadinessPort | None = None,
+    lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
-    configs = repository or InMemoryConfigRepository(initial=_default_config())
+    configs = repository or InMemoryConfigRepository(initial=default_config())
     reads = read_repository or InMemoryAdminReadRepository()
     service = AdminConfigService(repository=configs)
-    app = FastAPI(title="casework-admin")
+    app = FastAPI(title="casework-admin", lifespan=lifespan)
 
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    async def readyz() -> dict[str, str]:
+        if readiness is not None and not await readiness.check():
+            raise HTTPException(status_code=503, detail="postgres_not_ready")
+        return {"status": "ready"}
 
     async def current_config() -> ConfigSnapshot:
         return await service.current()
@@ -111,6 +124,7 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error)) from error
 
     app.add_api_route("/healthz", healthz, methods=["GET"])
+    app.add_api_route("/readyz", readyz, methods=["GET"])
     app.add_api_route(
         "/api/config", current_config, methods=["GET"], response_model=ConfigSnapshot
     )

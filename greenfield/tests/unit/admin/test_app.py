@@ -26,6 +26,14 @@ class _Client(Protocol):
     ) -> httpx.Response: ...
 
 
+class _Readiness:
+    def __init__(self, ready: bool) -> None:
+        self.ready = ready
+
+    async def check(self) -> bool:
+        return self.ready
+
+
 def _config() -> AdminConfig:
     return AdminConfig(
         desired_state="paused",
@@ -52,6 +60,31 @@ def test_admin_health_and_fixed_policy_are_read_only() -> None:
     assert policy.status_code == 200
     assert policy.json()["attempt_1"]["cpu"] == 0.5
     assert policy.json()["attempt_2"]["cpu"] == 1.0
+
+
+def test_admin_readiness_fails_closed_when_postgres_is_unavailable() -> None:
+    unavailable = cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                readiness=_Readiness(False),
+            )
+        ),
+    )
+    available = cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                readiness=_Readiness(True),
+            )
+        ),
+    )
+
+    assert unavailable.get("/healthz").status_code == 200
+    assert unavailable.get("/readyz").status_code == 503
+    assert available.get("/readyz").json() == {"status": "ready"}
 
 
 def test_config_update_requires_current_revision() -> None:
