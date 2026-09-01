@@ -35,7 +35,8 @@ not a deployment or filesystem editor.
   directories, sessions, model loops, context windows, and explicit model
   configurations.
 - The system has one business Agent type: `ZendeskCasework`. All registered
-  tools are available to root and child Agents.
+  investigation tools are available to root and child Agents. Harness
+  orchestration and final delivery are controller operations, not model tools.
 - System instructions are minimal. Investigation procedures live in
   progressively loaded Skills.
 - `human` is deterministic ingress behavior, not a model decision.
@@ -124,6 +125,38 @@ The ingress-to-harness business payload is intentionally minimal:
 Queue metadata such as `job_id`, `event_id`, timestamps, attempts, and config
 revision is infrastructure metadata and does not expand the Agent input.
 
+Every job freezes a required configuration snapshot: `config_revision`, root
+and child model configuration identifiers, plus model, Skill, and tool registry
+digests. Missing snapshot metadata fails closed before sandbox creation.
+
+### Normalized webhook event
+
+The webhook adapter supplies `event_id`, `ticket_id`, status, assignee, tags,
+message visibility, actor origin, and message text to the pure rule layer. If a
+required field is missing or actor origin is unknown, the event is ignored with
+a typed reason; the rule layer never fetches Zendesk. Repeated `event_id` values
+are idempotent.
+
+Only a public, customer-origin message can trigger processing or `human`.
+Human aliases use Unicode NFKC normalization, trim surrounding whitespace,
+casefold, and exact comparison after removing surrounding Unicode punctuation.
+Agent replies and deterministic footers can never trigger it. `human` creates a
+cancellation command and never a CaseJob. Applying the command atomically
+advances the ticket generation, cancels queued/running work, and fences unsent
+outbox entries for older generations.
+
+### Ticket snapshot and active question
+
+The sandbox fetches an immutable `TicketSnapshot` containing ticket metadata,
+requester, assignee, tags, form fields, all paginated public/internal comments,
+Messaging events, attachment metadata, locale, and latest customer-event
+cursor. An incomplete page, attachment listing, or cursor is a typed fetch
+failure rather than a partial answer.
+
+`ActiveQuestion` binds the original unresolved customer request to later
+clarifications and their event IDs. A clarification changes facts and
+constraints without replacing the original question.
+
 ### Todo
 
 ```json
@@ -140,6 +173,19 @@ revision is infrastructure metadata and does not expand the Agent input.
   "completion_condition": "One exact app is found or ambiguity is proven"
 }
 ```
+
+### Sandbox protocol and outcome
+
+Harness and sandbox communicate only through versioned JSON contracts for
+`StartRun`, `Heartbeat`, `CancelRun`, and `RunResult`; neither application
+imports the other's runtime modules. `StartRun` includes job/session/generation,
+ticket ID, attempt number, frozen config/digests, and deadline.
+
+`RunResult` includes terminal disposition (`answer`, `ask_customer`,
+`human_takeover`, `failed`, or `cancelled`), reply locale/body when applicable,
+snapshot cursor, Todo summary, evidence and artifact references, checkpoint
+reference, retry classification, and delivery eligibility. Hidden model
+reasoning is never included or persisted.
 
 ### Tool result
 
@@ -166,11 +212,29 @@ queued -> claimed -> sandbox_creating -> running -> finalizing
        -> completed | awaiting_customer | human_takeover | failed | cancelled
 ```
 
+The PostgreSQL queue enforces one active generation per ticket and uniqueness
+by `event_id`. Claims use a lease and heartbeat; expired claims are reclaimable.
+Retry count, bounded backoff, terminal dead-letter reason, ticket generation,
+and cancellation generation are durable. A worker acknowledges a job only
+after its terminal record and eligible outbox row commit atomically.
+
 Sandbox:
 
 ```text
 creating -> ready -> running -> destroying -> destroyed
 ```
+
+Attempt `1` always uses `0.5 CPU / 1 GiB`, no extra swap, and a 30-minute
+deadline. Only a typed CPU/memory resource-exhaustion result may create attempt
+`2`, with a new sandbox ID, `1 CPU / 1 GiB`, no extra swap, and a second
+30-minute deadline. All other failures are not resource retries.
+
+The controller creates the container, waits for readiness, monitors heartbeat,
+propagates cancellation, and requests destruction on success, ask, takeover,
+failure, timeout, cancellation, worker crash, and retry. A label-scoped orphan
+sweeper removes only expired casework sandboxes carrying this installation's
+controller/session/job/attempt labels. Destruction failure is durable and
+alertable; it never makes a failed run look successful.
 
 Todo:
 
@@ -199,6 +263,12 @@ It must not treat a clarification answer as a replacement for the original
 active question. It must not ask the customer while an internally executable
 Todo remains.
 
+Each Tool Loop iteration has a versioned request schema, remaining wall-clock
+and token budgets, maximum tool rounds, and explicit termination reason. Tool
+results are validated before entering context; retryable tool failures use a
+bounded per-tool policy. An answer is allowed only when the completion gate
+finds no executable Todo and all claims are evidence-bound.
+
 ## Context Governance
 
 - Soft compaction at 60% of the configured model context window.
@@ -212,6 +282,11 @@ Todo remains.
   structured reports.
 - Before delivery, refetch the latest Zendesk event. A changed event invalidates
   the draft and starts a fresh processing run.
+- A context checkpoint contains active question, exact identifiers and cursors,
+  Todo graph/state, evidence/claim bindings, unresolved contradictions, loaded
+  Skill versions, model/tool budgets, and artifact references. Rebuild validates
+  them before the next model call; an irreducibly over-budget checkpoint fails
+  rather than dropping required evidence.
 
 ## Skills
 
@@ -226,6 +301,29 @@ only when needed:
 - `billing-investigation`
 - `source-release-investigation`
 - `customer-reply`
+
+Every Skill has a versioned manifest with content digest, selection predicates,
+dependencies, compatible tool contracts, and bounded context contribution.
+Load failure is typed; a required Skill blocks the dependent Todo instead of
+being silently omitted. A Subagent receives an explicitly configured slot,
+independent model credentials/name, scoped Todo, separate workdir/session and
+context budget, and returns a bounded evidence-linked report. Child
+cancellation follows the parent run. Child Agents cannot create children.
+
+## Delivery and outbox
+
+Only the Harness controller may create or send a customer reply. An outbox row
+is keyed by ticket generation and snapshot cursor and progresses through
+`pending`, `attempted`, `sent`, `confirmed`, `ambiguous`, or `cancelled`.
+Immediately before send, the controller verifies the latest customer cursor and
+human cancellation fence. A mismatch cancels the draft and schedules a fresh
+generation.
+
+The localized footer is selected from the frozen config revision, uses a
+canonical invisible marker, and is appended exactly once to customer-facing
+`answer` and `ask_customer` bodies. Existing marked footers are replaced, not
+duplicated. Unsupported locales use the configured default locale. Failed,
+cancelled, and takeover outcomes create no customer outbox entry.
 
 ## Management Console
 
@@ -242,6 +340,29 @@ Five top-level pages only:
    evidence, checkpoints, sandbox lifecycle, and outcome.
 
 Host deployment, filesystem paths, and raw system-prompt editing are excluded.
+
+The editable allowlist is limited to desired Agent state, root model,
+independent Subagent slots/models, processing rules and human aliases, localized
+footers/reply enablement, Skill/tool enablement and assignment, bounded Tool
+Loop/context settings, and connection tests. Fixed sandbox resources, run
+snapshots, lifecycle history, evidence, digests, and audit records are read-only.
+Secrets are write-only and masked after save. Every save uses optimistic
+revision checks and creates an auditable configuration revision; rollback
+creates another revision rather than mutating history.
+
+## Image dependency graph
+
+```text
+casework-ingress -> contracts + persistence -> PostgreSQL
+casework-harness -> contracts + persistence -> PostgreSQL + Docker Engine API
+casework-sandbox -> contracts + agent-core + tool-sdk + built-in Skills
+casework-admin -> contracts + persistence -> PostgreSQL
+```
+
+Reverse application imports are forbidden. The sandbox does not access the
+queue or outbox database. Harness never imports sandbox runtime code. A release
+manifest records all four immutable image digests plus the migration revision;
+readiness requires migrations, queue connectivity, and a sandbox launch probe.
 
 ## Code Style
 
@@ -274,6 +395,8 @@ async def submit_ticket(
   delivery -> sandbox deletion, including `human`, timeout, OOM retry, Japanese
   response, duplicate webhook, and new-message invalidation.
 - Browser tests: all five admin pages and the common operator workflows.
+- CI guard: run from `greenfield/`, fail on imports from `zd_agent`, verify the
+  dependency graph, and build each image target independently.
 
 Every behavior change follows RED -> GREEN -> REFACTOR.
 
