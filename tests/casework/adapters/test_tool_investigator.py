@@ -287,6 +287,8 @@ def test_approved_tool_surface_is_explicit_and_write_closed() -> None:
     assert tuple(tool.name for tool in approved) == (
         "official_docs_search",
         "inspector_exec",
+        "sql_query",
+        "signoz_query",
     )
 
 
@@ -786,7 +788,7 @@ def test_cross_join_sql_cannot_claim_one_tenant_from_where_text() -> None:
     assert item.target_value("tenant_id") is None
 
 
-async def test_raw_sql_is_not_exposed_even_when_it_spoofs_tenant_column() -> None:
+async def test_raw_sql_is_exposed_without_current_tenant_binding() -> None:
     registry = ToolRegistry()
     sql = FakeTool(
         "sql_query",
@@ -817,6 +819,16 @@ async def test_raw_sql_is_not_exposed_even_when_it_spoofs_tenant_column() -> Non
                     ),
                 ],
             ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
         ],
     )
     investigator = BoundedToolCaseInvestigator(
@@ -826,10 +838,18 @@ async def test_raw_sql_is_not_exposed_even_when_it_spoofs_tenant_column() -> Non
         clock=FakeClock(),
     )
 
-    with pytest.raises(InvestigationProtocolError, match="not approved"):
-        await investigator.investigate(_context())
+    await investigator.investigate(_context())
 
-    assert sql.calls == []
+    assert sql.calls == [
+        {
+            "database": "prod",
+            "sql": (
+                f"SELECT '{TENANT}' AS tenant_id, b.email "
+                "FROM accounts b WHERE "
+                f"b.tenant_id = '{OTHER_TENANT}'"
+            ),
+        }
+    ]
 
 
 async def test_signoz_traceback_exact_id_is_exposed_and_executes() -> None:
@@ -876,7 +896,7 @@ async def test_signoz_traceback_exact_id_is_exposed_and_executes() -> None:
 
     result = await investigator.investigate(_context())
 
-    assert traceback.calls == [{"id": "log-from-other-tenant", "tenant": TENANT}]
+    assert traceback.calls == [{"id": "log-from-other-tenant"}]
     assert result.proposal.answer_status is AnswerStatus.INSUFFICIENT
     [schema] = provider.calls[0][1] or []
     assert schema.name == "signoz_traceback"
@@ -894,40 +914,23 @@ async def test_signoz_traceback_exact_id_is_exposed_and_executes() -> None:
             "inspector_exec",
             {
                 "type": "object",
-                "properties": {"tenant_id": {"type": "string"}},
-                "required": ["tenant_id"],
+                "properties": {"app_id": {"type": "string"}},
+                "required": ["app_id"],
             },
-            {"tenant_id": TENANT},
+            {"app_id": "app-exact-id"},
         ),
         (
-            "signoz_errors",
+            "signoz_get_trace_details",
             {
                 "type": "object",
-                "properties": {"tenant": {"type": "string"}},
+                "properties": {"traceId": {"type": "string"}},
+                "required": ["traceId"],
             },
-            {"tenant": TENANT},
-        ),
-        (
-            "zendesk_get_ticket",
-            {
-                "type": "object",
-                "properties": {"ticket_id": {"type": "integer"}},
-                "required": ["ticket_id"],
-            },
-            {"ticket_id": 4001},
-        ),
-        (
-            "ticket_record_read",
-            {
-                "type": "object",
-                "properties": {"ticket_id": {"type": "string"}},
-                "required": ["ticket_id"],
-            },
-            {"ticket_id": "4001"},
+            {"traceId": "trace-exact-id"},
         ),
     ],
 )
-async def test_unresolved_identity_blocks_every_tenant_data_capability(
+async def test_unresolved_identity_allows_exact_read_only_queries(
     tool_name: str,
     parameters: dict[str, Any],
     arguments: dict[str, Any],
@@ -946,6 +949,16 @@ async def test_unresolved_identity_blocks_every_tenant_data_capability(
                     ),
                 ],
             ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
         ],
     )
     investigator = BoundedToolCaseInvestigator(
@@ -955,13 +968,12 @@ async def test_unresolved_identity_blocks_every_tenant_data_capability(
         clock=FakeClock(),
     )
 
-    with pytest.raises(InvestigationProtocolError, match="requires resolved identity"):
-        await investigator.investigate(_unresolved_context())
+    await investigator.investigate(_unresolved_context())
 
-    assert tool.calls == []
+    assert tool.calls == [arguments]
 
 
-async def test_resolved_identity_rejects_other_tenant_scope_before_execution() -> None:
+async def test_resolved_identity_allows_other_tenant_scope_for_read_only_lookup() -> None:
     parameters = {
         "type": "object",
         "properties": {"tenant_id": {"type": "string"}},
@@ -981,6 +993,16 @@ async def test_resolved_identity_rejects_other_tenant_scope_before_execution() -
                     ),
                 ],
             ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
         ],
     )
     investigator = BoundedToolCaseInvestigator(
@@ -990,43 +1012,67 @@ async def test_resolved_identity_rejects_other_tenant_scope_before_execution() -
         clock=FakeClock(),
     )
 
-    with pytest.raises(InvestigationProtocolError, match="outside the resolved tenant"):
-        await investigator.investigate(_context())
+    await investigator.investigate(_context())
 
-    assert inspector.calls == []
+    assert inspector.calls == [{"tenant_id": OTHER_TENANT}]
+
+
+async def test_inspector_prefers_exact_app_id_over_tenant_id() -> None:
+    parameters = {
+        "type": "object",
+        "properties": {
+            "tenant_id": {"type": "string"},
+            "app_id": {"type": "string"},
+            "section": {"type": "string"},
+        },
+    }
+    registry = ToolRegistry()
+    inspector = FakeTool("inspector_exec", parameters=parameters)
+    registry.register(inspector)
+    provider = FakeProvider(
+        [
+            _response(
+                calls=[
+                    ToolCallRequest(
+                        id="call-inspector",
+                        name="inspector_exec",
+                        arguments=json.dumps(
+                            {
+                                "tenant_id": TENANT,
+                                "app_id": "app-exact-id",
+                                "section": "runs",
+                            }
+                        ),
+                    ),
+                ],
+            ),
+            _response(
+                content=json.dumps(
+                    {
+                        "answer_status": "insufficient",
+                        "proposed_claims": [],
+                        "proposed_customer_fields": [],
+                        "action_proposal": None,
+                    },
+                ),
+            ),
+        ],
+    )
+    investigator = BoundedToolCaseInvestigator(
+        provider=provider,
+        registry=registry,
+        session=AgentSession(ticket_id=4001),
+        clock=FakeClock(),
+    )
+
+    await investigator.investigate(_context())
+
+    assert inspector.calls == [{"app_id": "app-exact-id", "section": "runs"}]
 
 
 @pytest.mark.parametrize(
     ("tool_name", "parameters", "arguments"),
     [
-        (
-            "inspector_exec",
-            {
-                "type": "object",
-                "properties": {
-                    "email": {"type": "string"},
-                    "section": {"type": "string"},
-                },
-            },
-            {"email": "other-customer@example.test", "section": "tenants"},
-        ),
-        (
-            "inspector_exec",
-            {
-                "type": "object",
-                "properties": {"app_id": {"type": "string"}},
-            },
-            {"app_id": "app-from-another-tenant"},
-        ),
-        (
-            "signoz_get_trace_details",
-            {
-                "type": "object",
-                "properties": {"traceId": {"type": "string"}},
-                "required": ["traceId"],
-            },
-            {"traceId": "trace-from-another-tenant"},
-        ),
         (
             "zendesk_get_ticket",
             {
@@ -1079,7 +1125,7 @@ async def test_resolved_identity_rejects_other_tenant_scope_before_execution() -
         ),
     ],
 )
-async def test_capability_acl_rejects_untrusted_cross_customer_reads_before_execution(
+async def test_capability_acl_rejects_cross_ticket_reads_before_execution(
     tool_name: str,
     parameters: dict[str, Any],
     arguments: dict[str, Any],
@@ -1220,7 +1266,7 @@ async def test_capability_acl_executes_only_trusted_current_case_reads(
     assert tool.calls == [arguments]
 
 
-async def test_signoz_capability_injects_the_code_resolved_tenant() -> None:
+async def test_signoz_capability_does_not_inject_the_resolved_tenant() -> None:
     registry = ToolRegistry()
     aggregate = FakeTool(
         "signoz_aggregate_logs",
@@ -1266,7 +1312,7 @@ async def test_signoz_capability_injects_the_code_resolved_tenant() -> None:
 
     await investigator.investigate(_context())
 
-    assert aggregate.calls == [{"aggregation": "count", "tenant": TENANT}]
+    assert aggregate.calls == [{"aggregation": "count"}]
 
 
 async def test_investigator_fails_closed_on_unexposed_or_write_tool_call() -> None:
@@ -1499,7 +1545,7 @@ async def test_runtime_skill_forces_more_investigation_before_terminal_answer() 
                     ToolCallRequest(
                         id="call-status",
                         name="document_indexing_status",
-                        arguments="{}",
+                        arguments=json.dumps({"tenant_id": TENANT}),
                     ),
                 ],
             ),

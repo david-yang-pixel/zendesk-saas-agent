@@ -31,7 +31,6 @@ from zd_agent.casework.adapters.tool_loop import CaseworkToolLoop, ContinueToolL
 from zd_agent.casework.domain.enums import (
     EvidenceAuthority,
     EvidenceResultStatus,
-    ResolutionStatus,
 )
 from zd_agent.casework.domain.models import (
     CaseContext,
@@ -95,7 +94,6 @@ _APPROVED_HARNESS_WRITES = frozenset(
     }
 )
 _DISABLED_RAW_QUERY_TOOLS: frozenset[str] = frozenset()
-_SCOPED_QUERY_TOOLS = frozenset({"sql_query", "signoz_query"})
 _SAFE_UNRESOLVED_ZENDESK_TOOLS = frozenset(
     {"zendesk_get_article", "zendesk_search_articles"},
 )
@@ -112,6 +110,18 @@ _INSPECTOR_PRIMARY_ARGUMENTS = frozenset(
         "workflow_run_id",
         "id",
     },
+)
+_INSPECTOR_PRIMARY_PRIORITY = (
+    "workflow_run_id",
+    "conversation_id",
+    "document_id",
+    "app_id",
+    "dataset_id",
+    "workflow_id",
+    "id",
+    "account_id",
+    "tenant_id",
+    "email",
 )
 _MAX_CONCURRENT_TOOL_CALLS = 3
 _BOUNDED_PAGINATION_ARGUMENTS = frozenset(
@@ -138,10 +148,6 @@ def approved_read_tools(registry: ToolRegistry) -> tuple[Tool, ...]:
         for tool in registry.list_tools()
         if _approved_name(tool.name)
         and tool.name not in _DISABLED_RAW_QUERY_TOOLS
-        and (
-            tool.name not in _SCOPED_QUERY_TOOLS
-            or getattr(tool, "casework_scope_enforced", False) is True
-        )
         and (not tool.is_write_operation or tool.name in _APPROVED_HARNESS_WRITES)
         and not tool.requires_sandbox
     )
@@ -408,12 +414,28 @@ def _normalize_bounded_pagination_args(
     return normalized
 
 
-def _is_tenant_data_tool(name: str) -> bool:
-    if name in {"document_indexing_status", "inspector_exec", "sql_query"}:
-        return True
-    if name.startswith(("signoz_", "ticket_record_")):
-        return True
-    return name.startswith("zendesk_") and name not in _SAFE_UNRESOLVED_ZENDESK_TOOLS
+def _normalize_inspector_primary_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Keep the most precise Inspector lookup when the model supplies several.
+
+    Inspector itself accepts exactly one primary selector. During drill-down the
+    model may legitimately retain a broad tenant selector while adding an exact
+    app, run, conversation, or document ID. The exact object selector is safer
+    and narrower, so discard the broader selectors instead of aborting the
+    entire investigation.
+    """
+    present = {
+        name
+        for name in _INSPECTOR_PRIMARY_ARGUMENTS
+        if _normalized_string(args, name)
+    }
+    if len(present) <= 1:
+        return args
+    selected = next(name for name in _INSPECTOR_PRIMARY_PRIORITY if name in present)
+    return {
+        name: value
+        for name, value in args.items()
+        if name not in _INSPECTOR_PRIMARY_ARGUMENTS or name == selected
+    }
 
 
 def _deny_current_case_capability(tool_name: str, detail: str) -> None:
@@ -425,68 +447,6 @@ def _deny_current_case_capability(tool_name: str, detail: str) -> None:
 def _normalized_string(args: dict[str, Any], name: str) -> str:
     value = args.get(name)
     return value.strip() if isinstance(value, str) else ""
-
-
-def _validate_explicit_tenant_scope(
-    *,
-    tool_name: str,
-    args: dict[str, Any],
-    resolved_tenant_id: str,
-) -> None:
-    for name in ("tenant_id", "workspace_id", "tenant"):
-        value = _normalized_string(args, name)
-        if value and value.casefold() != resolved_tenant_id.casefold():
-            raise InvestigationProtocolError(
-                f"{tool_name}.{name} is outside the resolved tenant",
-            )
-
-
-def _validate_inspector_capability(
-    *,
-    args: dict[str, Any],
-    context: CaseContext,
-) -> None:
-    primary = tuple(
-        name for name in _INSPECTOR_PRIMARY_ARGUMENTS if _normalized_string(args, name)
-    )
-    if len(primary) != 1:
-        _deny_current_case_capability(
-            "inspector_exec",
-            "exactly one trusted primary lookup is required",
-        )
-    primary_name = primary[0]
-    if primary_name == "tenant_id":
-        return
-    if primary_name == "email":
-        requester = context.ticket.requester_email.strip().casefold()
-        email = _normalized_string(args, "email").casefold()
-        if not requester or email != requester:
-            _deny_current_case_capability(
-                "inspector_exec",
-                "email lookup must equal the current ticket requester",
-            )
-        if _normalized_string(args, "section").casefold() != "tenants":
-            _deny_current_case_capability(
-                "inspector_exec",
-                "requester email lookup is limited to section=tenants",
-            )
-        return
-    _deny_current_case_capability(
-        "inspector_exec",
-        f"{primary_name} is not a trusted identifier in the current case",
-    )
-
-
-def _validate_signoz_capability(
-    *,
-    tool_name: str,
-    args: dict[str, Any],
-) -> None:
-    if not _normalized_string(args, "tenant"):
-        _deny_current_case_capability(
-            tool_name,
-            "SigNoz reads require the resolved tenant filter at execution",
-        )
 
 
 def _validate_zendesk_capability(
@@ -532,24 +492,7 @@ def _validate_tool_capability(
     args: dict[str, Any],
     context: CaseContext,
 ) -> None:
-    identity = context.identity
-    if identity.status is not ResolutionStatus.RESOLVED and _is_tenant_data_tool(
-        tool_name,
-    ):
-        raise InvestigationProtocolError(
-            f"tenant-data tool requires resolved identity: {tool_name}",
-        )
-    if identity.status is ResolutionStatus.RESOLVED:
-        _validate_explicit_tenant_scope(
-            tool_name=tool_name,
-            args=args,
-            resolved_tenant_id=identity.selected_tenant_id,
-        )
-    if tool_name == "inspector_exec":
-        _validate_inspector_capability(args=args, context=context)
-    elif tool_name.startswith("signoz_"):
-        _validate_signoz_capability(tool_name=tool_name, args=args)
-    elif tool_name.startswith("zendesk_"):
+    if tool_name.startswith("zendesk_"):
         _validate_zendesk_capability(
             tool_name=tool_name,
             args=args,
@@ -561,37 +504,6 @@ def _validate_tool_capability(
             args=args,
             current_ticket_id=context.ticket.ticket_id,
         )
-
-
-def _bind_trusted_tool_scope(
-    *,
-    tool_name: str,
-    args: dict[str, Any],
-    parameters: dict[str, Any],
-    context: CaseContext,
-) -> dict[str, Any]:
-    """Inject scope resolved by code instead of asking the model to reproduce it."""
-    if context.identity.status is not ResolutionStatus.RESOLVED:
-        return args
-    raw_properties: object = parameters.get("properties", {})
-    if not isinstance(raw_properties, dict):
-        return args
-    if tool_name.startswith("signoz_") and "tenant" in raw_properties:
-        return (
-            args
-            if _normalized_string(args, "tenant")
-            else {**args, "tenant": context.identity.selected_tenant_id}
-        )
-    if (
-        tool_name in {"document_indexing_status", "sql_query"}
-        and "tenant_id" in raw_properties
-    ):
-        return (
-            args
-            if _normalized_string(args, "tenant_id")
-            else {**args, "tenant_id": context.identity.selected_tenant_id}
-        )
-    return args
 
 
 def _context_payload(context: CaseContext) -> dict[str, Any]:
@@ -787,15 +699,12 @@ class BoundedToolCaseInvestigator:
         validated: dict[str, dict[str, Any]] = {}
         for call in calls:
             tool = self._tools_by_name[call.name]
-            args = _bind_trusted_tool_scope(
-                tool_name=call.name,
-                args=_normalize_bounded_pagination_args(
-                    _arguments(call),
-                    tool.parameters,
-                ),
-                parameters=tool.parameters,
-                context=context,
+            args = _normalize_bounded_pagination_args(
+                _arguments(call),
+                tool.parameters,
             )
+            if call.name == "inspector_exec":
+                args = _normalize_inspector_primary_args(args)
             _validate_schema_value(
                 args,
                 tool.parameters,

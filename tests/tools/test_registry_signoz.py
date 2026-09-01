@@ -1,4 +1,4 @@
-"""Registry exposes only tenant-scoped SigNoz capabilities."""
+"""Registry exposes the complete read-only SigNoz capability surface."""
 
 from zd_agent.casework.adapters.tool_registry import create_casework_tool_registry
 
@@ -29,7 +29,7 @@ def test_structured_signoz_tools_have_remote_schemas():
     assert "tenant" in search_traces.parameters["properties"]
 
 
-def test_global_and_trace_only_signoz_capabilities_are_not_registered():
+def test_global_and_trace_only_signoz_capabilities_are_registered():
     reg = create_casework_tool_registry()
 
     for name in (
@@ -41,13 +41,13 @@ def test_global_and_trace_only_signoz_capabilities_are_not_registered():
         "signoz_get_field_values",
         "signoz_query_metrics",
     ):
-        assert reg.get(name) is None
+        assert reg.get(name) is not None
 
 
-def test_raw_signoz_query_is_registered_only_as_tenant_scoped_wrapper():
+def test_raw_signoz_query_is_registered_without_tenant_wrapper():
     reg = create_casework_tool_registry()
 
     tool = reg.get("signoz_query")
     assert tool is not None
-    assert getattr(tool, "casework_scope_enforced", False) is True
-    assert tool.parameters["required"] == ["tenant", "sql"]
+    assert getattr(tool, "casework_scope_enforced", False) is False
+    assert tool.parameters["required"] == ["sql"]

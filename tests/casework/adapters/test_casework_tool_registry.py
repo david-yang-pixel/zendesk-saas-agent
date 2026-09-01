@@ -12,6 +12,13 @@ def test_casework_registry_exposes_the_complete_safe_business_surface() -> None:
         "signoz_query",
         "github_get_pr",
         "signoz_search_logs",
+        "signoz_services",
+        "signoz_list_services",
+        "signoz_get_trace_details",
+        "signoz_list_metrics",
+        "signoz_get_field_keys",
+        "signoz_get_field_values",
+        "signoz_query_metrics",
         "sql_query",
         "zendesk_get_ticket",
     } <= names
@@ -30,13 +37,6 @@ def test_casework_registry_exposes_the_complete_safe_business_surface() -> None:
         "zendesk_get_user",
         "zendesk_search",
         "ticket_record_search",
-        "signoz_services",
-        "signoz_list_services",
-        "signoz_get_trace_details",
-        "signoz_list_metrics",
-        "signoz_get_field_keys",
-        "signoz_get_field_values",
-        "signoz_query_metrics",
     }.isdisjoint(names)
     assert all(not name.startswith("knowledge_") for name in names)
     assert all(not tool.is_write_operation for tool in registry.list_tools())

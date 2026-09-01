@@ -20,7 +20,8 @@ notes, tags, and plan labels are not customer evidence.
 5. Build an evidence ledger with separate entries for target, current state,
    failing boundary, impact, root cause, and recovery.
 6. Investigate each required hop in order. Use exact object IDs returned by a
-   trusted tenant-scoped tool to narrow later reads.
+   trusted read-only result to narrow later reads, even when the object is not
+   in the workspace initially resolved from the ticket.
 7. Re-read the evidence against the active question before returning terminal
    JSON. A true but adjacent fact is not an answer.
 
@@ -33,8 +34,9 @@ notes, tags, and plan labels are not customer evidence.
 - Historical tickets, docs, and source explain expected behavior; they do not
   prove the current customer path.
 - When a fixed tool cannot answer the question, use `sql_query` or
-  `signoz_query`. They retain full read-only query expressiveness while code binds
-  every source to this ticket's resolved tenant and previously discovered IDs.
+  `signoz_query`. They retain full read-only query expressiveness. Prefer exact
+  identifiers and bounded time windows, and never use unrelated customer data
+  as evidence for the current ticket.
 - Root cause requires both a target-bound failing boundary and an aligned
   mechanism. Otherwise report the bounded boundary and keep root cause unknown.
 - A retry or workaround is recovery evidence only after the affected path is
