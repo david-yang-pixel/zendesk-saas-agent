@@ -9,10 +9,10 @@ from typing import Any
 
 from pydantic import Field
 
-from casework_agent_core.domain import CoreModel
+from contracts._base import ContractModel
 
 
-class SkillManifest(CoreModel):
+class SkillManifest(ContractModel):
     name: str = Field(min_length=1)
     version: str = Field(min_length=1)
     description: str = Field(min_length=1)
@@ -23,7 +23,7 @@ class SkillManifest(CoreModel):
     content_digest: str | None = None
 
 
-class LoadedSkill(CoreModel):
+class LoadedSkill(ContractModel):
     manifest: SkillManifest
     content: str = Field(min_length=1)
 

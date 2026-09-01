@@ -77,6 +77,7 @@ class ToolRegistry:
             raise ToolNotFoundError(name) from error
         if not isinstance(arguments, dict):
             raise ToolExecutionError("tool arguments must be a JSON object")
+        self._validate_arguments(self._definitions[name], arguments)
         try:
             value = handler(dict(arguments), context)
             result = await value if inspect.isawaitable(value) else value
@@ -85,3 +86,51 @@ class ToolRegistry:
             raise
         except Exception as error:
             raise ToolExecutionError(f"tool {name} failed") from error
+
+    @staticmethod
+    def _validate_arguments(
+        definition: ToolDefinition, arguments: dict[str, Any]
+    ) -> None:
+        """Validate the portable JSON-schema subset used by tool manifests."""
+
+        schema = definition.input_schema
+        required = schema.get("required", [])
+        if isinstance(required, list):
+            for name in required:
+                if isinstance(name, str) and name not in arguments:
+                    raise ToolExecutionError(
+                        f"tool {definition.name} requires argument {name}"
+                    )
+        properties = schema.get("properties", {})
+        if not isinstance(properties, dict):
+            return
+        for name, value in arguments.items():
+            expected = properties.get(name)
+            if not isinstance(expected, dict):
+                continue
+            expected_type = expected.get("type")
+            if isinstance(expected_type, str) and not ToolRegistry._matches_type(
+                value, expected_type
+            ):
+                raise ToolExecutionError(
+                    f"tool {definition.name} argument {name} must be "
+                    f"{expected_type}"
+                )
+
+    @staticmethod
+    def _matches_type(value: Any, expected_type: str) -> bool:
+        if expected_type == "string":
+            return isinstance(value, str)
+        if expected_type == "integer":
+            return isinstance(value, int) and not isinstance(value, bool)
+        if expected_type == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if expected_type == "boolean":
+            return isinstance(value, bool)
+        if expected_type == "object":
+            return isinstance(value, dict)
+        if expected_type == "array":
+            return isinstance(value, list)
+        if expected_type == "null":
+            return value is None
+        return True

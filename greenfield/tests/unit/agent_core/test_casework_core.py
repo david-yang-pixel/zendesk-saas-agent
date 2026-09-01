@@ -17,23 +17,23 @@ NOW = datetime.now(UTC)
 def make_snapshot() -> TicketSnapshot:
     return TicketSnapshot(
         ticket_id=3726,
-        subject="Cannot find my workspace",
-        requester_email="customer@example.com",
-        locale="en-US",
         status="open",
-        assignee="SaaS",
+        requester_id=1,
+        assignee_id=2,
         tags=("saas",),
-        comments=(
+        messages=(
             TicketComment(
-                comment_id="c-01",
-                body="Please find the workspace connected to my account.",
-                public=True,
-                author_origin="customer",
-                created_at=NOW,
                 event_id="evt-01",
+                author_origin="customer",
+                public=True,
+                body="Please find the workspace connected to my account.",
+                created_at=NOW,
             ),
         ),
-        latest_customer_event_id="evt-01",
+        locale="en-US",
+        latest_customer_cursor="evt-01",
+        complete=True,
+        fetched_at=NOW,
     )
 
 
@@ -41,8 +41,8 @@ def test_snapshot_resolves_original_question_and_plans_a_dynamic_todo() -> None:
     snapshot = make_snapshot()
 
     question = resolve_active_question(snapshot)
-    assert question.original_text.startswith("Please find")
-    assert question.event_ids == ("evt-01",)
+    assert question.original_request.startswith("Please find")
+    assert question.original_event_id == "evt-01"
 
     plan = TodoPlanner().build(
         snapshot, question, available_tools=("workspace_lookup",)
@@ -77,18 +77,14 @@ def test_evidence_gate_admits_success_and_rejects_answer_without_bound_evidence(
 def test_context_governance_checkpoint_preserves_exact_ids_and_compacts() -> None:
     governance = ContextGovernance(window_tokens=100)
     governance.add("ticket 3726 event evt-01", tokens=70)
-    assert governance.checkpoint(active_question=ActiveQuestion(
-        question_id="q-01",
-        original_text="Find my workspace",
-        event_ids=("evt-01",),
-    )).level == "soft"
+    active_question = ActiveQuestion(
+        original_event_id="evt-01",
+        original_request="Find my workspace",
+    )
+    assert governance.checkpoint(active_question=active_question).level == "soft"
 
     governance.add("large raw output", tokens=20)
-    checkpoint = governance.checkpoint(active_question=ActiveQuestion(
-        question_id="q-01",
-        original_text="Find my workspace",
-        event_ids=("evt-01",),
-    ))
+    checkpoint = governance.checkpoint(active_question=active_question)
     assert checkpoint.level == "hard"
     assert checkpoint.exact_identifiers == ("3726", "evt-01")
-    assert checkpoint.active_question.original_text == "Find my workspace"
+    assert checkpoint.active_question.original_request == "Find my workspace"

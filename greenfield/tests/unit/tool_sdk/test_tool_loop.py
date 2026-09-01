@@ -3,7 +3,11 @@ from datetime import UTC, datetime
 import pytest
 
 from casework_tool_sdk.loop import ToolLoop
-from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
+from casework_tool_sdk.registry import (
+    ToolExecutionContext,
+    ToolExecutionError,
+    ToolRegistry,
+)
 from contracts.tool import ToolDefinition, ToolResult, ToolResultStatus
 
 
@@ -73,3 +77,37 @@ async def test_tool_loop_is_bounded_and_returns_typed_results() -> None:
     assert len(result.results) == 1
     assert result.termination_reason == "max_rounds"
     assert result.results[0].evidence_id == "ev-workspace"
+
+
+@pytest.mark.asyncio
+async def test_registry_validates_required_typed_arguments_before_execution() -> None:
+    registry = ToolRegistry()
+    calls: list[dict[str, object]] = []
+    definition = ToolDefinition(
+        name="typed_lookup",
+        description="Typed lookup",
+        input_schema={
+            "type": "object",
+            "required": ["query"],
+            "properties": {"query": {"type": "string"}},
+        },
+    )
+    async def typed_handler(
+        arguments: dict[str, object], context: ToolExecutionContext
+    ) -> ToolResult:
+        calls.append(arguments)
+        return await FakeLookupTool()(arguments, context)
+
+    registry.register(definition, typed_handler)
+
+    with pytest.raises(ToolExecutionError, match="query"):
+        await registry.execute(
+            "typed_lookup",
+            {},
+            context=ToolExecutionContext(
+                ticket_id=3726,
+                session_id="root-01",
+                root_session_id="root-01",
+            ),
+        )
+    assert calls == []

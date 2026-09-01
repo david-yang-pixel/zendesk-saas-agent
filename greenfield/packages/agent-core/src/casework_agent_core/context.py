@@ -58,6 +58,29 @@ class ContextGovernance:
             summary=summary,
         )
 
+    def rebuild(self, checkpoint: ContextCheckpoint) -> ContextCheckpoint:
+        """Rebuild a bounded context from a validated checkpoint.
+
+        Raw tool payloads are intentionally absent from a checkpoint.  The
+        retained rounds and summary are the only context reintroduced; exact
+        identifiers and the active question are carried separately.
+        """
+
+        self._items = []
+        self._used_tokens = 0
+        if checkpoint.summary:
+            summary_tokens = max(1, len(checkpoint.summary) // 4)
+            if summary_tokens <= self._budget.window_tokens:
+                self._items.append((checkpoint.summary, summary_tokens))
+                self._used_tokens = summary_tokens
+        for text in checkpoint.retained_rounds:
+            tokens = max(1, len(text) // 4)
+            if self._used_tokens + tokens > self._budget.window_tokens:
+                break
+            self._items.append((text, tokens))
+            self._used_tokens += tokens
+        return self.checkpoint(active_question=checkpoint.active_question)
+
     @staticmethod
     def _extract_identifiers(
         texts: list[str], active_question: ActiveQuestion
@@ -74,7 +97,10 @@ class ContextGovernance:
             ticket_id = ticket_ids[0]
             if ticket_id not in found:
                 found.insert(0, ticket_id)
-        for event_id in active_question.event_ids:
+        for event_id in (
+            active_question.original_event_id,
+            *active_question.clarification_event_ids,
+        ):
             if event_id not in found:
                 found.append(event_id)
         return tuple(found)

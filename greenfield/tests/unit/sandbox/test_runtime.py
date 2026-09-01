@@ -38,23 +38,23 @@ async def test_sandbox_runtime_fetches_by_ticket_plans_calls_tool_and_returns_ou
     zendesk = FakeZendesk(
         TicketSnapshot(
             ticket_id=3726,
-            subject="Workspace lookup",
-            requester_email="customer@example.com",
-            locale="en-US",
             status="open",
-            assignee="SaaS",
+            requester_id=1,
+            assignee_id=2,
             tags=("saas",),
-            comments=(
+            messages=(
                 TicketComment(
-                    comment_id="c-01",
-                    body="Which workspace is affected?",
-                    public=True,
-                    author_origin="customer",
-                    created_at=datetime.now(UTC),
                     event_id="evt-3726",
+                    author_origin="customer",
+                    public=True,
+                    body="Which workspace is affected?",
+                    created_at=datetime.now(UTC),
                 ),
             ),
-            latest_customer_event_id="evt-3726",
+            locale="en-US",
+            latest_customer_cursor="evt-3726",
+            complete=True,
+            fetched_at=datetime.now(UTC),
         )
     )
     tools = ToolRegistry()

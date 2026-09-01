@@ -79,15 +79,17 @@ class SandboxAgent:
         context = ContextGovernance(window_tokens=self._context_window_tokens)
         try:
             snapshot = await self._zendesk.fetch_ticket(ticket_id)
+            if snapshot.ticket_id != ticket_id:
+                raise ValueError("Zendesk returned a different ticket snapshot")
             question = resolve_active_question(snapshot)
             context.add(
                 "ticket "
-                f"{snapshot.ticket_id} event {snapshot.latest_customer_event_id}",
+                f"{snapshot.ticket_id} event {snapshot.latest_customer_cursor}",
                 tokens=8,
             )
             context.add(
-                question.original_text,
-                tokens=max(1, len(question.original_text) // 4),
+                question.original_request,
+                tokens=max(1, len(question.original_request) // 4),
             )
             skill = self._skills.load("core-casework")
             plan = await self._model.plan(
@@ -105,7 +107,7 @@ class SandboxAgent:
                 if not task.suggested_tools:
                     break
                 tool_calls.append(
-                    (task.suggested_tools[0], {"query": question.original_text})
+                    (task.suggested_tools[0], {"query": question.original_request})
                 )
                 if len(tool_calls) >= self._max_tool_rounds:
                     break
