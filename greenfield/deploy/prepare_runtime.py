@@ -177,7 +177,6 @@ def _discover_tools(service: McpService, secret: str) -> list[dict[str, object]]
                 "endpoint_url": service.endpoint,
                 "timeout_seconds": 30,
                 "read_only": True,
-                "transport": "mcp",
                 "remote_tool_name": name,
                 "credential_ref": service.credential_ref,
             }

@@ -8,6 +8,8 @@ from typing import Any, cast
 import pytest
 from deploy import configure_runtime, prepare_runtime
 
+from casework_sandbox.composition import SandboxRuntimeConfig
+
 
 def _source_environment(path: Path) -> None:
     values = {
@@ -55,7 +57,6 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
                 "input_schema": {"type": "object"},
                 "endpoint_url": service.endpoint,
                 "read_only": True,
-                "transport": "mcp",
                 "remote_tool_name": f"{service.name}-read",
                 "credential_ref": service.credential_ref,
             }
@@ -81,6 +82,8 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert runtime["CASEWORK_DELIVERY_MODE"] == "dry_run"
     assert runtime["DOCKER_GID"] == str(socket.stat().st_gid)
     assert len(tools) == len(prepare_runtime.READ_ONLY_SERVICES)
+    parsed = SandboxRuntimeConfig.from_env(runtime)
+    assert len(parsed.tool_configs) == len(prepare_runtime.READ_ONLY_SERVICES)
     assert credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] == "openai-secret"
     assert "OPENAI_API_KEY" not in runtime
     assert os.stat(state_dir / "runtime.env").st_mode & 0o777 == 0o600
