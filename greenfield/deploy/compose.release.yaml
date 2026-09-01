@@ -1,0 +1,58 @@
+name: casework-greenfield
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: casework
+      POSTGRES_USER: casework
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - casework-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casework -d casework"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migration:
+    image: ${CASEWORK_HARNESS_IMAGE:?render a release manifest first}
+    command: ["/app/.venv/bin/python", "/app/deploy/migrate.py"]
+    environment: &common-environment
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      CASEWORK_CONFIG_REVISION: ${CASEWORK_CONFIG_REVISION:?set CASEWORK_CONFIG_REVISION}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ingress:
+    image: ${CASEWORK_INGRESS_IMAGE:?render a release manifest first}
+    environment: *common-environment
+    ports: ["8101:8101"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+  harness:
+    image: ${CASEWORK_HARNESS_IMAGE:?render a release manifest first}
+    environment:
+      <<: *common-environment
+      SANDBOX_IMAGE: ${CASEWORK_SANDBOX_IMAGE:?render a release manifest first}
+    ports: ["8102:8102"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+  admin:
+    image: ${CASEWORK_ADMIN_IMAGE:?render a release manifest first}
+    environment: *common-environment
+    ports: ["8104:8104"]
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+volumes:
+  casework-postgres:

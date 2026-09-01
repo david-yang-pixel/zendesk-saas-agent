@@ -20,7 +20,7 @@
 - [x] Implement processing-rule evaluation with tests first.
 - [x] Implement webhook deduplication and minimal `ticket_id` enqueue.
 - [x] Implement deterministic `human` cancellation events.
-- [ ] Add ingress health and metrics endpoints.
+- [x] Add ingress health and metrics endpoints.
 
 Checkpoint: duplicate and nonmatching webhooks cannot start Agent work.
 
@@ -29,7 +29,7 @@ Checkpoint: duplicate and nonmatching webhooks cannot start Agent work.
 - [x] Implement Docker Engine abstraction and fake test engine.
 - [x] Create `0.5 CPU / 1 GiB` ephemeral sandbox for one claimed job.
 - [x] Destroy sandboxes on every terminal and exceptional path.
-- [ ] Implement orphan sweeper and one `1 CPU / 1 GiB` resource retry.
+- [x] Implement orphan sweeper and one `1 CPU / 1 GiB` resource retry.
 
 Checkpoint: lifecycle integration tests prove no terminal sandbox survives.
 
@@ -48,7 +48,7 @@ Checkpoint: webhook -> job -> sandbox -> Todo -> Tool -> outcome -> destroy.
 - [x] Implement Context Governor and checkpoints.
 - [x] Implement progressive Skill registry/loader.
 - [x] Implement Tool manifest, executor and result normalization SDK.
-- [ ] Implement sandbox artifact storage for large outputs.
+- [x] Implement sandbox artifact storage for large outputs.
 
 ## Slice 5: Subagents and memory
 
@@ -77,11 +77,29 @@ Checkpoint: webhook -> job -> sandbox -> Todo -> Tool -> outcome -> destroy.
 - [x] Multi-stage Dockerfile with four image targets.
 - [x] Compose deployment and PostgreSQL migrations job.
 - [x] Per-image readiness and a combined release manifest.
-- [ ] Immutable tag/digest deployment and rollback scripts.
+- [x] Immutable tag/digest deployment and rollback inputs.
 
 ## Slice 9: Replay, canary and cutover
 
-- [ ] Sanitized replay suite for required Zendesk behaviors.
+- [x] Sanitized replay suite for required Zendesk behaviors.
 - [ ] No-write live dry-run.
 - [ ] Explicit-ticket canary.
 - [ ] Cut over ingress while preserving the legacy rollback image.
+
+Implemented but not yet exercised against production: the read-only Zendesk
+snapshot adapter, dry-run delivery mode, explicit-ticket canary fence, digest
+manifest renderer, and release Compose bundle. Production execution remains
+unchecked because it requires separate deployment/write authorization and live
+credentials.
+
+## Slice 10: Production composition
+
+- [ ] Resolve frozen config and credential references inside a sandbox without
+  persisting secret values in job/session records.
+- [ ] Add production root-model and depth-one child-model runners using each
+  slot's explicit provider/model/credential reference.
+- [ ] Register the production investigation Tool adapters and connection
+  probes; keep delivery and orchestration outside the Tool registry.
+- [ ] Compose PostgreSQL ingress, worker, outbox, Admin read models, Docker
+  engine, and orphan sweeper in runnable service factories.
+- [ ] Build all four images with a live Docker daemon and record their digests.

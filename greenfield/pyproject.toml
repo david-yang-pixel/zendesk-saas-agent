@@ -11,6 +11,7 @@ dependencies = [
   "httpx>=0.28,<1",
   "pydantic>=2.11,<3",
   "pydantic-settings>=2.10,<3",
+  "pyyaml>=6.0,<7",
   "sqlalchemy[asyncio]>=2.0,<3",
   "structlog>=25.4,<26",
   "uvicorn[standard]>=0.35,<1",
@@ -42,6 +43,7 @@ pythonpath = [
   "apps/harness/src",
   "apps/sandbox/src",
   "apps/admin-api/src",
+  ".",
 ]
 
 [tool.ruff]
@@ -56,6 +58,7 @@ src = [
   "apps/harness/src",
   "apps/sandbox/src",
   "apps/admin-api/src",
+  "deploy",
   "tests",
 ]
 
@@ -65,7 +68,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-include = ["apps", "packages", "tests"]
+include = ["apps", "deploy/release.py", "packages", "tests"]
 exclude = ["apps/admin-web", "**/__pycache__"]
 extraPaths = [
   "packages/contracts/src",
