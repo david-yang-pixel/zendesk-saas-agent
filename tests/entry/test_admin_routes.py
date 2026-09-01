@@ -337,6 +337,7 @@ def test_admin_config_pages_render_prompt_textareas() -> None:
     assert "openCustomMcpConfig" in app_js
     assert "openMcpManager" in app_js
     assert "zendesk.mention_aliases" in app_js
+    assert "zendesk.saas_group_id" in app_js
     assert "fieldComparableValue" in app_js
     assert "json-textarea" in app_js
     assert "Intake 与等待策略" in app_js

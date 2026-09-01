@@ -1069,3 +1069,117 @@ async def test_pending_ticket_is_outside_automatic_reply_scope(tmp_path) -> None
 
     assert result.action == "status_out_of_scope"
     takeover.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ticket_in_another_group_is_outside_saas_intake_scope(tmp_path) -> None:
+    cfg = _cfg()
+    cfg.zendesk.saas_group_id = 40685275477140
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    takeover = AsyncMock()
+
+    result = await handle_trigger_message(
+        msg={"ticket_id": 12345, "source": "messaging_webhook"},
+        manager=MagicMock(),
+        state=state,
+        cfg=cfg,
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [{"id": "m1", "body": "new detail"}],
+                {
+                    "id": 12345,
+                    "status": "open",
+                    "tags": ["saas"],
+                    "group_id": 999,
+                },
+            )
+        ),
+        human_takeover_fn=takeover,
+    )
+
+    assert result.action == "saas_group_mismatch"
+    assert state.get(12345).last_verdict == "saas_group_mismatch"
+    takeover.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ticket_without_saas_tag_is_outside_saas_intake_scope(tmp_path) -> None:
+    cfg = _cfg()
+    cfg.zendesk.saas_group_id = 40685275477140
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    takeover = AsyncMock()
+
+    result = await handle_trigger_message(
+        msg={"ticket_id": 12345, "source": "messaging_webhook"},
+        manager=MagicMock(),
+        state=state,
+        cfg=cfg,
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [{"id": "m1", "body": "new detail"}],
+                {
+                    "id": 12345,
+                    "status": "new",
+                    "tags": ["production"],
+                    "group_id": 40685275477140,
+                },
+            )
+        ),
+        human_takeover_fn=takeover,
+    )
+
+    assert result.action == "saas_tag_missing"
+    assert state.get(12345).last_verdict == "saas_tag_missing"
+    takeover.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_message_reactivates_restart_retired_eligible_saas_ticket(
+    tmp_path,
+) -> None:
+    cfg = _cfg()
+    cfg.zendesk.saas_group_id = 40685275477140
+    state = TicketStateTracker(tmp_path / "tickets.json")
+    state.set(
+        3726,
+        TicketState(
+            state="out_of_scope",
+            first_seen=datetime(2026, 8, 31, 10, 15, tzinfo=timezone.utc),
+            last_verdict="offline_wait_state_discarded",
+            last_customer_comment_id="old-comment",
+        ),
+    )
+
+    result = await handle_trigger_message(
+        msg={"ticket_id": 3726, "source": "messaging_webhook"},
+        manager=MagicMock(),
+        state=state,
+        cfg=cfg,
+        log_path=tmp_path / "trigger.jsonl",
+        fetch_customer_messages_fn=AsyncMock(
+            return_value=(
+                [
+                    {
+                        "id": "new-comment",
+                        "body": "为什么没有运行日志？",
+                        "created_at": "2026-09-01T04:00:57Z",
+                    }
+                ],
+                {
+                    "id": 3726,
+                    "status": "open",
+                    "tags": ["production", "saas"],
+                    "group_id": 40685275477140,
+                    "assignee_id": None,
+                },
+            )
+        ),
+        human_takeover_fn=AsyncMock(),
+        detect_human_takeover_fn=AsyncMock(return_value=(False, "")),
+    )
+
+    assert result.action == "casework_queued"
+    assert state.get(3726).state == "in_silence_window"
+    assert state.get(3726).last_customer_comment_id == "new-comment"

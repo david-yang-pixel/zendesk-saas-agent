@@ -175,6 +175,12 @@ FIELD_SPECS: tuple[FieldSpec, ...] = (
         input="number",
         restart_required=True,
     ),
+    FieldSpec(
+        "zendesk.saas_group_id",
+        "SaaS 受托组 ID",
+        "触发配置",
+        input="number",
+    ),
     FieldSpec("zendesk.min_ticket_id", "灰度最小工单 ID", "触发配置", input="number"),
     FieldSpec(
         "webhook.signing_secret",

@@ -110,6 +110,7 @@ const FIELD_SECTIONS = {
         "zendesk.mention_aliases",
         "zendesk.mention_poll_interval_seconds",
         "zendesk.agent_user_id",
+        "zendesk.saas_group_id",
         "zendesk.min_ticket_id"
       ]
     },

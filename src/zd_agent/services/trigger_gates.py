@@ -19,9 +19,13 @@ _CUSTOMER_ACTIVITY_SOURCES = {
     "poller_new_msg",
     "intake_backfill",
 }
-_CUSTOMER_WAIT_TIMEOUT_VERDICTS = {
+_RECHECKABLE_OUT_OF_SCOPE_VERDICTS = {
     "customer_response_timeout",
     "form_submission_timeout",
+    "offline_wait_state_discarded",
+    "status_out_of_scope",
+    "saas_tag_missing",
+    "saas_group_mismatch",
 }
 
 
@@ -127,16 +131,15 @@ def handle_trigger_entry_gate(
             action="active_session_processing",
         )
 
-    timed_out_wait_may_have_new_customer_activity = bool(
+    out_of_scope_may_have_new_customer_activity = bool(
         existing_state is not None
         and existing_state.state == "out_of_scope"
-        and existing_state.last_verdict in _CUSTOMER_WAIT_TIMEOUT_VERDICTS
+        and existing_state.last_verdict in _RECHECKABLE_OUT_OF_SCOPE_VERDICTS
         and source in _CUSTOMER_ACTIVITY_SOURCES
     )
     owned_ticket_may_have_new_customer_activity = bool(
         existing_state is not None
-        and existing_state.state
-        in {"escalated_to_human", "owned", "externally_owned"}
+        and existing_state.state in {"escalated_to_human", "owned", "externally_owned"}
         and source in _CUSTOMER_ACTIVITY_SOURCES
     )
     if (
@@ -149,7 +152,7 @@ def handle_trigger_entry_gate(
             "out_of_scope",
         }
         and source != "mention"
-        and not timed_out_wait_may_have_new_customer_activity
+        and not out_of_scope_may_have_new_customer_activity
         and not owned_ticket_may_have_new_customer_activity
     ):
         logger.info(

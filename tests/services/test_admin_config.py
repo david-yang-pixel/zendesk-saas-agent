@@ -43,6 +43,8 @@ def test_schema_contains_editable_model_base_url_and_secret_field(tmp_path) -> N
     assert by_path["zendesk.mention_trigger"]["label"] == "主 @mention 触发词"
     assert by_path["zendesk.mention_aliases"]["input"] == "textarea"
     assert by_path["zendesk.mention_aliases"]["group"] == "触发配置"
+    assert by_path["zendesk.saas_group_id"]["input"] == "number"
+    assert by_path["zendesk.saas_group_id"]["group"] == "触发配置"
     assert by_path["mcp_services.custom"]["input"] == "json"
     assert not any(path.startswith("trigger_decider.") for path in by_path)
     assert not any(path.startswith("skills.") for path in by_path)
@@ -84,7 +86,9 @@ def test_schema_covers_agent_control_plane_settings(tmp_path) -> None:
     assert by_path["intake.post_agent_cooldown_seconds"]["group"] == "触发配置"
 
 
-def test_apply_subagent_slots_persists_api_keys_only_in_secret_storage(tmp_path) -> None:
+def test_apply_subagent_slots_persists_api_keys_only_in_secret_storage(
+    tmp_path,
+) -> None:
     cfg = AppConfig()
     store = AdminConfigStore(tmp_path)
     slots = [

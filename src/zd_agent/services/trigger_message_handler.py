@@ -15,6 +15,7 @@ from zd_agent.services.customer_activity import handle_customer_activity_gate
 from zd_agent.services.direct_dispatch import handle_direct_dispatch_source
 from zd_agent.services.human_takeover_dispatch import handle_human_takeover_dispatch
 from zd_agent.services.mention_comments import fetch_recent_ticket_comments
+from zd_agent.services.ticket_scope import evaluate_saas_ticket_scope
 from zd_agent.services.trigger_gates import handle_trigger_entry_gate
 from zd_agent.services.trigger_errors import TriggerDeferredError
 
@@ -328,30 +329,29 @@ async def handle_trigger_message(
             delay_seconds=30.0,
         )
 
-    ticket_status = str(ticket_info.get("status") or "").strip().casefold()
-    if ticket_status and ticket_status not in {"new", "open"}:
-        from zd_agent.services.trigger_state_machine import (
-            apply_waiting_poller_out_of_scope,
+    scope = evaluate_saas_ticket_scope(
+        ticket_info,
+        saas_group_id=cfg.zendesk.saas_group_id,
+    )
+    if not scope.eligible:
+        _record_ticket_scope_rejection(
+            state=state,
+            ticket_id=ticket_id,
+            reason=scope.reason,
         )
-
-        current = state.get(ticket_id)
-        if current is not None:
-            apply_waiting_poller_out_of_scope(
-                state,
-                ticket_id,
-                reason="status_out_of_scope",
-                expected_revision=current.state_revision,
-                expected_state=current.state,
-            )
         logger.info(
-            "trigger_status_out_of_scope",
+            "trigger_ticket_out_of_scope",
             ticket_id=ticket_id,
             source=source,
-            status=ticket_status,
+            reason=scope.reason,
+            status=str(ticket_info.get("status") or ""),
+            group_id=ticket_info.get("group_id"),
+            has_saas_tag="saas"
+            in {str(tag).strip().casefold() for tag in (ticket_info.get("tags") or [])},
         )
         return TriggerMessageResult(
             True,
-            "status_out_of_scope",
+            scope.reason,
             ticket_id,
             source,
         )
@@ -572,6 +572,38 @@ async def handle_trigger_message(
         ),
     )
     return TriggerMessageResult(True, "casework_queued", ticket_id, source)
+
+
+def _record_ticket_scope_rejection(
+    *,
+    state: Any,
+    ticket_id: int,
+    reason: str,
+) -> None:
+    """Persist a fresh eligibility rejection without trusting stale state."""
+    from datetime import datetime, timezone
+
+    from zd_agent.trigger.state_store import TicketState
+
+    existing = state.get(ticket_id)
+
+    def _retire(current: Any) -> TicketState:
+        if current is None:
+            current = TicketState(
+                state="out_of_scope",
+                first_seen=datetime.now(timezone.utc),
+            )
+        current.state = "out_of_scope"
+        current.last_verdict = reason
+        current.silence_window_end = None
+        current.active_session_id = ""
+        return current
+
+    state.update_if_revision(
+        ticket_id,
+        expected_revision=(existing.state_revision if existing is not None else None),
+        mutate=_retire,
+    )
 
 
 def _silence_event_is_current(*, state: Any, ticket_id: int, msg: dict) -> bool:

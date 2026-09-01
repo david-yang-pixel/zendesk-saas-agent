@@ -189,7 +189,46 @@ def test_customer_activity_can_reopen_a_timeout_expired_wait(
     assert result.action == "continue"
 
 
-def test_real_lifecycle_out_of_scope_still_blocks_customer_webhooks(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "source",
+    [
+        "zendesk_webhook",
+        "messaging_webhook",
+        "poller_new_msg",
+        "intake_backfill",
+    ],
+)
+def test_new_customer_activity_rechecks_a_wait_retired_during_restart(
+    tmp_path,
+    source: str,
+) -> None:
+    state = _state(tmp_path)
+    state.set(
+        3726,
+        TicketState(
+            state="out_of_scope",
+            first_seen=_now(),
+            last_verdict="offline_wait_state_discarded",
+            last_customer_comment_id="old-comment",
+        ),
+    )
+
+    result = handle_trigger_entry_gate(
+        ticket_id=3726,
+        source=source,
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        is_paused_fn=MagicMock(return_value=False),
+    )
+
+    assert result.handled is False
+    assert result.action == "continue"
+
+
+def test_customer_webhook_rechecks_a_ticket_after_status_returns_in_scope(
+    tmp_path,
+) -> None:
     state = _state(tmp_path)
     state.set(
         9999,
@@ -203,6 +242,30 @@ def test_real_lifecycle_out_of_scope_still_blocks_customer_webhooks(tmp_path) ->
     result = handle_trigger_entry_gate(
         ticket_id=9999,
         source="zendesk_webhook",
+        state=state,
+        log_path=tmp_path / "trigger.jsonl",
+        cfg=_cfg(),
+        is_paused_fn=MagicMock(return_value=False),
+    )
+
+    assert result.handled is False
+    assert result.action == "continue"
+
+
+def test_non_customer_trigger_still_respects_status_out_of_scope(tmp_path) -> None:
+    state = _state(tmp_path)
+    state.set(
+        9999,
+        TicketState(
+            state="out_of_scope",
+            first_seen=_now(),
+            last_verdict="status_out_of_scope",
+        ),
+    )
+
+    result = handle_trigger_entry_gate(
+        ticket_id=9999,
+        source="waiting_poller",
         state=state,
         log_path=tmp_path / "trigger.jsonl",
         cfg=_cfg(),
