@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from casework_harness.delivery import DeliveryDisposition, DeliveryResult
 from casework_harness.worker import (
     HarnessWorker,
     JobLease,
@@ -54,6 +55,18 @@ class FakeDelivery:
 
     async def deliver(self, outcome: Outcome, generation: int) -> None:
         self.delivered.append((outcome, generation))
+
+
+@dataclass
+class FailedDelivery:
+    async def deliver(
+        self, outcome: Outcome, generation: int
+    ) -> DeliveryResult:
+        return DeliveryResult(
+            disposition=DeliveryDisposition.FAILED,
+            ticket_id=outcome.ticket_id,
+            reason="live_sender_not_ready",
+        )
 
 
 def _lease() -> JobLease:
@@ -122,6 +135,20 @@ async def test_worker_maps_ask_to_awaiting_customer() -> None:
     await worker.process_once()
 
     assert jobs.finished == ["awaiting_customer"]
+
+
+@pytest.mark.asyncio
+async def test_worker_finalizes_failed_delivery_as_failed_job() -> None:
+    jobs = FakeJobs(_lease())
+    worker = HarnessWorker(
+        jobs=jobs,
+        sandboxes=FakeSandboxRuns(_answer()),
+        delivery=FailedDelivery(),
+    )
+
+    await worker.process_once()
+
+    assert jobs.finished == ["failed"]
 
 
 @pytest.mark.asyncio

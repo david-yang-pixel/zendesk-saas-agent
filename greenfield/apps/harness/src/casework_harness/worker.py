@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
+from casework_harness.delivery import DeliveryDisposition, DeliveryResult
 from contracts.outcome import Outcome, OutcomeKind
 
 
@@ -80,7 +81,9 @@ class SandboxRunPort(Protocol):
 
 
 class OutcomeDeliveryPort(Protocol):
-    async def deliver(self, outcome: Outcome, generation: int) -> None: ...
+    async def deliver(
+        self, outcome: Outcome, generation: int
+    ) -> DeliveryResult | None: ...
 
 
 class HarnessWorker:
@@ -114,7 +117,15 @@ class HarnessWorker:
             self._validate_outcome(lease, outcome)
             await self._jobs.transition(lease, "finalizing")
             if outcome.delivery_eligible:
-                await self._delivery.deliver(outcome, lease.generation)
+                delivery_result = await self._delivery.deliver(
+                    outcome, lease.generation
+                )
+                if delivery_result is not None:
+                    terminal_status = self._delivery_terminal_status(
+                        delivery_result, outcome.kind
+                    )
+                    await self._jobs.finish(lease, terminal_status)
+                    return True
             await self._jobs.finish(lease, self._terminal_status(outcome.kind))
         except Exception:
             await self._jobs.finish(lease, "failed")
@@ -156,3 +167,19 @@ class HarnessWorker:
             OutcomeKind.FAILED: "failed",
             OutcomeKind.CANCELLED: "cancelled",
         }[kind]
+
+    @staticmethod
+    def _delivery_terminal_status(
+        result: DeliveryResult, outcome_kind: OutcomeKind
+    ) -> str:
+        if result.disposition in {
+            DeliveryDisposition.SENT,
+            DeliveryDisposition.DRY_RUN,
+            DeliveryDisposition.DEDUPLICATED,
+        }:
+            return HarnessWorker._terminal_status(outcome_kind)
+        if result.disposition is DeliveryDisposition.FENCED:
+            return "human_takeover"
+        if result.disposition is DeliveryDisposition.STALE:
+            return "cancelled"
+        return "failed"

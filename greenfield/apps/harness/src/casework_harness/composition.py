@@ -7,18 +7,29 @@ import os
 import socket
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 import docker
 import structlog
 from fastapi import FastAPI
 
+from casework_harness.delivery import (
+    ControllerDeliveryAdapter,
+    DeliveryController,
+    DeliveryMode,
+    DeliveryPolicy,
+    PostgresDeliveryAdapter,
+    UnavailableZendeskReplySender,
+    parse_delivery_mode,
+    postgres_delivery_transaction_scope,
+)
 from casework_harness.docker_engine import (
     DockerClientPort,
     DockerSandboxEngine,
     DockerSandboxOrphanSweeper,
     HttpxSandboxHttp,
 )
+from casework_harness.footer import FooterCatalog
 from casework_harness.postgres_queue import (
     PostgresJobQueue,
     postgres_job_gateway_scope,
@@ -33,7 +44,6 @@ from casework_persistence import (
     create_engine,
     create_session_factory,
 )
-from contracts.outcome import Outcome
 
 _LOG = structlog.get_logger(__name__)
 
@@ -44,34 +54,34 @@ class _LifecycleDockerClient(DockerClientPort, Protocol):
     def close(self) -> None: ...
 
 
-class _DryRunDelivery:
-    """Safe composition default: validate the run without external Zendesk writes."""
+class _DatabaseReadinessPort(Protocol):
+    async def check(self) -> bool: ...
 
-    async def deliver(self, outcome: Outcome, generation: int) -> None:
-        await _LOG.ainfo(
-            "delivery_dry_run",
-            ticket_id=outcome.ticket_id,
-            session_id=outcome.session_id,
-            generation=generation,
-        )
+
+class _DockerReadinessPort(Protocol):
+    def ping(self) -> bool: ...
 
 
 class _HarnessReadiness:
     def __init__(
         self,
         *,
-        database: DatabaseReadiness,
-        docker_client: _LifecycleDockerClient,
+        database: _DatabaseReadinessPort,
+        docker_client: _DockerReadinessPort,
+        delivery_ready: bool,
     ) -> None:
         self._database = database
         self._docker_client = docker_client
+        self._delivery_ready = delivery_ready
         self._tasks: tuple[asyncio.Task[None], ...] = ()
 
-    def attach_tasks(self, *tasks: asyncio.Task[None]) -> None:
+    def attach_tasks(self, *tasks: asyncio.Task[Any]) -> None:
         self._tasks = tuple(tasks)
 
     async def check(self) -> bool:
         if not self._tasks or any(task.done() for task in self._tasks):
+            return False
+        if not self._delivery_ready:
             return False
         if not await self._database.check():
             return False
@@ -123,6 +133,15 @@ def create_app() -> FastAPI:
     sandbox_image = os.environ.get("SANDBOX_IMAGE", "").strip()
     if not sandbox_image:
         raise RuntimeError("SANDBOX_IMAGE is required for production Harness")
+    try:
+        delivery_mode = parse_delivery_mode(
+            os.environ.get("CASEWORK_DELIVERY_MODE")
+        )
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    canary_ticket_ids = _canary_ticket_ids(
+        os.environ.get("CASEWORK_CANARY_TICKET_IDS")
+    )
 
     installation_id = os.environ.get(
         "CASEWORK_INSTALLATION_ID", "casework-greenfield"
@@ -150,10 +169,30 @@ def create_app() -> FastAPI:
         gateway_scope=postgres_job_gateway_scope(sessions),
         worker_id=controller_id,
     )
+    delivery_adapter = PostgresDeliveryAdapter(
+        transaction_scope=postgres_delivery_transaction_scope(sessions)
+    )
+    delivery_controller = DeliveryController(
+        freshness=delivery_adapter,
+        outbox=delivery_adapter,
+        sender=UnavailableZendeskReplySender(),
+        footer_catalog=FooterCatalog(
+            default_locale=os.environ.get("CASEWORK_DEFAULT_LOCALE", "en-US"),
+            footers={
+                "en-US": "This reply was sent by Dify AI Agent.",
+                "zh-CN": "此回复由 Dify AI Agent 发送。",
+                "ja-JP": "この返信は Dify AI Agent によって送信されました。",
+            },
+        ),
+        policy=DeliveryPolicy(
+            mode=delivery_mode,
+            canary_ticket_ids=frozenset(canary_ticket_ids),
+        ),
+    )
     worker = HarnessWorker(
         jobs=jobs,
         sandboxes=ControllerSandboxRunner(controller=controller),
-        delivery=_DryRunDelivery(),
+        delivery=ControllerDeliveryAdapter(delivery_controller),
     )
     sweeper = DockerSandboxOrphanSweeper(
         client=docker_client,
@@ -163,6 +202,11 @@ def create_app() -> FastAPI:
     readiness = _HarnessReadiness(
         database=database,
         docker_client=docker_client,
+        # No live Zendesk client is shipped yet.  Only the explicitly safe
+        # dry-run mode is ready; canary is also fail-closed until a real
+        # sender is configured, even though the controller itself never
+        # writes in canary mode.
+        delivery_ready=delivery_mode is DeliveryMode.DRY_RUN,
     )
 
     @asynccontextmanager
@@ -185,4 +229,21 @@ def create_app() -> FastAPI:
     return create_harness_app(readiness=readiness, lifespan=lifespan)
 
 
-__all__ = ["create_app"]
+def _canary_ticket_ids(value: str | None) -> tuple[int, ...]:
+    if not value or not value.strip():
+        return ()
+    try:
+        ticket_ids = tuple(int(item.strip()) for item in value.split(","))
+    except ValueError as error:
+        raise RuntimeError(
+            "CASEWORK_CANARY_TICKET_IDS must be comma-separated integers"
+        ) from error
+    if any(ticket_id <= 0 for ticket_id in ticket_ids):
+        raise RuntimeError("CASEWORK_CANARY_TICKET_IDS must be positive")
+    return ticket_ids
+
+
+HarnessReadiness = _HarnessReadiness
+
+
+__all__ = ["HarnessReadiness", "create_app"]

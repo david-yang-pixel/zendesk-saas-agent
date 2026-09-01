@@ -12,6 +12,8 @@ from casework_harness.delivery import (
     DeliveryMode,
     DeliveryPolicy,
     DeliveryRequest,
+    UnavailableZendeskReplySender,
+    parse_delivery_mode,
 )
 from casework_harness.footer import (
     CANONICAL_FOOTER_MARKER,
@@ -103,6 +105,15 @@ def test_unsupported_locale_falls_back_to_configured_default() -> None:
     assert rendered.endswith("This reply was sent by Dify AI Agent.")
 
 
+def test_delivery_defaults_to_dry_run_and_mode_parser_is_explicit() -> None:
+    assert DeliveryPolicy().mode is DeliveryMode.DRY_RUN
+    assert parse_delivery_mode(None) is DeliveryMode.DRY_RUN
+    assert parse_delivery_mode("live") is DeliveryMode.LIVE
+    assert parse_delivery_mode("dry-run") is DeliveryMode.DRY_RUN
+    with pytest.raises(ValueError, match="delivery mode"):
+        parse_delivery_mode("send-everything")
+
+
 @dataclass
 class FakeFreshness:
     generation: int = 7
@@ -128,6 +139,7 @@ class FakeOutboxEntry:
     ticket_id: int
     generation: int
     cursor: str
+    locale: str
     body: str
     idempotency_key: str
     status: str = "pending"
@@ -147,6 +159,7 @@ class FakeOutbox:
         ticket_id: int,
         generation: int,
         cursor: str,
+        locale: str,
         body: str,
         idempotency_key: str,
     ) -> FakeOutboxEntry:
@@ -157,15 +170,22 @@ class FakeOutbox:
                 ticket_id=ticket_id,
                 generation=generation,
                 cursor=cursor,
+                locale=locale,
                 body=body,
                 idempotency_key=idempotency_key,
             )
             self.entries[key] = entry
         return entry
 
-    async def claim(self, *, key: str, generation: int, cursor: str) -> bool:
+    async def claim(
+        self, *, key: str, ticket_id: int, generation: int, cursor: str
+    ) -> bool:
         entry = self.entries[key]
-        if entry.generation != generation or entry.cursor != cursor:
+        if (
+            entry.ticket_id != ticket_id
+            or entry.generation != generation
+            or entry.cursor != cursor
+        ):
             return False
         if entry.status != "pending" or key in self.claimed:
             return False
@@ -180,6 +200,7 @@ class FakeOutbox:
             ticket_id=entry.ticket_id,
             generation=entry.generation,
             cursor=entry.cursor,
+            locale=entry.locale,
             body=entry.body,
             idempotency_key=entry.idempotency_key,
             status="sent",
@@ -187,6 +208,19 @@ class FakeOutbox:
 
     async def cancel(self, *, key: str, reason: str) -> None:
         self.cancelled.append(f"{key}:{reason}")
+
+    async def mark_ambiguous(self, *, key: str) -> None:
+        entry = self.entries[key]
+        self.entries[key] = FakeOutboxEntry(
+            key=entry.key,
+            ticket_id=entry.ticket_id,
+            generation=entry.generation,
+            cursor=entry.cursor,
+            locale=entry.locale,
+            body=entry.body,
+            idempotency_key=entry.idempotency_key,
+            status="ambiguous",
+        )
 
 
 @dataclass
@@ -233,6 +267,7 @@ async def test_answer_delivery_adds_japanese_footer_and_is_idempotent() -> None:
         outbox=outbox,
         sender=sender,
         footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
     )
     request = _request()
 
@@ -273,6 +308,24 @@ async def test_dry_run_renders_reply_without_outbox_or_zendesk_write() -> None:
 
 
 @pytest.mark.asyncio
+async def test_live_without_sender_fails_closed_before_creating_outbox() -> None:
+    outbox = FakeOutbox()
+    controller = DeliveryController(
+        freshness=FakeFreshness(),
+        outbox=outbox,
+        sender=UnavailableZendeskReplySender(),
+        footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
+    )
+
+    result = await controller.deliver(_request())
+
+    assert result.disposition is DeliveryDisposition.FAILED
+    assert result.reason == "live_sender_not_ready"
+    assert outbox.entries == {}
+
+
+@pytest.mark.asyncio
 async def test_canary_mode_allows_only_explicit_ticket_ids() -> None:
     blocked_outbox = FakeOutbox()
     blocked_sender = FakeSender()
@@ -308,8 +361,9 @@ async def test_canary_mode_allows_only_explicit_ticket_ids() -> None:
 
     allowed_result = await allowed.deliver(_request())
 
-    assert allowed_result.disposition is DeliveryDisposition.SENT
-    assert len(allowed_sender.sent) == 1
+    assert allowed_result.disposition is DeliveryDisposition.DRY_RUN
+    assert allowed_result.reason == "canary_no_write"
+    assert allowed_sender.sent == []
 
 
 @pytest.mark.asyncio
@@ -322,6 +376,7 @@ async def test_new_customer_message_invalidates_draft_before_outbox_creation() -
         outbox=outbox,
         sender=sender,
         footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
     )
 
     result = await controller.deliver(_request(cursor="customer-01"))
@@ -376,6 +431,7 @@ async def test_human_generation_fence_wins_when_human_arrives_concurrently() -> 
         outbox=outbox,
         sender=sender,
         footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
     )
 
     async def human_event() -> None:
@@ -424,6 +480,7 @@ async def test_concurrent_delivery_claims_only_one_outbox_send() -> None:
         outbox=outbox,
         sender=sender,
         footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
     )
 
     results = await asyncio.gather(

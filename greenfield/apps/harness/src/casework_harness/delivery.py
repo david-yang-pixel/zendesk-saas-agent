@@ -9,10 +9,22 @@ reject the claim before the Zendesk send.
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, cast
+from hashlib import sha256
+from typing import Any, Protocol, cast
 
+from sqlalchemy import desc, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from casework_persistence.models import EventRecord, OutboxMessage, TicketState
+from casework_persistence.repositories import (
+    OutboxDraft,
+    OutboxRepository,
+    SessionPort,
+)
 from contracts.outcome import Outcome, OutcomeKind
 
 from .footer import FooterCatalog, append_localized_footer
@@ -36,7 +48,7 @@ class DeliveryMode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class DeliveryPolicy:
-    mode: DeliveryMode = DeliveryMode.LIVE
+    mode: DeliveryMode = DeliveryMode.DRY_RUN
     canary_ticket_ids: frozenset[int] = frozenset()
 
     def __post_init__(self) -> None:
@@ -113,11 +125,14 @@ class DeliveryOutboxPort(Protocol):
         ticket_id: int,
         generation: int,
         cursor: str,
+        locale: str,
         body: str,
         idempotency_key: str,
     ) -> object: ...
 
-    async def claim(self, *, key: str, generation: int, cursor: str) -> bool: ...
+    async def claim(
+        self, *, key: str, ticket_id: int, generation: int, cursor: str
+    ) -> bool: ...
 
     async def cancel(self, *, key: str, reason: str) -> None: ...
 
@@ -148,6 +163,28 @@ def _freshness(value: TicketFreshness | tuple[int, str]) -> TicketFreshness:
 def _entry_status(entry: object) -> str:
     status = getattr(entry, "status", "pending")
     return getattr(status, "value", str(status)).casefold()
+
+
+class DeliveryUnavailableError(RuntimeError):
+    """Raised when live delivery was requested without a real sender client."""
+
+
+class UnavailableZendeskReplySender:
+    """Fail-closed placeholder until a real Zendesk sender is configured.
+
+    This class deliberately performs no network operation.  It lets the
+    production composition expose an unhealthy readiness state while keeping
+    accidental live writes impossible.
+    """
+
+    ready = False
+
+    async def send_reply(
+        self, *, ticket_id: int, body: str, idempotency_key: str
+    ) -> object:
+        raise DeliveryUnavailableError(
+            "live Zendesk sender is not configured; no customer write performed"
+        )
 
 
 class DeliveryController:
@@ -201,6 +238,15 @@ class DeliveryController:
                 ticket_id=ticket_id,
                 reason="ticket_not_in_canary_allowlist",
             )
+        if (
+            self._policy.mode is DeliveryMode.LIVE
+            and getattr(self._sender, "ready", True) is False
+        ):
+            return DeliveryResult(
+                disposition=DeliveryDisposition.FAILED,
+                ticket_id=ticket_id,
+                reason="live_sender_not_ready",
+            )
 
         # Eligible outcomes carry the source-of-truth metadata.  The request
         # wrapper may omit duplicate values, but may never override them.
@@ -232,6 +278,13 @@ class DeliveryController:
                 reason="dry_run_no_write",
                 body=rendered,
             )
+        if self._policy.mode is DeliveryMode.CANARY:
+            return DeliveryResult(
+                disposition=DeliveryDisposition.DRY_RUN,
+                ticket_id=ticket_id,
+                reason="canary_no_write",
+                body=rendered,
+            )
         outbox_key = self._outbox_key(
             ticket_id=ticket_id,
             generation=request.generation,
@@ -243,6 +296,7 @@ class DeliveryController:
             ticket_id=ticket_id,
             generation=request.generation,
             cursor=snapshot_cursor,
+            locale=locale,
             body=rendered,
             idempotency_key=idempotency_key,
         )
@@ -275,6 +329,7 @@ class DeliveryController:
 
         claimed = await self._outbox.claim(
             key=outbox_key,
+            ticket_id=ticket_id,
             generation=request.generation,
             cursor=snapshot_cursor,
         )
@@ -371,16 +426,208 @@ class DeliveryController:
     def _outbox_key(
         *, ticket_id: int, generation: int, snapshot_cursor: str
     ) -> str:
-        return (
-            f"ticket:{ticket_id}:generation:{generation}:cursor:{snapshot_cursor}"
+        material = f"{ticket_id}:{generation}:{snapshot_cursor}".encode()
+        digest = sha256(material).hexdigest()
+        return f"ticket:{ticket_id}:generation:{generation}:cursor-sha256:{digest}"
+
+
+DeliveryTransactionScope = Callable[
+    [], AbstractAsyncContextManager[SessionPort]
+]
+
+
+def postgres_delivery_transaction_scope(
+    sessions: async_sessionmaker[AsyncSession],
+) -> DeliveryTransactionScope:
+    """Create a transaction scope for durable freshness and outbox writes."""
+
+    @asynccontextmanager
+    async def scope() -> AsyncGenerator[SessionPort, None]:
+        async with sessions() as session, session.begin():
+            yield cast(SessionPort, session)
+
+    return scope
+
+
+def parse_delivery_mode(value: str | None) -> DeliveryMode:
+    """Parse the explicit deployment mode, defaulting safely to dry-run."""
+
+    raw = (value or DeliveryMode.DRY_RUN.value).strip().casefold().replace("-", "_")
+    try:
+        return DeliveryMode(raw)
+    except ValueError as error:
+        raise ValueError(
+            "delivery mode must be one of: dry_run, live, canary"
+        ) from error
+
+
+class PostgresDeliveryAdapter:
+    """Durable freshness fence and transactional outbox adapter.
+
+    Every operation runs inside the injected PostgreSQL transaction scope.  A
+    claim locks the ticket state, re-reads the newest customer event, and only
+    then changes the matching pending row to ``attempted``.  Human cancellation
+    uses the same ticket-state lock and therefore cannot race a stale claim.
+    """
+
+    def __init__(self, *, transaction_scope: DeliveryTransactionScope) -> None:
+        self._transaction_scope = transaction_scope
+
+    async def latest(self, ticket_id: int) -> TicketFreshness:
+        async with self._transaction_scope() as session:
+            generation_result = await session.execute(
+                select(TicketState.generation).where(
+                    TicketState.ticket_id == ticket_id
+                )
+            )
+            generation = generation_result.scalar_one_or_none()
+            event = await self._latest_customer_event(session, ticket_id)
+        return TicketFreshness(
+            generation=int(generation) if generation is not None else 1,
+            cursor=self._event_cursor(event),
+        )
+
+    async def create_or_get(
+        self,
+        *,
+        key: str,
+        ticket_id: int,
+        generation: int,
+        cursor: str,
+        locale: str,
+        body: str,
+        idempotency_key: str,
+    ) -> object:
+        async with self._transaction_scope() as session:
+            return await OutboxRepository(session).create(
+                OutboxDraft(
+                    outbox_id=key,
+                    job_id=None,
+                    ticket_id=ticket_id,
+                    generation=generation,
+                    snapshot_cursor=cursor,
+                    locale=locale,
+                    body=body,
+                    idempotency_key=idempotency_key,
+                )
+            )
+
+    async def claim(
+        self, *, key: str, ticket_id: int, generation: int, cursor: str
+    ) -> bool:
+        async with self._transaction_scope() as session:
+            # HumanCancelRepository locks and increments this same row.  The
+            # row lock plus the checks below make this an atomic generation and
+            # latest-customer-cursor fence in PostgreSQL.
+            state_result = await session.execute(
+                select(TicketState.generation)
+                .where(TicketState.ticket_id == ticket_id)
+                .with_for_update()
+            )
+            current_generation = state_result.scalar_one_or_none()
+            if current_generation is None or int(current_generation) != generation:
+                return False
+            event = await self._latest_customer_event(session, ticket_id)
+            if self._event_cursor(event) != cursor:
+                return False
+            result = await session.execute(
+                update(OutboxMessage)
+                .where(
+                    OutboxMessage.outbox_id == key,
+                    OutboxMessage.ticket_id == ticket_id,
+                    OutboxMessage.generation == generation,
+                    OutboxMessage.snapshot_cursor == cursor,
+                    OutboxMessage.status == "pending",
+                )
+                .values(
+                    status="attempted",
+                    attempt_count=OutboxMessage.attempt_count + 1,
+                )
+            )
+            return bool(getattr(result, "rowcount", 0))
+
+    async def cancel(self, *, key: str, reason: str) -> None:
+        async with self._transaction_scope() as session:
+            await session.execute(
+                update(OutboxMessage)
+                .where(
+                    OutboxMessage.outbox_id == key,
+                    OutboxMessage.status.in_(("pending", "attempted", "ambiguous")),
+                )
+                .values(status="cancelled", last_error=reason)
+            )
+
+    async def mark_sent(self, *, key: str) -> None:
+        async with self._transaction_scope() as session:
+            await session.execute(
+                update(OutboxMessage)
+                .where(
+                    OutboxMessage.outbox_id == key,
+                    OutboxMessage.status == "attempted",
+                )
+                .values(status="sent")
+            )
+
+    async def mark_ambiguous(
+        self, *, key: str, error: str = "reply_send_failed"
+    ) -> None:
+        async with self._transaction_scope() as session:
+            await session.execute(
+                update(OutboxMessage)
+                .where(
+                    OutboxMessage.outbox_id == key,
+                    OutboxMessage.status == "attempted",
+                )
+                .values(status="ambiguous", last_error=error)
+            )
+
+    @staticmethod
+    async def _latest_customer_event(
+        session: SessionPort, ticket_id: int
+    ) -> EventRecord | None:
+        result = await session.execute(
+            select(EventRecord)
+            .where(
+                EventRecord.ticket_id == ticket_id,
+                EventRecord.customer_origin == "customer",
+            )
+            .order_by(desc(EventRecord.occurred_at), desc(EventRecord.event_id))
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _event_cursor(event: EventRecord | None) -> str:
+        if event is None:
+            return ""
+        payload: dict[str, Any] = event.payload
+        for field_name in ("snapshot_cursor", "cursor", "message_id"):
+            value = payload.get(field_name)
+            if isinstance(value, str) and value.strip():
+                return value
+        if event.message_id and event.message_id.strip():
+            return event.message_id
+        return event.event_id
+
+
+class ControllerDeliveryAdapter:
+    """Adapt the controller request shape to the worker delivery port."""
+
+    def __init__(self, controller: DeliveryController) -> None:
+        self._controller = controller
+
+    async def deliver(self, outcome: Outcome, generation: int) -> DeliveryResult:
+        return await self._controller.deliver(
+            DeliveryRequest(outcome=outcome, generation=generation)
         )
 
 
 class ProtocolCallable(Protocol):
-    async def __call__(self, *, key: str) -> None: ...
+    async def __call__(self, *, key: str, error: str = "reply_send_failed") -> None: ...
 
 
 __all__ = [
+    "ControllerDeliveryAdapter",
     "DeliveryController",
     "DeliveryDisposition",
     "DeliveryMode",
@@ -388,8 +635,14 @@ __all__ = [
     "DeliveryPolicy",
     "DeliveryRequest",
     "DeliveryResult",
+    "DeliveryTransactionScope",
+    "DeliveryUnavailableError",
+    "PostgresDeliveryAdapter",
     "ProtocolCallable",
     "TicketFreshness",
     "TicketFreshnessPort",
+    "UnavailableZendeskReplySender",
     "ZendeskReplyPort",
+    "parse_delivery_mode",
+    "postgres_delivery_transaction_scope",
 ]
