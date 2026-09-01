@@ -105,6 +105,8 @@ class RunContextCheckpoint(_ReadModel):
     exact_identifiers: tuple[str, ...] = ()
     retained_rounds: tuple[str, ...] = ()
     summary: str | None = None
+    working_memory_fact_keys: tuple[str, ...] = ()
+    working_memory_fact_count: int = Field(default=0, ge=0, le=128)
 
 
 class RunSandboxLifecycleEvent(_ReadModel):
