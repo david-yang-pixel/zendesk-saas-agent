@@ -61,6 +61,29 @@ def test_healthz_reports_ingress_ready() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_metrics_reports_webhook_decisions_without_ticket_identifiers() -> None:
+    client, _, _ = _app()
+    client.post("/webhook/zendesk", json=_payload())
+    client.post(
+        "/webhook/zendesk",
+        json=_payload(event_id="evt-ignore-metrics", tags=["priority"]),
+    )
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert (
+        'casework_ingress_webhooks_total{action="enqueue",reason="eligible"} 1'
+        in response.text
+    )
+    assert (
+        'casework_ingress_webhooks_total{action="ignore",reason="saas_tag_missing"} 1'
+        in response.text
+    )
+    assert "3726" not in response.text
+
+
 def test_matching_webhook_submits_only_ticket_id_and_event_metadata() -> None:
     client, jobs, cancellations = _app()
 

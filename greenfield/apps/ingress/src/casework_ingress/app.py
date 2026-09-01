@@ -5,9 +5,11 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import FastAPI
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .fakes import InMemoryCancelSink, InMemoryIdempotency, InMemoryJobSink
+from .metrics import IngressMetricsPort, InMemoryIngressMetrics
 from .ports import CancelSink, IdempotencyPort, JobSink
 from .processing_rules import (
     NormalizedZendeskEvent,
@@ -127,6 +129,7 @@ def create_app(
     job_sink: JobSink | None = None,
     cancel_sink: CancelSink | None = None,
     idempotency: IdempotencyPort | None = None,
+    metrics: IngressMetricsPort | None = None,
 ) -> FastAPI:
     """Build the ingress app with injected side-effect destinations.
 
@@ -140,18 +143,30 @@ def create_app(
     jobs = job_sink or InMemoryJobSink()
     cancellations = cancel_sink or InMemoryCancelSink()
     event_ids = idempotency or InMemoryIdempotency()
+    ingress_metrics = metrics or InMemoryIngressMetrics()
 
     app = FastAPI(title="casework-ingress")
     app.state.job_sink = jobs
     app.state.cancel_sink = cancellations
     app.state.idempotency = event_ids
+    app.state.metrics = ingress_metrics
 
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
+    async def metrics_endpoint() -> PlainTextResponse:
+        return PlainTextResponse(
+            ingress_metrics.render(),
+            media_type="text/plain; version=0.0.4",
+        )
+
+    def respond(*, action: Action, reason: str, ticket_id: int) -> WebhookResponse:
+        ingress_metrics.record_webhook(action=action, reason=reason)
+        return _response(action=action, reason=reason, ticket_id=ticket_id)
+
     async def webhook(payload: ZendeskWebhookPayload) -> WebhookResponse:
         if not await event_ids.claim(payload.event_id):
-            return _response(
+            return respond(
                 action="duplicate",
                 reason="event_id_seen",
                 ticket_id=payload.ticket_id,
@@ -165,7 +180,7 @@ def create_app(
                 event_id=payload.event_id,
             )
             if accepted is False:
-                return _response(
+                return respond(
                     action="duplicate",
                     reason="event_id_seen",
                     ticket_id=decision.ticket_id,
@@ -176,19 +191,20 @@ def create_app(
                 event_id=payload.event_id,
             )
             if accepted is False:
-                return _response(
+                return respond(
                     action="duplicate",
                     reason="event_id_seen",
                     ticket_id=decision.ticket_id,
                 )
 
-        return _response(
+        return respond(
             action=decision.action,
             reason=decision.reason,
             ticket_id=decision.ticket_id,
         )
 
     app.add_api_route("/healthz", healthz, methods=["GET"])
+    app.add_api_route("/metrics", metrics_endpoint, methods=["GET"])
     app.add_api_route(
         WEBHOOK_PATH,
         webhook,

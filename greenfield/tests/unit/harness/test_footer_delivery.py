@@ -9,6 +9,8 @@ import pytest
 from casework_harness.delivery import (
     DeliveryController,
     DeliveryDisposition,
+    DeliveryMode,
+    DeliveryPolicy,
     DeliveryRequest,
 )
 from casework_harness.footer import (
@@ -244,6 +246,70 @@ async def test_answer_delivery_adds_japanese_footer_and_is_idempotent() -> None:
     assert sender.sent[0][1].endswith(
         "この返信は Dify AI Agent によって送信されました。"
     )
+
+
+@pytest.mark.asyncio
+async def test_dry_run_renders_reply_without_outbox_or_zendesk_write() -> None:
+    freshness = FakeFreshness()
+    outbox = FakeOutbox()
+    sender = FakeSender()
+    controller = DeliveryController(
+        freshness=freshness,
+        outbox=outbox,
+        sender=sender,
+        footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.DRY_RUN),
+    )
+
+    result = await controller.deliver(_request())
+
+    assert result.disposition is DeliveryDisposition.DRY_RUN
+    assert result.reason == "dry_run_no_write"
+    assert result.body is not None
+    assert result.body.endswith("この返信は Dify AI Agent によって送信されました。")
+    assert freshness.reads == 1
+    assert outbox.entries == {}
+    assert sender.sent == []
+
+
+@pytest.mark.asyncio
+async def test_canary_mode_allows_only_explicit_ticket_ids() -> None:
+    blocked_outbox = FakeOutbox()
+    blocked_sender = FakeSender()
+    blocked = DeliveryController(
+        freshness=FakeFreshness(),
+        outbox=blocked_outbox,
+        sender=blocked_sender,
+        footer_catalog=_catalog(),
+        policy=DeliveryPolicy(
+            mode=DeliveryMode.CANARY,
+            canary_ticket_ids=frozenset({4000}),
+        ),
+    )
+
+    blocked_result = await blocked.deliver(_request())
+
+    assert blocked_result.disposition is DeliveryDisposition.NOT_ELIGIBLE
+    assert blocked_result.reason == "ticket_not_in_canary_allowlist"
+    assert blocked_outbox.entries == {}
+    assert blocked_sender.sent == []
+
+    allowed_sender = FakeSender()
+    allowed = DeliveryController(
+        freshness=FakeFreshness(),
+        outbox=FakeOutbox(),
+        sender=allowed_sender,
+        footer_catalog=_catalog(),
+        policy=DeliveryPolicy(
+            mode=DeliveryMode.CANARY,
+            canary_ticket_ids=frozenset({3726}),
+        ),
+    )
+
+    allowed_result = await allowed.deliver(_request())
+
+    assert allowed_result.disposition is DeliveryDisposition.SENT
+    assert len(allowed_sender.sent) == 1
 
 
 @pytest.mark.asyncio

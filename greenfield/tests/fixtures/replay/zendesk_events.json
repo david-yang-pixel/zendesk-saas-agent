@@ -1,0 +1,62 @@
+[
+  {
+    "name": "eligible_japanese_customer_message",
+    "expected_action": "enqueue",
+    "payload": {
+      "event_id": "replay-eligible-ja",
+      "ticket_id": 9001,
+      "tags": ["saas"],
+      "assignee": "saas-support",
+      "status": "open",
+      "is_customer_message": true,
+      "actor": "customer",
+      "visibility": "public",
+      "message_text": "テスト用の質問です"
+    }
+  },
+  {
+    "name": "non_saas_ticket",
+    "expected_action": "ignore",
+    "payload": {
+      "event_id": "replay-ignore-tag",
+      "ticket_id": 9002,
+      "tags": ["enterprise"],
+      "assignee": "saas-support",
+      "status": "new",
+      "is_customer_message": true,
+      "actor": "customer",
+      "visibility": "public",
+      "message_text": "Sanitized test question"
+    }
+  },
+  {
+    "name": "exact_human_alias",
+    "expected_action": "cancel",
+    "payload": {
+      "event_id": "replay-human",
+      "ticket_id": 9003,
+      "tags": ["saas"],
+      "assignee": "saas-support",
+      "status": "open",
+      "is_customer_message": true,
+      "actor": "customer",
+      "visibility": "public",
+      "message_text": "（Ｈｕｍａｎ）"
+    }
+  },
+  {
+    "name": "agent_message_cannot_retrigger",
+    "expected_action": "ignore",
+    "payload": {
+      "event_id": "replay-agent-message",
+      "ticket_id": 9004,
+      "tags": ["saas"],
+      "assignee": "saas-support",
+      "status": "open",
+      "is_customer_message": true,
+      "actor": "agent",
+      "visibility": "public",
+      "message_text": "Sanitized agent response"
+    }
+  }
+]

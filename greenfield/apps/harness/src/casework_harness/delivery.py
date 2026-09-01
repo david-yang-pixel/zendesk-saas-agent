@@ -20,11 +20,30 @@ from .footer import FooterCatalog, append_localized_footer
 
 class DeliveryDisposition(StrEnum):
     SENT = "sent"
+    DRY_RUN = "dry_run"
     DEDUPLICATED = "deduplicated"
     STALE = "stale"
     FENCED = "fenced"
     NOT_ELIGIBLE = "not_eligible"
     FAILED = "failed"
+
+
+class DeliveryMode(StrEnum):
+    LIVE = "live"
+    DRY_RUN = "dry_run"
+    CANARY = "canary"
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryPolicy:
+    mode: DeliveryMode = DeliveryMode.LIVE
+    canary_ticket_ids: frozenset[int] = frozenset()
+
+    def __post_init__(self) -> None:
+        if any(ticket_id <= 0 for ticket_id in self.canary_ticket_ids):
+            raise ValueError("canary ticket identifiers must be positive")
+        if self.mode is DeliveryMode.CANARY and not self.canary_ticket_ids:
+            raise ValueError("canary mode requires explicit ticket identifiers")
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,11 +169,13 @@ class DeliveryController:
         outbox: DeliveryOutboxPort,
         sender: ZendeskReplyPort,
         footer_catalog: FooterCatalog,
+        policy: DeliveryPolicy | None = None,
     ) -> None:
         self._freshness = freshness
         self._outbox = outbox
         self._sender = sender
         self._footer_catalog = footer_catalog
+        self._policy = policy or DeliveryPolicy()
 
     async def deliver(self, request: DeliveryRequest) -> DeliveryResult:
         outcome = request.outcome
@@ -169,6 +190,16 @@ class DeliveryController:
                     if body is None
                     else "outcome_delivery_not_eligible"
                 ),
+            )
+
+        if (
+            self._policy.mode is DeliveryMode.CANARY
+            and ticket_id not in self._policy.canary_ticket_ids
+        ):
+            return DeliveryResult(
+                disposition=DeliveryDisposition.NOT_ELIGIBLE,
+                ticket_id=ticket_id,
+                reason="ticket_not_in_canary_allowlist",
             )
 
         # Eligible outcomes carry the source-of-truth metadata.  The request
@@ -194,6 +225,13 @@ class DeliveryController:
             locale=locale,
             catalog=self._footer_catalog,
         )
+        if self._policy.mode is DeliveryMode.DRY_RUN:
+            return DeliveryResult(
+                disposition=DeliveryDisposition.DRY_RUN,
+                ticket_id=ticket_id,
+                reason="dry_run_no_write",
+                body=rendered,
+            )
         outbox_key = self._outbox_key(
             ticket_id=ticket_id,
             generation=request.generation,
@@ -345,7 +383,9 @@ class ProtocolCallable(Protocol):
 __all__ = [
     "DeliveryController",
     "DeliveryDisposition",
+    "DeliveryMode",
     "DeliveryOutboxPort",
+    "DeliveryPolicy",
     "DeliveryRequest",
     "DeliveryResult",
     "ProtocolCallable",
