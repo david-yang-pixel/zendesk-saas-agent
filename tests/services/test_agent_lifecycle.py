@@ -711,8 +711,9 @@ def test_new_online_epoch_retires_old_waiting_states(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_blocks_without_killing_worker_when_public_reply_is_ambiguous(
-    tmp_path, monkeypatch
+async def test_stop_and_start_preserve_ambiguous_outbox_without_blocking_lifecycle(
+    tmp_path,
+    monkeypatch,
 ) -> None:
     state_dir = tmp_path / ".state"
     queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
@@ -731,15 +732,12 @@ async def test_stop_blocks_without_killing_worker_when_public_reply_is_ambiguous
         )
     )
     await supervisor.initialize()
-    checks = 0
-
-    def _block_after_request() -> dict[str, int]:
-        nonlocal checks
-        checks += 1
-        return {} if checks == 1 else {"public_reply_ambiguous": 1}
-
-    monkeypatch.setattr(supervisor, "_outbox_blockers", _block_after_request)
-    await supervisor.stop(operation_id="blocked-stop-1")
+    blockers = {
+        "historical_handoff_pending": 3,
+        "public_reply_ambiguous": 2,
+    }
+    monkeypatch.setattr(supervisor, "_outbox_blockers", lambda: blockers)
+    await supervisor.stop(operation_id="direct-stop-1")
     generation = supervisor.store.read()["dispatch_generation"]
     supervisor.store.write_worker_status(
         {
@@ -748,7 +746,63 @@ async def test_stop_blocks_without_killing_worker_when_public_reply_is_ambiguous
             "heartbeat_unix": time.time(),
             "observed_dispatch_generation": generation,
             "dispatch_enabled": False,
-            "background_tasks_quiesced": False,
+            "background_tasks_quiesced": True,
+            "active": 0,
+        }
+    )
+    await supervisor.wait_for_operation(timeout=3)
+
+    lifecycle = supervisor.store.read()
+    assert lifecycle["desired_state"] == "stopped"
+    assert lifecycle["transition_status"] == "completed"
+    assert lifecycle["transition_blockers"] == blockers
+    assert supervisor.status()["process_running"] is False
+
+    started = await supervisor.start(operation_id="direct-start-1")
+
+    assert started["desired_state"] == "running"
+    assert started["process_running"] is True
+    await supervisor.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_preserves_ambiguous_outbox_without_blocking_lifecycle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    state_dir = tmp_path / ".state"
+    queue = DurableTriggerQueue(state_dir / "trigger_queue.sqlite3")
+    supervisor = AgentWorkerSupervisor(
+        state_dir=state_dir,
+        trigger_queue=queue,
+        command=(sys.executable, "-c", "import time; time.sleep(60)"),
+        stop_timeout_seconds=2,
+    )
+    supervisor.store.write(
+        _lifecycle_state(
+            desired_state="running",
+            dispatch_enabled=True,
+            dispatch_generation=1,
+            generation=1,
+        )
+    )
+    await supervisor.initialize()
+    blockers = {
+        "historical_handoff_pending": 3,
+        "public_reply_ambiguous": 2,
+    }
+    monkeypatch.setattr(supervisor, "_outbox_blockers", lambda: blockers)
+
+    await supervisor.restart(operation_id="direct-restart-1")
+    generation = supervisor.store.read()["dispatch_generation"]
+    supervisor.store.write_worker_status(
+        {
+            "status": "running",
+            "pid": supervisor._process.pid,
+            "heartbeat_unix": time.time(),
+            "observed_dispatch_generation": generation,
+            "dispatch_enabled": False,
+            "background_tasks_quiesced": True,
             "active": 0,
         }
     )
@@ -756,17 +810,9 @@ async def test_stop_blocks_without_killing_worker_when_public_reply_is_ambiguous
 
     lifecycle = supervisor.store.read()
     assert lifecycle["desired_state"] == "running"
-    assert lifecycle["transition_status"] == "blocked"
-    assert lifecycle["transition_error"] == "unsafe_outbox"
+    assert lifecycle["transition_status"] == "completed"
+    assert lifecycle["transition_blockers"] == blockers
     assert supervisor.status()["process_running"] is True
-    with pytest.raises(
-        AgentLifecycleConflict,
-        match="incomplete_lifecycle_transition",
-    ):
-        await supervisor.start(operation_id="unsafe-start-1")
-    unchanged = supervisor.store.read()
-    assert unchanged["transition_action"] == "stop"
-    assert unchanged["transition_status"] == "blocked"
     await supervisor.close()
 
 

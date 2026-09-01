@@ -705,15 +705,13 @@ class AgentWorkerSupervisor:
                 )
                 self.store.write(lifecycle)
                 return self.status(), 0
-            blockers = self._outbox_blockers()
-            if blockers:
-                raise AgentLifecycleConflict("unsafe_outbox", blockers=blockers)
             self._start_drain_locked(
                 action="stop",
                 operation_id=operation_id,
                 actor=actor,
                 reason=reason,
                 ip=ip,
+                allow_preserved_outbox=True,
             )
             return self.status(), 0
 
@@ -732,15 +730,13 @@ class AgentWorkerSupervisor:
                 raise AgentLifecycleConflict("lifecycle_state_unreadable")
             if lifecycle["desired_state"] != "running":
                 raise AgentLifecycleConflict("agent_stopped")
-            blockers = self._outbox_blockers()
-            if blockers:
-                raise AgentLifecycleConflict("unsafe_outbox", blockers=blockers)
             self._start_drain_locked(
                 action="restart",
                 operation_id=operation_id,
                 actor=actor,
                 reason=reason,
                 ip=ip,
+                allow_preserved_outbox=True,
             )
             return self.status()
 
@@ -904,6 +900,11 @@ class AgentWorkerSupervisor:
                             "transition_status": "completed",
                             "transition_completed_at": _utc_iso(),
                             "transition_audit_status": "pending",
+                            "transition_blockers": (
+                                self._outbox_blockers()
+                                if allow_preserved_outbox
+                                else {}
+                            ),
                             "transition_allow_preserved_outbox": False,
                         }
                     )
