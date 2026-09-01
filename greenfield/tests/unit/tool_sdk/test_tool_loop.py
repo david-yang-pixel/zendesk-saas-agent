@@ -80,6 +80,49 @@ async def test_tool_loop_is_bounded_and_returns_typed_results() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_loop_retries_only_retryable_results_within_round_budget() -> None:
+    attempts = 0
+
+    async def flaky_tool(
+        arguments: dict[str, object], context: ToolExecutionContext
+    ) -> ToolResult:
+        nonlocal attempts
+        del arguments, context
+        attempts += 1
+        if attempts == 1:
+            return ToolResult(
+                status=ToolResultStatus.FAILURE,
+                summary="temporary timeout",
+                observed_at=datetime.now(UTC),
+                retryable=True,
+            )
+        return ToolResult(
+            status=ToolResultStatus.SUCCESS,
+            summary="recovered",
+            evidence_id="ev-recovered",
+            observed_at=datetime.now(UTC),
+        )
+
+    registry = ToolRegistry()
+    registry.register(FakeLookupTool.definition, flaky_tool)
+    result = await ToolLoop(
+        registry=registry, max_rounds=3, max_retries_per_call=1
+    ).run(
+        calls=[("workspace_lookup", {"query": "Dify"})],
+        context=ToolExecutionContext(
+            ticket_id=3726,
+            session_id="root-01",
+            root_session_id="root-01",
+        ),
+    )
+
+    assert attempts == 2
+    assert result.rounds == 2
+    assert result.results[-1].evidence_id == "ev-recovered"
+    assert result.termination_reason == "calls_exhausted"
+
+
+@pytest.mark.asyncio
 async def test_registry_validates_required_typed_arguments_before_execution() -> None:
     registry = ToolRegistry()
     calls: list[dict[str, object]] = []

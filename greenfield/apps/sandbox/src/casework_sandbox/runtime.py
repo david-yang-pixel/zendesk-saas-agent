@@ -239,7 +239,9 @@ class SandboxAgent:
                 tool_rounds += loop_result.rounds
                 if not loop_result.results:
                     break
-                result = loop_result.results[0]
+                # A bounded retry returns every attempt for telemetry/budgeting;
+                # only the final attempt determines this Todo's evidence.
+                result = loop_result.results[-1]
                 call_id = f"call-{ticket_id}-{tool_rounds:02d}"
                 gate.admit(
                     call_id=call_id,

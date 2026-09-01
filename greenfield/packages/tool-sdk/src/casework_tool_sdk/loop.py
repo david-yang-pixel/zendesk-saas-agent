@@ -20,11 +20,20 @@ class ToolLoopResult:
 class ToolLoop:
     """Execute model-selected tool calls with a strict per-run round budget."""
 
-    def __init__(self, *, registry: ToolRegistry, max_rounds: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        registry: ToolRegistry,
+        max_rounds: int = 8,
+        max_retries_per_call: int = 1,
+    ) -> None:
         if max_rounds < 1:
             raise ValueError("max_rounds must be positive")
+        if max_retries_per_call < 0 or max_retries_per_call > 3:
+            raise ValueError("max_retries_per_call must be between 0 and 3")
         self._registry = registry
         self._max_rounds = max_rounds
+        self._max_retries_per_call = max_retries_per_call
 
     async def run(
         self,
@@ -33,18 +42,26 @@ class ToolLoop:
         context: ToolExecutionContext,
     ) -> ToolLoopResult:
         results: list[ToolResult] = []
-        for rounds, (name, arguments) in enumerate(calls, start=1):
-            if rounds > self._max_rounds:
-                return ToolLoopResult(
-                    results=tuple(results),
-                    termination_reason="max_rounds",
-                    rounds=self._max_rounds,
+        rounds = 0
+        for name, arguments in calls:
+            retries = 0
+            while True:
+                if rounds >= self._max_rounds:
+                    return ToolLoopResult(
+                        results=tuple(results),
+                        termination_reason="max_rounds",
+                        rounds=rounds,
+                    )
+                result = await self._registry.execute(
+                    name, arguments, context=context
                 )
-            results.append(
-                await self._registry.execute(name, arguments, context=context)
-            )
+                results.append(result)
+                rounds += 1
+                if not result.retryable or retries >= self._max_retries_per_call:
+                    break
+                retries += 1
         return ToolLoopResult(
             results=tuple(results),
             termination_reason="calls_exhausted",
-            rounds=len(results),
+            rounds=rounds,
         )

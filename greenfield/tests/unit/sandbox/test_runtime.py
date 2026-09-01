@@ -35,6 +35,26 @@ class WorkspaceTool:
         )
 
 
+class RetryWorkspaceTool(WorkspaceTool):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(
+        self,
+        arguments: dict[str, object],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        self.calls += 1
+        if self.calls == 1:
+            return ToolResult(
+                status=ToolResultStatus.FAILURE,
+                summary="temporary timeout",
+                observed_at=datetime.now(UTC),
+                retryable=True,
+            )
+        return await super().__call__(arguments, context)
+
+
 class DependentModel:
     async def plan(
         self,
@@ -163,3 +183,39 @@ async def test_runtime_does_not_answer_before_dependent_todos_are_executed() -> 
 
     assert outcome.kind is OutcomeKind.ANSWER
     assert outcome.todo_summary.completed == 2
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_successful_final_attempt_after_bounded_tool_retry() -> None:
+    snapshot = TicketSnapshot(
+        ticket_id=3726,
+        status="open",
+        requester_id=1,
+        assignee_id=2,
+        messages=(
+            TicketComment(
+                event_id="evt-3726",
+                author_origin="customer",
+                public=True,
+                body="Which workspace is affected?",
+                created_at=datetime.now(UTC),
+            ),
+        ),
+        locale="en-US",
+        latest_customer_cursor="evt-3726",
+        complete=True,
+        fetched_at=datetime.now(UTC),
+    )
+    tool = RetryWorkspaceTool()
+    tools = ToolRegistry()
+    tools.register(tool.definition, tool)
+
+    outcome = await SandboxAgent(
+        zendesk=FakeZendesk(snapshot),
+        model=FakeModel(answer="The workspace is Dify's workspace."),
+        tools=tools,
+    ).run(ticket_id=3726, session_id="session-3726")
+
+    assert tool.calls == 2
+    assert outcome.kind is OutcomeKind.ANSWER
+    assert outcome.evidence_ids == ("ev-ws-dify",)
