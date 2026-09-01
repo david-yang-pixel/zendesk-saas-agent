@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import httpx
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, ValidationError, model_validator
 
 from casework_agent_core.domain import ActiveQuestion, TicketSnapshot
 from casework_agent_core.runtime_config import (
@@ -34,6 +34,7 @@ from casework_agent_core.subagents import (
     SubagentTask,
 )
 from casework_agent_core.todo import TodoPlan
+from casework_sandbox.mcp import McpStreamableHttpTool
 from casework_sandbox.runtime import RuntimeOutcome, SandboxAgent
 from casework_sandbox.zendesk import ZendeskApiReader
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
@@ -310,6 +311,8 @@ class ToolEndpointConfig(ContractModel):
     health_url: str | None = Field(default=None, min_length=1)
     timeout_seconds: float = Field(default=20.0, gt=0)
     read_only: bool = True
+    remote_tool_name: str | None = Field(default=None, min_length=1)
+    credential_ref: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _validate_adapter(self) -> ToolEndpointConfig:
@@ -319,7 +322,15 @@ class ToolEndpointConfig(ContractModel):
             raise ValueError("tool health_url must use HTTPS")
         if not self.read_only:
             raise ValueError("sandbox tool adapters must be read-only")
+        if (self.remote_tool_name is None) != (self.credential_ref is None):
+            raise ValueError(
+                "MCP tool config requires remote_tool_name and credential_ref"
+            )
         return self
+
+    @property
+    def is_mcp(self) -> bool:
+        return self.remote_tool_name is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,7 +373,18 @@ class SandboxRuntimeConfig:
                 ToolEndpointConfig.model_validate(item)
                 for item in cast(list[object], raw_tools)
             )
-        except Exception as error:
+        except ValidationError as error:
+            if any(
+                item.get("msg")
+                == (
+                    "Value error, MCP tool config requires remote_tool_name "
+                    "and credential_ref"
+                )
+                for item in error.errors()
+            ):
+                raise SandboxConfigurationError(
+                    "CASEWORK_TOOL_CONFIG requires remote_tool_name and credential_ref"
+                ) from error
             raise SandboxConfigurationError(
                 "CASEWORK_TOOL_CONFIG contains an invalid tool"
             ) from error
@@ -731,7 +753,7 @@ class ProductionSandboxCommands:
         *,
         reader: ZendeskApiReader,
         tools: ToolRegistry,
-        adapters: tuple[HttpInvestigationTool, ...],
+        adapters: tuple[HttpInvestigationTool | McpStreamableHttpTool, ...],
         http_client: httpx.AsyncClient,
         model_base_url: str,
         secret_resolver: SecretResolver,
@@ -878,9 +900,28 @@ def create_production_commands(
         api_token=config.zendesk_api_token,
     )
     registry = ToolRegistry()
-    adapters: list[HttpInvestigationTool] = []
+    adapters: list[HttpInvestigationTool | McpStreamableHttpTool] = []
     for tool_config in config.tool_configs:
-        adapter = HttpInvestigationTool(client=client, config=tool_config)
+        if tool_config.is_mcp:
+            remote_tool_name = tool_config.remote_tool_name
+            credential_ref = tool_config.credential_ref
+            if remote_tool_name is None or credential_ref is None:
+                raise SandboxConfigurationError(
+                    "MCP tool config requires remote_tool_name and credential_ref"
+                )
+            adapter = McpStreamableHttpTool(
+                client=client,
+                name=tool_config.name,
+                description=tool_config.description,
+                input_schema=tool_config.input_schema,
+                endpoint_url=tool_config.endpoint_url,
+                remote_tool_name=remote_tool_name,
+                credential_ref=credential_ref,
+                resolver=resolver,
+                timeout_seconds=tool_config.timeout_seconds,
+            )
+        else:
+            adapter = HttpInvestigationTool(client=client, config=tool_config)
         registry.register(adapter.definition, adapter)
         adapters.append(adapter)
     return ProductionSandboxCommands(
@@ -897,6 +938,7 @@ def create_production_commands(
 __all__ = [
     "HttpCaseworkModel",
     "HttpInvestigationTool",
+    "McpStreamableHttpTool",
     "ProductionSandboxCommands",
     "SandboxConfigurationError",
     "SandboxRuntimeConfig",

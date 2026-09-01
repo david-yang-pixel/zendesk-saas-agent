@@ -228,6 +228,109 @@ def test_tool_config_is_parsed_as_typed_read_only_adapter_contract() -> None:
     assert config.tool_configs[0].read_only is True
 
 
+def test_mcp_tool_config_requires_remote_name_and_credential_reference() -> None:
+    env = {
+        "ZENDESK_BASE_URL": "https://tenant.zendesk.com",
+        "ZENDESK_EMAIL": "support@example.com",
+        "ZENDESK_API_TOKEN": "token",
+        "CASEWORK_MODEL_BASE_URL": "https://model.example.com",
+        "CASEWORK_TOOL_CONFIG": json.dumps(
+            [
+                {
+                    "name": "workspace_lookup",
+                    "description": "Find a workspace",
+                    "input_schema": {"type": "object"},
+                    "endpoint_url": "https://mcp.example.com/mcp",
+                    "remote_tool_name": "workspace_lookup",
+                }
+            ]
+        ),
+    }
+
+    with pytest.raises(SandboxConfigurationError, match="credential_ref"):
+        SandboxRuntimeConfig.from_env(env)
+
+
+def test_mcp_tool_config_is_parsed_with_remote_name_and_credential_reference() -> None:
+    env = {
+        "ZENDESK_BASE_URL": "https://tenant.zendesk.com",
+        "ZENDESK_EMAIL": "support@example.com",
+        "ZENDESK_API_TOKEN": "token",
+        "CASEWORK_MODEL_BASE_URL": "https://model.example.com",
+        "CASEWORK_TOOL_CONFIG": json.dumps(
+            [
+                {
+                    "name": "workspace_lookup",
+                    "description": "Find a workspace",
+                    "input_schema": {"type": "object"},
+                    "endpoint_url": "https://mcp.example.com/mcp",
+                    "remote_tool_name": "workspace_lookup",
+                    "credential_ref": "mcp/tools",
+                }
+            ]
+        ),
+    }
+
+    config = SandboxRuntimeConfig.from_env(env)
+
+    assert config.tool_configs[0].remote_tool_name == "workspace_lookup"
+    assert config.tool_configs[0].credential_ref == "mcp/tools"
+
+
+@pytest.mark.asyncio
+async def test_factory_wires_mcp_streamable_http_adapter_and_bearer_credential(
+) -> None:
+    env = {
+        "ZENDESK_BASE_URL": "https://tenant.zendesk.com",
+        "ZENDESK_EMAIL": "support@example.com",
+        "ZENDESK_API_TOKEN": "token",
+        "CASEWORK_MODEL_BASE_URL": "https://model.example.com",
+        "CASEWORK_MODEL_API_KEY": "model-key",
+        "CASEWORK_MODEL_NAME": "casework-model",
+        "CASEWORK_CREDENTIAL_MCP_TOOLS": "mcp-secret",
+        "CASEWORK_TOOL_CONFIG": json.dumps(
+            [
+                {
+                    "name": "workspace_lookup",
+                    "description": "Find a workspace",
+                    "input_schema": {"type": "object"},
+                    "endpoint_url": "https://mcp.example.com/mcp",
+                    "remote_tool_name": "workspace_lookup",
+                    "credential_ref": "mcp/tools",
+                }
+            ]
+        ),
+    }
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/users/me.json":
+            return httpx.Response(200, json={"user": {"id": 1}})
+        if request.url.path == "/healthz":
+            return httpx.Response(200, json={"status": "ready"})
+        assert request.url.path == "/mcp"
+        payload = json.loads(request.content)
+        methods.append(payload["method"])
+        assert request.headers["authorization"] == "Bearer mcp-secret"
+        return httpx.Response(
+            200,
+            headers={"Mcp-Session-Id": "mcp-session"},
+            json={
+                "jsonrpc": "2.0",
+                "id": payload["id"],
+                "result": {},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    commands = create_production_commands(environ=env, http_client=client)
+
+    assert await commands.is_ready() is True
+    assert commands.tool_names == ("workspace_lookup",)
+    assert methods == ["initialize"]
+    await commands.aclose()
+
+
 @pytest.mark.asyncio
 async def test_factory_wires_configured_external_adapters_without_database_or_docker(
 ) -> None:
