@@ -15,12 +15,12 @@ RUN uv sync --frozen --no-dev --no-install-project
 FROM node:22-alpine AS admin-web-build
 
 WORKDIR /src
-COPY pnpm-workspace.yaml ./
+RUN corepack enable
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/admin-web/package.json apps/admin-web/index.html apps/admin-web/tsconfig.json apps/admin-web/vite.config.ts ./apps/admin-web/
+RUN pnpm install --frozen-lockfile
 COPY apps/admin-web/src ./apps/admin-web/src
-RUN cd apps/admin-web \
-    && npm install --no-audit --no-fund --ignore-scripts \
-    && npm run build
+RUN pnpm --dir apps/admin-web build
 
 
 FROM python-deps AS app-base
