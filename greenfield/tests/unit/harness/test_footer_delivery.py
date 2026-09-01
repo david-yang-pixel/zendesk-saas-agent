@@ -107,12 +107,15 @@ class FakeFreshness:
     cursor: str = "customer-01"
     reads: int = 0
     human_after_first_read: bool = False
+    first_read: asyncio.Event = field(default_factory=asyncio.Event)
+    release_first_read: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def latest(self, ticket_id: int) -> tuple[int, str]:
         self.reads += 1
         if self.human_after_first_read and self.reads == 1:
             result = (self.generation, self.cursor)
-            self.generation += 1
+            self.first_read.set()
+            await self.release_first_read.wait()
             return result
         return self.generation, self.cursor
 
@@ -294,7 +297,8 @@ async def test_human_generation_fence_wins_when_human_arrives_concurrently() -> 
     outbox = FakeOutbox()
     sender = FakeSender()
 
-    # The first read is fresh; the second read is the just-before-send fence.
+    # The human command is allowed to land while the first freshness read is
+    # in flight; the second read is the just-before-send fence.
     freshness.human_after_first_read = True
     controller = DeliveryController(
         freshness=freshness,
@@ -303,7 +307,15 @@ async def test_human_generation_fence_wins_when_human_arrives_concurrently() -> 
         footer_catalog=_catalog(),
     )
 
-    result = await controller.deliver(_request())
+    async def human_event() -> None:
+        await freshness.first_read.wait()
+        freshness.generation = 8
+        freshness.release_first_read.set()
+
+    results = await asyncio.gather(
+        controller.deliver(_request()), human_event()
+    )
+    result = results[0]
 
     assert result.disposition is DeliveryDisposition.FENCED
     assert sender.sent == []
