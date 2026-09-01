@@ -6,7 +6,7 @@ from casework_harness.runtime_bootstrap import (
     RuntimeBootstrapUnavailable,
     runtime_bootstrap_from_config,
 )
-from casework_ingress.postgres_admission import PostgresAdmission, _RuntimeConfig
+from casework_ingress.postgres_admission import frozen_config_snapshot
 
 
 def _config() -> dict[str, object]:
@@ -70,8 +70,7 @@ def test_projection_rejects_inline_secret_in_persisted_config() -> None:
 
 def test_ingress_snapshot_and_harness_bootstrap_share_canonical_digests() -> None:
     config = _config()
-    runtime = _RuntimeConfig.model_validate(config)
-    snapshot = PostgresAdmission._frozen_config("cfg-1", runtime)
+    snapshot = frozen_config_snapshot(revision="cfg-1", config=config)
     bootstrap = runtime_bootstrap_from_config(revision="cfg-1", config=config)
 
     assert bootstrap.model_digest == snapshot.model_digest

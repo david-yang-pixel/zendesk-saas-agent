@@ -153,7 +153,7 @@ class PostgresAdmission:
             queued = await JobRepository(session).enqueue(
                 ticket_id=event.normalized.ticket_id,
                 event_id=event.event_id,
-                config=self._frozen_config(revision.revision, runtime),
+                config=self.frozen_config(revision.revision, runtime),
                 job_id=str(uuid4()),
                 available_at=event.received_at,
             )
@@ -178,7 +178,7 @@ class PostgresAdmission:
         )
 
     @classmethod
-    def _frozen_config(
+    def frozen_config(
         cls, revision: str, runtime: _RuntimeConfig
     ) -> ConfigSnapshot:
         enabled_children = tuple(
@@ -199,4 +199,18 @@ class PostgresAdmission:
         )
 
 
-__all__ = ["PostgresAdmission", "postgres_transaction_scope"]
+def frozen_config_snapshot(
+    *, revision: str, config: dict[str, object]
+) -> ConfigSnapshot:
+    """Build the canonical queue snapshot used by cross-service contract tests."""
+
+    return PostgresAdmission.frozen_config(
+        revision, _RuntimeConfig.model_validate(config)
+    )
+
+
+__all__ = [
+    "PostgresAdmission",
+    "frozen_config_snapshot",
+    "postgres_transaction_scope",
+]
