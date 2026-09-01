@@ -14,6 +14,10 @@ from casework_admin.postgres_config import (
     PostgresConfigRepository,
     postgres_gateway_scope,
 )
+from casework_admin.postgres_reads import (
+    PostgresAdminReadRepository,
+    postgres_read_transaction_scope,
+)
 from casework_persistence import (
     SCHEMA_HEAD,
     DatabaseReadiness,
@@ -33,6 +37,9 @@ def create_app() -> FastAPI:
     configs = PostgresConfigRepository(
         gateway_scope=postgres_gateway_scope(sessions)
     )
+    reads = PostgresAdminReadRepository(
+        transaction_scope=postgres_read_transaction_scope(sessions)
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
@@ -46,6 +53,7 @@ def create_app() -> FastAPI:
 
     return create_admin_app(
         repository=configs,
+        read_repository=reads,
         readiness=readiness,
         lifespan=lifespan,
     )
