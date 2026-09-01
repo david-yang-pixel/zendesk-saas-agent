@@ -10,17 +10,18 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 
+async def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+async def readyz() -> dict[str, str]:
+    return {"status": "ready"}
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="casework-sandbox")
-
-    @app.get("/healthz")
-    async def healthz() -> dict[str, str]:
-        return {"status": "ok"}
-
-    @app.get("/readyz")
-    async def readyz() -> dict[str, str]:
-        return {"status": "ready"}
-
+    app.add_api_route("/healthz", healthz, methods=["GET"])
+    app.add_api_route("/readyz", readyz, methods=["GET"])
     return app
 
 
