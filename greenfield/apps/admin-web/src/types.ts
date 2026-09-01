@@ -81,6 +81,10 @@ export interface HarnessConfig {
     purpose: string
     model: string
     provider: string
+    credentialRef: string
+    contextWindowTokens: number
+    maxToolRounds: number
+    maxParallel: number
     enabled: boolean
   }>
   contextWindow: string
@@ -103,6 +107,8 @@ export interface SubagentSlotConfig extends ModelRoutingConfig {
   slotId: string
   enabled: boolean
   maxParallel: number
+  contextWindowTokens: number
+  maxToolRounds: number
 }
 
 export interface AdminConfig {

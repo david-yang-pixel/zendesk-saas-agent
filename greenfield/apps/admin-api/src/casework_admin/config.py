@@ -37,6 +37,8 @@ class SubagentSlotConfig(ModelConfig):
     slot_id: str = Field(min_length=1)
     enabled: bool = True
     max_parallel: int = Field(default=1, ge=1, le=8)
+    context_window_tokens: int = Field(default=32_000, ge=16_000, le=1_000_000)
+    max_tool_rounds: int = Field(default=12, ge=1, le=100)
 
 
 class ProcessingRulesConfig(_ConfigModel):

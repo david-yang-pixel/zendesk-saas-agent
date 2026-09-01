@@ -115,6 +115,46 @@ def test_config_update_requires_current_revision() -> None:
     assert stale.status_code == 409
 
 
+def test_config_update_accepts_independent_subagent_limits() -> None:
+    client = _client()
+    current = client.get("/api/config").json()
+    config = {
+        **current["config"],
+        "subagent_slots": [
+            {
+                "slot_id": "investigator",
+                "enabled": True,
+                "provider": "openai",
+                "model": "gpt-5.6-luna",
+                "credential_ref": "secret/child",
+                "context_window_tokens": 24_000,
+                "max_tool_rounds": 8,
+                "max_parallel": 2,
+            }
+        ],
+    }
+
+    response = client.put(
+        "/api/config",
+        json={"expected_revision": current["revision"], "config": config},
+        headers={"X-Admin-Actor": "operator@example.com"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["config"]["subagent_slots"] == [
+        {
+            "slot_id": "investigator",
+            "enabled": True,
+            "provider": "openai",
+            "model": "gpt-5.6-luna",
+            "credential_ref": "secret/child",
+            "context_window_tokens": 24_000,
+            "max_tool_rounds": 8,
+            "max_parallel": 2,
+        }
+    ]
+
+
 def test_admin_image_serves_built_web_console(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

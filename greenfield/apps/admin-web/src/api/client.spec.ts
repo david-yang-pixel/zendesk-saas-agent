@@ -22,7 +22,7 @@ describe('Admin API client', () => {
         config: {
           desired_state: 'running',
           root_model: { provider: 'openai', model: 'gpt-root', credential_ref: 'secret/root' },
-          subagent_slots: [{ slot_id: 'runtime', enabled: true, provider: 'openai', model: 'gpt-child', credential_ref: 'secret/child', max_parallel: 1 }],
+          subagent_slots: [{ slot_id: 'runtime', enabled: true, provider: 'openai', model: 'gpt-child', credential_ref: 'secret/child', context_window_tokens: 24000, max_tool_rounds: 8, max_parallel: 2 }],
           rules: { saas_tag: 'saas', saas_assignee: 'saas-support', statuses: ['new', 'open'], human_aliases: ['human'], reply_enabled: false, default_locale: 'en', footers: {} },
           enabled_skills: ['core'],
           enabled_tools: ['zendesk'],
@@ -38,6 +38,7 @@ describe('Admin API client', () => {
 
     expect(snapshot.config.rootModel.credentialRef).toBe('secret/root')
     expect(snapshot.config.subagentSlots[0]?.credentialRef).toBe('secret/child')
+    expect(snapshot.config.subagentSlots[0]).toMatchObject({ contextWindowTokens: 24000, maxToolRounds: 8, maxParallel: 2 })
     expect(snapshot.config.rules.saasTag).toBe('saas')
     expect(transport.calls).toEqual([{ path: '/api/config', init: undefined }])
   })
@@ -51,7 +52,7 @@ describe('Admin API client', () => {
         config: {
           desired_state: 'paused',
           root_model: { provider: 'openai', model: 'gpt-root', credential_ref: 'secret/root' },
-          subagent_slots: [],
+          subagent_slots: [{ slot_id: 'runtime', enabled: false, provider: 'openai', model: 'gpt-child', credential_ref: 'secret/child', context_window_tokens: 32000, max_tool_rounds: 12, max_parallel: 1 }],
           rules: { saas_tag: 'saas', saas_assignee: 'saas-support', statuses: ['new', 'open'], human_aliases: ['human'], reply_enabled: false, default_locale: 'en', footers: {} },
           enabled_skills: [],
           enabled_tools: [],
@@ -65,7 +66,7 @@ describe('Admin API client', () => {
     const config = {
       desiredState: 'paused' as const,
       rootModel: { provider: 'openai', model: 'gpt-root', credentialRef: 'secret/root' },
-      subagentSlots: [],
+      subagentSlots: [{ slotId: 'runtime', enabled: false, provider: 'openai', model: 'gpt-child', credentialRef: 'secret/child', contextWindowTokens: 32000, maxToolRounds: 12, maxParallel: 1 }],
       rules: { saasTag: 'saas', assignee: 'saas-support', statuses: ['new', 'open'], humanAliases: ['human'], replyEnabled: false, footerLocale: 'en', footers: {} },
       enabledSkills: [],
       enabledTools: [],
@@ -83,6 +84,16 @@ describe('Admin API client', () => {
       expected_revision: 'r1',
       config: expect.objectContaining({
         root_model: expect.objectContaining({ credential_ref: 'secret/root' }),
+        subagent_slots: [{
+          slot_id: 'runtime',
+          enabled: false,
+          provider: 'openai',
+          model: 'gpt-child',
+          credential_ref: 'secret/child',
+          context_window_tokens: 32000,
+          max_tool_rounds: 12,
+          max_parallel: 1,
+        }],
       }),
     })
   })

@@ -43,7 +43,11 @@ function applySnapshot(next: Awaited<ReturnType<typeof api.getConfig>>, nextPoli
     name: slot.slotId,
     purpose: '独立调查任务',
     model: slot.model,
-    provider: displayProvider(slot.provider),
+    provider: slot.provider,
+    credentialRef: slot.credentialRef,
+    contextWindowTokens: slot.contextWindowTokens,
+    maxToolRounds: slot.maxToolRounds,
+    maxParallel: slot.maxParallel,
     enabled: slot.enabled,
   }))
   config.contextWindow = `${Math.round(next.config.contextWindowTokens / 1000)}k tokens`
@@ -83,15 +87,45 @@ function configForSave(current: AdminConfig): AdminConfig {
   return {
     ...current,
     rootModel: { ...current.rootModel, model: config.rootModel },
-    subagentSlots: current.subagentSlots.map((slot) => {
-      const view = config.subagents.find((item) => item.id === slot.slotId)
-      return view ? { ...slot, model: view.model, enabled: view.enabled } : slot
-    }),
+    subagentSlots: config.subagents.map((slot) => ({
+      slotId: slot.id,
+      enabled: slot.enabled,
+      provider: slot.provider,
+      model: slot.model,
+      credentialRef: slot.credentialRef,
+      contextWindowTokens: slot.contextWindowTokens,
+      maxToolRounds: slot.maxToolRounds,
+      maxParallel: slot.maxParallel,
+    })),
     contextWindowTokens: contextTokens(config.contextWindow),
     softCompactionPercent: config.softCompaction,
     hardCheckpointPercent: config.hardCheckpoint,
     maxToolRounds: config.maxToolRounds,
   }
+}
+
+function addSubagent() {
+  let nextNumber = config.subagents.length + 1
+  while (config.subagents.some((slot) => slot.id === `subagent-${nextNumber}`)) {
+    nextNumber += 1
+  }
+  const slotId = `subagent-${nextNumber}`
+  config.subagents.push({
+    id: slotId,
+    name: slotId,
+    purpose: '独立调查任务',
+    model: 'gpt-5.6-luna',
+    provider: 'openai',
+    credentialRef: `secret/${slotId}`,
+    contextWindowTokens: 32_000,
+    maxToolRounds: 12,
+    maxParallel: 1,
+    enabled: true,
+  })
+}
+
+function removeSubagent(index: number) {
+  config.subagents.splice(index, 1)
 }
 
 async function saveConfig() {
@@ -130,7 +164,7 @@ onMounted(() => { void loadConfig() })
       </div>
       <div class="heading-actions">
         <span v-if="saveState === 'saved'" class="save-confirm"><AppIcon name="check" :size="14" />已保存到修订 {{ revision }}</span>
-        <button type="button" class="button button--primary" :disabled="saveState === 'saving' || saveState === 'loading'" @click="saveConfig">
+        <button type="button" class="button button--primary" data-testid="save-config" :disabled="saveState === 'saving' || saveState === 'loading'" @click="saveConfig">
           <AppIcon name="check" :size="15" />{{ saveState === 'saving' ? '保存中…' : '保存配置' }}
         </button>
       </div>
@@ -147,7 +181,7 @@ onMounted(() => { void loadConfig() })
     <section class="panel config-section">
       <div class="panel-heading panel-heading--with-description">
         <div><p class="eyebrow">MODEL ROUTING</p><h2>模型配置</h2><p>Root Agent 和 Subagent 使用独立模型设置，凭据不会互相继承。</p></div>
-        <StatusBadge :label="`${config.subagents.length + 1} 个已配置`" tone="success" />
+        <div class="heading-actions"><StatusBadge :label="`${config.subagents.length + 1} 个已配置`" tone="success" /><button type="button" class="button button--secondary" data-testid="add-subagent" :disabled="saveState === 'loading' || saveState === 'saving'" @click="addSubagent"><AppIcon name="spark" :size="15" />新增 Subagent</button></div>
       </div>
       <div class="model-grid">
         <article class="model-card model-card--root" data-testid="root-model">
@@ -158,12 +192,26 @@ onMounted(() => { void loadConfig() })
           <div class="model-meta"><span>Provider</span><strong>{{ config.rootProvider }}</strong></div>
           <div class="model-meta"><span>最大上下文</span><strong>{{ config.contextWindow }}</strong></div>
         </article>
-        <article v-for="agent in config.subagents" :key="agent.id" class="model-card">
-          <div class="model-card__heading"><span class="model-avatar"><AppIcon name="box" :size="18" /></span><div><span class="card-kicker">SUBAGENT</span><h3>{{ agent.name }}</h3></div><label class="switch switch--small"><input v-model="agent.enabled" type="checkbox" :aria-label="`启用 ${agent.name}`"><span /></label></div>
-          <p class="model-purpose">{{ agent.purpose }}</p>
-          <label class="field-label" :for="`model-${agent.id}`">模型</label>
-          <select :id="`model-${agent.id}`" v-model="agent.model" class="field-control"><option>gpt-5.6-terra</option><option>gpt-5.6-luna</option><option>gpt-5.6-sol</option></select>
-          <div class="model-meta"><span>Provider</span><strong>{{ agent.provider }}</strong></div>
+        <article v-for="(agent, index) in config.subagents" :key="index" class="model-card" :data-testid="`subagent-card-${index}`">
+          <div class="model-card__heading"><span class="model-avatar"><AppIcon name="box" :size="18" /></span><div><span class="card-kicker">SUBAGENT</span><h3>{{ agent.id || '未命名 Subagent' }}</h3></div><label class="switch switch--small"><input v-model="agent.enabled" type="checkbox" :aria-label="`启用 ${agent.id || 'Subagent'}`"><span /></label></div>
+          <div class="model-card__actions"><button type="button" class="text-button text-button--compact" :data-testid="`remove-slot-${index}`" @click="removeSubagent(index)">删除 slot</button></div>
+          <label class="field-label" :for="`slot-id-${index}`">Slot ID</label>
+          <input :id="`slot-id-${index}`" v-model="agent.id" class="field-control" :data-testid="`slot-id-${index}`" type="text" autocomplete="off">
+          <label class="field-label" :for="`slot-provider-${index}`">Provider</label>
+          <input :id="`slot-provider-${index}`" v-model="agent.provider" class="field-control" :data-testid="`slot-provider-${index}`" type="text" autocomplete="off">
+          <label class="field-label" :for="`slot-model-${index}`">模型</label>
+          <input :id="`slot-model-${index}`" v-model="agent.model" class="field-control" :data-testid="`slot-model-${index}`" type="text" autocomplete="off">
+          <label class="field-label" :for="`slot-credential-ref-${index}`">Credential ref</label>
+          <input :id="`slot-credential-ref-${index}`" v-model="agent.credentialRef" class="field-control" :data-testid="`slot-credential-ref-${index}`" type="text" autocomplete="off" placeholder="secret/subagent-id">
+          <small class="field-help">仅保存 secret reference，不填写或显示明文凭据。</small>
+          <div class="subagent-limits">
+            <label class="field-label" :for="`slot-context-window-${index}`">Context window</label>
+            <input :id="`slot-context-window-${index}`" v-model.number="agent.contextWindowTokens" class="field-control field-control--number" :data-testid="`slot-context-window-${index}`" type="number" min="16000" max="1000000">
+            <label class="field-label" :for="`slot-max-tool-rounds-${index}`">Max Tool rounds</label>
+            <input :id="`slot-max-tool-rounds-${index}`" v-model.number="agent.maxToolRounds" class="field-control field-control--number" :data-testid="`slot-max-tool-rounds-${index}`" type="number" min="1" max="100">
+            <label class="field-label" :for="`slot-max-parallel-${index}`">Max parallel</label>
+            <input :id="`slot-max-parallel-${index}`" v-model.number="agent.maxParallel" class="field-control field-control--number" :data-testid="`slot-max-parallel-${index}`" type="number" min="1" max="8">
+          </div>
           <div class="model-meta"><span>状态</span><StatusBadge :label="agent.enabled ? '已启用' : '已停用'" :tone="agent.enabled ? 'success' : 'neutral'" /></div>
         </article>
       </div>

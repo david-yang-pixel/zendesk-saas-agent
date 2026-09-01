@@ -53,6 +53,8 @@ interface ApiSubagentSlotConfig extends ApiModelConfig {
   slot_id: string
   enabled: boolean
   max_parallel: number
+  context_window_tokens: number
+  max_tool_rounds: number
 }
 
 interface ApiProcessingRules {
@@ -248,6 +250,8 @@ function toConfig(value: ApiAdminConfig): AdminConfig {
       model: slot.model,
       credentialRef: slot.credential_ref,
       maxParallel: slot.max_parallel,
+      contextWindowTokens: slot.context_window_tokens,
+      maxToolRounds: slot.max_tool_rounds,
     })),
     rules: {
       saasTag: value.rules.saas_tag,
@@ -282,6 +286,8 @@ function toApiConfig(value: AdminConfig): ApiAdminConfig {
       model: slot.model,
       credential_ref: slot.credentialRef,
       max_parallel: slot.maxParallel,
+      context_window_tokens: slot.contextWindowTokens,
+      max_tool_rounds: slot.maxToolRounds,
     })),
     rules: {
       saas_tag: value.rules.saasTag,
