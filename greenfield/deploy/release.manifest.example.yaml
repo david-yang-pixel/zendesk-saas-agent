@@ -7,8 +7,8 @@ metadata:
   name: casework-2026-09-01-e9d4958
   generatedAt: "2026-09-01T00:00:00Z"
 spec:
-  gitRevision: e9d4958
-  migrationRevision: 0004_job_session_id
+  gitRevision: e9d4958c52253c6ca903adf5727dfcc770f62216
+  migrationRevision: 0005_run_telemetry
   images:
     ingress:
       repository: registry.example.invalid/casework-ingress

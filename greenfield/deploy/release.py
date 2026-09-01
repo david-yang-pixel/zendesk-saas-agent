@@ -17,6 +17,7 @@ import yaml
 
 IMAGE_NAMES = ("ingress", "harness", "sandbox", "admin")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+_GIT_REVISION = re.compile(r"[0-9a-f]{40}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,8 +80,11 @@ def load_release_manifest(path: Path) -> ReleaseManifest:
             digest=digest,
         )
 
+    git_revision = _required_string(spec, "gitRevision")
+    if not _GIT_REVISION.fullmatch(git_revision):
+        raise ValueError("release manifest gitRevision must be a full commit SHA")
     return ReleaseManifest(
-        git_revision=_required_string(spec, "gitRevision"),
+        git_revision=git_revision,
         migration_revision=_required_string(spec, "migrationRevision"),
         images=images,
     )
@@ -98,9 +102,12 @@ def render_environment(manifest: ReleaseManifest) -> dict[str, str]:
 
 
 def render_dotenv(manifest: ReleaseManifest) -> str:
-    return "\n".join(
-        f"{name}={value}" for name, value in render_environment(manifest).items()
-    ) + "\n"
+    return (
+        "\n".join(
+            f"{name}={value}" for name, value in render_environment(manifest).items()
+        )
+        + "\n"
+    )
 
 
 def main() -> None:

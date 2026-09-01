@@ -2,7 +2,7 @@ name: casework-greenfield
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
     environment:
       POSTGRES_DB: casework
       POSTGRES_USER: casework
@@ -14,6 +14,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.35
 
   migration:
     image: ${CASEWORK_HARNESS_IMAGE:?render a release manifest first}
@@ -28,11 +31,19 @@ services:
 
   ingress:
     image: ${CASEWORK_INGRESS_IMAGE:?render a release manifest first}
-    environment: *common-environment
-    ports: ["8101:8101"]
+    environment:
+      <<: *common-environment
+      ZENDESK_BASE_URL: ${ZENDESK_BASE_URL:?set ZENDESK_BASE_URL}
+      ZENDESK_EMAIL: ${ZENDESK_EMAIL:?set ZENDESK_EMAIL}
+      ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}
+      ZENDESK_MESSAGING_WEBHOOK_SECRET: ${ZENDESK_MESSAGING_WEBHOOK_SECRET:?set ZENDESK_MESSAGING_WEBHOOK_SECRET}
+    ports: ["127.0.0.1:${CASEWORK_INGRESS_PORT:-18101}:8101"]
     depends_on:
       migration:
         condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
 
   harness:
     image: ${CASEWORK_HARNESS_IMAGE:?render a release manifest first}
@@ -44,10 +55,12 @@ services:
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}
       CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:?set CASEWORK_MODEL_BASE_URL}
       CASEWORK_TOOL_CONFIG: ${CASEWORK_TOOL_CONFIG:?set CASEWORK_TOOL_CONFIG}
+      CASEWORK_DELIVERY_MODE: ${CASEWORK_DELIVERY_MODE:-dry_run}
+      CASEWORK_CANARY_TICKET_IDS: ${CASEWORK_CANARY_TICKET_IDS:-}
     env_file:
       - path: ${CASEWORK_CREDENTIAL_ENV_FILE:?set CASEWORK_CREDENTIAL_ENV_FILE}
         required: true
-    ports: ["8102:8102"]
+    ports: ["127.0.0.1:${CASEWORK_HARNESS_PORT:-18102}:8102"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     group_add:
@@ -57,14 +70,22 @@ services:
     depends_on:
       migration:
         condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.35
 
   admin:
     image: ${CASEWORK_ADMIN_IMAGE:?render a release manifest first}
-    environment: *common-environment
-    ports: ["8104:8104"]
+    environment:
+      <<: *common-environment
+      CASEWORK_TOOL_PROBE_ENDPOINTS: ${CASEWORK_TOOL_PROBE_ENDPOINTS:-}
+    ports: ["127.0.0.1:${CASEWORK_ADMIN_PORT:-18104}:8104"]
     depends_on:
       migration:
         condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
 
 volumes:
   casework-postgres:

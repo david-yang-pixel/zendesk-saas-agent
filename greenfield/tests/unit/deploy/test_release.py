@@ -13,9 +13,10 @@ def test_release_manifest_renders_only_digest_pinned_images() -> None:
     manifest = load_release_manifest(fixture)
     environment = render_environment(manifest)
 
-    assert environment["CASEWORK_RELEASE_REVISION"] == "e9d4958"
-    assert environment["CASEWORK_CONFIG_REVISION"] == "e9d4958"
-    assert environment["CASEWORK_MIGRATION_REVISION"] == "0004_job_session_id"
+    revision = "e9d4958c52253c6ca903adf5727dfcc770f62216"
+    assert environment["CASEWORK_RELEASE_REVISION"] == revision
+    assert environment["CASEWORK_CONFIG_REVISION"] == revision
+    assert environment["CASEWORK_MIGRATION_REVISION"] == "0005_run_telemetry"
     assert set(environment) == {
         "CASEWORK_ADMIN_IMAGE",
         "CASEWORK_CONFIG_REVISION",
@@ -64,4 +65,17 @@ def test_release_manifest_rejects_mutable_or_missing_image_digest(
     )
 
     with pytest.raises(ValueError, match="digest"):
+        load_release_manifest(manifest)
+
+
+def test_release_manifest_requires_full_commit_sha(tmp_path: Path) -> None:
+    manifest = tmp_path / "invalid-revision.yaml"
+    fixture = Path(__file__).parents[3] / "deploy/release.manifest.example.yaml"
+    manifest.write_text(
+        fixture.read_text().replace(
+            "e9d4958c52253c6ca903adf5727dfcc770f62216", "abc1234"
+        )
+    )
+
+    with pytest.raises(ValueError, match="full commit SHA"):
         load_release_manifest(manifest)
