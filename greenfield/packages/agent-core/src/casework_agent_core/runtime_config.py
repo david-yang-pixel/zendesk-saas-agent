@@ -77,9 +77,7 @@ def resolve_model_credentials(
 ) -> ResolvedModelBinding:
     secret = resolver.resolve(binding.credential_ref)
     if secret is None or not secret.strip():
-        raise RuntimeConfigError(
-            f"credential_ref cannot be resolved: {binding.credential_ref}"
-        )
+        raise RuntimeConfigError("model credential unavailable")
     return ResolvedModelBinding(
         provider=binding.provider,
         model=binding.model,

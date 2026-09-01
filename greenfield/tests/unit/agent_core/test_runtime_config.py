@@ -36,9 +36,9 @@ def test_secret_resolver_resolves_refs_only_and_never_changes_bootstrap() -> Non
 
 
 def test_secret_resolver_fails_closed_for_unknown_or_inherited_credentials() -> None:
-    with pytest.raises(RuntimeConfigError, match="credential_ref"):
+    with pytest.raises(RuntimeConfigError, match="credential unavailable") as error:
         resolve_model_credentials(
             ModelBinding(provider="openai", model="child", credential_ref="secret/no"),
             resolver=MappingSecretResolver({}),
         )
-
+    assert "secret/no" not in str(error.value)
