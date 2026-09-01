@@ -31,6 +31,7 @@ from zd_agent.casework.policies.investigation_completion import (
     enforce_investigation_completion,
 )
 from zd_agent.casework.policies.ownership import admit_action_proposal
+from zd_agent.casework.policies.reply_language import resolve_ticket_reply_language
 
 
 def _admit_claims(
@@ -167,9 +168,7 @@ def _blocking_failure(
         return proposal.blocking_failure
     if answer_status is not AnswerStatus.INSUFFICIENT:
         return None
-    return _identity_context_failure(context=context) or _billing_context_failure(
-        context,
-    )
+    return _identity_context_failure(context=context) or _billing_context_failure(context)
 
 
 def _retry_exhausted_action(
@@ -321,6 +320,7 @@ def _case_assessment(
 ) -> CaseAssessment:
     return CaseAssessment(
         question=proposal.question,
+        reply_language=resolve_ticket_reply_language(context.ticket),
         answer_status=answer_status,
         admitted_claims=admitted_claims,
         customer_only_fields=customer_fields,

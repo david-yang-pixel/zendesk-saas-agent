@@ -240,6 +240,106 @@ async def test_exact_human_command_skips_investigation_and_requests_support() ->
     assert "support specialist" in run.reply_draft.body
 
 
+async def test_japanese_locale_receives_japanese_deterministic_intake_reply() -> None:
+    investigator = FakeInvestigator(
+        InvestigationResult(
+            proposal=AssessmentProposal(
+                question="This result must never be used.",
+                answer_status=AnswerStatus.INSUFFICIENT,
+            ),
+        ),
+    )
+    orchestrator = CaseworkOrchestrator(
+        context_builder=NeverContextBuilder(),  # type: ignore[arg-type]
+        investigator=investigator,
+        reply_composer=ReplyComposer(
+            writer=PolicyReplyWriter(),
+            reviewer=NoOpReplyReviewer(),
+        ),
+        clock=FakeClock(),
+    )
+    ticket = TicketSnapshot(
+        ticket_id=4217,
+        generation=1,
+        status="new",
+        channel="messaging",
+        locale="ja-JP",
+        latest_event_id="event-ja-form",
+        latest_event_at=NOW,
+        questions=(),
+        form_identity=FormIdentity(email="hanako@example.com"),
+    )
+
+    run = await orchestrator.run(
+        ticket=ticket,
+        billing_required=False,
+        execution_mode=ExecutionMode.CASEWORK,
+    )
+
+    assert run.reply_draft is not None
+    assert run.reply_draft.language == "ja"
+    assert run.reply_draft.body.startswith(
+        "Difyサポートにお問い合わせいただきありがとうございます。"
+    )
+    assert "発生している問題について" in run.reply_draft.body
+
+
+async def test_japanese_language_question_is_answered_without_account_investigation() -> (
+    None
+):
+    investigator = FakeInvestigator(
+        InvestigationResult(
+            proposal=AssessmentProposal(
+                question="This result must never be used.",
+                answer_status=AnswerStatus.INSUFFICIENT,
+            ),
+        ),
+    )
+    context_builder = NeverContextBuilder()
+    orchestrator = CaseworkOrchestrator(
+        context_builder=context_builder,  # type: ignore[arg-type]
+        investigator=investigator,
+        reply_composer=ReplyComposer(
+            writer=PolicyReplyWriter(),
+            reviewer=NoOpReplyReviewer(),
+        ),
+        clock=FakeClock(),
+    )
+    message = "これはテストメールです。日本語で送っても大丈夫ですか？"
+    ticket = TicketSnapshot(
+        ticket_id=4217,
+        generation=2,
+        status="open",
+        channel="messaging",
+        locale="ja-JP",
+        latest_event_id="event-ja-question",
+        latest_event_at=NOW,
+        questions=(message,),
+        customer_messages=(
+            CustomerMessageEvent(
+                event_id="event-ja-question",
+                occurred_at=NOW,
+                body=message,
+            ),
+        ),
+        form_identity=FormIdentity(email="hanako@example.com"),
+    )
+
+    run = await orchestrator.run(
+        ticket=ticket,
+        billing_required=False,
+        execution_mode=ExecutionMode.CASEWORK,
+    )
+
+    assert context_builder.calls == 0
+    assert investigator.calls == 0
+    assert run.reply_draft is not None
+    assert run.reply_draft.language == "ja"
+    assert run.reply_draft.body.startswith(
+        "はい、日本語でお問い合わせいただいて問題ありません。"
+    )
+
+
 async def test_human_command_stays_active_when_customer_adds_detail() -> None:
     investigator = FakeInvestigator(
         InvestigationResult(

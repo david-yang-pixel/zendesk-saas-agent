@@ -55,6 +55,7 @@ OwnershipSender = Callable[..., Awaitable[bool]]
 _AI_DISCLOSURES = (
     "This reply was sent by Dify AI Agent.",
     "This reply was sent by Dify AI Support.",
+    "この返信はDify AI Agentによって送信されました。",
 )
 
 

@@ -47,10 +47,34 @@ _WORKSPACE_IDENTITY_REQUEST_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 
 
-def public_reply_language_blockers(body: str) -> tuple[str, ...]:
-    """Reject alphabetic scripts that cannot be part of an English reply."""
+def public_reply_language_blockers(
+    body: str,
+    *,
+    language: str = "en",
+) -> tuple[str, ...]:
+    """Reject customer prose that does not match the code-resolved language."""
+
+    if language == "ja":
+        saw_japanese = False
+        for paragraph in re.split(r"(?:\r?\n){2,}", body.strip()):
+            stripped = paragraph.strip()
+            if not stripped:
+                continue
+            if _JAPANESE_KANA_RE.search(stripped):
+                saw_japanese = True
+                continue
+            if any(character.isalpha() for character in stripped):
+                return ("public reply paragraph does not match Japanese language",)
+        return (
+            ()
+            if saw_japanese
+            else ("public reply contains no verifiable Japanese prose",)
+        )
+    if language != "en":
+        return (f"unsupported public reply language: {language}",)
     for character in body:
         if character.isalpha() and "LATIN" not in unicodedata.name(character, ""):
             return ("public reply contains non-English alphabetic text",)
@@ -114,7 +138,12 @@ def _safety_reasons(
         reasons.append("reply promises human follow-up without durable ownership")
     if _INTERNAL_EVIDENCE_RE.search(candidate.body):
         reasons.append("reply exposes internal evidence or implementation details")
-    reasons.extend(public_reply_language_blockers(candidate.body))
+    reasons.extend(
+        public_reply_language_blockers(
+            candidate.body,
+            language=candidate.language,
+        ),
+    )
     return tuple(reasons)
 
 

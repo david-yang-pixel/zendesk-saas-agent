@@ -6,10 +6,8 @@ import unicodedata
 from lingua import Language, LanguageDetectorBuilder
 from wordfreq import zipf_frequency  # pyright: ignore[reportMissingTypeStubs]
 
-from zd_agent.casework.policies.reply_quality import public_reply_language_blockers
-
-
 _LANGUAGE_SEGMENT_RE = re.compile(r"(?<=[.!?])\s+|[\r\n]+")
+_JAPANESE_KANA_RE = re.compile(r"[\u3040-\u30ff]")
 _WORD_JOINERS = frozenset({"'", "’", "-"})
 _ENGLISH_ACKNOWLEDGEMENT_SEGMENTS = frozenset(
     {
@@ -204,8 +202,9 @@ def _contains_detected_language_function_word(
 
 def public_reply_english_blockers(body: str) -> tuple[str, ...]:
     """Require every customer-visible prose segment to be detected as English."""
-    if blockers := public_reply_language_blockers(body):
-        return blockers
+    for character in body:
+        if character.isalpha() and "LATIN" not in unicodedata.name(character, ""):
+            return ("public reply contains non-English alphabetic text",)
     saw_words = False
     for segment in _LANGUAGE_SEGMENT_RE.split(body):
         words = _latin_words(segment)
@@ -223,3 +222,30 @@ def public_reply_english_blockers(body: str) -> tuple[str, ...]:
             detected = language.name.casefold() if language is not None else "unknown"
             return (f"public reply was not verified as English (detected {detected})",)
     return () if saw_words else ("public reply contains no verifiable English prose",)
+
+
+def public_reply_japanese_blockers(body: str) -> tuple[str, ...]:
+    """Require each customer-visible prose paragraph to contain Japanese kana."""
+
+    saw_japanese = False
+    paragraphs = re.split(r"(?:\r?\n){2,}", body.strip())
+    for paragraph in paragraphs:
+        stripped = paragraph.strip()
+        if not stripped:
+            continue
+        if _JAPANESE_KANA_RE.search(stripped):
+            saw_japanese = True
+            continue
+        if any(character.isalpha() for character in stripped):
+            return ("public reply contains prose not verified as Japanese",)
+    return () if saw_japanese else ("public reply contains no verifiable Japanese prose",)
+
+
+def verified_public_reply_language(body: str) -> str | None:
+    """Return the verified supported language for one complete public reply."""
+
+    if not public_reply_japanese_blockers(body):
+        return "ja"
+    if not public_reply_english_blockers(body):
+        return "en"
+    return None

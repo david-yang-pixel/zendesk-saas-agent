@@ -61,6 +61,36 @@ async def test_exhausted_automation_reply_explains_retry_without_requesting_iden
     assert "workspace id" not in candidate.body.casefold()
 
 
+async def test_exhausted_automation_reply_uses_japanese_customer_language() -> None:
+    action = _action(
+        OwnershipAction.SUPPORT,
+        ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+    )
+    assessment = CaseAssessment(
+        question="日本語で送っても大丈夫ですか？",
+        reply_language="ja",
+        answer_status=AnswerStatus.INSUFFICIENT,
+        human_action=action,
+    )
+    decision = DispositionDecision(
+        disposition=Disposition.HUMAN_ACTION_REQUIRED,
+        reply_kind=ReplyKind.PROGRESS,
+        ownership_action=OwnershipAction.SUPPORT,
+        reason_code=ReasonCode.AUTOMATION_RETRY_EXHAUSTED,
+        evidence_ids=("ev-current",),
+    )
+
+    candidate = await PolicyReplyWriter().write_reply(
+        assessment=assessment,
+        decision=decision,
+    )
+
+    assert candidate.language == "ja"
+    assert candidate.body.startswith("必要な確認を再試行しましたが")
+    assert "サポート担当者" in candidate.body
+    assert "This reply was sent" not in candidate.body
+
+
 async def test_business_approval_reply_names_the_decision_not_a_generic_handoff() -> (
     None
 ):

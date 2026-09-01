@@ -9,11 +9,20 @@ _REQUIRED_AI_FOOTER = (
     "reply \u201chuman\u201d. A human support engineer will respond as soon as possible "
     "during support hours, 9:00 AM\u20136:00 PM Beijing Time (UTC+8)."
 )
+_REQUIRED_AI_FOOTER_JA = (
+    "この返信はDify AI Agentによって送信されました。問題が解決しない場合は、"
+    "「human」と返信してください。サポート担当者が、北京時間（UTC+8）の"
+    "サポート時間（午前9時～午後6時）内にできるだけ早く対応します。"
+)
 _FOOTER_BY_TYPE = {
     "ask": _REQUIRED_AI_FOOTER,
     "solution": _REQUIRED_AI_FOOTER,
     "handoff": _REQUIRED_AI_FOOTER,
     "closed": _REQUIRED_AI_FOOTER,
+}
+_FOOTER_BY_LANGUAGE = {
+    "en": _FOOTER_BY_TYPE,
+    "ja": {reply_type: _REQUIRED_AI_FOOTER_JA for reply_type in _FOOTER_BY_TYPE},
 }
 _VALID_REPLY_TYPES = frozenset(_FOOTER_BY_TYPE)
 _DOCS_MD_PATTERN = re.compile(r"(https?://docs\.dify\.ai/[^\s\)\]>]+?)\.md\b")
@@ -197,9 +206,11 @@ def _append_footer(
     reply_type: str,
     *,
     now: datetime | None = None,
+    language: str = "en",
 ) -> str:
+    _ = now
     body = _format_reply_body(_strip_docs_md_suffix(body))
-    footer = _FOOTER_BY_TYPE[reply_type]
+    footer = _FOOTER_BY_LANGUAGE[language][reply_type]
     if body.rstrip().endswith(footer):
         return _preserve_visual_blank_lines_for_messaging(body)
     return _preserve_visual_blank_lines_for_messaging(

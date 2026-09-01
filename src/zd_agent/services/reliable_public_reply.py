@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from zd_agent.casework.adapters.language import public_reply_english_blockers
+from zd_agent.casework.adapters.language import verified_public_reply_language
 from zd_agent.config import AppConfig, EnvSettings, get_config
 from zd_agent.integrations.zendesk_browser_relay import (
     BrowserRelayDefiniteUnsentError,
@@ -142,11 +142,12 @@ def _validated_request(
         )
     if not isinstance(body, str) or not body.strip():
         raise ReliablePublicReplyRejected("body is empty")
-    language_blockers = public_reply_english_blockers(body.strip())
-    if language_blockers:
+    language = verified_public_reply_language(body.strip())
+    if language is None:
         raise ReliablePublicReplyRejected(
-            "Public reply English hard gate blocked this reply. "
-            "Regenerate the customer response in English before delivery."
+            "Public reply language hard gate blocked this reply. Regenerate the "
+            "customer response in the code-resolved supported language before "
+            "delivery."
         )
     blockers = public_reply_privacy_blockers(body.strip())
     if blockers:
@@ -179,7 +180,7 @@ def _validated_request(
         delivery_attempt_id.strip(),
         (snapshot_customer_last_message_id or "").strip() or None,
         internal_analysis.strip(),
-        _append_footer(body.strip(), reply_type),
+        _append_footer(body.strip(), reply_type, language=language),
     )
 
 

@@ -110,6 +110,32 @@ async def test_disabled_internal_audit_note_only_sends_public_reply(
 
 
 @pytest.mark.asyncio
+async def test_japanese_casework_reply_passes_language_gate_and_keeps_japanese_footer(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _config(tmp_path)
+    relay, _zendesk = _patch_safe_boundaries(monkeypatch, cfg=cfg)
+
+    result = await send_casework_public_reply_with_freshness(
+        ticket_id=4217,
+        body="日本語でお問い合わせいただいて問題ありません。",
+        reply_type="solution",
+        conversation_id="conversation-4217",
+        snapshot_customer_message_count=2,
+        snapshot_customer_last_message_id="ja-message-2",
+        delivery_attempt_id="casework:4217:ja-message-2",
+        internal_analysis="Language regression verification.",
+    )
+
+    assert result.success is True
+    delivered = relay.await_args.kwargs["body"]
+    assert delivered.startswith("日本語でお問い合わせいただいて問題ありません。")
+    assert "この返信はDify AI Agentによって送信されました。" in delivered
+    assert "This reply was sent by Dify AI Agent." not in delivered
+
+
+@pytest.mark.asyncio
 async def test_casework_rejects_requested_handoff_before_context_or_outbox(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -153,7 +179,7 @@ async def test_casework_rejects_requested_handoff_before_context_or_outbox(
         "Confirmamos que su suscripción está activa.",
     ),
 )
-async def test_non_english_reply_is_blocked_before_context_or_outbox(
+async def test_unsupported_language_reply_is_blocked_before_context_or_outbox(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     body: str,
@@ -183,7 +209,7 @@ async def test_non_english_reply_is_blocked_before_context_or_outbox(
     )
 
     assert result.success is False
-    assert "English" in result.message
+    assert "language hard gate" in result.message
     context.assert_not_called()
     store_factory.assert_not_called()
     relay.assert_not_awaited()

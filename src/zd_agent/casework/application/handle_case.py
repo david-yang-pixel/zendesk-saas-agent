@@ -8,6 +8,8 @@ from zd_agent.casework.application.compose_reply import ReplyComposer
 from zd_agent.casework.domain.enums import (
     ActionRequirement,
     AnswerStatus,
+    ClaimRole,
+    ClaimStatus,
     EvidenceAuthority,
     EvidenceResultStatus,
     ExecutionMode,
@@ -23,6 +25,8 @@ from zd_agent.casework.domain.models import (
     CaseAssessment,
     CaseContext,
     CaseworkRun,
+    Claim,
+    ClaimAdmission,
     CustomerMessageEvent,
     EvidenceItem,
     HumanActionRequest,
@@ -34,11 +38,18 @@ from zd_agent.casework.domain.models import (
 )
 from zd_agent.casework.policies.disposition import decide_disposition
 from zd_agent.casework.policies.ownership import active_human_request_index
+from zd_agent.casework.policies.reply_language import (
+    asks_whether_japanese_is_supported,
+    japanese_support_confirmation,
+    resolve_ticket_reply_language,
+)
 from zd_agent.casework.ports.investigation import CaseInvestigator
 from zd_agent.casework.ports.readers import Clock
 
 
-def _missing_issue_result() -> tuple[InvestigationResult, AssessmentBuild]:
+def _missing_issue_result(
+    ticket: TicketSnapshot,
+) -> tuple[InvestigationResult, AssessmentBuild]:
     question = "The customer has not yet described the issue."
     investigation = InvestigationResult(
         proposal=AssessmentProposal(
@@ -49,6 +60,7 @@ def _missing_issue_result() -> tuple[InvestigationResult, AssessmentBuild]:
     )
     assessment = CaseAssessment(
         question=question,
+        reply_language=resolve_ticket_reply_language(ticket),
         answer_status=AnswerStatus.INSUFFICIENT,
         customer_only_fields=("issue_description",),
     )
@@ -120,11 +132,64 @@ def _human_request_result(
     )
     assessment = CaseAssessment(
         question=event.body,
+        reply_language=resolve_ticket_reply_language(ticket),
         answer_status=AnswerStatus.INSUFFICIENT,
         human_action=action,
         evidence_ids=(evidence_id,),
     )
     return investigation, AssessmentBuild(assessment=assessment)
+
+
+def _language_support_result(
+    ticket: TicketSnapshot,
+    event: CustomerMessageEvent,
+) -> tuple[InvestigationResult, AssessmentBuild]:
+    evidence_id = "policy:supported-customer-language:ja:v1"
+    language = resolve_ticket_reply_language(ticket)
+    claim = Claim(
+        claim_id=f"ticket:{ticket.ticket_id}:japanese-support",
+        statement=japanese_support_confirmation(language),
+        role=ClaimRole.PRODUCT_FACT,
+        status=ClaimStatus.CONFIRMED,
+        supporting_evidence_ids=(evidence_id,),
+        public_allowed=True,
+    )
+    evidence = EvidenceItem(
+        evidence_id=evidence_id,
+        call_id=evidence_id,
+        source="casework-policy",
+        authority=EvidenceAuthority.CURRENT_AUTHORITATIVE,
+        result_status=EvidenceResultStatus.SUCCESS,
+        observed_at=event.occurred_at,
+        supports_roles=(ClaimRole.PRODUCT_FACT,),
+        payload={"supported_customer_language": "ja"},
+    )
+    investigation = InvestigationResult(
+        proposal=AssessmentProposal(
+            question=event.body,
+            answer_status=AnswerStatus.SUPPORTED,
+            proposed_claims=(claim,),
+            evidence_ids=(evidence_id,),
+        ),
+        evidence=(evidence,),
+    )
+    assessment = CaseAssessment(
+        question=event.body,
+        reply_language=language,
+        answer_status=AnswerStatus.SUPPORTED,
+        admitted_claims=(claim,),
+        evidence_ids=(evidence_id,),
+    )
+    return investigation, AssessmentBuild(
+        assessment=assessment,
+        admissions=(
+            ClaimAdmission(
+                claim_id=claim.claim_id,
+                accepted=True,
+                eligible_evidence_ids=(evidence_id,),
+            ),
+        ),
+    )
 
 
 def _deterministic_result(
@@ -144,8 +209,19 @@ def _deterministic_result(
             )
         )
         return _human_request_result(ticket, event)
+    if bodies and asks_whether_japanese_is_supported(bodies[-1]):
+        event = (
+            messages[-1]
+            if messages
+            else CustomerMessageEvent(
+                event_id=ticket.latest_event_id,
+                occurred_at=ticket.latest_event_at,
+                body=bodies[-1],
+            )
+        )
+        return _language_support_result(ticket, event)
     if not ticket.questions:
-        return _missing_issue_result()
+        return _missing_issue_result(ticket)
     return None
 
 

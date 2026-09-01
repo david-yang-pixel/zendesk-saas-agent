@@ -143,7 +143,7 @@ def _decision_consistency_error(decision: DispositionDecision) -> str:
 
 class ReplyCandidate(FrozenModel):
     body: str = Field(min_length=1)
-    language: str = "en"
+    language: str = Field(default="en", pattern=r"^(?:en|ja)$")
     reply_kind: ReplyKind
     used_claim_ids: tuple[str, ...] = ()
     requested_customer_fields: tuple[str, ...] = ()
@@ -156,8 +156,6 @@ class ReplyCandidate(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_candidate(self) -> ReplyCandidate:
-        if self.language != "en":
-            raise ValueError("public reply language must be English")
         if len(self.used_claim_ids) != len(set(self.used_claim_ids)):
             raise ValueError("reply candidate cannot repeat claim IDs")
         if len(self.requested_customer_fields) != len(
@@ -169,7 +167,7 @@ class ReplyCandidate(FrozenModel):
 
 class ReplyDraft(FrozenModel):
     body: str = Field(min_length=1)
-    language: str = "en"
+    language: str = Field(default="en", pattern=r"^(?:en|ja)$")
     reply_kind: ReplyKind
     disposition: Disposition
     ownership_action: OwnershipAction

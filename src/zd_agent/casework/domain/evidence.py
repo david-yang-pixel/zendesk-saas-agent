@@ -168,6 +168,7 @@ class ActionProposal(FrozenModel):
 
 class CaseAssessment(FrozenModel):
     question: str = Field(min_length=1)
+    reply_language: str = Field(default="en", pattern=r"^(?:en|ja)$")
     answer_status: AnswerStatus
     admitted_claims: tuple[Claim, ...] = ()
     customer_only_fields: tuple[str, ...] = ()

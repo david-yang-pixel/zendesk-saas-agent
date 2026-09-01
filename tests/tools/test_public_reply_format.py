@@ -24,3 +24,17 @@ def test_required_ai_footer_is_idempotent() -> None:
     once = _append_footer("Customer-visible body.", "solution")
 
     assert _append_footer(once, "solution") == once
+
+
+def test_japanese_public_reply_uses_japanese_ai_footer_idempotently() -> None:
+    body = "日本語でお問い合わせいただいて問題ありません。"
+
+    once = _append_footer(body, "solution", language="ja")
+
+    assert once.startswith(body)
+    assert once.endswith(
+        "この返信はDify AI Agentによって送信されました。問題が解決しない場合は、"
+        "「human」と返信してください。サポート担当者が、北京時間（UTC+8）の"
+        "サポート時間（午前9時～午後6時）内にできるだけ早く対応します。"
+    )
+    assert _append_footer(once, "solution", language="ja") == once

@@ -225,7 +225,7 @@ def _bind_claim_to_context(context: CaseContext, claim: Claim) -> Claim:
     )
 
 
-_FIELD_QUESTIONS = {
+_FIELD_QUESTIONS_EN = {
     "issue_description": (
         "Hi, thanks for contacting Dify Support. Could you please describe the "
         "issue you\u2019re experiencing?"
@@ -244,15 +244,52 @@ _FIELD_QUESTIONS = {
     "customer_authorization": "Please confirm whether you authorize this account action.",
 }
 
+_FIELD_QUESTIONS_JA = {
+    "issue_description": (
+        "Difyサポートにお問い合わせいただきありがとうございます。"
+        "発生している問題について、詳しく教えていただけますか？"
+    ),
+    "target_workspace_choice": (
+        "このメールアドレスに複数のワークスペースが関連付けられています。"
+        "影響を受けているワークスペース名を教えてください。"
+    ),
+    "target_workspace_identity": (
+        "影響を受けているワークスペースに関連付けられたメールアドレスを"
+        "お知らせください。"
+    ),
+    "reproduction_steps": "問題を再現する正確な手順を教えてください。",
+    "request_timestamp": (
+        "影響を受けたリクエストのおおよその時刻とタイムゾーンを"
+        "お知らせください。"
+    ),
+    "affected_object_id": (
+        "アカウント画面に表示されている対象オブジェクトのIDをお知らせください。"
+    ),
+    "expected_behavior": "期待していた結果を教えてください。",
+    "actual_behavior": "実際に発生した状況を教えてください。",
+    "attachment_resend": (
+        "確認できるよう、スクリーンショットまたはファイルをもう一度"
+        "添付してください。"
+    ),
+    "customer_authorization": (
+        "このアカウント操作を承認するかどうか確認してください。"
+    ),
+}
 
-_OWNER_LABELS = {
+_FIELD_QUESTIONS_BY_LANGUAGE = {
+    "en": _FIELD_QUESTIONS_EN,
+    "ja": _FIELD_QUESTIONS_JA,
+}
+
+
+_OWNER_LABELS_EN = {
     OwnershipAction.SUPPORT: "support specialist",
     OwnershipAction.BILLING: "billing specialist",
     OwnershipAction.ENGINEERING: "engineering team",
     OwnershipAction.SRE: "site reliability team",
     OwnershipAction.SECURITY: "security team",
 }
-_OWNERSHIP_PARAGRAPHS = {
+_OWNERSHIP_PARAGRAPHS_EN = {
     ReasonCode.CUSTOMER_REQUESTED_HUMAN: (
         "You asked to continue with a support specialist. They will follow up in "
         "this ticket."
@@ -279,7 +316,52 @@ _OWNERSHIP_PARAGRAPHS = {
         "this ticket."
     ),
 }
-_AI_DISCLOSURE = "This reply was sent by Dify AI Agent."
+_OWNER_LABELS_JA = {
+    OwnershipAction.SUPPORT: "サポート担当者",
+    OwnershipAction.BILLING: "請求担当者",
+    OwnershipAction.ENGINEERING: "エンジニアリングチーム",
+    OwnershipAction.SRE: "サイト信頼性チーム",
+    OwnershipAction.SECURITY: "セキュリティチーム",
+}
+_OWNERSHIP_PARAGRAPHS_JA = {
+    ReasonCode.CUSTOMER_REQUESTED_HUMAN: (
+        "有人サポートでの継続をご希望とのこと、承知しました。"
+        "サポート担当者がこのチケットでご連絡します。"
+    ),
+    ReasonCode.BUSINESS_APPROVAL_REQUIRED: (
+        "返金の判断には請求担当者による確認が必要です。"
+        "確認結果を記録し、このチケットでご連絡します。"
+    ),
+    ReasonCode.SENSITIVE_ACCOUNT_MUTATION_REQUIRED: (
+        "このご依頼には保護されたアカウント操作が必要です。"
+        "サポート担当者が確認し、このチケットでご連絡します。"
+    ),
+    ReasonCode.SECURITY_OR_PRIVACY_REVIEW_REQUIRED: (
+        "このご依頼にはセキュリティまたはプライバシーの確認が必要です。"
+        "セキュリティチームがこのチケットでご連絡します。"
+    ),
+    ReasonCode.POLICY_COMMITMENT_REQUIRED: (
+        "ご希望の確約にはサポート担当者による確認が必要です。"
+        "確認後、このチケットでご連絡します。"
+    ),
+    ReasonCode.AUTOMATION_RETRY_EXHAUSTED: (
+        "必要な確認を再試行しましたが、安全に回答するための検証を"
+        "完了できませんでした。サポート担当者が引き続き確認し、"
+        "このチケットでご連絡します。"
+    ),
+}
+_OWNER_LABELS_BY_LANGUAGE = {
+    "en": _OWNER_LABELS_EN,
+    "ja": _OWNER_LABELS_JA,
+}
+_OWNERSHIP_PARAGRAPHS_BY_LANGUAGE = {
+    "en": _OWNERSHIP_PARAGRAPHS_EN,
+    "ja": _OWNERSHIP_PARAGRAPHS_JA,
+}
+_AI_DISCLOSURE_BY_LANGUAGE = {
+    "en": "This reply was sent by Dify AI Agent.",
+    "ja": "この返信はDify AI Agentによって送信されました。",
+}
 
 
 class PolicyReplyWriter:
@@ -291,26 +373,37 @@ class PolicyReplyWriter:
         assessment: CaseAssessment,
         decision: DispositionDecision,
     ) -> ReplyCandidate:
+        language = assessment.reply_language
+        field_questions = _FIELD_QUESTIONS_BY_LANGUAGE[language]
         paragraphs = [claim.statement.strip() for claim in assessment.admitted_claims]
         paragraphs.extend(
-            _FIELD_QUESTIONS[field]
+            field_questions[field]
             for field in decision.required_customer_fields
-            if field in _FIELD_QUESTIONS
+            if field in field_questions
         )
         if decision.ownership_action is not OwnershipAction.NONE:
-            owner = _OWNER_LABELS[decision.ownership_action]
+            owner = _OWNER_LABELS_BY_LANGUAGE[language][decision.ownership_action]
+            fallback = (
+                f"The remaining action requires our {owner}. "
+                "They will follow up in this ticket."
+                if language == "en"
+                else (
+                    f"残りの対応には{owner}による確認が必要です。"
+                    "このチケットでご連絡します。"
+                )
+            )
             paragraphs.append(
-                _OWNERSHIP_PARAGRAPHS.get(
+                _OWNERSHIP_PARAGRAPHS_BY_LANGUAGE[language].get(
                     decision.reason_code,
-                    f"The remaining action requires our {owner}. "
-                    "They will follow up in this ticket.",
+                    fallback,
                 ),
             )
         if not paragraphs:
             raise ValueError("reply decision has no admitted customer-safe content")
-        paragraphs.append(_AI_DISCLOSURE)
+        paragraphs.append(_AI_DISCLOSURE_BY_LANGUAGE[language])
         return ReplyCandidate(
             body="\n\n".join(paragraphs),
+            language=language,
             reply_kind=decision.reply_kind,
             used_claim_ids=tuple(
                 claim.claim_id for claim in assessment.admitted_claims

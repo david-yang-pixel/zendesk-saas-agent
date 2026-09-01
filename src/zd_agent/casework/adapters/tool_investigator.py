@@ -43,6 +43,7 @@ from zd_agent.casework.ports.readers import Clock
 from zd_agent.casework.policies.investigation_completion import (
     missing_completion_roles,
 )
+from zd_agent.casework.policies.reply_language import resolve_ticket_reply_language
 from zd_agent.runtime.llm.types import (
     LLMProvider,
     LLMResponse,
@@ -601,6 +602,8 @@ def _context_payload(context: CaseContext) -> dict[str, Any]:
             "generation": context.ticket.generation,
             "status": context.ticket.status,
             "channel": context.ticket.channel,
+            "locale": context.ticket.locale,
+            "reply_language": resolve_ticket_reply_language(context.ticket),
             "latest_event_id": context.ticket.latest_event_id,
             "latest_event_at": context.ticket.latest_event_at.isoformat(),
             "questions": context.ticket.questions,
