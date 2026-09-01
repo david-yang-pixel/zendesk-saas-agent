@@ -37,8 +37,8 @@ class DeliveryRequest:
     locale: str | None = None
 
     def __post_init__(self) -> None:
-        if self.generation < 0:
-            raise ValueError("generation must not be negative")
+        if self.generation < 1:
+            raise ValueError("generation must be positive")
         if self.snapshot_cursor is not None and not self.snapshot_cursor.strip():
             raise ValueError("snapshot_cursor must not be empty")
         if (

@@ -216,6 +216,11 @@ def _request(
     )
 
 
+def test_delivery_generation_starts_at_one() -> None:
+    with pytest.raises(ValueError, match="generation"):
+        _request(generation=0)
+
+
 @pytest.mark.asyncio
 async def test_answer_delivery_adds_japanese_footer_and_is_idempotent() -> None:
     freshness = FakeFreshness()
