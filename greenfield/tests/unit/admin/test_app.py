@@ -19,6 +19,8 @@ from casework_admin.config import (
 class _Client(Protocol):
     def get(self, url: str) -> httpx.Response: ...
 
+    def post(self, url: str) -> httpx.Response: ...
+
     def put(
         self, url: str, *, json: object, headers: dict[str, str]
     ) -> httpx.Response: ...
@@ -86,3 +88,34 @@ def test_admin_image_serves_built_web_console(
     response = client.get("/")
     assert response.status_code == 200
     assert "Casework console" in response.text
+
+
+def test_admin_read_models_are_available_for_all_console_pages() -> None:
+    client = _client()
+
+    overview = client.get("/api/overview")
+    runs = client.get("/api/runs")
+    registry = client.get("/api/registry")
+
+    assert overview.status_code == 200
+    assert overview.json()["desired_state"] == "paused"
+    assert {"metrics", "queue_health", "failures", "recent_runs"} <= set(
+        overview.json()
+    )
+    assert runs.status_code == 200
+    assert runs.json() == {"items": [], "total": 0}
+    assert registry.status_code == 200
+    assert registry.json() == {"skills": [], "tools": []}
+
+
+def test_registry_connection_test_is_a_typed_read_only_probe() -> None:
+    client = _client()
+
+    response = client.post("/api/registry/tools/sql/test")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "tool_id": "sql",
+        "status": "untested",
+        "latency_ms": None,
+    }

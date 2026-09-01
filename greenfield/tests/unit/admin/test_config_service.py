@@ -99,3 +99,7 @@ def test_subagent_requires_an_independent_model_configuration() -> None:
             max_parallel=1,
         )
 
+
+def test_model_configuration_accepts_references_but_not_raw_secret_material() -> None:
+    with pytest.raises(ValueError, match="credential_ref"):
+        ModelConfig(provider="openai", model="gpt-root", credential_ref="sk-live-token")
