@@ -75,3 +75,14 @@ def test_all_runtime_apps_have_isolated_source_roots() -> None:
     for package, app_root in APPLICATION_ROOTS.items():
         source_root = app_root / "src" / package
         assert source_root.is_dir(), f"missing isolated source root: {source_root}"
+
+
+def test_sandbox_is_an_ephemeral_image_not_a_compose_runtime_service() -> None:
+    compose = (GREENFIELD_ROOT / "deploy" / "compose.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "  sandbox-image:" in compose
+    assert 'profiles: ["image-build-only"]' in compose
+    assert "  sandbox:\n" not in compose
+    assert "SANDBOX_IMAGE: casework-sandbox:dev" in compose

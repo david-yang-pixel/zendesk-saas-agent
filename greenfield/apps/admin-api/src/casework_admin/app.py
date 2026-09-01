@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.staticfiles import StaticFiles
 
 from casework_admin.config import (
     AdminConfig,
@@ -77,4 +81,8 @@ def create_app(repository: ConfigRepository | None = None) -> FastAPI:
     app.add_api_route(
         "/api/config", update_config, methods=["PUT"], response_model=ConfigSnapshot
     )
+    web_dist_value = os.environ.get("ADMIN_WEB_DIST")
+    web_dist = Path(web_dist_value) if web_dist_value else None
+    if web_dist is not None and web_dist.is_dir():
+        app.mount("/", StaticFiles(directory=web_dist, html=True), name="admin-web")
     return app

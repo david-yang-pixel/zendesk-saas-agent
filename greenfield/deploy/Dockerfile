@@ -29,11 +29,6 @@ FROM python-deps AS app-base
 
 ENV PYTHONPATH=/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/apps/admin-api/src
 
-COPY packages ./packages
-COPY apps ./apps
-COPY migrations ./migrations
-COPY deploy ./deploy
-
 RUN addgroup --system casework \
     && adduser --system --ingroup casework casework \
     && chown -R casework:casework /app
@@ -46,6 +41,9 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
 FROM app-base AS ingress
 
 ENV SERVICE_PORT=8101
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/persistence ./packages/persistence
+COPY --chown=casework:casework apps/ingress ./apps/ingress
 EXPOSE 8101
 CMD ["/app/.venv/bin/uvicorn", "casework_ingress.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8101"]
 
@@ -53,6 +51,11 @@ CMD ["/app/.venv/bin/uvicorn", "casework_ingress.app:create_app", "--factory", "
 FROM app-base AS harness
 
 ENV SERVICE_PORT=8102
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/persistence ./packages/persistence
+COPY --chown=casework:casework apps/harness ./apps/harness
+COPY --chown=casework:casework migrations ./migrations
+COPY --chown=casework:casework deploy/migrate.py ./deploy/migrate.py
 EXPOSE 8102
 CMD ["/app/.venv/bin/uvicorn", "casework_harness.service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8102"]
 
@@ -60,6 +63,11 @@ CMD ["/app/.venv/bin/uvicorn", "casework_harness.service:create_app", "--factory
 FROM app-base AS sandbox
 
 ENV SERVICE_PORT=8103
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/agent-core ./packages/agent-core
+COPY --chown=casework:casework packages/tool-sdk ./packages/tool-sdk
+COPY --chown=casework:casework apps/sandbox ./apps/sandbox
+COPY --chown=casework:casework skills ./skills
 EXPOSE 8103
 CMD ["/app/.venv/bin/uvicorn", "casework_sandbox.service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8103"]
 
@@ -68,6 +76,9 @@ FROM app-base AS admin
 
 ENV SERVICE_PORT=8104 \
     ADMIN_WEB_DIST=/app/apps/admin-web/dist
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/persistence ./packages/persistence
+COPY --chown=casework:casework apps/admin-api ./apps/admin-api
 COPY --from=admin-web-build --chown=casework:casework /src/apps/admin-web/dist /app/apps/admin-web/dist
 EXPOSE 8104
 CMD ["/app/.venv/bin/uvicorn", "casework_admin.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]

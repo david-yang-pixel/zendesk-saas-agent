@@ -65,25 +65,12 @@ services:
       migration:
         condition: service_completed_successfully
 
-  sandbox:
+  sandbox-image:
     image: casework-sandbox:dev
     build:
       <<: *python-build
       target: sandbox
-    environment:
-      <<: *common-environment
-    deploy:
-      resources:
-        limits:
-          cpus: "0.5"
-          memory: 1G
-    mem_limit: 1G
-    memswap_limit: 1G
-    ports:
-      - "8103:8103"
-    depends_on:
-      migration:
-        condition: service_completed_successfully
+    profiles: ["image-build-only"]
 
   admin:
     image: casework-admin:dev

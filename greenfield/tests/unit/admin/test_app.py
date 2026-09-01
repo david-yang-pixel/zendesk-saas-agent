@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol, cast
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from casework_admin.app import create_app
@@ -70,3 +72,17 @@ def test_config_update_requires_current_revision() -> None:
     assert updated.json()["actor"] == "operator@example.com"
     assert stale.status_code == 409
 
+
+def test_admin_image_serves_built_web_console(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<main>Casework console</main>", encoding="utf-8")
+    monkeypatch.setenv("ADMIN_WEB_DIST", str(dist))
+
+    client = _client()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "Casework console" in response.text
