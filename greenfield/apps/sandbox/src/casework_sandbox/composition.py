@@ -36,7 +36,7 @@ from casework_agent_core.subagents import (
 from casework_agent_core.todo import TodoPlan
 from casework_sandbox.mcp import McpStreamableHttpTool
 from casework_sandbox.runtime import RuntimeOutcome, SandboxAgent
-from casework_sandbox.zendesk import ZendeskApiReader
+from casework_sandbox.zendesk import ZendeskApiReader, ZendeskMessagingLoader
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
 from contracts._base import ContractModel
 from contracts.outcome import Outcome, OutcomeKind
@@ -893,14 +893,9 @@ def create_production_commands(
     client = http_client or httpx.AsyncClient()
     values = os.environ if environ is None else environ
     resolver = EnvironmentSecretResolver(values)
-    reader = ZendeskApiReader(
-        client=client,
-        base_url=config.zendesk_base_url,
-        email=config.zendesk_email,
-        api_token=config.zendesk_api_token,
-    )
     registry = ToolRegistry()
     adapters: list[HttpInvestigationTool | McpStreamableHttpTool] = []
+    mcp_adapters: dict[str, McpStreamableHttpTool] = {}
     for tool_config in config.tool_configs:
         if tool_config.is_mcp:
             remote_tool_name = tool_config.remote_tool_name
@@ -924,6 +919,25 @@ def create_production_commands(
             adapter = HttpInvestigationTool(client=client, config=tool_config)
         registry.register(adapter.definition, adapter)
         adapters.append(adapter)
+        if isinstance(adapter, McpStreamableHttpTool):
+            mcp_adapters[tool_config.name] = adapter
+    ticket_tool = mcp_adapters.get("get_ticket")
+    conversation_tool = mcp_adapters.get("get_ticket_conversation_log")
+    messaging_loader = (
+        ZendeskMessagingLoader(
+            ticket_tool=ticket_tool,
+            conversation_tool=conversation_tool,
+        )
+        if ticket_tool is not None and conversation_tool is not None
+        else None
+    )
+    reader = ZendeskApiReader(
+        client=client,
+        base_url=config.zendesk_base_url,
+        email=config.zendesk_email,
+        api_token=config.zendesk_api_token,
+        messaging_loader=messaging_loader,
+    )
     return ProductionSandboxCommands(
         reader=reader,
         tools=registry,

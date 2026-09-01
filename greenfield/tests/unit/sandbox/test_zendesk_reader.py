@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
-from typing import cast
+from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
 import pytest
+from pydantic import JsonValue
 
-from casework_sandbox.zendesk import ZendeskApiReader, ZendeskSnapshotError
+from casework_sandbox.zendesk import (
+    ZendeskApiReader,
+    ZendeskMessagingLoader,
+    ZendeskSnapshotError,
+)
+from casework_tool_sdk.registry import ToolExecutionContext
+from contracts.tool import ToolResult, ToolResultStatus
 
 
 def _response(payload: object, status_code: int = 200) -> httpx.Response:
@@ -15,6 +23,28 @@ def _response(payload: object, status_code: int = 200) -> httpx.Response:
         content=json.dumps(payload).encode(),
         headers={"content-type": "application/json"},
     )
+
+
+class _FakeStructuredTool:
+    def __init__(self, payloads: list[dict[str, JsonValue]]) -> None:
+        self.payloads = payloads
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(
+        self,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        assert context.ticket_id == 3726
+        self.calls.append(arguments)
+        payload: JsonValue = self.payloads.pop(0)
+        return ToolResult(
+            status=ToolResultStatus.SUCCESS,
+            summary="Zendesk snapshot loaded",
+            data={"structured_content": payload},
+            evidence_id=f"evidence-{len(self.calls)}",
+            observed_at=datetime.now(UTC),
+        )
 
 
 @pytest.mark.asyncio
@@ -118,8 +148,136 @@ async def test_reader_fetches_ticket_all_comment_pages_attachments_and_locale() 
 
 
 @pytest.mark.asyncio
-async def test_reader_rejects_cross_origin_pagination_before_sending_credentials(
-) -> None:
+async def test_reader_merges_complete_paginated_messaging_conversation() -> None:
+    ticket_tool = _FakeStructuredTool(
+        [
+            {
+                "success": True,
+                "data": {
+                    "conversation_log": {
+                        "events": [
+                            {
+                                "id": "evt-1",
+                                "created_at": "2026-09-01T00:01:00Z",
+                                "author": {"type": "end-user"},
+                                "content": {"type": "text", "text": "Initial issue"},
+                            },
+                            {
+                                "id": "evt-agent",
+                                "created_at": "2026-09-01T00:02:00Z",
+                                "author": {"type": "agent"},
+                                "metadata": {"is_public": False},
+                                "content": {"type": "html", "body": "<b>Internal</b>"},
+                            },
+                        ],
+                        "meta": {"has_more": True, "after_cursor": "cursor-1"},
+                    }
+                },
+            }
+        ]
+    )
+    conversation_tool = _FakeStructuredTool(
+        [
+            {
+                "success": True,
+                "data": {
+                    "conversation_log": {
+                        "events": [
+                            {
+                                "id": "evt-2",
+                                "created_at": "2026-09-01T00:03:00Z",
+                                "author": {"type": "end-user"},
+                                "content": {
+                                    "type": "text",
+                                    "text": "Latest clarification",
+                                },
+                            }
+                        ],
+                        "meta": {"has_more": False},
+                    }
+                },
+            }
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/tickets/3726.json":
+            return _response(
+                {
+                    "ticket": {
+                        "id": 3726,
+                        "status": "open",
+                        "requester_id": 10,
+                        "assignee_id": 20,
+                        "tags": ["saas"],
+                        "custom_fields": [],
+                    }
+                }
+            )
+        if request.url.path == "/api/v2/tickets/3726/comments.json":
+            return _response({"comments": [], "next_page": None})
+        if request.url.path == "/api/v2/users/10.json":
+            return _response({"user": {"id": 10, "locale": "zh-CN"}})
+        return _response({"error": "not found"}, status_code=404)
+
+    loader = ZendeskMessagingLoader(
+        ticket_tool=ticket_tool,
+        conversation_tool=conversation_tool,
+    )
+    async with httpx.AsyncClient(
+        base_url="https://tenant.zendesk.com",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        snapshot = await ZendeskApiReader(
+            client=client,
+            base_url="https://tenant.zendesk.com",
+            email="support@example.invalid",
+            api_token="test-token",
+            messaging_loader=loader,
+        ).fetch_ticket(3726)
+
+    assert [message.event_id for message in snapshot.messages] == [
+        "messaging:evt-1",
+        "messaging:evt-agent",
+        "messaging:evt-2",
+    ]
+    assert snapshot.messages[1].body == "Internal"
+    assert snapshot.messages[1].public is False
+    assert snapshot.latest_customer_cursor == "messaging:evt-2"
+    assert conversation_tool.calls == [
+        {
+            "ticket_id": 3726,
+            "conversation_after": "cursor-1",
+            "conversation_page_size": 100,
+            "force_refresh": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_messaging_loader_fails_closed_on_repeated_cursor() -> None:
+    page: dict[str, JsonValue] = {
+        "success": True,
+        "data": {
+            "conversation_log": {
+                "events": [],
+                "meta": {"has_more": True, "after_cursor": "same"},
+            }
+        },
+    }
+    loader = ZendeskMessagingLoader(
+        ticket_tool=_FakeStructuredTool([page]),
+        conversation_tool=_FakeStructuredTool([page]),
+    )
+
+    with pytest.raises(ZendeskSnapshotError, match="cursor repeated"):
+        await loader.fetch(3726)
+
+
+@pytest.mark.asyncio
+async def test_reader_rejects_cross_origin_pagination_before_sending_credentials() -> (
+    None
+):
     seen_hosts: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

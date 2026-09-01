@@ -27,7 +27,10 @@ def _json_request(url: str, payload: object | None = None) -> dict[str, Any]:
 
 
 def probe(*, ticket_id: int, timeout_seconds: int) -> str:
-    event_id = f"greenfield-dry-run-{ticket_id}-{int(time.time())}"
+    query = urllib.parse.quote(str(ticket_id))
+    before = _json_request(f"http://127.0.0.1:18104/api/runs?query={query}")
+    existing_sessions = _ticket_session_ids(before, ticket_id=ticket_id)
+    event_id = f"greenfield-dry-run-{ticket_id}-{time.time_ns()}"
     admitted = _json_request(
         "http://127.0.0.1:18101/webhook/zendesk",
         {
@@ -47,7 +50,6 @@ def probe(*, ticket_id: int, timeout_seconds: int) -> str:
         raise RuntimeError(f"dry-run event was not enqueued: {admitted.get('reason')}")
 
     deadline = time.monotonic() + timeout_seconds
-    query = urllib.parse.quote(str(ticket_id))
     while time.monotonic() < deadline:
         runs = _json_request(f"http://127.0.0.1:18104/api/runs?query={query}")
         items = runs.get("items")
@@ -58,19 +60,33 @@ def probe(*, ticket_id: int, timeout_seconds: int) -> str:
                 item = cast(dict[str, object], raw)
                 if item.get("ticket_id") != ticket_id:
                     continue
+                session_id = item.get("session_id")
+                if not isinstance(session_id, str) or session_id in existing_sessions:
+                    continue
                 status = item.get("status")
                 if status in {"completed", "awaiting_customer"}:
-                    session_id = item.get("session_id")
-                    if isinstance(session_id, str):
-                        print(
-                            "Greenfield dry-run completed without a Zendesk write "
-                            f"at {datetime.now(UTC).isoformat()}."
-                        )
-                        return session_id
+                    print(
+                        "Greenfield dry-run completed without a Zendesk write "
+                        f"at {datetime.now(UTC).isoformat()}."
+                    )
+                    return session_id
                 if status in {"failed", "cancelled", "human_takeover"}:
                     raise RuntimeError(f"dry-run reached terminal status {status}")
         time.sleep(3)
     raise RuntimeError("dry-run did not reach a safe terminal status before timeout")
+
+
+def _ticket_session_ids(payload: dict[str, Any], *, ticket_id: int) -> set[str]:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return set()
+    return {
+        session_id
+        for raw in cast(list[object], items)
+        if isinstance(raw, dict)
+        and raw.get("ticket_id") == ticket_id
+        and isinstance((session_id := raw.get("session_id")), str)
+    }
 
 
 def main() -> None:

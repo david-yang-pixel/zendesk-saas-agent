@@ -2,17 +2,302 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import httpx
 from pydantic import JsonValue
 
+from casework_tool_sdk.registry import ToolExecutionContext
 from contracts.ticket import TicketAttachment, TicketMessage, TicketSnapshot
+from contracts.tool import ToolResult, ToolResultStatus
 
 
 class ZendeskSnapshotError(RuntimeError):
     """The ticket could not be fetched completely and must not be answered."""
+
+
+class StructuredZendeskTool(Protocol):
+    """One configured read-only Zendesk MCP tool."""
+
+    async def __call__(
+        self,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult: ...
+
+
+class ZendeskMessagingLoader:
+    """Load every bounded Messaging page through the configured Zendesk MCP."""
+
+    def __init__(
+        self,
+        *,
+        ticket_tool: StructuredZendeskTool,
+        conversation_tool: StructuredZendeskTool,
+        page_size: int = 100,
+        max_pages: int = 10,
+        max_events: int = 1_000,
+    ) -> None:
+        if page_size < 1 or max_pages < 1 or max_events < 1:
+            raise ValueError("Messaging pagination limits must be positive")
+        self._ticket_tool = ticket_tool
+        self._conversation_tool = conversation_tool
+        self._page_size = page_size
+        self._max_pages = max_pages
+        self._max_events = max_events
+
+    async def fetch(self, ticket_id: int) -> tuple[TicketMessage, ...]:
+        context = ToolExecutionContext(
+            ticket_id=ticket_id,
+            session_id=f"snapshot-{ticket_id}",
+            root_session_id=f"snapshot-{ticket_id}",
+        )
+        first = await self._ticket_tool(
+            {
+                "ticket_id": ticket_id,
+                "include_comments": True,
+                "include_conversation_log": True,
+                "conversation_page_size": self._page_size,
+                "force_refresh": True,
+            },
+            context,
+        )
+        payload = self._payload(first, tool_name="get_ticket")
+        events, meta = self._conversation_parts(payload)
+        page_count = 1
+        seen_cursors: set[str] = set()
+        while bool(meta.get("has_more")):
+            if len(events) >= self._max_events:
+                raise ZendeskSnapshotError("Messaging event limit exceeded")
+            if page_count >= self._max_pages:
+                raise ZendeskSnapshotError("Messaging page limit exceeded")
+            cursor = meta.get("after_cursor")
+            if not isinstance(cursor, str) or not cursor.strip():
+                raise ZendeskSnapshotError(
+                    "Messaging pagination is missing after_cursor"
+                )
+            if cursor in seen_cursors:
+                raise ZendeskSnapshotError("Messaging pagination cursor repeated")
+            seen_cursors.add(cursor)
+            result = await self._conversation_tool(
+                {
+                    "ticket_id": ticket_id,
+                    "conversation_after": cursor,
+                    "conversation_page_size": self._page_size,
+                    "force_refresh": True,
+                },
+                context,
+            )
+            page_payload = self._payload(
+                result, tool_name="get_ticket_conversation_log"
+            )
+            page_events, meta = self._conversation_parts(page_payload)
+            events.extend(page_events)
+            page_count += 1
+            if len(events) > self._max_events:
+                raise ZendeskSnapshotError("Messaging event limit exceeded")
+
+        messages = tuple(
+            message for event in events if (message := self._message(event)) is not None
+        )
+        return tuple(
+            sorted(messages, key=lambda item: (item.created_at, item.event_id))
+        )
+
+    @staticmethod
+    def _payload(result: ToolResult, *, tool_name: str) -> dict[str, Any]:
+        if result.status is not ToolResultStatus.SUCCESS:
+            raise ZendeskSnapshotError(f"{tool_name} did not return a complete result")
+        data = result.data
+        if not isinstance(data, dict):
+            raise ZendeskSnapshotError(f"{tool_name} returned no structured data")
+        data_mapping = cast(dict[str, Any], data)
+        structured = data_mapping.get("structured_content")
+        if not isinstance(structured, dict):
+            content = data_mapping.get("content")
+            structured = ZendeskMessagingLoader._structured_from_content(content)
+        if not isinstance(structured, dict):
+            raise ZendeskSnapshotError(f"{tool_name} returned no structured data")
+        structured_mapping = cast(dict[str, Any], structured)
+        if structured_mapping.get("success") is not True:
+            raise ZendeskSnapshotError(f"{tool_name} returned an unsuccessful payload")
+        payload = structured_mapping.get("data")
+        if not isinstance(payload, dict):
+            raise ZendeskSnapshotError(f"{tool_name} payload is missing data")
+        return cast(dict[str, Any], payload)
+
+    @staticmethod
+    def _structured_from_content(value: object) -> dict[str, Any] | None:
+        if not isinstance(value, list):
+            return None
+        for raw in cast(list[object], value):
+            if not isinstance(raw, dict):
+                continue
+            block = cast(dict[str, Any], raw)
+            if block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if not isinstance(text, str):
+                continue
+            try:
+                decoded = json.loads(text)
+            except ValueError:
+                continue
+            if isinstance(decoded, dict):
+                return cast(dict[str, Any], decoded)
+        return None
+
+    @staticmethod
+    def _conversation_parts(
+        payload: dict[str, Any],
+    ) -> tuple[list[object], dict[str, Any]]:
+        conversation = payload.get("conversation_log")
+        if not isinstance(conversation, dict):
+            return [], {}
+        conversation_mapping = cast(dict[str, Any], conversation)
+        nested = conversation_mapping.get("conversation_log")
+        source = (
+            cast(dict[str, Any], nested)
+            if isinstance(nested, dict)
+            else conversation_mapping
+        )
+        events = source.get("events")
+        meta = source.get("meta")
+        if not isinstance(events, list):
+            raise ZendeskSnapshotError("Messaging events must be an array")
+        if not isinstance(meta, dict):
+            meta = {}
+        return cast(list[object], events), cast(dict[str, Any], meta)
+
+    @classmethod
+    def _message(cls, value: object) -> TicketMessage | None:
+        if not isinstance(value, dict):
+            raise ZendeskSnapshotError("Messaging event must be an object")
+        event = cast(dict[str, Any], value)
+        author = event.get("author")
+        content = event.get("content")
+        if not isinstance(author, dict) or not isinstance(content, dict):
+            # Conversation logs also contain non-message lifecycle events.
+            return None
+        event_id = event.get("id")
+        if not isinstance(event_id, (str, int)) or not str(event_id).strip():
+            raise ZendeskSnapshotError("Messaging event is missing id")
+        author_mapping = cast(dict[str, Any], author)
+        content_mapping = cast(dict[str, Any], content)
+        author_type = str(author_mapping.get("type") or "").strip().casefold()
+        if not author_type:
+            raise ZendeskSnapshotError("Messaging event is missing author type")
+        metadata = event.get("metadata")
+        metadata_public = (
+            cast(dict[str, Any], metadata).get("is_public")
+            if isinstance(metadata, dict)
+            else None
+        )
+        public = event.get("public") is not False and metadata_public is not False
+        customer = author_type in {"end-user", "customer", "requester"}
+        return TicketMessage(
+            event_id=f"messaging:{event_id}",
+            author_origin="customer" if customer else "agent",
+            public=public,
+            body=cls._body(content_mapping),
+            created_at=cls._datetime(
+                event.get("created_at"), field="messaging.created_at"
+            ),
+            attachments=cls._attachments(
+                event, content_mapping, event_id=str(event_id)
+            ),
+        )
+
+    @staticmethod
+    def _body(content: dict[str, Any]) -> str:
+        content_type = str(content.get("type") or "").casefold()
+        if content_type == "text":
+            return str(content.get("text") or "").strip()
+        if content_type == "html":
+            raw = str(content.get("body") or content.get("text") or "")
+            return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", raw)).strip()
+        fallback = str(content.get("text_fallback") or "").strip()
+        if fallback:
+            return fallback
+        fields = content.get("fields")
+        if isinstance(fields, list):
+            lines: list[str] = []
+            for raw in cast(list[object], fields):
+                if not isinstance(raw, dict):
+                    continue
+                field = cast(dict[str, Any], raw)
+                label = field.get("label") or field.get("name")
+                field_value = (
+                    field.get("value") or field.get("text") or field.get("email")
+                )
+                if label and field_value not in {None, ""}:
+                    lines.append(f"{label}: {field_value}")
+            return "\n".join(lines)
+        return ""
+
+    @classmethod
+    def _attachments(
+        cls,
+        event: dict[str, Any],
+        content: dict[str, Any],
+        *,
+        event_id: str,
+    ) -> tuple[TicketAttachment, ...]:
+        values = event.get("attachments")
+        raw_attachments: list[object] = (
+            list(cast(list[object], values)) if isinstance(values, list) else []
+        )
+        if content.get("media_url"):
+            raw_attachments.append(
+                {
+                    "id": content.get("attachment_id") or f"{event_id}-media",
+                    "file_name": content.get("alt_text") or "attachment",
+                    "content_type": (
+                        content.get("media_type") or "application/octet-stream"
+                    ),
+                    "size": content.get("media_size") or 0,
+                }
+            )
+        attachments: list[TicketAttachment] = []
+        for index, raw in enumerate(raw_attachments):
+            if not isinstance(raw, dict):
+                raise ZendeskSnapshotError("Messaging attachment must be an object")
+            attachment = cast(dict[str, Any], raw)
+            size = attachment.get("size", 0)
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                size = 0
+            attachments.append(
+                TicketAttachment(
+                    attachment_id=str(attachment.get("id") or f"{event_id}-{index}"),
+                    filename=str(
+                        attachment.get("file_name")
+                        or attachment.get("name")
+                        or "attachment"
+                    ),
+                    content_type=str(
+                        attachment.get("content_type") or "application/octet-stream"
+                    ),
+                    size_bytes=size,
+                )
+            )
+        return tuple(attachments)
+
+    @staticmethod
+    def _datetime(value: object, *, field: str) -> datetime:
+        if not isinstance(value, str):
+            raise ZendeskSnapshotError(f"Zendesk {field} must be a timestamp")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ZendeskSnapshotError(
+                f"Zendesk {field} must be a timestamp"
+            ) from error
+        if parsed.tzinfo is None:
+            raise ZendeskSnapshotError(f"Zendesk {field} must include a timezone")
+        return parsed
 
 
 class ZendeskApiReader:
@@ -23,6 +308,7 @@ class ZendeskApiReader:
         base_url: str,
         email: str,
         api_token: str,
+        messaging_loader: ZendeskMessagingLoader | None = None,
         timeout_seconds: float = 20.0,
         max_pages: int = 100,
     ) -> None:
@@ -38,6 +324,7 @@ class ZendeskApiReader:
         self._client = client
         self._origin = origin.copy_with(path="/", query=None, fragment=None)
         self._auth = httpx.BasicAuth(f"{email.strip()}/token", api_token)
+        self._messaging_loader = messaging_loader
         self._timeout = timeout_seconds
         self._max_pages = max_pages
 
@@ -51,7 +338,13 @@ class ZendeskApiReader:
         requester_id = self._integer(
             ticket.get("requester_id"), field="ticket.requester_id"
         )
-        messages = await self._fetch_comments(ticket_id, requester_id=requester_id)
+        comments = await self._fetch_comments(ticket_id, requester_id=requester_id)
+        messaging = (
+            await self._messaging_loader.fetch(ticket_id)
+            if self._messaging_loader is not None
+            else ()
+        )
+        messages = self._merge_messages(comments, messaging)
         customer_messages = tuple(
             message
             for message in messages
@@ -77,6 +370,20 @@ class ZendeskApiReader:
             latest_customer_cursor=customer_messages[-1].event_id,
             complete=True,
             fetched_at=datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _merge_messages(
+        comments: tuple[TicketMessage, ...],
+        messaging: tuple[TicketMessage, ...],
+    ) -> tuple[TicketMessage, ...]:
+        unique: dict[str, TicketMessage] = {}
+        for message in (*comments, *messaging):
+            if message.event_id in unique:
+                raise ZendeskSnapshotError("Zendesk returned a duplicate message id")
+            unique[message.event_id] = message
+        return tuple(
+            sorted(unique.values(), key=lambda item: (item.created_at, item.event_id))
         )
 
     async def ready(self) -> bool:
