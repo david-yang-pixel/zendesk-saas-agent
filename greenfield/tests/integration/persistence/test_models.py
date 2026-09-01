@@ -37,6 +37,7 @@ def test_schema_has_durable_event_dedup_and_ticket_generation_tables() -> None:
     assert list(event_table.primary_key.columns.keys()) == ["event_id"]
     assert list(state_table.primary_key.columns.keys()) == ["ticket_id"]
     assert bool(job_table.c.event_id.unique)
+    assert bool(job_table.c.session_id.unique)
     assert bool(outbox_table.c.idempotency_key.unique)
     revision_table = cast(Table, ConfigRevisionRow.__table__)
     assert list(revision_table.primary_key.columns.keys()) == ["revision"]

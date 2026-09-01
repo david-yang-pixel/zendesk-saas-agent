@@ -121,6 +121,7 @@ class CaseJobRow(Base):
     __tablename__ = "case_jobs"
 
     job_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     event_id: Mapped[str] = mapped_column(
         String(255), ForeignKey("events.event_id"), nullable=False, unique=True
     )

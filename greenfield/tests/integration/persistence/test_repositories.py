@@ -156,6 +156,8 @@ async def test_enqueue_allows_only_one_active_job_per_ticket(
         ticket_id=3726, event_id="evt-2", config=CONFIG, job_id="job-2"
     )
     assert first.accepted is True
+    first_job = cast(CaseJobRow, db_session.get(CaseJobRow, "job-1"))
+    assert first_job.session_id == "session-job-1"
     assert second.accepted is False
     assert second.reason == "active_ticket_job"
 

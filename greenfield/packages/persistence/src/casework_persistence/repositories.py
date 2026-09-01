@@ -356,6 +356,7 @@ class JobRepository:
         config: ConfigSnapshot,
         available_at: datetime | None = None,
         job_id: str | None = None,
+        session_id: str | None = None,
     ) -> EnqueueResult:
         """Create at most one active job for the ticket's current generation."""
 
@@ -408,9 +409,13 @@ class JobRepository:
             )
 
         new_job_id = job_id or f"job-{uuid4()}"
+        new_session_id = session_id or f"session-{new_job_id}"
+        if not new_session_id.strip():
+            raise ValueError("session_id must not be blank")
         await self.session.execute(
             insert(CaseJobRow).values(
                 job_id=new_job_id,
+                session_id=new_session_id,
                 event_id=event_id,
                 ticket_id=ticket_id,
                 generation=generation,
