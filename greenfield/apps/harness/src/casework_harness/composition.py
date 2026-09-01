@@ -19,15 +19,16 @@ from casework_harness.delivery import (
     DeliveryMode,
     DeliveryPolicy,
     PostgresDeliveryAdapter,
-    UnavailableZendeskReplySender,
-    parse_delivery_mode,
+    create_zendesk_reply_sender,
     postgres_delivery_transaction_scope,
+    resolve_delivery_mode,
 )
 from casework_harness.docker_engine import (
     DockerClientPort,
     DockerSandboxEngine,
     DockerSandboxOrphanSweeper,
     HttpxSandboxHttp,
+    SandboxLaunchProbe,
 )
 from casework_harness.footer import FooterCatalog
 from casework_harness.postgres_queue import (
@@ -87,6 +88,10 @@ class _DockerReadinessPort(Protocol):
     def ping(self) -> bool: ...
 
 
+class _SandboxLaunchProbePort(Protocol):
+    async def check(self) -> bool: ...
+
+
 class _HarnessReadiness:
     def __init__(
         self,
@@ -94,10 +99,12 @@ class _HarnessReadiness:
         database: _DatabaseReadinessPort,
         docker_client: _DockerReadinessPort,
         delivery_ready: bool,
+        sandbox_probe: _SandboxLaunchProbePort | None = None,
     ) -> None:
         self._database = database
         self._docker_client = docker_client
         self._delivery_ready = delivery_ready
+        self._sandbox_probe = sandbox_probe
         self._tasks: tuple[asyncio.Task[None], ...] = ()
 
     def attach_tasks(self, *tasks: asyncio.Task[Any]) -> None:
@@ -111,9 +118,13 @@ class _HarnessReadiness:
         if not await self._database.check():
             return False
         try:
-            return bool(await asyncio.to_thread(self._docker_client.ping))
+            if not await asyncio.to_thread(self._docker_client.ping):
+                return False
         except Exception:
             return False
+        if self._sandbox_probe is not None and not await self._sandbox_probe.check():
+            return False
+        return True
 
 
 async def _wait_or_stop(stop: asyncio.Event, seconds: float) -> None:
@@ -160,9 +171,7 @@ def create_app() -> FastAPI:
         raise RuntimeError("SANDBOX_IMAGE is required for production Harness")
     runtime_environment = sandbox_environment(os.environ)
     try:
-        delivery_mode = parse_delivery_mode(
-            os.environ.get("CASEWORK_DELIVERY_MODE")
-        )
+        delivery_mode = resolve_delivery_mode(os.environ)
     except ValueError as error:
         raise RuntimeError(str(error)) from error
     canary_ticket_ids = _canary_ticket_ids(
@@ -191,18 +200,29 @@ def create_app() -> FastAPI:
         host=os.environ.get("SANDBOX_HOST", "host.docker.internal"),
         environment=runtime_environment,
     )
+    sandbox_probe = SandboxLaunchProbe(
+        client=docker_client,
+        engine=sandbox_engine,
+        image=sandbox_image,
+    )
     controller = SandboxController(engine=sandbox_engine, image=sandbox_image)
     jobs = PostgresJobQueue(
         gateway_scope=postgres_job_gateway_scope(sessions),
         worker_id=controller_id,
     )
+    if delivery_mode is DeliveryMode.DRY_RUN:
+        zendesk_sender, close_zendesk_sender = create_zendesk_reply_sender({})
+    else:
+        zendesk_sender, close_zendesk_sender = create_zendesk_reply_sender(
+            os.environ
+        )
     delivery_adapter = PostgresDeliveryAdapter(
         transaction_scope=postgres_delivery_transaction_scope(sessions)
     )
     delivery_controller = DeliveryController(
         freshness=delivery_adapter,
         outbox=delivery_adapter,
-        sender=UnavailableZendeskReplySender(),
+        sender=zendesk_sender,
         footer_catalog=FooterCatalog(
             default_locale=os.environ.get("CASEWORK_DEFAULT_LOCALE", "en-US"),
             footers={
@@ -229,11 +249,13 @@ def create_app() -> FastAPI:
     readiness = _HarnessReadiness(
         database=database,
         docker_client=docker_client,
-        # No live Zendesk client is shipped yet.  Only the explicitly safe
-        # dry-run mode is ready; canary is also fail-closed until a real
-        # sender is configured, even though the controller itself never
-        # writes in canary mode.
-        delivery_ready=delivery_mode is DeliveryMode.DRY_RUN,
+        sandbox_probe=sandbox_probe,
+        # Dry-run is always safe.  Live/canary require complete credentials;
+        # the sender factory returns an unavailable sender otherwise.
+        delivery_ready=(
+            delivery_mode is DeliveryMode.DRY_RUN
+            or getattr(zendesk_sender, "ready", False) is True
+        ),
     )
 
     @asynccontextmanager
@@ -250,6 +272,7 @@ def create_app() -> FastAPI:
             sweeper_task.cancel()
             await asyncio.gather(worker_task, sweeper_task, return_exceptions=True)
             await sandbox_http.aclose()
+            await close_zendesk_sender()
             await asyncio.to_thread(docker_client.close)
             await engine.dispose()
 

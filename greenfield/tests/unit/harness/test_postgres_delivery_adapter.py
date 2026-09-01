@@ -160,3 +160,32 @@ async def test_postgres_adapter_rejects_new_customer_cursor_and_human_generation
     )
     assert row is not None
     assert row.status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_postgres_adapter_reconciles_ambiguous_receipt_with_provider_id(
+    db_session: Session,
+) -> None:
+    seed_delivery_state(db_session)
+    adapter = PostgresDeliveryAdapter(
+        transaction_scope=transaction_scope(db_session)
+    )
+
+    assert await adapter.claim(
+        key=OUTBOX_KEY,
+        ticket_id=3726,
+        generation=7,
+        cursor="cursor-01",
+    ) is True
+    assert await adapter.mark_ambiguous(
+        key=OUTBOX_KEY, error="provider_timeout_after_accept"
+    ) is True
+    reconciled = await adapter.reconcile(
+        key=OUTBOX_KEY, provider_message_id="comment-3726"
+    )
+
+    assert reconciled is True
+    row = db_session.get(OutboxMessage, OUTBOX_KEY)
+    assert row is not None
+    assert row.status == "confirmed"
+    assert row.provider_message_id == "comment-3726"

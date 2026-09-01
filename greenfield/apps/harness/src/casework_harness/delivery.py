@@ -9,14 +9,16 @@ reject the claim before the Zendesk send.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable
+import os
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from hashlib import sha256
 from typing import Any, Protocol, cast
 
-from sqlalchemy import desc, select, update
+import httpx
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from casework_persistence.models import EventRecord, OutboxMessage, TicketState
@@ -102,6 +104,7 @@ class DeliveryResult:
     outbox_key: str | None = None
     idempotency_key: str | None = None
     body: str | None = None
+    provider_message_id: str | None = None
 
 
 class TicketFreshnessPort(Protocol):
@@ -136,13 +139,74 @@ class DeliveryOutboxPort(Protocol):
 
     async def cancel(self, *, key: str, reason: str) -> None: ...
 
-    async def mark_sent(self, *, key: str) -> None: ...
+    async def mark_sent(
+        self, *, key: str, provider_message_id: str | None = None
+    ) -> None: ...
 
 
 class ZendeskReplyPort(Protocol):
     async def send_reply(
         self, *, ticket_id: int, body: str, idempotency_key: str
     ) -> object: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ZendeskReplyReceipt:
+    """Provider receipt persisted with a successful outbox transition."""
+
+    provider_message_id: str
+
+    def __post_init__(self) -> None:
+        if not self.provider_message_id.strip():
+            raise ValueError("provider_message_id must not be blank")
+
+
+@dataclass(frozen=True, slots=True)
+class ZendeskReplyConfig:
+    """Credentials and endpoint for the Zendesk ticket comment API."""
+
+    base_url: str
+    email: str
+    api_token: str = field(repr=False)
+    timeout_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        if any(
+            not value.strip()
+            for value in (self.base_url, self.email, self.api_token)
+        ):
+            raise ValueError("Zendesk sender configuration must not be blank")
+        if self.timeout_seconds <= 0:
+            raise ValueError("Zendesk sender timeout must be positive")
+
+    @classmethod
+    def from_environment(
+        cls, environment: Mapping[str, str] | None = None
+    ) -> ZendeskReplyConfig | None:
+        values = environment if environment is not None else os.environ
+        base_url = values.get("ZENDESK_BASE_URL", "").strip()
+        subdomain = values.get("ZENDESK_SUBDOMAIN", "").strip()
+        if not base_url and subdomain:
+            base_url = f"https://{subdomain}.zendesk.com"
+        email = (
+            values.get("ZENDESK_ACCOUNT_EMAIL")
+            or values.get("ZENDESK_EMAIL")
+            or ""
+        ).strip()
+        api_token = values.get("ZENDESK_API_TOKEN", "").strip()
+        if not base_url or not email or not api_token:
+            return None
+        raw_timeout = values.get("ZENDESK_TIMEOUT_SECONDS", "10").strip()
+        try:
+            timeout_seconds = float(raw_timeout)
+        except ValueError as error:
+            raise ValueError("ZENDESK_TIMEOUT_SECONDS must be numeric") from error
+        return cls(
+            base_url=base_url.rstrip("/"),
+            email=email,
+            api_token=api_token,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def _outcome_body(outcome: Outcome) -> str | None:
@@ -165,6 +229,21 @@ def _entry_status(entry: object) -> str:
     return getattr(status, "value", str(status)).casefold()
 
 
+def _receipt_provider_message_id(receipt: object) -> str | None:
+    if isinstance(receipt, ZendeskReplyReceipt):
+        return receipt.provider_message_id
+    if isinstance(receipt, str) and receipt.strip():
+        return receipt
+    value = getattr(receipt, "provider_message_id", None)
+    if isinstance(value, (str, int)) and str(value).strip():
+        return str(value)
+    return None
+
+
+def _entry_provider_message_id(entry: object) -> str | None:
+    return _receipt_provider_message_id(getattr(entry, "provider_message_id", None))
+
+
 class DeliveryUnavailableError(RuntimeError):
     """Raised when live delivery was requested without a real sender client."""
 
@@ -185,6 +264,100 @@ class UnavailableZendeskReplySender:
         raise DeliveryUnavailableError(
             "live Zendesk sender is not configured; no customer write performed"
         )
+
+
+class ZendeskReplySender:
+    """Send a public ticket comment through the Zendesk REST API."""
+
+    ready = True
+
+    def __init__(self, *, client: httpx.AsyncClient) -> None:
+        self._client = client
+
+    async def send_reply(
+        self, *, ticket_id: int, body: str, idempotency_key: str
+    ) -> ZendeskReplyReceipt:
+        response = await self._client.put(
+            f"/api/v2/tickets/{ticket_id}.json",
+            headers={"Idempotency-Key": idempotency_key},
+            json={
+                "ticket": {
+                    "comment": {
+                        "body": body,
+                        "public": True,
+                    }
+                }
+            },
+        )
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise DeliveryUnavailableError(
+                "Zendesk response was not valid JSON"
+            ) from error
+        provider_message_id = _provider_message_id(payload)
+        if provider_message_id is None:
+            raise DeliveryUnavailableError(
+                "Zendesk response did not include provider message id"
+            )
+        return ZendeskReplyReceipt(provider_message_id=provider_message_id)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
+def _provider_message_id(payload: object) -> str | None:
+    """Extract a comment id without mistaking the ticket id for a receipt."""
+
+    if not isinstance(payload, Mapping):
+        return None
+    data = cast(Mapping[str, object], payload)
+    for field_name in ("provider_message_id", "comment_id"):
+        value = data.get(field_name)
+        if isinstance(value, (str, int)) and str(value).strip():
+            return str(value)
+    comment = data.get("comment")
+    if isinstance(comment, Mapping):
+        value = cast(Mapping[str, object], comment).get("id")
+        if isinstance(value, (str, int)) and str(value).strip():
+            return str(value)
+    comments = data.get("comments")
+    if isinstance(comments, list):
+        for item in reversed(cast(list[object], comments)):
+            if isinstance(item, Mapping):
+                value = cast(Mapping[str, object], item).get("id")
+                if isinstance(value, (str, int)) and str(value).strip():
+                    return str(value)
+    ticket = data.get("ticket")
+    if isinstance(ticket, Mapping):
+        return _provider_message_id(cast(Mapping[str, object], ticket))
+    return None
+
+
+async def _close_unavailable_sender() -> None:
+    return None
+
+
+def create_zendesk_reply_sender(
+    environment: Mapping[str, str] | None = None,
+) -> tuple[ZendeskReplyPort, Callable[[], Awaitable[None]]]:
+    """Build a sender without making a network request.
+
+    Missing or incomplete credentials return the explicit unavailable sender;
+    callers can expose that state through readiness and remain fail-closed.
+    """
+
+    config = ZendeskReplyConfig.from_environment(environment)
+    if config is None:
+        return UnavailableZendeskReplySender(), _close_unavailable_sender
+    client = httpx.AsyncClient(
+        base_url=config.base_url,
+        auth=(f"{config.email}/token", config.api_token),
+        timeout=config.timeout_seconds,
+    )
+    sender = ZendeskReplySender(client=client)
+    return sender, sender.aclose
 
 
 class DeliveryController:
@@ -239,13 +412,13 @@ class DeliveryController:
                 reason="ticket_not_in_canary_allowlist",
             )
         if (
-            self._policy.mode is DeliveryMode.LIVE
+            self._policy.mode in {DeliveryMode.LIVE, DeliveryMode.CANARY}
             and getattr(self._sender, "ready", True) is False
         ):
             return DeliveryResult(
                 disposition=DeliveryDisposition.FAILED,
                 ticket_id=ticket_id,
-                reason="live_sender_not_ready",
+                reason=f"{self._policy.mode.value}_sender_not_ready",
             )
 
         # Eligible outcomes carry the source-of-truth metadata.  The request
@@ -308,6 +481,7 @@ class DeliveryController:
                 outbox_key=outbox_key,
                 idempotency_key=idempotency_key,
                 body=rendered,
+                provider_message_id=_entry_provider_message_id(entry),
             )
 
         # A human or a new customer message can arrive while the outbox row is
@@ -348,13 +522,13 @@ class DeliveryController:
 
         try:
             await self._mark_attempted(outbox_key)
-            await self._sender.send_reply(
+            receipt = await self._sender.send_reply(
                 ticket_id=ticket_id,
                 body=rendered,
                 idempotency_key=idempotency_key,
             )
-        except Exception:
-            await self._mark_ambiguous(outbox_key)
+        except Exception as error:
+            await self._mark_ambiguous(outbox_key, error=str(error))
             return DeliveryResult(
                 disposition=DeliveryDisposition.FAILED,
                 ticket_id=ticket_id,
@@ -363,7 +537,10 @@ class DeliveryController:
                 idempotency_key=idempotency_key,
                 body=rendered,
             )
-        await self._outbox.mark_sent(key=outbox_key)
+        provider_message_id = _receipt_provider_message_id(receipt)
+        await self._outbox.mark_sent(
+            key=outbox_key, provider_message_id=provider_message_id
+        )
         return DeliveryResult(
             disposition=DeliveryDisposition.SENT,
             ticket_id=ticket_id,
@@ -371,6 +548,7 @@ class DeliveryController:
             outbox_key=outbox_key,
             idempotency_key=idempotency_key,
             body=rendered,
+            provider_message_id=provider_message_id,
         )
 
     async def _read_current(self, ticket_id: int) -> TicketFreshness:
@@ -417,10 +595,12 @@ class DeliveryController:
         if marker is not None:
             await cast(ProtocolCallable, marker)(key=key)
 
-    async def _mark_ambiguous(self, key: str) -> None:
+    async def _mark_ambiguous(
+        self, key: str, *, error: str = "reply_send_failed"
+    ) -> None:
         marker = getattr(self._outbox, "mark_ambiguous", None)
         if marker is not None:
-            await cast(ProtocolCallable, marker)(key=key)
+            await cast(ProtocolCallable, marker)(key=key, error=error)
 
     @staticmethod
     def _outbox_key(
@@ -459,6 +639,15 @@ def parse_delivery_mode(value: str | None) -> DeliveryMode:
         raise ValueError(
             "delivery mode must be one of: dry_run, live, canary"
         ) from error
+
+
+def resolve_delivery_mode(environment: Mapping[str, str] | None = None) -> DeliveryMode:
+    """Resolve the explicit deployment mode, with legacy env compatibility."""
+
+    values = environment if environment is not None else os.environ
+    return parse_delivery_mode(
+        values.get("DELIVERY_MODE") or values.get("CASEWORK_DELIVERY_MODE")
+    )
 
 
 class PostgresDeliveryAdapter:
@@ -542,6 +731,7 @@ class PostgresDeliveryAdapter:
                 .values(
                     status="attempted",
                     attempt_count=OutboxMessage.attempt_count + 1,
+                    updated_at=func.now(),
                 )
             )
             return bool(getattr(result, "rowcount", 0))
@@ -554,22 +744,15 @@ class PostgresDeliveryAdapter:
                     OutboxMessage.outbox_id == key,
                     OutboxMessage.status.in_(("pending", "attempted", "ambiguous")),
                 )
-                .values(status="cancelled", last_error=reason)
-            )
-
-    async def mark_sent(self, *, key: str) -> None:
-        async with self._transaction_scope() as session:
-            await session.execute(
-                update(OutboxMessage)
-                .where(
-                    OutboxMessage.outbox_id == key,
-                    OutboxMessage.status == "attempted",
+                .values(
+                    status="cancelled",
+                    last_error=reason,
+                    updated_at=func.now(),
                 )
-                .values(status="sent")
             )
 
-    async def mark_ambiguous(
-        self, *, key: str, error: str = "reply_send_failed"
+    async def mark_sent(
+        self, *, key: str, provider_message_id: str | None = None
     ) -> None:
         async with self._transaction_scope() as session:
             await session.execute(
@@ -578,8 +761,61 @@ class PostgresDeliveryAdapter:
                     OutboxMessage.outbox_id == key,
                     OutboxMessage.status == "attempted",
                 )
-                .values(status="ambiguous", last_error=error)
+                .values(
+                    status="sent",
+                    provider_message_id=provider_message_id,
+                    updated_at=func.now(),
+                )
             )
+
+    async def reconcile(
+        self, *, key: str, provider_message_id: str
+    ) -> bool:
+        if not provider_message_id.strip():
+            raise ValueError("provider_message_id must not be blank")
+        async with self._transaction_scope() as session:
+            result = await session.execute(
+                update(OutboxMessage)
+                .where(
+                    OutboxMessage.outbox_id == key,
+                    OutboxMessage.status.in_(
+                        ("ambiguous", "attempted", "sent")
+                    ),
+                )
+                .values(
+                    status="confirmed",
+                    provider_message_id=provider_message_id,
+                    updated_at=func.now(),
+                )
+            )
+            return bool(getattr(result, "rowcount", 0))
+
+    async def mark_confirmed(
+        self, *, key: str, provider_message_id: str
+    ) -> bool:
+        """Compatibility alias for receipt reconciliation workers."""
+
+        return await self.reconcile(
+            key=key, provider_message_id=provider_message_id
+        )
+
+    async def mark_ambiguous(
+        self, *, key: str, error: str = "reply_send_failed"
+    ) -> bool:
+        async with self._transaction_scope() as session:
+            result = await session.execute(
+                update(OutboxMessage)
+                .where(
+                    OutboxMessage.outbox_id == key,
+                    OutboxMessage.status == "attempted",
+                )
+                .values(
+                    status="ambiguous",
+                    last_error=error,
+                    updated_at=func.now(),
+                )
+            )
+            return bool(getattr(result, "rowcount", 0))
 
     @staticmethod
     async def _latest_customer_event(
@@ -642,7 +878,12 @@ __all__ = [
     "TicketFreshness",
     "TicketFreshnessPort",
     "UnavailableZendeskReplySender",
+    "ZendeskReplyConfig",
     "ZendeskReplyPort",
+    "ZendeskReplyReceipt",
+    "ZendeskReplySender",
+    "create_zendesk_reply_sender",
     "parse_delivery_mode",
     "postgres_delivery_transaction_scope",
+    "resolve_delivery_mode",
 ]

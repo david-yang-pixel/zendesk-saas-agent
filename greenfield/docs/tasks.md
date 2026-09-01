@@ -82,15 +82,14 @@ Checkpoint: webhook -> job -> sandbox -> Todo -> Tool -> outcome -> destroy.
 ## Slice 9: Replay, canary and cutover
 
 - [x] Sanitized replay suite for required Zendesk behaviors.
-- [ ] No-write live dry-run.
-- [ ] Explicit-ticket canary.
+- [x] No-write live dry-run with an explicit `DELIVERY_MODE=dry_run` gate.
+- [x] Explicit-ticket canary with a required allowlist and no-write path.
 - [ ] Cut over ingress while preserving the legacy rollback image.
 
 Implemented but not yet exercised against production: the read-only Zendesk
-snapshot adapter, dry-run delivery mode, explicit-ticket canary fence, digest
-manifest renderer, and release Compose bundle. Production execution remains
-unchecked because it requires separate deployment/write authorization and live
-credentials.
+snapshot adapter, delivery mode gates, digest manifest renderer, and release
+Compose bundle. Production execution remains unchecked because it requires
+separate deployment/write authorization and live credentials.
 
 ## Slice 10: Production composition
 
@@ -104,6 +103,8 @@ credentials.
   non-database runtime environment into each ephemeral container.
 - [x] Connect durable PostgreSQL delivery fencing and outbox claims while
   keeping production delivery in explicit dry-run by default.
+- [x] Add a mockable Zendesk reply sender with provider receipts; keep live and
+  canary fail-closed when complete credentials are absent.
 
 - [ ] Resolve frozen config and credential references inside a sandbox without
   persisting secret values in job/session records.

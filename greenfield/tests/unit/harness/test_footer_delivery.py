@@ -13,7 +13,9 @@ from casework_harness.delivery import (
     DeliveryPolicy,
     DeliveryRequest,
     UnavailableZendeskReplySender,
+    ZendeskReplyReceipt,
     parse_delivery_mode,
+    resolve_delivery_mode,
 )
 from casework_harness.footer import (
     CANONICAL_FOOTER_MARKER,
@@ -110,6 +112,7 @@ def test_delivery_defaults_to_dry_run_and_mode_parser_is_explicit() -> None:
     assert parse_delivery_mode(None) is DeliveryMode.DRY_RUN
     assert parse_delivery_mode("live") is DeliveryMode.LIVE
     assert parse_delivery_mode("dry-run") is DeliveryMode.DRY_RUN
+    assert resolve_delivery_mode({"DELIVERY_MODE": "canary"}) is DeliveryMode.CANARY
     with pytest.raises(ValueError, match="delivery mode"):
         parse_delivery_mode("send-everything")
 
@@ -143,6 +146,7 @@ class FakeOutboxEntry:
     body: str
     idempotency_key: str
     status: str = "pending"
+    provider_message_id: str | None = None
 
 
 @dataclass
@@ -192,7 +196,9 @@ class FakeOutbox:
         self.claimed.add(key)
         return True
 
-    async def mark_sent(self, *, key: str) -> None:
+    async def mark_sent(
+        self, *, key: str, provider_message_id: str | None = None
+    ) -> None:
         self.sent.append(key)
         entry = self.entries[key]
         self.entries[key] = FakeOutboxEntry(
@@ -204,12 +210,15 @@ class FakeOutbox:
             body=entry.body,
             idempotency_key=entry.idempotency_key,
             status="sent",
+            provider_message_id=provider_message_id,
         )
 
     async def cancel(self, *, key: str, reason: str) -> None:
         self.cancelled.append(f"{key}:{reason}")
 
-    async def mark_ambiguous(self, *, key: str) -> None:
+    async def mark_ambiguous(
+        self, *, key: str, error: str = "reply_send_failed"
+    ) -> None:
         entry = self.entries[key]
         self.entries[key] = FakeOutboxEntry(
             key=entry.key,
@@ -220,6 +229,7 @@ class FakeOutbox:
             body=entry.body,
             idempotency_key=entry.idempotency_key,
             status="ambiguous",
+            provider_message_id=entry.provider_message_id,
         )
 
 
@@ -230,12 +240,13 @@ class FakeSender:
 
     async def send_reply(
         self, *, ticket_id: int, body: str, idempotency_key: str
-    ) -> None:
+    ) -> ZendeskReplyReceipt | None:
         if self.before_send is not None:
             callback = self.before_send
             self.before_send = None
             await callback()
         self.sent.append((ticket_id, body, idempotency_key))
+        return None
 
 
 def _request(
@@ -276,6 +287,7 @@ async def test_answer_delivery_adds_japanese_footer_and_is_idempotent() -> None:
 
     assert first.disposition is DeliveryDisposition.SENT
     assert second.disposition is DeliveryDisposition.DEDUPLICATED
+    assert second.provider_message_id is None
     assert len(sender.sent) == 1
     assert sender.sent[0][1].count(CANONICAL_FOOTER_MARKER) == 1
     assert sender.sent[0][1].endswith(
@@ -323,6 +335,83 @@ async def test_live_without_sender_fails_closed_before_creating_outbox() -> None
     assert result.disposition is DeliveryDisposition.FAILED
     assert result.reason == "live_sender_not_ready"
     assert outbox.entries == {}
+
+
+@pytest.mark.asyncio
+async def test_canary_without_sender_fails_closed_even_for_allowlisted_ticket() -> None:
+    outbox = FakeOutbox()
+    controller = DeliveryController(
+        freshness=FakeFreshness(),
+        outbox=outbox,
+        sender=UnavailableZendeskReplySender(),
+        footer_catalog=_catalog(),
+        policy=DeliveryPolicy(
+            mode=DeliveryMode.CANARY,
+            canary_ticket_ids=frozenset({3726}),
+        ),
+    )
+
+    result = await controller.deliver(_request())
+
+    assert result.disposition is DeliveryDisposition.FAILED
+    assert result.reason == "canary_sender_not_ready"
+    assert outbox.entries == {}
+
+
+@pytest.mark.asyncio
+async def test_delivery_persists_provider_message_id_from_receipt() -> None:
+    outbox = FakeOutbox()
+
+    class ReceiptSender(FakeSender):
+        async def send_reply(
+            self, *, ticket_id: int, body: str, idempotency_key: str
+        ) -> ZendeskReplyReceipt:
+            self.sent.append((ticket_id, body, idempotency_key))
+            return ZendeskReplyReceipt(provider_message_id="comment-3726")
+
+    sender = ReceiptSender()
+    controller = DeliveryController(
+        freshness=FakeFreshness(),
+        outbox=outbox,
+        sender=sender,
+        footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
+    )
+
+    result = await controller.deliver(_request())
+    duplicate = await controller.deliver(_request())
+
+    assert result.disposition is DeliveryDisposition.SENT
+    assert result.provider_message_id == "comment-3726"
+    assert duplicate.disposition is DeliveryDisposition.DEDUPLICATED
+    assert duplicate.provider_message_id == "comment-3726"
+    entry = outbox.entries[result.outbox_key or ""]
+    assert entry.provider_message_id == "comment-3726"
+
+
+@pytest.mark.asyncio
+async def test_provider_timeout_leaves_outbox_ambiguous_for_reconciliation() -> None:
+    outbox = FakeOutbox()
+
+    class TimeoutSender(FakeSender):
+        async def send_reply(
+            self, *, ticket_id: int, body: str, idempotency_key: str
+        ) -> None:
+            raise TimeoutError("provider timeout after accept")
+
+    controller = DeliveryController(
+        freshness=FakeFreshness(),
+        outbox=outbox,
+        sender=TimeoutSender(),
+        footer_catalog=_catalog(),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
+    )
+
+    result = await controller.deliver(_request())
+
+    assert result.disposition is DeliveryDisposition.FAILED
+    assert result.reason == "reply_send_failed"
+    assert outbox.entries[result.outbox_key or ""].status == "ambiguous"
 
 
 @pytest.mark.asyncio
