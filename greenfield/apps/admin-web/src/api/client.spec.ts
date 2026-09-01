@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createAdminApiClient, type AdminApiTransport } from './client'
+import { adminApiBasePath, adminBasePath, createAdminApiClient, type AdminApiTransport } from './client'
 
 function transportFor(payloads: Record<string, unknown>): AdminApiTransport & { calls: Array<{ path: string; init?: RequestInit }> } {
   const calls: Array<{ path: string; init?: RequestInit }> = []
@@ -13,6 +13,13 @@ function transportFor(payloads: Record<string, unknown>): AdminApiTransport & { 
 }
 
 describe('Admin API client', () => {
+  it('derives the API path from the configured web base path', () => {
+    expect(adminBasePath('/')).toBe('')
+    expect(adminBasePath('/admin/')).toBe('/admin')
+    expect(adminApiBasePath('/')).toBe('/api')
+    expect(adminApiBasePath('/admin/')).toBe('/admin/api')
+  })
+
   it('maps versioned config and never requires a credential value', async () => {
     const transport = transportFor({
       '/api/config': {

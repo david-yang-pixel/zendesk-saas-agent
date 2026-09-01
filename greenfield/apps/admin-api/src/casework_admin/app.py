@@ -9,9 +9,10 @@ from typing import Protocol
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 from starlette.staticfiles import StaticFiles
-from starlette.types import Lifespan
+from starlette.types import Lifespan, Scope
 
 from casework_admin.config import (
     AdminConfig,
@@ -44,6 +45,23 @@ class ConfigUpdateRequest(BaseModel):
 
 class ReadinessPort(Protocol):
     async def check(self) -> bool: ...
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serve the built console entry point for client-side history routes."""
+
+    async def get_response(self, path: str, scope: Scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as error:
+            if (
+                error.status_code != 404
+                or scope.get("method") != "GET"
+                or path.startswith("api/")
+                or "." in Path(path).name
+            ):
+                raise
+            return await super().get_response("index.html", scope)
 
 
 def default_config() -> AdminConfig:
@@ -170,5 +188,5 @@ def create_app(
     web_dist_value = os.environ.get("ADMIN_WEB_DIST")
     web_dist = Path(web_dist_value) if web_dist_value else None
     if web_dist is not None and web_dist.is_dir():
-        app.mount("/", StaticFiles(directory=web_dist, html=True), name="admin-web")
+        app.mount("/", SPAStaticFiles(directory=web_dist, html=True), name="admin-web")
     return app

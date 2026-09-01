@@ -4,8 +4,9 @@ import HarnessPage from './pages/HarnessPage.vue'
 import RulesPage from './pages/RulesPage.vue'
 import SkillsPage from './pages/SkillsPage.vue'
 import RunsPage from './pages/RunsPage.vue'
+import { adminBasePath } from './base-path'
 
-export function createAppRouter(history: RouterHistory = createWebHistory()) {
+export function createAppRouter(history: RouterHistory = createWebHistory(adminBasePath())) {
   return createRouter({
     history,
     routes: [

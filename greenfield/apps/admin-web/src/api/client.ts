@@ -9,6 +9,9 @@ import type {
 } from '../types'
 import type { FailureItem, MetricCard, QueueHealth, RecentRun, RunRecord, SkillRecord, ToolRecord } from '../types'
 import type { InjectionKey } from 'vue'
+import { adminApiBasePath, adminBasePath } from '../base-path'
+
+export { adminApiBasePath, adminBasePath } from '../base-path'
 
 export interface AdminApiTransport {
   request<T>(path: string, init?: RequestInit): Promise<T>
@@ -22,7 +25,7 @@ export class AdminApiHttpError extends Error {
 }
 
 class FetchAdminApiTransport implements AdminApiTransport {
-  constructor(private readonly baseUrl = '') {}
+  constructor(private readonly baseUrl = adminBasePath()) {}
 
   async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {

@@ -170,6 +170,37 @@ def test_admin_image_serves_built_web_console(
     assert "Casework console" in response.text
 
 
+def test_admin_image_falls_back_to_spa_entry_for_history_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<main>Casework console</main>", encoding="utf-8")
+    monkeypatch.setenv("ADMIN_WEB_DIST", str(dist))
+
+    client = _client()
+
+    response = client.get("/harness")
+
+    assert response.status_code == 200
+    assert "Casework console" in response.text
+
+
+def test_admin_image_does_not_turn_unknown_api_requests_into_html(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<main>Casework console</main>", encoding="utf-8")
+    monkeypatch.setenv("ADMIN_WEB_DIST", str(dist))
+
+    client = _client()
+
+    response = client.get("/api/unknown")
+
+    assert response.status_code == 404
+
+
 def test_admin_read_models_are_available_for_all_console_pages() -> None:
     client = _client()
 
