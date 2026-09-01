@@ -364,6 +364,7 @@ class JobRepository:
         event_id: str,
         config: ConfigSnapshot,
         available_at: datetime | None = None,
+        created_at: datetime | None = None,
         job_id: str | None = None,
         session_id: str | None = None,
     ) -> EnqueueResult:
@@ -421,6 +422,7 @@ class JobRepository:
         new_session_id = session_id or _default_session_id(new_job_id)
         if not new_session_id.strip():
             raise ValueError("session_id must not be blank")
+        timestamp = created_at or utc_now()
         await self.session.execute(
             insert(CaseJobRow).values(
                 job_id=new_job_id,
@@ -431,6 +433,8 @@ class JobRepository:
                 status="queued",
                 attempts=0,
                 available_at=available_at or utc_now(),
+                created_at=timestamp,
+                updated_at=timestamp,
                 config_revision=config.config_revision,
                 root_model_config_id=config.root_model_config_id,
                 child_model_config_ids=list(config.child_model_config_ids),
