@@ -18,7 +18,6 @@ from casework_agent_core.todo import TodoPlan
 from casework_tool_sdk.loop import ToolLoop
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
 from contracts.outcome import Outcome, OutcomeKind
-from contracts.todo import Todo
 
 
 class ZendeskReader(Protocol):
@@ -99,33 +98,40 @@ class SandboxAgent:
                 self._tools.names(),
             )
             gate = EvidenceGate()
-            loop = ToolLoop(registry=self._tools, max_rounds=self._max_tool_rounds)
-            tool_calls: list[tuple[str, dict[str, object]]] = []
-            ready_tasks: list[Todo] = []
-            while (task := plan.next_ready()) is not None:
-                ready_tasks.append(task)
+            tool_rounds = 0
+            while tool_rounds < self._max_tool_rounds:
+                task = plan.next_ready()
+                if task is None:
+                    break
                 if not task.suggested_tools:
                     break
-                tool_calls.append(
-                    (task.suggested_tools[0], {"query": question.original_request})
+                loop = ToolLoop(
+                    registry=self._tools,
+                    max_rounds=self._max_tool_rounds - tool_rounds,
                 )
-                if len(tool_calls) >= self._max_tool_rounds:
+                loop_result = await loop.run(
+                    calls=[
+                        (
+                            task.suggested_tools[0],
+                            {"query": question.original_request},
+                        )
+                    ],
+                    context=ToolExecutionContext(
+                        ticket_id=ticket_id,
+                        session_id=session_id,
+                        root_session_id=session_id,
+                    ),
+                )
+                tool_rounds += loop_result.rounds
+                if not loop_result.results:
                     break
-            loop_result = await loop.run(
-                calls=tool_calls,
-                context=ToolExecutionContext(
-                    ticket_id=ticket_id,
-                    session_id=session_id,
-                    root_session_id=session_id,
-                ),
-            )
-            for index, result in enumerate(loop_result.results):
+                result = loop_result.results[0]
                 gate.admit(
-                    call_id=f"call-{ticket_id}-{index + 1:02d}",
-                    tool_name=ready_tasks[index].suggested_tools[0],
+                    call_id=f"call-{ticket_id}-{tool_rounds:02d}",
+                    tool_name=task.suggested_tools[0],
                     result=result,
                 )
-                plan.mark_completed(ready_tasks[index].task_id)
+                plan.mark_completed(task.task_id)
                 context.add(result.summary, tokens=max(1, len(result.summary) // 4))
             evidence_ids = tuple(item.evidence_id for item in gate.records())
             checkpoint = context.checkpoint(active_question=question)
