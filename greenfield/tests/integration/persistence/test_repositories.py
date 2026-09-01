@@ -210,11 +210,11 @@ async def test_human_cancel_advances_generation_and_fences_jobs_and_outbox(
             outbox_id="out-1",
             job_id="job-1",
             ticket_id=3726,
-            generation=0,
+            generation=1,
             snapshot_cursor="cursor-1",
             locale="zh-CN",
             body="reply",
-            idempotency_key="reply:3726:0:cursor-1",
+            idempotency_key="reply:3726:1:cursor-1",
         )
     )
     cancel = HumanCancelRepository(db_session)
@@ -224,7 +224,7 @@ async def test_human_cancel_advances_generation_and_fences_jobs_and_outbox(
         occurred_at=NOW + timedelta(seconds=2),
         reason="customer requested a human",
     )
-    assert result.generation == 1
+    assert result.generation == 2
     assert result.cancelled_jobs == 1
     assert result.cancelled_outbox == 1
     job = cast(CaseJobRow, db_session.get(CaseJobRow, "job-1"))
@@ -254,11 +254,11 @@ async def test_outbox_create_is_idempotent_by_key(
         outbox_id="out-1",
         job_id="job-1",
         ticket_id=3726,
-        generation=0,
+        generation=1,
         snapshot_cursor="cursor-1",
         locale="ja-JP",
         body="reply",
-        idempotency_key="reply:3726:0:cursor-1",
+        idempotency_key="reply:3726:1:cursor-1",
     )
     first = await outbox.create(draft)
     second = await outbox.create(draft)

@@ -65,7 +65,9 @@ class TicketState(Base):
     ticket_id: Mapped[int] = mapped_column(
         BigInteger, primary_key=True, autoincrement=False
     )
-    generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default="1"
+    )
     last_event_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("events.event_id")
     )
@@ -76,9 +78,7 @@ class TicketState(Base):
 
     __table_args__ = (
         CheckConstraint("ticket_id > 0", name="ck_ticket_states_ticket_id_positive"),
-        CheckConstraint(
-            "generation >= 0", name="ck_ticket_states_generation_nonnegative"
-        ),
+        CheckConstraint("generation >= 1", name="ck_ticket_states_generation_positive"),
     )
 
 
@@ -122,7 +122,7 @@ class CaseJobRow(Base):
 
     __table_args__ = (
         CheckConstraint("ticket_id > 0", name="ck_case_jobs_ticket_id_positive"),
-        CheckConstraint("generation >= 0", name="ck_case_jobs_generation_nonnegative"),
+        CheckConstraint("generation >= 1", name="ck_case_jobs_generation_positive"),
         CheckConstraint("attempts >= 0", name="ck_case_jobs_attempts_nonnegative"),
         CheckConstraint(
             "status IN ('queued', 'claimed', 'sandbox_creating', 'running', "
@@ -178,7 +178,7 @@ class OutboxMessage(Base):
 
     __table_args__ = (
         CheckConstraint("ticket_id > 0", name="ck_outbox_ticket_id_positive"),
-        CheckConstraint("generation >= 0", name="ck_outbox_generation_nonnegative"),
+        CheckConstraint("generation >= 1", name="ck_outbox_generation_positive"),
         CheckConstraint("attempt_count >= 0", name="ck_outbox_attempts_nonnegative"),
         CheckConstraint(
             "status IN ('pending', 'attempted', 'sent', 'confirmed', "

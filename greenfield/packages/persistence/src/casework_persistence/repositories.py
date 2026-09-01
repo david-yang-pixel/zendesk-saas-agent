@@ -226,7 +226,7 @@ class TicketRepository:
             select(TicketState.generation).where(TicketState.ticket_id == ticket_id)
         )
         generation = result.scalar_one_or_none()
-        return int(generation) if generation is not None else 0
+        return int(generation) if generation is not None else 1
 
 
 class JobRepository:
@@ -627,8 +627,8 @@ class OutboxRepository:
         self.session = session
 
     async def create(self, draft: OutboxDraft) -> OutboxMessage:
-        if draft.ticket_id <= 0 or draft.generation < 0:
-            raise ValueError("ticket_id must be positive and generation nonnegative")
+        if draft.ticket_id <= 0 or draft.generation < 1:
+            raise ValueError("ticket_id and generation must be positive")
         if any(
             not value.strip()
             for value in (

@@ -5,7 +5,7 @@ from typing import cast
 
 import pytest
 from sqlalchemy.dialects import postgresql, sqlite
-from sqlalchemy.schema import CreateIndex, CreateTable
+from sqlalchemy.schema import ColumnDefault, CreateIndex, CreateTable
 from sqlalchemy.sql.schema import Table
 
 from casework_persistence.models import (
@@ -68,7 +68,7 @@ def test_required_config_snapshot_is_explicit_and_immutable() -> None:
         )
 
 
-def test_all_timestamps_are_timezone_aware_and_generation_cannot_be_negative() -> None:
+def test_all_timestamps_are_timezone_aware_and_generation_starts_at_one() -> None:
     now = datetime(2026, 9, 1, tzinfo=UTC)
     assert (
         EventRecord(
@@ -83,7 +83,9 @@ def test_all_timestamps_are_timezone_aware_and_generation_cannot_be_negative() -
     )
     state_table = cast(Table, TicketState.__table__)
     checks = {constraint.name for constraint in state_table.constraints}
-    assert "ck_ticket_states_generation_nonnegative" in checks
+    assert "ck_ticket_states_generation_positive" in checks
+    generation_default = cast(ColumnDefault, state_table.c.generation.default)
+    assert generation_default.arg == 1
 
 
 def test_sqlite_ddl_is_available_for_local_contract_review() -> None:
