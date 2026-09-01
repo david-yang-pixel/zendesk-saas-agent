@@ -69,6 +69,22 @@ class ToolRegistry:
             raise ValueError("tool session kind must be root or subagent")
         return self
 
+    def allowlist(self, names: tuple[str, ...]) -> ToolRegistry:
+        """Return a registry view for one frozen runtime snapshot."""
+
+        if len(set(names)) != len(names):
+            raise ValueError("tool allowlist must not contain duplicates")
+        unknown = tuple(name for name in names if name not in self._definitions)
+        if unknown:
+            raise ToolNotFoundError(unknown[0])
+        selected = ToolRegistry(
+            artifact_store=self._artifact_store,
+            max_inline_bytes=self._max_inline_bytes,
+        )
+        for name in names:
+            selected.register(self._definitions[name], self._handlers[name])
+        return selected
+
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._definitions))
 

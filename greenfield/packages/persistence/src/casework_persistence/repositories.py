@@ -30,8 +30,12 @@ from casework_persistence.models import (
     ConfigRevisionRow,
     EventRecord,
     OutboxMessage,
+    RunEventRow,
+    RunRecordRow,
     TicketState,
 )
+from contracts.outcome import Outcome
+from contracts.telemetry import SandboxResultTelemetry
 
 
 def utc_now() -> datetime:
@@ -927,6 +931,205 @@ class OutboxRepository:
         return _rowcount(result)
 
 
+class RunTelemetryRepository:
+    """Persist the bounded result projection inside the worker transaction."""
+
+    _TERMINAL = frozenset(
+        {"completed", "awaiting_customer", "human_takeover", "failed", "cancelled"}
+    )
+
+    def __init__(self, session: SessionPort) -> None:
+        self.session = session
+
+    async def record_finalization(
+        self,
+        *,
+        job_id: str,
+        session_id: str,
+        ticket_id: int,
+        generation: int,
+        outcome: Outcome,
+        terminal_status: str,
+        started_at: datetime | None = None,
+        finished_at: datetime | None = None,
+        delivery_status: str | None = None,
+        outbox_id: str | None = None,
+    ) -> RunRecordRow:
+        if terminal_status not in self._TERMINAL:
+            raise ValueError(
+                f"run telemetry requires terminal status: {terminal_status}"
+            )
+        if ticket_id <= 0 or generation < 1:
+            raise ValueError("ticket_id and generation must be positive")
+        if not job_id.strip() or not session_id.strip():
+            raise ValueError("job_id and session_id must not be blank")
+        if outcome.ticket_id != ticket_id or outcome.session_id != session_id:
+            raise ValueError("outcome identity does not match run finalization")
+
+        existing_result = await self.session.execute(
+            select(RunRecordRow)
+            .where(RunRecordRow.session_id == session_id)
+            .with_for_update()
+        )
+        existing = existing_result.scalar_one_or_none()
+        outcome_json = cast(dict[str, object], outcome.model_dump(
+            mode="json", exclude={"telemetry"}
+        ))
+        if existing is not None:
+            existing_outcome = existing.outcome
+            if (
+                existing.job_id != job_id
+                or existing.ticket_id != ticket_id
+                or existing.generation != generation
+                or existing_outcome.get("outcome_id") != outcome.outcome_id
+            ):
+                raise ValueError("session_id is already bound to another run")
+            return existing
+
+        telemetry = outcome.telemetry
+        values = self._projection(
+            telemetry=telemetry,
+            outcome=outcome_json,
+            job_id=job_id,
+            session_id=session_id,
+            ticket_id=ticket_id,
+            generation=generation,
+            terminal_status=terminal_status,
+            started_at=started_at,
+            finished_at=finished_at or utc_now(),
+        )
+        await self.session.execute(insert(RunRecordRow).values(**values))
+        event_token = md5(session_id.encode(), usedforsecurity=False).hexdigest()
+        await self.session.execute(
+            insert(RunEventRow).values(
+                event_id=f"run-finalized:{event_token}",
+                session_id=session_id,
+                job_id=job_id,
+                event_type="run.finalized",
+                payload={
+                    "outcome_id": outcome.outcome_id,
+                    "status": terminal_status,
+                    "telemetry_version": (
+                        telemetry.version if telemetry is not None else None
+                    ),
+                    "delivery_status": delivery_status,
+                    "outbox_id": outbox_id,
+                },
+                occurred_at=finished_at or utc_now(),
+            )
+        )
+        if telemetry is not None:
+            for index, lifecycle in enumerate(telemetry.sandbox_lifecycle):
+                await self.session.execute(
+                    insert(RunEventRow).values(
+                        event_id=f"run-sandbox:{event_token}:{index}",
+                        session_id=session_id,
+                        job_id=job_id,
+                        event_type="sandbox.lifecycle",
+                        payload=lifecycle.model_dump(mode="json"),
+                        occurred_at=lifecycle.occurred_at,
+                    )
+                )
+        result = await self.session.execute(
+            select(RunRecordRow).where(RunRecordRow.session_id == session_id)
+        )
+        created = result.scalar_one_or_none()
+        if created is None:
+            raise RuntimeError("run telemetry insert was not readable")
+        return created
+
+    async def get(self, *, session_id: str) -> RunRecordRow | None:
+        result = await self.session.execute(
+            select(RunRecordRow).where(RunRecordRow.session_id == session_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_events(self, *, session_id: str) -> tuple[RunEventRow, ...]:
+        result = await self.session.execute(
+            select(RunEventRow)
+            .where(RunEventRow.session_id == session_id)
+            .order_by(RunEventRow.occurred_at, RunEventRow.event_id)
+        )
+        return tuple(result.scalars().all())
+
+    @staticmethod
+    def _projection(
+        *,
+        telemetry: SandboxResultTelemetry | None,
+        outcome: dict[str, object],
+        job_id: str,
+        session_id: str,
+        ticket_id: int,
+        generation: int,
+        terminal_status: str,
+        started_at: datetime | None,
+        finished_at: datetime,
+    ) -> dict[str, object]:
+        if telemetry is None:
+            activity: dict[str, object | None] = {
+                "telemetry_version": None,
+                "active_question": None,
+                "todo_total": None,
+                "todo_completed": None,
+                "todo_statuses": None,
+                "tool_calls": None,
+                "tool_call_records": None,
+                "subagents": None,
+                "subagent_tasks": None,
+                "evidence_count": None,
+                "evidence_ids": None,
+                "context_checkpoint": None,
+                "sandbox_lifecycle": None,
+            }
+        else:
+            todos = [item.model_dump(mode="json") for item in telemetry.todos]
+            tool_calls = [item.model_dump(mode="json") for item in telemetry.tool_calls]
+            subagents = [
+                item.model_dump(mode="json") for item in telemetry.subagent_tasks
+            ]
+            activity = {
+                "telemetry_version": telemetry.version,
+                "active_question": (
+                    telemetry.active_question.model_dump(mode="json")
+                    if telemetry.active_question is not None
+                    else None
+                ),
+                "todo_total": len(todos),
+                "todo_completed": sum(
+                    item["status"] == "completed" for item in todos
+                ),
+                "todo_statuses": todos,
+                "tool_calls": len(tool_calls),
+                "tool_call_records": tool_calls,
+                "subagents": len(subagents),
+                "subagent_tasks": subagents,
+                "evidence_count": len(telemetry.evidence_ids),
+                "evidence_ids": list(telemetry.evidence_ids),
+                "context_checkpoint": (
+                    telemetry.context_checkpoint.model_dump(mode="json")
+                    if telemetry.context_checkpoint is not None
+                    else None
+                ),
+                "sandbox_lifecycle": [
+                    event.model_dump(mode="json")
+                    for event in telemetry.sandbox_lifecycle
+                ],
+            }
+        return {
+            "session_id": session_id,
+            "job_id": job_id,
+            "ticket_id": ticket_id,
+            "generation": generation,
+            "status": terminal_status,
+            "outcome": outcome,
+            "created_at": started_at or finished_at,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "updated_at": finished_at,
+            **activity,
+        }
+
+
 class CaseworkPersistence:
     """Convenience aggregate exposing all repository ports for one session."""
 
@@ -937,6 +1140,7 @@ class CaseworkPersistence:
         self.jobs = JobRepository(session)
         self.human_cancel = HumanCancelRepository(session)
         self.outbox = OutboxRepository(session)
+        self.run_telemetry = RunTelemetryRepository(session)
 
 
 __all__ = [
@@ -957,6 +1161,7 @@ __all__ = [
     "OutboxDraft",
     "OutboxRepository",
     "OutboxStatus",
+    "RunTelemetryRepository",
     "SessionPort",
     "TicketRepository",
     "session_transaction",

@@ -7,6 +7,7 @@ from enum import StrEnum
 from pydantic import AliasChoices, Field, StrictInt, field_validator, model_validator
 
 from contracts._base import ContractModel, unique_strings
+from contracts.telemetry import SandboxResultTelemetry
 
 
 class OutcomeKind(StrEnum):
@@ -36,6 +37,7 @@ class Outcome(ContractModel):
     artifact_refs: tuple[str, ...] = ()
     checkpoint_ref: str | None = Field(default=None, min_length=1)
     retry_classification: str | None = Field(default=None, min_length=1)
+    telemetry: SandboxResultTelemetry | None = None
 
     @field_validator("todo_ids", "evidence_ids", "artifact_refs")
     @classmethod

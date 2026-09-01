@@ -76,6 +76,13 @@ async def test_success_uses_default_limits_and_always_destroys() -> None:
 
     assert result.result == {"ok": True}
     assert result.attempt == 1
+    assert [event.state for event in result.lifecycle] == [
+        "creating",
+        "ready",
+        "running",
+        "destroying",
+        "destroyed",
+    ]
     assert engine.created[0]["limits"] == {
         "nano_cpus": 500_000_000,
         "mem_limit": 1024**3,

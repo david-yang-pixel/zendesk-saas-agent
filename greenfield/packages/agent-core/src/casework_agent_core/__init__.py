@@ -14,6 +14,16 @@ from casework_agent_core.memory import (
     WorkingFact,
     WorkingMemory,
 )
+from casework_agent_core.runtime_config import (
+    EnvironmentSecretResolver,
+    MappingSecretResolver,
+    ResolvedModelBinding,
+    ResolvedRuntimeModels,
+    RuntimeConfigError,
+    SecretResolver,
+    resolve_model_credentials,
+    resolve_runtime_models,
+)
 from casework_agent_core.skills import LoadedSkill, SkillLoader, SkillManifest
 from casework_agent_core.subagents import (
     ChildSession,
@@ -29,10 +39,16 @@ __all__ = [
     "ChildSession",
     "ContextCheckpoint",
     "ContextGovernance",
+    "EnvironmentSecretResolver",
     "EvidenceGate",
     "LoadedSkill",
+    "MappingSecretResolver",
     "MemoryProposal",
     "MemoryProposalStatus",
+    "ResolvedModelBinding",
+    "ResolvedRuntimeModels",
+    "RuntimeConfigError",
+    "SecretResolver",
     "SkillLoader",
     "SkillManifest",
     "SubagentOrchestrator",
@@ -46,4 +62,6 @@ __all__ = [
     "WorkingFact",
     "WorkingMemory",
     "resolve_active_question",
+    "resolve_model_credentials",
+    "resolve_runtime_models",
 ]

@@ -187,6 +187,7 @@ class OutboxMessage(Base):
     job_id: Mapped[str | None] = mapped_column(
         String(255), ForeignKey("case_jobs.job_id")
     )
+
     ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     snapshot_cursor: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -230,6 +231,98 @@ class OutboxMessage(Base):
     )
 
 
+class RunRecordRow(Base):
+    """Bounded and queryable projection of one finalized sandbox run."""
+
+    __tablename__ = "run_records"
+
+    session_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    job_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("case_jobs.job_id"), nullable=False, unique=True
+    )
+    ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    telemetry_version: Mapped[str | None] = mapped_column(String(64))
+    active_question: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    todo_total: Mapped[int | None] = mapped_column(Integer)
+    todo_completed: Mapped[int | None] = mapped_column(Integer)
+    todo_statuses: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    tool_calls: Mapped[int | None] = mapped_column(Integer)
+    tool_call_records: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    subagents: Mapped[int | None] = mapped_column(Integer)
+    subagent_tasks: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    evidence_count: Mapped[int | None] = mapped_column(Integer)
+    evidence_ids: Mapped[list[str] | None] = mapped_column(JSON)
+    context_checkpoint: Mapped[dict[str, object] | None] = mapped_column(JSON)
+    sandbox_lifecycle: Mapped[list[dict[str, object]] | None] = mapped_column(JSON)
+    outcome: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("ticket_id > 0", name="ck_run_records_ticket_id_positive"),
+        CheckConstraint("generation >= 1", name="ck_run_records_generation_positive"),
+        CheckConstraint(
+            "status IN ('completed', 'awaiting_customer', 'human_takeover', "
+            "'failed', 'cancelled')",
+            name="ck_run_records_status",
+        ),
+        CheckConstraint(
+            "todo_total IS NULL OR todo_total >= 0",
+            name="ck_run_records_todo_total_nonnegative",
+        ),
+        CheckConstraint(
+            "todo_completed IS NULL OR todo_completed >= 0",
+            name="ck_run_records_todo_completed_nonnegative",
+        ),
+        CheckConstraint(
+            "tool_calls IS NULL OR tool_calls >= 0",
+            name="ck_run_records_tool_calls_nonnegative",
+        ),
+        CheckConstraint(
+            "subagents IS NULL OR subagents >= 0",
+            name="ck_run_records_subagents_nonnegative",
+        ),
+        CheckConstraint(
+            "evidence_count IS NULL OR evidence_count >= 0",
+            name="ck_run_records_evidence_count_nonnegative",
+        ),
+        Index("ix_run_records_ticket_generation", "ticket_id", "generation"),
+        Index("ix_run_records_finished_at", "finished_at"),
+    )
+
+
+class RunEventRow(Base):
+    """Append-only lifecycle event for the bounded run projection."""
+
+    __tablename__ = "run_events"
+
+    event_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("run_records.session_id"), nullable=False
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("case_jobs.job_id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_run_events_session_occurred", "session_id", "occurred_at"),
+        Index("ix_run_events_job_occurred", "job_id", "occurred_at"),
+    )
+
+
 __all__ = [
     "ACTIVE_JOB_STATUSES",
     "Base",
@@ -238,5 +331,7 @@ __all__ = [
     "ConfigRevisionRow",
     "EventRecord",
     "OutboxMessage",
+    "RunEventRow",
+    "RunRecordRow",
     "TicketState",
 ]

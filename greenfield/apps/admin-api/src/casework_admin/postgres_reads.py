@@ -8,6 +8,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from typing import Literal, cast
 
+from pydantic import BaseModel
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,14 +20,21 @@ from casework_admin.read_models import (
     QueueHealth,
     RecentRun,
     RegistryResponse,
+    RunActiveQuestion,
+    RunContextCheckpoint,
     RunListResponse,
     RunRecord,
+    RunSandboxLifecycle,
+    RunSandboxLifecycleEvent,
     RunStatus,
+    RunSubagentTask,
+    RunTodo,
+    RunToolCall,
     SkillRecord,
     ToolProbe,
     ToolRecord,
 )
-from casework_persistence.models import CaseJobRow
+from casework_persistence.models import CaseJobRow, RunRecordRow
 from casework_persistence.repositories import (
     ConfigRevisionRepository,
     SessionPort,
@@ -82,8 +90,70 @@ def _duration(row: CaseJobRow) -> str:
     return f"{minutes}m {remainder}s" if minutes else f"{remainder}s"
 
 
-def _record(row: CaseJobRow) -> RunRecord:
+def _read_model[M: BaseModel](model_type: type[M], value: object) -> M | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return model_type.model_validate(value)
+    except ValueError:
+        return None
+
+
+def _read_models[M: BaseModel](model_type: type[M], value: object) -> tuple[M, ...]:
+    if not isinstance(value, list):
+        return ()
+    raw_values = cast(list[object], value)
+    parsed = tuple(
+        item
+        for raw in raw_values
+        if (item := _read_model(model_type, raw)) is not None
+    )
+    return parsed
+
+
+def _record(row: CaseJobRow, run: RunRecordRow | None = None) -> RunRecord:
     status = _run_status(row.status)
+    has_telemetry = run is not None and run.telemetry_version is not None
+    active_question = (
+        _read_model(RunActiveQuestion, run.active_question)
+        if has_telemetry and run is not None
+        else None
+    )
+    todos = (
+        _read_models(RunTodo, run.todo_statuses)
+        if has_telemetry and run is not None
+        else ()
+    )
+    tool_call_records = (
+        _read_models(RunToolCall, run.tool_call_records)
+        if has_telemetry and run is not None
+        else ()
+    )
+    subagent_tasks = (
+        _read_models(RunSubagentTask, run.subagent_tasks)
+        if has_telemetry and run is not None
+        else ()
+    )
+    context_checkpoint = (
+        _read_model(RunContextCheckpoint, run.context_checkpoint)
+        if has_telemetry and run is not None
+        else None
+    )
+    lifecycle_events = (
+        _read_models(RunSandboxLifecycleEvent, run.sandbox_lifecycle)
+        if has_telemetry and run is not None
+        else ()
+    )
+    sandbox_lifecycle = (
+        RunSandboxLifecycle(
+            sandbox_id=lifecycle_events[0].sandbox_id if lifecycle_events else None,
+            attempt=lifecycle_events[0].attempt if lifecycle_events else None,
+            events=lifecycle_events,
+        )
+        if has_telemetry
+        else None
+    )
+    outcome_kind = run.outcome.get("kind") if run is not None else None
     return RunRecord(
         ticket_id=row.ticket_id,
         subject=f"Ticket #{row.ticket_id}",
@@ -93,18 +163,31 @@ def _record(row: CaseJobRow) -> RunRecord:
         duration=_duration(row),
         # The queue row does not persist runtime activity.  Do not turn
         # unavailable Todo/tool/evidence/checkpoint data into fake zeros.
-        steps=None,
+        steps=run.todo_total if has_telemetry and run is not None else None,
         session_id=row.session_id,
-        question=None,
-        todo_completed=None,
-        todo_total=None,
-        tool_calls=None,
-        subagents=None,
-        evidence=None,
-        checkpoint=None,
+        question=(active_question.original_request if active_question else None),
+        todo_completed=(
+            run.todo_completed if has_telemetry and run is not None else None
+        ),
+        todo_total=run.todo_total if has_telemetry and run is not None else None,
+        tool_calls=run.tool_calls if has_telemetry and run is not None else None,
+        subagents=run.subagents if has_telemetry and run is not None else None,
+        evidence=run.evidence_count if has_telemetry and run is not None else None,
+        checkpoint=(context_checkpoint.checkpoint_ref if context_checkpoint else None),
         config_revision=row.config_revision,
         sandbox="running" if row.status in _ACTIVE else "destroyed",
-        outcome=row.status,
+        outcome=outcome_kind if isinstance(outcome_kind, str) else row.status,
+        active_question=active_question,
+        todos=cast(tuple[RunTodo, ...], todos),
+        tool_call_records=cast(tuple[RunToolCall, ...], tool_call_records),
+        subagent_tasks=cast(tuple[RunSubagentTask, ...], subagent_tasks),
+        evidence_ids=(
+            tuple(run.evidence_ids)
+            if has_telemetry and run is not None and isinstance(run.evidence_ids, list)
+            else ()
+        ),
+        context_checkpoint=context_checkpoint,
+        sandbox_lifecycle=sandbox_lifecycle,
     )
 
 
@@ -134,13 +217,28 @@ class PostgresAdminReadRepository:
             )
             return tuple(result.scalars().all())
 
+    async def _jobs_with_runs(
+        self,
+    ) -> tuple[tuple[CaseJobRow, RunRecordRow | None], ...]:
+        async with self._transaction_scope() as session:
+            result = await session.execute(
+                select(CaseJobRow, RunRecordRow)
+                .outerjoin(RunRecordRow, RunRecordRow.job_id == CaseJobRow.job_id)
+                .order_by(desc(CaseJobRow.created_at))
+                .limit(500)
+            )
+            return cast(
+                tuple[tuple[CaseJobRow, RunRecordRow | None], ...], result.all()
+            )
+
     async def overview(
         self,
         *,
         desired_state: Literal["running", "paused"],
         config_revision: str,
     ) -> OverviewResponse:
-        jobs = await self._jobs()
+        pairs = await self._jobs_with_runs()
+        jobs = tuple(row for row, _run in pairs)
         statuses = Counter(row.status for row in jobs)
         active = sum(statuses[status] for status in _ACTIVE)
         waiting = statuses["awaiting_customer"]
@@ -172,7 +270,7 @@ class PostgresAdminReadRepository:
                 tone="danger" if statuses["failed"] else "neutral",
             ),
         )
-        records = tuple(_record(row) for row in jobs)
+        records = tuple(_record(row, run) for row, run in pairs)
         failures = tuple(
             FailureItem(
                 id=row.job_id,
@@ -240,6 +338,13 @@ class PostgresAdminReadRepository:
                     "config_revision",
                     "sandbox",
                     "outcome",
+                    "active_question",
+                    "todos",
+                    "tool_call_records",
+                    "subagent_tasks",
+                    "evidence_ids",
+                    "context_checkpoint",
+                    "sandbox_lifecycle",
                 }))
                 for record in records[:10]
             ),
@@ -254,7 +359,9 @@ class PostgresAdminReadRepository:
         normalized = query.strip().casefold() if query else ""
         records = tuple(
             record
-            for record in (_record(row) for row in await self._jobs())
+            for record in (
+                _record(row, run) for row, run in await self._jobs_with_runs()
+            )
             if (status is None or record.status == status)
             and (
                 not normalized
@@ -268,10 +375,12 @@ class PostgresAdminReadRepository:
     async def run(self, *, session_id: str) -> RunRecord | None:
         async with self._transaction_scope() as session:
             result = await session.execute(
-                select(CaseJobRow).where(CaseJobRow.session_id == session_id)
+                select(CaseJobRow, RunRecordRow)
+                .outerjoin(RunRecordRow, RunRecordRow.job_id == CaseJobRow.job_id)
+                .where(CaseJobRow.session_id == session_id)
             )
-            row = result.scalar_one_or_none()
-        return None if row is None else _record(row)
+            pair = result.one_or_none()
+        return None if pair is None else _record(pair[0], pair[1])
 
     async def registry(self) -> RegistryResponse:
         async with self._transaction_scope() as session:

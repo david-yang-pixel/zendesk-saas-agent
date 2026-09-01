@@ -8,9 +8,15 @@ from typing import Protocol, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from casework_harness.delivery import DeliveryResult
 from casework_harness.worker import JobLease
 from casework_persistence.models import CaseJobRow
-from casework_persistence.repositories import JobRepository
+from casework_persistence.repositories import (
+    JobRepository,
+    RunTelemetryRepository,
+    SessionPort,
+)
+from contracts.outcome import Outcome
 
 
 class LeaseLostError(RuntimeError):
@@ -112,6 +118,47 @@ class PostgresJobQueue:
                 ),
             )
         self._require_lease(updated, lease)
+
+    async def finalize(
+        self,
+        lease: JobLease,
+        outcome: Outcome,
+        status: str,
+        delivery_result: DeliveryResult | None = None,
+    ) -> None:
+        """Persist run telemetry and terminal job state in one DB transaction."""
+
+        async with self._gateway_scope() as jobs:
+            session = getattr(jobs, "session", None)
+            if session is None:
+                raise RuntimeError("postgres job gateway has no session")
+            await RunTelemetryRepository(
+                cast(SessionPort, session)
+            ).record_finalization(
+                job_id=lease.job_id,
+                session_id=lease.session_id,
+                ticket_id=lease.ticket_id,
+                generation=lease.generation,
+                outcome=outcome,
+                terminal_status=status,
+                delivery_status=(
+                    delivery_result.disposition.value
+                    if delivery_result is not None
+                    else None
+                ),
+                outbox_id=(
+                    delivery_result.outbox_key
+                    if delivery_result is not None
+                    else None
+                ),
+            )
+            updated = await jobs.finish(
+                job_id=lease.job_id,
+                worker_id=self._worker_id,
+                status=status,
+                dead_letter_reason="harness_failed" if status == "failed" else None,
+            )
+            self._require_lease(updated, lease)
 
     @staticmethod
     def _lease(row: CaseJobRow) -> JobLease:

@@ -69,6 +69,31 @@ class FailedDelivery:
         )
 
 
+class RaisingDelivery:
+    async def deliver(
+        self, outcome: Outcome, generation: int
+    ) -> DeliveryResult:
+        del outcome, generation
+        raise RuntimeError("delivery unavailable")
+
+
+@dataclass
+class FinalizingJobs(FakeJobs):
+    finalized: list[tuple[Outcome, str]] = field(
+        default_factory=list[tuple[Outcome, str]]
+    )
+
+    async def finalize(
+        self,
+        lease: JobLease,
+        outcome: Outcome,
+        status: str,
+        delivery_result: DeliveryResult | None = None,
+    ) -> None:
+        del lease, delivery_result
+        self.finalized.append((outcome, status))
+
+
 def _lease() -> JobLease:
     return JobLease(
         job_id="job-1",
@@ -149,6 +174,37 @@ async def test_worker_finalizes_failed_delivery_as_failed_job() -> None:
     await worker.process_once()
 
     assert jobs.finished == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_atomic_finalizer_when_queue_exposes_one() -> None:
+    jobs = FinalizingJobs(_lease())
+    worker = HarnessWorker(
+        jobs=jobs,
+        sandboxes=FakeSandboxRuns(_answer()),
+        delivery=FakeDelivery(),
+    )
+
+    await worker.process_once()
+
+    assert jobs.finalized == [(_answer(), "completed")]
+    assert jobs.finished == []
+
+
+@pytest.mark.asyncio
+async def test_worker_persists_outcome_when_delivery_raises() -> None:
+    jobs = FinalizingJobs(_lease())
+    worker = HarnessWorker(
+        jobs=jobs,
+        sandboxes=FakeSandboxRuns(_answer()),
+        delivery=RaisingDelivery(),
+    )
+
+    with pytest.raises(RuntimeError, match="delivery unavailable"):
+        await worker.process_once()
+
+    assert jobs.finalized == [(_answer(), "failed")]
+    assert jobs.finished == []
 
 
 @pytest.mark.asyncio

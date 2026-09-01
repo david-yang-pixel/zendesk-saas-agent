@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 from casework_harness.delivery import DeliveryDisposition, DeliveryResult
 from contracts.outcome import Outcome, OutcomeKind
+from contracts.runtime import RuntimeBootstrap
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +22,7 @@ class JobLease:
     model_digest: str
     skill_digest: str
     tool_digest: str
+    bootstrap: RuntimeBootstrap | None = None
 
     def __post_init__(self) -> None:
         if self.ticket_id <= 0 or self.generation < 1:
@@ -47,6 +49,7 @@ class SandboxRunRequest:
     model_digest: str
     skill_digest: str
     tool_digest: str
+    bootstrap: RuntimeBootstrap | None = None
 
     @property
     def business_input(self) -> dict[str, int]:
@@ -63,7 +66,14 @@ class SandboxRunRequest:
             model_digest=lease.model_digest,
             skill_digest=lease.skill_digest,
             tool_digest=lease.tool_digest,
+            bootstrap=lease.bootstrap,
         )
+
+
+class RuntimeBootstrapLoader(Protocol):
+    """Read the immutable config revision outside the sandbox."""
+
+    async def load(self, *, config_revision: str) -> RuntimeBootstrap: ...
 
 
 class JobQueuePort(Protocol):
@@ -86,6 +96,17 @@ class OutcomeDeliveryPort(Protocol):
     ) -> DeliveryResult | None: ...
 
 
+class _TerminalFinalizer(Protocol):
+    async def __call__(
+        self,
+        *,
+        lease: JobLease,
+        outcome: Outcome,
+        status: str,
+        delivery_result: DeliveryResult | None = None,
+    ) -> None: ...
+
+
 class HarnessWorker:
     """Process one leased ticket while keeping queue, sandbox and delivery split."""
 
@@ -96,6 +117,7 @@ class HarnessWorker:
         sandboxes: SandboxRunPort,
         delivery: OutcomeDeliveryPort,
         heartbeat_interval_seconds: float = 20.0,
+        bootstrap_loader: RuntimeBootstrapLoader | None = None,
     ) -> None:
         if heartbeat_interval_seconds <= 0:
             raise ValueError("heartbeat_interval_seconds must be positive")
@@ -103,16 +125,18 @@ class HarnessWorker:
         self._sandboxes = sandboxes
         self._delivery = delivery
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._bootstrap_loader = bootstrap_loader
 
     async def process_once(self) -> bool:
         lease = await self._jobs.claim()
         if lease is None:
             return False
+        outcome: Outcome | None = None
         try:
             await self._jobs.transition(lease, "sandbox_creating")
             await self._jobs.transition(lease, "running")
             outcome = await self._run_with_heartbeat(
-                lease, SandboxRunRequest.from_lease(lease)
+                lease, await self._request_for(lease)
             )
             self._validate_outcome(lease, outcome)
             await self._jobs.transition(lease, "finalizing")
@@ -124,13 +148,73 @@ class HarnessWorker:
                     terminal_status = self._delivery_terminal_status(
                         delivery_result, outcome.kind
                     )
-                    await self._jobs.finish(lease, terminal_status)
+                    await self._finish_terminal(
+                        lease, outcome, terminal_status, delivery_result
+                    )
                     return True
-            await self._jobs.finish(lease, self._terminal_status(outcome.kind))
+            await self._finish_terminal(
+                lease, outcome, self._terminal_status(outcome.kind)
+            )
         except Exception:
-            await self._jobs.finish(lease, "failed")
+            if outcome is None:
+                await self._jobs.finish(lease, "failed")
+            else:
+                try:
+                    await self._finish_terminal(lease, outcome, "failed")
+                except Exception:
+                    # Preserve the original failure while still releasing a
+                    # lease if the telemetry transaction itself is unavailable.
+                    await self._jobs.finish(lease, "failed")
             raise
         return True
+
+    async def _request_for(self, lease: JobLease) -> SandboxRunRequest:
+        bootstrap = lease.bootstrap
+        if self._bootstrap_loader is not None:
+            bootstrap = await self._bootstrap_loader.load(
+                config_revision=lease.config_revision
+            )
+            if bootstrap.config_revision != lease.config_revision:
+                raise ValueError("runtime bootstrap revision does not match lease")
+            if bootstrap.model_digest != lease.model_digest:
+                raise ValueError("runtime bootstrap model digest does not match lease")
+            if bootstrap.skill_digest != lease.skill_digest:
+                raise ValueError("runtime bootstrap skill digest does not match lease")
+            if bootstrap.tool_digest != lease.tool_digest:
+                raise ValueError("runtime bootstrap tool digest does not match lease")
+        if bootstrap is lease.bootstrap:
+            return SandboxRunRequest.from_lease(lease)
+        return SandboxRunRequest.from_lease(
+            JobLease(
+                job_id=lease.job_id,
+                session_id=lease.session_id,
+                ticket_id=lease.ticket_id,
+                generation=lease.generation,
+                config_revision=lease.config_revision,
+                model_digest=lease.model_digest,
+                skill_digest=lease.skill_digest,
+                tool_digest=lease.tool_digest,
+                bootstrap=bootstrap,
+            )
+        )
+
+    async def _finish_terminal(
+        self,
+        lease: JobLease,
+        outcome: Outcome,
+        status: str,
+        delivery_result: DeliveryResult | None = None,
+    ) -> None:
+        finalizer = getattr(self._jobs, "finalize", None)
+        if finalizer is not None:
+            await cast(_TerminalFinalizer, finalizer)(
+                lease=lease,
+                outcome=outcome,
+                status=status,
+                delivery_result=delivery_result,
+            )
+            return
+        await self._jobs.finish(lease, status)
 
     async def _run_with_heartbeat(
         self, lease: JobLease, request: SandboxRunRequest

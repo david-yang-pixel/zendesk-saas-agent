@@ -15,6 +15,8 @@ from casework_persistence.models import (
     ConfigRevisionRow,
     EventRecord,
     OutboxMessage,
+    RunEventRow,
+    RunRecordRow,
     TicketState,
 )
 from casework_persistence.repositories import (
@@ -32,6 +34,7 @@ from casework_persistence.repositories import (
     OutboxDraft,
     OutboxRepository,
     OutboxStatus,
+    RunTelemetryRepository,
     TicketRepository,
     session_transaction,
 )
@@ -60,6 +63,9 @@ __all__ = [
     "OutboxMessage",
     "OutboxRepository",
     "OutboxStatus",
+    "RunEventRow",
+    "RunRecordRow",
+    "RunTelemetryRepository",
     "TicketRepository",
     "TicketState",
     "create_engine",

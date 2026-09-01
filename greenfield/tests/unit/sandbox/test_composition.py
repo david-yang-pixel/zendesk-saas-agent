@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
 import pytest
 
+from casework_agent_core.runtime_config import MappingSecretResolver
+from casework_agent_core.subagents import ChildSession, SubagentTask
 from casework_sandbox.composition import (
+    HttpChildAgentRunner,
     SandboxConfigurationError,
     SandboxRuntimeConfig,
     create_production_commands,
 )
+from casework_tool_sdk.registry import ToolRegistry
 
 
 def test_production_config_fails_closed_when_an_external_adapter_is_missing() -> None:
@@ -93,3 +98,52 @@ async def test_factory_wires_configured_external_adapters_without_database_or_do
     assert await commands.is_ready() is True
     assert commands.tool_names == ("workspace_lookup",)
     await commands.aclose()
+
+
+@pytest.mark.asyncio
+async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
+    observed: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        observed["authorization"] = request.headers["authorization"]
+        payload = request.read()
+        observed["payload"] = payload
+        return httpx.Response(
+            200,
+            json={"summary": "Child found evidence", "evidence_ids": ["ev-child"]},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    runner = HttpChildAgentRunner(
+        client=client,
+        base_url="https://model.example.com",
+        resolver=MappingSecretResolver(
+            {"secret/root": "root-secret", "secret/child": "child-secret"}
+        ),
+    )
+    session = ChildSession(
+        session_id="sub-1",
+        root_session_id="root-1",
+        parent_session_id="root-1",
+        slot_id="logs",
+        provider="child-provider",
+        model="child-model",
+        credential_ref="secret/child",
+        context_window=1_000,
+        max_tool_rounds=2,
+        workdir="/tmp/sub-1",
+        ticket_id=3726,
+    )
+
+    report = await runner.run(
+        session=session,
+        task=SubagentTask(task_id="t-1", objective="inspect logs"),
+        tools=ToolRegistry(),
+        cancelled=asyncio.Event(),
+    )
+
+    assert report.evidence_ids == ("ev-child",)
+    assert observed["authorization"] == "Bearer child-secret"
+    assert b'"model":"child-model"' in observed["payload"]  # type: ignore[operator]
+    assert b'"provider":"child-provider"' in observed["payload"]  # type: ignore[operator]
+    await client.aclose()

@@ -84,6 +84,7 @@ def create_app(commands: SandboxCommandHandler | None = None) -> FastAPI:
             sandbox_id=request.sandbox_id,
             session_id=request.session_id,
             outcome=outcome,
+            telemetry=outcome.telemetry,
             finished_at=datetime.now(UTC),
         )
 

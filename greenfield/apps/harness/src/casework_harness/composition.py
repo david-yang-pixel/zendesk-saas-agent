@@ -35,6 +35,7 @@ from casework_harness.postgres_queue import (
     PostgresJobQueue,
     postgres_job_gateway_scope,
 )
+from casework_harness.runtime_bootstrap import PostgresRuntimeBootstrapLoader
 from casework_harness.sandbox_controller import SandboxController
 from casework_harness.sandbox_runner import ControllerSandboxRunner
 from casework_harness.service import create_app as create_harness_app
@@ -52,8 +53,6 @@ _SANDBOX_ENV_KEYS = (
     "ZENDESK_EMAIL",
     "ZENDESK_API_TOKEN",
     "CASEWORK_MODEL_BASE_URL",
-    "CASEWORK_MODEL_API_KEY",
-    "CASEWORK_MODEL_NAME",
     "CASEWORK_TOOL_CONFIG",
 )
 
@@ -71,6 +70,15 @@ def sandbox_environment(environ: Mapping[str, str]) -> dict[str, str]:
         raise SandboxEnvironmentError(
             "missing sandbox environment: " + ", ".join(missing)
         )
+    # Credential values are passed only through the explicitly namespaced
+    # secret bridge.  They are never part of the runtime bootstrap or queue.
+    environment.update(
+        {
+            key: value.strip()
+            for key, value in environ.items()
+            if key.startswith("CASEWORK_CREDENTIAL_") and value.strip()
+        }
+    )
     return environment
 
 
@@ -240,6 +248,7 @@ def create_app() -> FastAPI:
         jobs=jobs,
         sandboxes=ControllerSandboxRunner(controller=controller),
         delivery=ControllerDeliveryAdapter(delivery_controller),
+        bootstrap_loader=PostgresRuntimeBootstrapLoader(sessions),
     )
     sweeper = DockerSandboxOrphanSweeper(
         client=docker_client,

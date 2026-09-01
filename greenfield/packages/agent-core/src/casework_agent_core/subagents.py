@@ -56,6 +56,7 @@ class ChildSession:
     context_window: int
     max_tool_rounds: int
     workdir: str
+    ticket_id: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,13 +97,17 @@ class SubagentOrchestrator:
         slots: tuple[SubagentSlot, ...],
         tools: ToolRegistry,
         runner: ChildAgentRunner,
+        ticket_id: int | None = None,
     ) -> None:
         if not root_session_id.strip():
             raise ValueError("root_session_id must not be empty")
+        if ticket_id is not None and ticket_id <= 0:
+            raise ValueError("ticket_id must be positive when configured")
         slot_map = {slot.slot_id: slot for slot in slots}
         if len(slot_map) != len(slots):
             raise ValueError("Subagent slot IDs must be unique")
         self._root_session_id = root_session_id
+        self._ticket_id = ticket_id or 0
         self._sandbox_workdir = sandbox_workdir
         self._slots = slot_map
         self._tools = tools.for_session(kind="subagent")
@@ -159,4 +164,5 @@ class SubagentOrchestrator:
             context_window=slot.context_window,
             max_tool_rounds=slot.max_tool_rounds,
             workdir=str(workdir),
+            ticket_id=self._ticket_id,
         )

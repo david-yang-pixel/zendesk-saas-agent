@@ -117,6 +117,17 @@ async def test_sandbox_runtime_fetches_by_ticket_plans_calls_tool_and_returns_ou
     assert outcome.reply_locale == "en-US"
     assert outcome.snapshot_cursor == "evt-3726"
     assert outcome.delivery_eligible is True
+    assert outcome.telemetry is not None
+    assert outcome.telemetry.active_question is not None
+    assert outcome.telemetry.active_question.original_request == (
+        "Which workspace is affected?"
+    )
+    assert outcome.telemetry.todos[0].status == "completed"
+    assert outcome.telemetry.tool_calls[0].summary == "Found the Dify workspace"
+    assert outcome.telemetry.tool_calls[0].evidence_ids == ("ev-ws-dify",)
+    assert outcome.telemetry.evidence_ids == ("ev-ws-dify",)
+    assert outcome.telemetry.context_checkpoint is not None
+    assert "data" not in outcome.telemetry.model_dump(mode="json")
 
 
 @pytest.mark.asyncio

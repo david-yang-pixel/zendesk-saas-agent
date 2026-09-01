@@ -9,6 +9,8 @@ from pydantic import AliasChoices, Field, StrictInt, field_validator, model_vali
 
 from contracts._base import ContractModel, require_aware, validate_transition
 from contracts.outcome import Outcome
+from contracts.runtime import RuntimeBootstrap
+from contracts.telemetry import SandboxResultTelemetry
 
 
 class SandboxStatus(StrEnum):
@@ -97,6 +99,9 @@ class SandboxStartRequest(ContractModel):
     model_digest: str = Field(min_length=1)
     skill_digest: str = Field(min_length=1)
     tool_digest: str = Field(min_length=1)
+    # The Harness sends this once per attempt.  It is an allowlisted,
+    # secret-free projection of the immutable config revision.
+    bootstrap: RuntimeBootstrap
 
     @field_validator("deadline")
     @classmethod
@@ -108,6 +113,14 @@ class SandboxStartRequest(ContractModel):
         expected_cpu = 1.0 if self.resource_attempt == 2 else 0.5
         if self.resources.cpu != expected_cpu:
             raise ValueError("sandbox start attempt does not match resources")
+        if self.bootstrap.config_revision != self.config_revision:
+            raise ValueError("sandbox bootstrap config revision mismatch")
+        if self.bootstrap.model_digest != self.model_digest:
+            raise ValueError("sandbox bootstrap model digest mismatch")
+        if self.bootstrap.skill_digest != self.skill_digest:
+            raise ValueError("sandbox bootstrap skill digest mismatch")
+        if self.bootstrap.tool_digest != self.tool_digest:
+            raise ValueError("sandbox bootstrap tool digest mismatch")
         return self
 
 
@@ -147,6 +160,7 @@ class SandboxResultMessage(ContractModel):
     sandbox_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     outcome: Outcome
+    telemetry: SandboxResultTelemetry | None = None
     finished_at: datetime | None = None
     artifacts: tuple[str, ...] = ()
 

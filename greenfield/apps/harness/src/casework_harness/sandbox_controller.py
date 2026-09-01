@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from casework_harness.sandbox_policy import SandboxFailure, SandboxResourcePolicy
+from contracts.telemetry import SandboxLifecycleEvent
 
 
 class SandboxExecutionStatus(StrEnum):
@@ -32,6 +33,7 @@ class SandboxRunResult:
     status: SandboxExecutionStatus
     result: dict[str, Any] | None = None
     error_code: str | None = None
+    lifecycle: tuple[SandboxLifecycleEvent, ...] = ()
 
 
 class SandboxCleanupError(RuntimeError):
@@ -105,11 +107,35 @@ class SandboxController:
             limits=allocation.docker_limits(),
             labels=self._labels(request=request, attempt=attempt),
         )
+        lifecycle = [
+            SandboxLifecycleEvent(
+                state="creating",
+                occurred_at=datetime.now(UTC),
+                sandbox_id=sandbox_id,
+                attempt=attempt,
+            )
+        ]
         execution: SandboxExecution
         try:
             try:
                 await self._engine.wait_ready(
                     sandbox_id, timeout_seconds=allocation.timeout_seconds
+                )
+                lifecycle.append(
+                    SandboxLifecycleEvent(
+                        state="ready",
+                        occurred_at=datetime.now(UTC),
+                        sandbox_id=sandbox_id,
+                        attempt=attempt,
+                    )
+                )
+                lifecycle.append(
+                    SandboxLifecycleEvent(
+                        state="running",
+                        occurred_at=datetime.now(UTC),
+                        sandbox_id=sandbox_id,
+                        attempt=attempt,
+                    )
                 )
                 execution_request = {
                     **request,
@@ -139,12 +165,28 @@ class SandboxController:
                     error_code=error.error_code,
                 )
         finally:
+            lifecycle.append(
+                SandboxLifecycleEvent(
+                    state="destroying",
+                    occurred_at=datetime.now(UTC),
+                    sandbox_id=sandbox_id,
+                    attempt=attempt,
+                )
+            )
             try:
                 await self._engine.destroy(sandbox_id)
             except Exception as error:
                 raise SandboxCleanupError(
                     f"failed to destroy managed sandbox {sandbox_id}"
                 ) from error
+            lifecycle.append(
+                SandboxLifecycleEvent(
+                    state="destroyed",
+                    occurred_at=datetime.now(UTC),
+                    sandbox_id=sandbox_id,
+                    attempt=attempt,
+                )
+            )
 
         return SandboxRunResult(
             sandbox_id=sandbox_id,
@@ -152,6 +194,7 @@ class SandboxController:
             status=execution.status,
             result=execution.result,
             error_code=execution.error_code,
+            lifecycle=tuple(lifecycle),
         )
 
     @staticmethod

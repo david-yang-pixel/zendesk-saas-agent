@@ -62,6 +62,65 @@ class RecentRun(_ReadModel):
     steps: int | None = Field(default=None, ge=0)
 
 
+class RunActiveQuestion(_ReadModel):
+    original_event_id: str
+    original_request: str
+    clarification_event_ids: tuple[str, ...] = ()
+    current_facts: tuple[str, ...] = ()
+
+
+class RunTodo(_ReadModel):
+    task_id: str
+    goal: str
+    status: Literal[
+        "pending", "ready", "running", "completed", "failed", "blocked", "cancelled"
+    ]
+    assigned_to: str | None = None
+
+
+class RunToolCall(_ReadModel):
+    call_id: str
+    tool_name: str
+    status: Literal["queued", "running", "succeeded", "failed", "cancelled"]
+    summary: str
+    evidence_ids: tuple[str, ...] = ()
+    artifact_refs: tuple[str, ...] = ()
+
+
+class RunSubagentTask(_ReadModel):
+    subagent_id: str
+    objective: str
+    status: Literal[
+        "queued", "running", "completed", "failed", "timed_out", "cancelled"
+    ]
+    slot_id: str | None = None
+    session_id: str | None = None
+    evidence_ids: tuple[str, ...] = ()
+
+
+class RunContextCheckpoint(_ReadModel):
+    checkpoint_ref: str
+    level: Literal["none", "soft", "hard"]
+    used_tokens: int = Field(ge=0)
+    exact_identifiers: tuple[str, ...] = ()
+    retained_rounds: tuple[str, ...] = ()
+    summary: str | None = None
+
+
+class RunSandboxLifecycleEvent(_ReadModel):
+    state: Literal["creating", "ready", "running", "destroying", "destroyed"]
+    occurred_at: str
+    sandbox_id: str
+    attempt: int = Field(ge=1, le=2)
+    detail: str | None = None
+
+
+class RunSandboxLifecycle(_ReadModel):
+    sandbox_id: str | None = None
+    attempt: int | None = Field(default=None, ge=1, le=2)
+    events: tuple[RunSandboxLifecycleEvent, ...] = ()
+
+
 class RunRecord(RecentRun):
     session_id: str
     # The queue snapshot pins each run to an immutable config revision.  Local
@@ -76,6 +135,13 @@ class RunRecord(RecentRun):
     checkpoint: str | None = None
     sandbox: Literal["destroyed", "running"]
     outcome: str
+    active_question: RunActiveQuestion | None = None
+    todos: tuple[RunTodo, ...] = ()
+    tool_call_records: tuple[RunToolCall, ...] = ()
+    subagent_tasks: tuple[RunSubagentTask, ...] = ()
+    evidence_ids: tuple[str, ...] = ()
+    context_checkpoint: RunContextCheckpoint | None = None
+    sandbox_lifecycle: RunSandboxLifecycle | None = None
 
 
 class OverviewResponse(_ReadModel):
