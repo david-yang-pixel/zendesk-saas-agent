@@ -44,9 +44,9 @@ class ActiveQuestionTelemetry(ContractModel):
     clarification_event_ids: tuple[str, ...] = ()
     current_facts: tuple[str, ...] = ()
 
-    @field_validator("clarification_event_ids", "current_facts")
+    @field_validator("clarification_event_ids")
     @classmethod
-    def _bounded_identifiers(
+    def _unique_identifiers(
         cls, value: tuple[str, ...]
     ) -> tuple[str, ...]:
         return _unique(value, "question telemetry identifiers")

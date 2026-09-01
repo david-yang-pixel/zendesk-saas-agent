@@ -430,8 +430,10 @@ class SandboxAgent:
             active_question=ActiveQuestionTelemetry(
                 original_event_id=question.original_event_id,
                 original_request=question.original_request[:4096],
-                clarification_event_ids=question.clarification_event_ids,
-                current_facts=tuple(fact[:2048] for fact in question.current_facts),
+                clarification_event_ids=question.clarification_event_ids[-128:],
+                current_facts=tuple(
+                    fact[:2048] for fact in question.current_facts[-128:]
+                ),
             ),
             todos=tuple(
                 TodoTelemetry(

@@ -157,6 +157,41 @@ async def test_root_model_fails_closed_on_non_json_responses_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_root_model_reports_sanitized_http_status_and_error_code() -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                401,
+                json={
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "invalid_api_key",
+                        "message": "secret provider detail",
+                    }
+                },
+            )
+        )
+    )
+    model = HttpCaseworkModel(
+        client=client,
+        base_url="https://api.openai.com",
+        provider="openai",
+        api_key="root-key",
+        model_name="root-model",
+    )
+    snapshot, question, skill = _model_inputs()
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"HTTP 401 invalid_api_key$",
+    ) as captured:
+        await model.plan(snapshot, question, skill, ("workspace_lookup",))
+    assert "secret provider detail" not in str(captured.value)
+    assert "root-key" not in str(captured.value)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_root_model_rejects_response_fields_outside_strict_schema() -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(

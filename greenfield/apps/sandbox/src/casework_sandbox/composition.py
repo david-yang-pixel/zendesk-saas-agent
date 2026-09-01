@@ -212,6 +212,24 @@ async def _post_responses(
         )
         response.raise_for_status()
         data = response.json()
+    except httpx.HTTPStatusError as error:
+        code = "unknown_error"
+        try:
+            error_payload = error.response.json()
+            if isinstance(error_payload, dict):
+                response_mapping = cast(dict[str, Any], error_payload)
+                error_value = response_mapping.get("error")
+                if isinstance(error_value, dict):
+                    error_mapping = cast(dict[str, Any], error_value)
+                    raw_code = error_mapping.get("code") or error_mapping.get("type")
+                    if isinstance(raw_code, str) and raw_code.strip():
+                        code = raw_code.strip()[:128]
+        except ValueError:
+            pass
+        raise RuntimeError(
+            "configured model adapter request failed: "
+            f"HTTP {error.response.status_code} {code}"
+        ) from error
     except (httpx.HTTPError, ValueError) as error:
         raise RuntimeError("configured model adapter request failed") from error
     if not isinstance(data, dict):

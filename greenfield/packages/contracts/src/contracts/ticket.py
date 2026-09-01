@@ -70,10 +70,10 @@ class ActiveQuestion(ContractModel):
     clarification_event_ids: tuple[str, ...] = ()
     current_facts: tuple[str, ...] = ()
 
-    @field_validator("clarification_event_ids", "current_facts")
+    @field_validator("clarification_event_ids")
     @classmethod
-    def _unique_values(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        unique_strings(value, "active question values")
+    def _unique_event_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        unique_strings(value, "active question event ids")
         return value
 
     @model_validator(mode="after")

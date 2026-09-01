@@ -292,6 +292,19 @@ def test_ticket_snapshot_and_active_question_preserve_original_request() -> None
 
     assert snapshot.messages[-1].body == "It is workspace A."
     assert question.original_request == "Why did my workflow fail?"
+    repeated = ActiveQuestion(
+        original_event_id="event-original",
+        original_request="Why did my workflow fail?",
+        clarification_event_ids=("event-a", "event-b"),
+        current_facts=("same clarification", "same clarification"),
+    )
+    assert repeated.current_facts == ("same clarification", "same clarification")
+    with pytest.raises(ValidationError, match="event ids"):
+        ActiveQuestion(
+            original_event_id="event-original",
+            original_request="Why did my workflow fail?",
+            clarification_event_ids=("event-a", "event-a"),
+        )
     with pytest.raises(ValidationError, match="complete"):
         TicketSnapshot.model_validate({**snapshot.model_dump(), "complete": False})
 
