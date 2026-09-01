@@ -19,6 +19,16 @@ from casework_admin.config import (
     ModelConfig,
     ProcessingRulesConfig,
 )
+from casework_admin.read_models import (
+    AdminReadRepository,
+    ConnectionProbeResponse,
+    InMemoryAdminReadRepository,
+    OverviewResponse,
+    RegistryResponse,
+    RunListResponse,
+    RunRecord,
+    RunStatus,
+)
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -44,8 +54,12 @@ def _default_config() -> AdminConfig:
     )
 
 
-def create_app(repository: ConfigRepository | None = None) -> FastAPI:
+def create_app(
+    repository: ConfigRepository | None = None,
+    read_repository: AdminReadRepository | None = None,
+) -> FastAPI:
     configs = repository or InMemoryConfigRepository(initial=_default_config())
+    reads = read_repository or InMemoryAdminReadRepository()
     service = AdminConfigService(repository=configs)
     app = FastAPI(title="casework-admin")
 
@@ -57,6 +71,31 @@ def create_app(repository: ConfigRepository | None = None) -> FastAPI:
 
     async def sandbox_policy() -> dict[str, object]:
         return service.fixed_sandbox_policy()
+
+    async def overview() -> OverviewResponse:
+        current = await service.current()
+        return await reads.overview(
+            desired_state=current.config.desired_state,
+            config_revision=current.revision,
+        )
+
+    async def runs(
+        query: str | None = None,
+        status: RunStatus | None = None,
+    ) -> RunListResponse:
+        return await reads.runs(query=query, status=status)
+
+    async def run_detail(session_id: str) -> RunRecord:
+        result = await reads.run(session_id=session_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return result
+
+    async def registry() -> RegistryResponse:
+        return await reads.registry()
+
+    async def probe_tool(tool_id: str) -> ConnectionProbeResponse:
+        return await reads.probe_tool(tool_id=tool_id)
 
     async def update_config(
         request: ConfigUpdateRequest,
@@ -77,6 +116,24 @@ def create_app(repository: ConfigRepository | None = None) -> FastAPI:
     )
     app.add_api_route(
         "/api/config/sandbox-policy", sandbox_policy, methods=["GET"]
+    )
+    app.add_api_route(
+        "/api/overview", overview, methods=["GET"], response_model=OverviewResponse
+    )
+    app.add_api_route(
+        "/api/runs", runs, methods=["GET"], response_model=RunListResponse
+    )
+    app.add_api_route(
+        "/api/runs/{session_id}", run_detail, methods=["GET"], response_model=RunRecord
+    )
+    app.add_api_route(
+        "/api/registry", registry, methods=["GET"], response_model=RegistryResponse
+    )
+    app.add_api_route(
+        "/api/registry/tools/{tool_id}/test",
+        probe_tool,
+        methods=["POST"],
+        response_model=ConnectionProbeResponse,
     )
     app.add_api_route(
         "/api/config", update_config, methods=["PUT"], response_model=ConfigSnapshot

@@ -1,24 +1,83 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import MetricCard from '../components/MetricCard.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { failures, metricCards, queueHealth, recentRuns } from '../data/mockData'
-import type { RunStatus, StatusTone } from '../types'
+import { ADMIN_API_KEY } from '../api/client'
+import type { AdminApiClient } from '../api/client'
+import type { OverviewData, RunStatus, StatusTone } from '../types'
 
-const isPaused = ref(false)
+const injectedApi = inject(ADMIN_API_KEY)
+if (!injectedApi) throw new Error('Admin API client is not provided')
+const api: AdminApiClient = injectedApi
+
+const placeholderOverview: OverviewData = {
+  desiredState: 'running',
+  configRevision: '—',
+  heartbeat: null,
+  metrics: [
+    { label: '今日处理工单', value: '—', detail: '加载中', icon: 'activity', accent: 'blue' },
+    { label: '当前队列', value: '—', detail: '加载中', icon: 'clock', accent: 'green' },
+    { label: '成功完成率', value: '—', detail: '加载中', icon: 'check', accent: 'violet' },
+    { label: '需关注', value: '—', detail: '加载中', icon: 'alert', accent: 'amber' },
+  ],
+  queueHealth: [],
+  failures: [],
+  recentRuns: [],
+}
+
+const overview = ref<OverviewData>(placeholderOverview)
+const configSnapshot = ref<Awaited<ReturnType<typeof api.getConfig>> | null>(null)
 const isRefreshing = ref(false)
 const lastUpdated = ref('刚刚更新')
+const errorMessage = ref('')
 
+const isPaused = computed(() => overview.value.desiredState === 'paused')
 const agentLabel = computed(() => (isPaused.value ? '已暂停' : '运行中'))
 const agentTone = computed<StatusTone>(() => (isPaused.value ? 'warning' : 'success'))
+const activeQueueTotal = computed(() => overview.value.queueHealth.reduce((total, item) => total + item.count, 0))
 
-function refreshOverview() {
+function queueWidth(item: { count: number }): string {
+  if (!activeQueueTotal.value) return '0%'
+  return `${Math.round((item.count / activeQueueTotal.value) * 100)}%`
+}
+
+async function refreshOverview() {
   isRefreshing.value = true
-  window.setTimeout(() => {
-    isRefreshing.value = false
+  errorMessage.value = ''
+  try {
+    const [snapshot, nextOverview] = await Promise.all([api.getConfig(), api.getOverview()])
+    configSnapshot.value = snapshot
+    overview.value = nextOverview
     lastUpdated.value = '刚刚更新'
-  }, 350)
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '读取管理 API 失败'
+  } finally {
+    isRefreshing.value = false
+  }
+}
+
+async function toggleAgent() {
+  const desiredState = isPaused.value ? 'running' : 'paused'
+  overview.value = { ...overview.value, desiredState }
+  const snapshot = configSnapshot.value
+  if (!snapshot) {
+    await refreshOverview()
+    return
+  }
+  errorMessage.value = ''
+  try {
+    const saved = await api.saveConfig({
+      expectedRevision: snapshot.revision,
+      config: { ...snapshot.config, desiredState },
+    })
+    configSnapshot.value = saved
+    overview.value = { ...overview.value, configRevision: saved.revision }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '保存 Agent 状态失败'
+    await refreshOverview()
+    if (isConflict(error)) errorMessage.value = '配置版本已过期，已重新加载当前状态。请稍后重试。'
+  }
 }
 
 function statusTone(status: RunStatus): StatusTone {
@@ -27,6 +86,12 @@ function statusTone(status: RunStatus): StatusTone {
   if (status === 'failed') return 'danger'
   return 'warning'
 }
+
+function isConflict(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'status' in error && (error as { status?: unknown }).status === 409
+}
+
+onMounted(() => { void refreshOverview() })
 </script>
 
 <template>
@@ -46,6 +111,8 @@ function statusTone(status: RunStatus): StatusTone {
       </div>
     </div>
 
+    <div v-if="errorMessage" class="notice-banner notice-banner--danger" role="alert"><AppIcon name="alert" :size="18" /><div><strong>管理 API 暂时不可用</strong><span>{{ errorMessage }}</span></div></div>
+
     <section class="agent-banner" aria-labelledby="agent-state-title">
       <div class="agent-banner__identity">
         <div class="agent-emblem"><AppIcon name="spark" :size="21" /></div>
@@ -58,15 +125,15 @@ function statusTone(status: RunStatus): StatusTone {
         </div>
       </div>
       <div class="agent-banner__meta">
-        <div><span>当前版本</span><strong>Harness r42</strong></div>
-        <div><span>心跳</span><strong>18 秒前</strong></div>
+          <div><span>当前版本</span><strong>Harness {{ overview.configRevision }}</strong></div>
+        <div><span>心跳</span><strong>{{ overview.heartbeat ?? '暂无数据' }}</strong></div>
         <button
           type="button"
           class="button"
           :class="isPaused ? 'button--success' : 'button--danger-soft'"
           data-testid="agent-toggle"
           :aria-pressed="isPaused"
-          @click="isPaused = !isPaused"
+          @click="toggleAgent"
         >
           <AppIcon :name="isPaused ? 'play' : 'pause'" :size="14" />
           {{ isPaused ? '恢复运行' : '暂停接收' }}
@@ -75,7 +142,7 @@ function statusTone(status: RunStatus): StatusTone {
     </section>
 
     <div class="metric-grid">
-      <MetricCard v-for="metric in metricCards" :key="metric.label" :metric="metric" />
+      <MetricCard v-for="metric in overview.metrics" :key="metric.label" :metric="metric" />
     </div>
 
     <div class="content-grid content-grid--overview">
@@ -85,16 +152,13 @@ function statusTone(status: RunStatus): StatusTone {
           <button type="button" class="text-button">查看全部 <AppIcon name="external" :size="13" /></button>
         </div>
         <div class="queue-summary">
-          <div class="queue-total"><strong>14</strong><span>个活动任务</span></div>
+          <div class="queue-total"><strong>{{ activeQueueTotal }}</strong><span>个活动任务</span></div>
           <div class="queue-track" aria-label="队列任务分布">
-            <span class="queue-segment queue-segment--blue" style="width: 50%" />
-            <span class="queue-segment queue-segment--green" style="width: 29%" />
-            <span class="queue-segment queue-segment--amber" style="width: 14%" />
-            <span class="queue-segment queue-segment--red" style="width: 7%" />
+            <span v-for="(item, index) in overview.queueHealth" :key="item.label" class="queue-segment" :class="`queue-segment--${['blue', 'green', 'amber', 'red'][index % 4]}`" :style="{ width: queueWidth(item) }" />
           </div>
         </div>
         <div class="queue-list">
-          <div v-for="item in queueHealth" :key="item.label" class="queue-row">
+          <div v-for="item in overview.queueHealth" :key="item.label" class="queue-row">
             <div class="queue-row__label"><span class="queue-marker" :class="`marker-${item.tone}`" />{{ item.label }}</div>
             <div class="queue-row__description">{{ item.description }}</div>
             <strong>{{ item.count }}</strong>
@@ -105,10 +169,10 @@ function statusTone(status: RunStatus): StatusTone {
       <section class="panel failure-panel">
         <div class="panel-heading">
           <div><p class="eyebrow">ATTENTION NEEDED</p><h2>近期异常</h2></div>
-          <span class="panel-count">{{ failures.length }}</span>
+          <span class="panel-count">{{ overview.failures.length }}</span>
         </div>
         <div class="failure-list">
-          <article v-for="failure in failures" :key="failure.id" class="failure-row">
+          <article v-for="failure in overview.failures" :key="failure.id" class="failure-row">
             <div class="failure-icon" :class="`failure-icon--${failure.tone}`"><AppIcon :name="failure.tone === 'danger' ? 'alert' : 'clock'" :size="15" /></div>
             <div class="failure-copy"><strong>{{ failure.title }}</strong><span>{{ failure.detail }}</span></div>
             <time>{{ failure.time }}</time>
@@ -126,7 +190,7 @@ function statusTone(status: RunStatus): StatusTone {
         <table class="data-table">
           <thead><tr><th>工单</th><th>主题</th><th>状态</th><th>开始时间</th><th>耗时</th><th>Tool steps</th><th /></tr></thead>
           <tbody>
-            <tr v-for="run in recentRuns" :key="run.ticketId">
+            <tr v-for="run in overview.recentRuns" :key="run.ticketId">
               <td><a href="#" class="ticket-link" @click.prevent>{{ `#${run.ticketId}` }}</a></td>
               <td class="subject-cell">{{ run.subject }}</td>
               <td><StatusBadge :label="run.statusLabel" :tone="statusTone(run.status)" /></td>

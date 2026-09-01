@@ -93,6 +93,70 @@ export interface HarnessConfig {
   maxToolRounds: number
 }
 
+export interface ModelRoutingConfig {
+  provider: string
+  model: string
+  credentialRef: string
+}
+
+export interface SubagentSlotConfig extends ModelRoutingConfig {
+  slotId: string
+  enabled: boolean
+  maxParallel: number
+}
+
+export interface AdminConfig {
+  desiredState: AgentDesiredState
+  rootModel: ModelRoutingConfig
+  subagentSlots: SubagentSlotConfig[]
+  rules: ProcessingRules
+  enabledSkills: string[]
+  enabledTools: string[]
+  contextWindowTokens: number
+  softCompactionPercent: number
+  hardCheckpointPercent: number
+  maxToolRounds: number
+}
+
+export interface AdminConfigSnapshot {
+  revision: string
+  config: AdminConfig
+  createdAt: string
+  actor: string
+}
+
+export interface SandboxPolicy {
+  attempt1: { cpu: number; memoryMib: number; timeoutSeconds: number }
+  attempt2: { cpu: number; memoryMib: number; timeoutSeconds: number }
+  retryCondition: string
+}
+
+export interface OverviewData {
+  desiredState: AgentDesiredState
+  configRevision: string
+  heartbeat: string | null
+  metrics: MetricCard[]
+  queueHealth: QueueHealth[]
+  failures: FailureItem[]
+  recentRuns: RecentRun[]
+}
+
+export interface RunListData {
+  items: RunRecord[]
+  total: number
+}
+
+export interface RegistryData {
+  skills: SkillRecord[]
+  tools: ToolRecord[]
+}
+
+export interface ConnectionProbe {
+  toolId: string
+  status: 'connected' | 'degraded' | 'untested'
+  latencyMs: number | null
+}
+
 export interface ProcessingRules {
   saasTag: string
   assignee: string

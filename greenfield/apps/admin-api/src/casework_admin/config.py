@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _ConfigModel(BaseModel):
@@ -17,6 +17,20 @@ class ModelConfig(_ConfigModel):
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
     credential_ref: str = Field(min_length=1)
+
+    @field_validator("credential_ref")
+    @classmethod
+    def _credential_reference_only(cls, value: str) -> str:
+        """Keep the API contract reference-only; secret values never enter config."""
+        normalized = value.strip().casefold()
+        secret_prefixes = ("sk-", "sk_", "api_key=", "bearer ", "ghp_")
+        if normalized.startswith(secret_prefixes):
+            raise ValueError(
+                "credential_ref must reference a secret, not contain secret material"
+            )
+        if "\n" in value or "\r" in value:
+            raise ValueError("credential_ref must be a single-line reference")
+        return value
 
 
 class SubagentSlotConfig(ModelConfig):
@@ -48,6 +62,9 @@ class AdminConfig(_ConfigModel):
     rules: ProcessingRulesConfig
     enabled_skills: tuple[str, ...] = ()
     enabled_tools: tuple[str, ...] = ()
+    context_window_tokens: int = Field(default=128_000, ge=16_000, le=1_000_000)
+    soft_compaction_percent: int = Field(default=60, ge=20, le=90)
+    hard_checkpoint_percent: int = Field(default=80, ge=40, le=95)
     max_tool_rounds: int = Field(default=24, ge=1, le=100)
 
 

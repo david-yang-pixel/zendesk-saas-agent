@@ -1,17 +1,37 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { runs } from '../data/mockData'
+import { ADMIN_API_KEY } from '../api/client'
+import type { AdminApiClient } from '../api/client'
 import type { RunRecord, RunStatus, StatusTone } from '../types'
+
+const injectedApi = inject(ADMIN_API_KEY)
+if (!injectedApi) throw new Error('Admin API client is not provided')
+const api: AdminApiClient = injectedApi
 
 const query = ref('')
 const statusFilter = ref<'all' | RunStatus>('all')
 const selectedRun = ref<RunRecord | null>(null)
+const runRecords = ref<RunRecord[]>([])
+const loading = ref(true)
+const errorMessage = ref('')
+
+async function loadRuns() {
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    runRecords.value = (await api.getRuns()).items
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '读取运行记录失败'
+  } finally {
+    loading.value = false
+  }
+}
 
 const filteredRuns = computed(() => {
   const normalizedQuery = query.value.trim().toLowerCase()
-  return runs.filter((run) => {
+  return runRecords.value.filter((run) => {
     const matchesStatus = statusFilter.value === 'all' || run.status === statusFilter.value
     const matchesQuery = !normalizedQuery || String(run.ticketId).includes(normalizedQuery) || run.subject.toLowerCase().includes(normalizedQuery) || run.sessionId.toLowerCase().includes(normalizedQuery)
     return matchesStatus && matchesQuery
@@ -25,6 +45,11 @@ function statusTone(status: RunStatus): StatusTone {
   return 'warning'
 }
 
+const activeRuns = computed(() => runRecords.value.filter((run) => run.status === 'running').length)
+const completedRuns = computed(() => runRecords.value.filter((run) => run.status === 'completed').length)
+const awaitingRuns = computed(() => runRecords.value.filter((run) => run.status === 'awaiting_customer').length)
+const failedRuns = computed(() => runRecords.value.filter((run) => run.status === 'failed').length)
+
 function selectRun(run: RunRecord) {
   selectedRun.value = run
 }
@@ -32,6 +57,8 @@ function selectRun(run: RunRecord) {
 function closeDetails() {
   selectedRun.value = null
 }
+
+onMounted(() => { void loadRuns() })
 </script>
 
 <template>
@@ -42,13 +69,15 @@ function closeDetails() {
         <h1>工单运行</h1>
         <p class="page-description">按工单追踪会话、Todo、Tool Calls、Subagents、证据与沙箱生命周期，集中查看运行记录。</p>
       </div>
-      <div class="heading-actions"><span class="last-updated"><span class="live-dot" aria-hidden="true" />每 10 秒刷新</span><button type="button" class="button button--secondary"><AppIcon name="download" :size="15" />导出记录</button></div>
+      <div class="heading-actions"><span class="last-updated"><span class="live-dot" aria-hidden="true" />{{ loading ? '读取中…' : '刚刚更新' }}</span><button type="button" class="button button--secondary" disabled><AppIcon name="download" :size="15" />导出记录</button></div>
     </div>
 
-    <div class="run-metrics"><div><span class="run-metric-dot run-metric-dot--blue" /><strong>07</strong><small>活动运行</small></div><div><span class="run-metric-dot run-metric-dot--green" /><strong>184</strong><small>今日完成</small></div><div><span class="run-metric-dot run-metric-dot--amber" /><strong>02</strong><small>等待客户</small></div><div><span class="run-metric-dot run-metric-dot--red" /><strong>01</strong><small>需复核</small></div></div>
+    <div v-if="errorMessage" class="notice-banner notice-banner--danger" role="alert"><AppIcon name="alert" :size="18" /><div><strong>运行记录不可用</strong><span>{{ errorMessage }}</span></div></div>
+
+    <div class="run-metrics"><div><span class="run-metric-dot run-metric-dot--blue" /><strong>{{ activeRuns }}</strong><small>活动运行</small></div><div><span class="run-metric-dot run-metric-dot--green" /><strong>{{ completedRuns }}</strong><small>当前返回完成</small></div><div><span class="run-metric-dot run-metric-dot--amber" /><strong>{{ awaitingRuns }}</strong><small>等待客户</small></div><div><span class="run-metric-dot run-metric-dot--red" /><strong>{{ failedRuns }}</strong><small>需复核</small></div></div>
 
     <section class="panel runs-panel">
-      <div class="runs-toolbar"><div class="search-field"><AppIcon name="search" :size="16" /><input v-model="query" data-testid="run-search" type="search" placeholder="搜索工单号、主题或 session ID…" aria-label="搜索运行记录"><button v-if="query" type="button" aria-label="清空搜索" @click="query = ''">×</button></div><div class="filter-group" aria-label="运行状态筛选"><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'all' }" @click="statusFilter = 'all'">全部 <span>4</span></button><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'running' }" @click="statusFilter = 'running'">运行中</button><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'awaiting_customer' }" @click="statusFilter = 'awaiting_customer'">等待客户</button><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'failed' }" @click="statusFilter = 'failed'">失败</button></div><button type="button" class="icon-button" aria-label="更多筛选"><AppIcon name="sliders" :size="17" /></button></div>
+      <div class="runs-toolbar"><div class="search-field"><AppIcon name="search" :size="16" /><input v-model="query" data-testid="run-search" type="search" placeholder="搜索工单号、主题或 session ID…" aria-label="搜索运行记录"><button v-if="query" type="button" aria-label="清空搜索" @click="query = ''">×</button></div><div class="filter-group" aria-label="运行状态筛选"><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'all' }" @click="statusFilter = 'all'">全部 <span>{{ runRecords.length }}</span></button><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'running' }" @click="statusFilter = 'running'">运行中</button><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'awaiting_customer' }" @click="statusFilter = 'awaiting_customer'">等待客户</button><button type="button" class="filter-button" :class="{ 'filter-button--active': statusFilter === 'failed' }" @click="statusFilter = 'failed'">失败</button></div><button type="button" class="icon-button" aria-label="更多筛选"><AppIcon name="sliders" :size="17" /></button></div>
       <div class="table-wrap"><table class="data-table runs-table"><thead><tr><th>工单</th><th>主题 / 活动问题</th><th>状态</th><th>Todo</th><th>Tool calls</th><th>Evidence</th><th>开始时间</th><th>沙箱</th><th /></tr></thead><tbody><tr v-for="run in filteredRuns" :key="run.sessionId" class="run-table-row" :class="{ 'run-table-row--selected': selectedRun?.sessionId === run.sessionId }" @click="selectRun(run)"><td><a href="#" class="ticket-link" @click.stop.prevent="selectRun(run)">{{ `#${run.ticketId}` }}</a><small class="table-subtext">{{ run.sessionId }}</small></td><td><strong class="run-subject">{{ run.subject }}</strong><span class="table-subtext run-question">{{ run.question }}</span></td><td><StatusBadge :label="run.statusLabel" :tone="statusTone(run.status)" /></td><td><span class="progress-value">{{ run.todoCompleted }} / {{ run.todoTotal }}</span><span class="mini-progress"><span :style="{ width: `${(run.todoCompleted / run.todoTotal) * 100}%` }" /></span></td><td class="mono-cell">{{ run.toolCalls }}</td><td class="mono-cell">{{ run.evidence }}</td><td class="muted-cell">{{ run.startedAt }}</td><td><StatusBadge :label="run.sandbox === 'running' ? 'Running' : 'Destroyed'" :tone="run.sandbox === 'running' ? 'info' : 'neutral'" /></td><td><AppIcon name="chevron" :size="15" class="row-chevron" /></td></tr><tr v-if="filteredRuns.length === 0"><td colspan="9" class="empty-cell"><AppIcon name="search" :size="22" /><strong>没有匹配的运行记录</strong><span>尝试修改搜索词或筛选条件。</span></td></tr></tbody></table></div>
     </section>
 

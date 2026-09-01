@@ -1,19 +1,123 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { inject, onMounted, reactive, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import StatusBadge from '../components/StatusBadge.vue'
-import { harnessConfig } from '../data/mockData'
+import { ADMIN_API_KEY } from '../api/client'
+import type { AdminApiClient } from '../api/client'
+import type { AdminConfig, HarnessConfig, SandboxPolicy } from '../types'
 
-const config = reactive({
-  ...harnessConfig,
-  subagents: harnessConfig.subagents.map((agent) => ({ ...agent })),
+const injectedApi = inject(ADMIN_API_KEY)
+if (!injectedApi) throw new Error('Admin API client is not provided')
+const api: AdminApiClient = injectedApi
+
+const config = reactive<HarnessConfig>({
+  rootModel: 'unconfigured',
+  rootProvider: 'unconfigured',
+  subagents: [],
+  contextWindow: '128k tokens',
+  softCompaction: 60,
+  hardCheckpoint: 80,
+  sandboxCpu: '0.5 CPU',
+  sandboxMemory: '1 GiB',
+  timeoutMinutes: 30,
+  maxRetries: 1,
+  maxToolRounds: 24,
 })
-const saveState = ref<'idle' | 'saving' | 'saved'>('idle')
+const policy = ref<SandboxPolicy | null>(null)
+const revision = ref('—')
+const snapshot = ref<Awaited<ReturnType<typeof api.getConfig>> | null>(null)
+const saveState = ref<'idle' | 'loading' | 'saving' | 'saved' | 'error'>('loading')
+const errorMessage = ref('')
 
-function saveConfig() {
-  saveState.value = 'saving'
-  window.setTimeout(() => { saveState.value = 'saved' }, 450)
+function displayProvider(provider: string): string {
+  return provider === 'openai' ? 'OpenAI' : provider
 }
+
+function applySnapshot(next: Awaited<ReturnType<typeof api.getConfig>>, nextPolicy: SandboxPolicy) {
+  snapshot.value = next
+  revision.value = next.revision
+  config.rootModel = next.config.rootModel.model
+  config.rootProvider = displayProvider(next.config.rootModel.provider)
+  config.subagents = next.config.subagentSlots.map((slot) => ({
+    id: slot.slotId,
+    name: slot.slotId,
+    purpose: '独立调查任务',
+    model: slot.model,
+    provider: displayProvider(slot.provider),
+    enabled: slot.enabled,
+  }))
+  config.contextWindow = `${Math.round(next.config.contextWindowTokens / 1000)}k tokens`
+  config.softCompaction = next.config.softCompactionPercent
+  config.hardCheckpoint = next.config.hardCheckpointPercent
+  config.sandboxCpu = `${nextPolicy.attempt1.cpu} CPU`
+  config.sandboxMemory = `${nextPolicy.attempt1.memoryMib / 1024} GiB`
+  config.timeoutMinutes = Math.round(nextPolicy.attempt1.timeoutSeconds / 60)
+  config.maxRetries = nextPolicy.attempt2.cpu > nextPolicy.attempt1.cpu ? 1 : 0
+  config.maxToolRounds = next.config.maxToolRounds
+}
+
+async function loadConfig(preserveError = false) {
+  saveState.value = 'loading'
+  if (!preserveError) errorMessage.value = ''
+  try {
+    const [next, nextPolicy] = await Promise.all([api.getConfig(), api.getSandboxPolicy()])
+    policy.value = nextPolicy
+    applySnapshot(next, nextPolicy)
+    saveState.value = 'idle'
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '读取 Harness 配置失败'
+    saveState.value = 'error'
+  }
+}
+
+function isConflict(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'status' in error && (error as { status?: unknown }).status === 409
+}
+
+function contextTokens(value: string): number {
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : 128_000
+}
+
+function configForSave(current: AdminConfig): AdminConfig {
+  return {
+    ...current,
+    rootModel: { ...current.rootModel, model: config.rootModel },
+    subagentSlots: current.subagentSlots.map((slot) => {
+      const view = config.subagents.find((item) => item.id === slot.slotId)
+      return view ? { ...slot, model: view.model, enabled: view.enabled } : slot
+    }),
+    contextWindowTokens: contextTokens(config.contextWindow),
+    softCompactionPercent: config.softCompaction,
+    hardCheckpointPercent: config.hardCheckpoint,
+    maxToolRounds: config.maxToolRounds,
+  }
+}
+
+async function saveConfig() {
+  if (!snapshot.value) {
+    await loadConfig()
+    return
+  }
+  saveState.value = 'saving'
+  errorMessage.value = ''
+  try {
+    const saved = await api.saveConfig({ expectedRevision: snapshot.value.revision, config: configForSave(snapshot.value.config) })
+    snapshot.value = saved
+    revision.value = saved.revision
+    saveState.value = 'saved'
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '保存 Harness 配置失败'
+    saveState.value = 'error'
+    if (isConflict(error)) {
+      await loadConfig(true)
+      errorMessage.value = '配置版本已过期，已重新加载最新配置；请确认后再次保存。'
+      saveState.value = 'error'
+    }
+  }
+}
+
+onMounted(() => { void loadConfig() })
 </script>
 
 <template>
@@ -25,23 +129,25 @@ function saveConfig() {
         <p class="page-description">管理 Root Agent、独立 Subagent 和每次运行的资源边界。</p>
       </div>
       <div class="heading-actions">
-        <span v-if="saveState === 'saved'" class="save-confirm"><AppIcon name="check" :size="14" />已保存到修订 r43</span>
-        <button type="button" class="button button--primary" :disabled="saveState === 'saving'" @click="saveConfig">
+        <span v-if="saveState === 'saved'" class="save-confirm"><AppIcon name="check" :size="14" />已保存到修订 {{ revision }}</span>
+        <button type="button" class="button button--primary" :disabled="saveState === 'saving' || saveState === 'loading'" @click="saveConfig">
           <AppIcon name="check" :size="15" />{{ saveState === 'saving' ? '保存中…' : '保存配置' }}
         </button>
       </div>
     </div>
 
+    <div v-if="errorMessage" class="notice-banner notice-banner--danger" role="alert"><AppIcon name="alert" :size="18" /><div><strong>Harness 配置不可用</strong><span>{{ errorMessage }}</span></div></div>
+
     <div class="notice-banner notice-banner--info">
       <AppIcon name="shield" :size="18" />
-      <div><strong>配置修订 r42 正在使用</strong><span>每个新运行都会固定到创建时的不可变配置。修改只会影响后续工单。</span></div>
-      <span class="notice-time">最后更新 · 今天 09:20</span>
+      <div><strong>配置修订 {{ revision }} 正在使用</strong><span>每个新运行都会固定到创建时的不可变配置。修改只会影响后续工单。</span></div>
+      <span class="notice-time">{{ snapshot ? `最后更新 · ${new Date(snapshot.createdAt).toLocaleString()}` : '正在读取…' }}</span>
     </div>
 
     <section class="panel config-section">
       <div class="panel-heading panel-heading--with-description">
         <div><p class="eyebrow">MODEL ROUTING</p><h2>模型配置</h2><p>Root Agent 和 Subagent 使用独立模型设置，凭据不会互相继承。</p></div>
-        <StatusBadge label="3 个已配置" tone="success" />
+        <StatusBadge :label="`${config.subagents.length + 1} 个已配置`" tone="success" />
       </div>
       <div class="model-grid">
         <article class="model-card model-card--root" data-testid="root-model">
@@ -65,7 +171,7 @@ function saveConfig() {
 
     <div class="content-grid content-grid--config">
       <section class="panel settings-panel">
-        <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">CONTEXT GOVERNANCE</p><h2>上下文治理</h2><p>控制模型上下文增长和检查点保留策略。</p></div><AppIcon name="sliders" class="heading-icon" :size="19" /></div>
+      <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">CONTEXT GOVERNANCE</p><h2>上下文治理</h2><p>控制模型上下文增长和检查点保留策略。</p></div><AppIcon name="sliders" class="heading-icon" :size="19" /></div>
         <div class="settings-list">
           <label class="setting-row"><span><strong>上下文窗口</strong><small>所有 Root Agent 运行的上限</small></span><select v-model="config.contextWindow" class="field-control field-control--compact"><option>128k tokens</option><option>64k tokens</option><option>256k tokens</option></select></label>
           <label class="setting-row"><span><strong>软压缩阈值</strong><small>达到后保留最近四轮 Tool 输出</small></span><div class="input-with-suffix"><input v-model.number="config.softCompaction" class="field-control field-control--number" type="number" min="20" max="90"><span>%</span></div></label>

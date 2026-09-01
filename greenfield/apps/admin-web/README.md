@@ -8,7 +8,9 @@ Vue 3 + TypeScript + Vite 管理后台壳，覆盖 Greenfield Harness 的五个�
 - Skill 与工具：版本化 registry、typed contracts 和连接测试
 - 工单运行：运行筛选、Todo / Tool / Evidence 摘要与详情抽屉
 
-当前版本使用本地 typed mock data，不调用后端。沙箱 CPU、内存、超时与资源重试策略按产品固定决策以只读方式展示。
+页面通过版本化 Admin API 读取运行总览、Harness 配置、处理规则、能力注册表和运行记录。配置保存携带 `expected_revision`，发生并发修改时显示冲突并要求重新加载；凭据只使用后端引用，不在浏览器处理明文。沙箱 CPU、内存、超时与资源重试策略按产品固定决策以只读方式展示。
+
+开发和测试时可通过 `AdminApiTransport` 注入内存实现，页面测试不依赖真实网络。默认浏览器 transport 使用同源 `/api/*` 路径。
 
 ## 本地运行
 

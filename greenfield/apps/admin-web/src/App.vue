@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject, provide } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
-import { navItems } from './data/mockData'
+import { ADMIN_API_KEY, createAdminApiClient } from './api/client'
+import { navItems } from './navigation'
 
 const route = useRoute()
 const currentLabel = computed(() => String(route.meta.label ?? '运行总览'))
+const api = inject(ADMIN_API_KEY, createAdminApiClient())
+provide(ADMIN_API_KEY, api)
 </script>
 
 <template>
