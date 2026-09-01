@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -110,9 +111,26 @@ class SandboxController:
                 await self._engine.wait_ready(
                     sandbox_id, timeout_seconds=allocation.timeout_seconds
                 )
+                execution_request = {
+                    **request,
+                    "sandbox_id": sandbox_id,
+                    "resource_attempt": attempt,
+                    "deadline": (
+                        datetime.now(UTC)
+                        + timedelta(seconds=allocation.timeout_seconds)
+                    )
+                    .replace(microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    "resources": {
+                        "cpu": allocation.cpus,
+                        "memory_mb": allocation.memory_bytes // (1024**2),
+                        "timeout_seconds": allocation.timeout_seconds,
+                    },
+                }
                 execution = await self._engine.execute(
                     sandbox_id,
-                    request=request,
+                    request=execution_request,
                     timeout_seconds=allocation.timeout_seconds,
                 )
             except SandboxResourceExhaustedError as error:

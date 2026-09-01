@@ -25,6 +25,7 @@ class FakeSandboxEngine:
         self.created: list[dict[str, Any]] = []
         self.ready: list[str] = []
         self.destroyed: list[str] = []
+        self.executed: list[dict[str, Any]] = []
 
     async def create(
         self, *, image: str, limits: dict[str, int], labels: dict[str, str]
@@ -45,6 +46,7 @@ class FakeSandboxEngine:
         request: dict[str, Any],
         timeout_seconds: int,
     ) -> SandboxExecution:
+        self.executed.append(request)
         return self.executions.pop(0)
 
     async def destroy(self, sandbox_id: str) -> None:
@@ -86,6 +88,14 @@ async def test_success_uses_default_limits_and_always_destroys() -> None:
         "casework.attempt": "1",
     }
     assert engine.destroyed == ["sandbox-1"]
+    assert engine.executed[0]["sandbox_id"] == "sandbox-1"
+    assert engine.executed[0]["resource_attempt"] == 1
+    assert engine.executed[0]["resources"] == {
+        "cpu": 0.5,
+        "memory_mb": 1024,
+        "timeout_seconds": 1800,
+    }
+    assert engine.executed[0]["deadline"].endswith("Z")
 
 
 @pytest.mark.asyncio

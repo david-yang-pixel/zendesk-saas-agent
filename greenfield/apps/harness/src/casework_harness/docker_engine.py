@@ -108,6 +108,11 @@ class HttpxSandboxHttp:
             self._client = httpx.AsyncClient()
         return self._client
 
+    async def aclose(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
 
 class SandboxReadinessError(RuntimeError):
     """The sandbox did not expose ``/readyz`` before its deadline."""
