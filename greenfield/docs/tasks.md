@@ -100,6 +100,10 @@ credentials.
   schema readiness and owned startup/shutdown lifecycles.
 - [x] Make the deployment migration gate execute `alembic upgrade head` and
   point the long-running images at their production composition roots.
+- [x] Compose the fail-closed Sandbox HTTP adapters and pass only an explicit
+  non-database runtime environment into each ephemeral container.
+- [x] Connect durable PostgreSQL delivery fencing and outbox claims while
+  keeping production delivery in explicit dry-run by default.
 
 - [ ] Resolve frozen config and credential references inside a sandbox without
   persisting secret values in job/session records.
@@ -107,6 +111,6 @@ credentials.
   slot's explicit provider/model/credential reference.
 - [ ] Register the production investigation Tool adapters and connection
   probes; keep delivery and orchestration outside the Tool registry.
-- [ ] Compose PostgreSQL ingress, worker, outbox, Admin read models, Docker
+- [x] Compose PostgreSQL ingress, worker, outbox, Admin read models, Docker
   engine, and orphan sweeper in runnable service factories.
 - [ ] Build all four images with a live Docker daemon and record their digests.

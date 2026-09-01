@@ -27,6 +27,9 @@ _SANDBOX_TIMEOUT_SECONDS = 30 * 60
 _NANO_CPU_DEFAULT = 500_000_000
 _NANO_CPU_RETRY = 1_000_000_000
 _GIB = 1024**3
+_DATABASE_ENV_KEYS = frozenset(
+    {"DATABASE_URL", "PGHOST", "PGPASSWORD", "POSTGRES_PASSWORD"}
+)
 
 
 class DockerContainerPort(Protocol):
@@ -240,6 +243,7 @@ class DockerSandboxEngine:
         controller_id: str,
         container_port: int = _SANDBOX_PORT,
         host: str = "127.0.0.1",
+        environment: Mapping[str, str] | None = None,
         poll_interval_seconds: float = 0.25,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -249,12 +253,18 @@ class DockerSandboxEngine:
             raise ValueError("container_port must be a valid TCP port")
         if poll_interval_seconds < 0:
             raise ValueError("poll_interval_seconds must not be negative")
+        sandbox_environment = dict(environment or {})
+        if _DATABASE_ENV_KEYS.intersection(sandbox_environment):
+            raise ValueError(
+                "sandbox environment must not include database credentials"
+            )
         self._client = client
         self._http = http
         self._installation_id = installation_id
         self._controller_id = controller_id
         self._container_port = container_port
         self._host = host
+        self._environment = sandbox_environment
         self._poll_interval_seconds = poll_interval_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
         self._endpoints: dict[str, str] = {}
@@ -288,6 +298,7 @@ class DockerSandboxEngine:
             image=image,
             detach=True,
             labels=merged_labels,
+            environment=self._environment,
             ports={f"{self._container_port}/tcp": None},
             **limits,
         )

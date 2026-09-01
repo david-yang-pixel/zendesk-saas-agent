@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from typing import Any, Protocol, cast
 
@@ -46,6 +46,31 @@ from casework_persistence import (
 )
 
 _LOG = structlog.get_logger(__name__)
+_SANDBOX_ENV_KEYS = (
+    "ZENDESK_BASE_URL",
+    "ZENDESK_EMAIL",
+    "ZENDESK_API_TOKEN",
+    "CASEWORK_MODEL_BASE_URL",
+    "CASEWORK_MODEL_API_KEY",
+    "CASEWORK_MODEL_NAME",
+    "CASEWORK_TOOL_CONFIG",
+)
+
+
+class SandboxEnvironmentError(RuntimeError):
+    """Required Sandbox adapter configuration is incomplete."""
+
+
+def sandbox_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    environment = {
+        key: environ.get(key, "").strip() for key in _SANDBOX_ENV_KEYS
+    }
+    missing = [key for key, value in environment.items() if not value]
+    if missing:
+        raise SandboxEnvironmentError(
+            "missing sandbox environment: " + ", ".join(missing)
+        )
+    return environment
 
 
 class _LifecycleDockerClient(DockerClientPort, Protocol):
@@ -133,6 +158,7 @@ def create_app() -> FastAPI:
     sandbox_image = os.environ.get("SANDBOX_IMAGE", "").strip()
     if not sandbox_image:
         raise RuntimeError("SANDBOX_IMAGE is required for production Harness")
+    runtime_environment = sandbox_environment(os.environ)
     try:
         delivery_mode = parse_delivery_mode(
             os.environ.get("CASEWORK_DELIVERY_MODE")
@@ -163,6 +189,7 @@ def create_app() -> FastAPI:
         installation_id=installation_id,
         controller_id=controller_id,
         host=os.environ.get("SANDBOX_HOST", "host.docker.internal"),
+        environment=runtime_environment,
     )
     controller = SandboxController(engine=sandbox_engine, image=sandbox_image)
     jobs = PostgresJobQueue(
@@ -246,4 +273,9 @@ def _canary_ticket_ids(value: str | None) -> tuple[int, ...]:
 HarnessReadiness = _HarnessReadiness
 
 
-__all__ = ["HarnessReadiness", "create_app"]
+__all__ = [
+    "HarnessReadiness",
+    "SandboxEnvironmentError",
+    "create_app",
+    "sandbox_environment",
+]

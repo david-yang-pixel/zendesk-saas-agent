@@ -49,10 +49,12 @@ class FakeContainer:
 class FakeContainers:
     def __init__(self) -> None:
         self.created: list[FakeContainer] = []
+        self.create_calls: list[dict[str, Any]] = []
         self.by_id: dict[str, FakeContainer] = {}
         self.list_calls: list[dict[str, Any]] = []
 
     def create(self, **kwargs: Any) -> FakeContainer:
+        self.create_calls.append(kwargs)
         container = FakeContainer(
             f"container-{len(self.created) + 1}", labels=kwargs["labels"]
         )
@@ -116,6 +118,7 @@ async def test_create_starts_container_and_resolves_published_endpoint() -> None
         http=FakeHttp([]),
         installation_id="install-1",
         controller_id="controller-1",
+        environment={"ZENDESK_BASE_URL": "https://example.zendesk.com"},
         clock=lambda: datetime(2026, 9, 1, 12, 0, tzinfo=UTC),
     )
 
@@ -147,6 +150,20 @@ async def test_create_starts_container_and_resolves_published_endpoint() -> None
         "8103/tcp": [{"HostIp": "127.0.0.1", "HostPort": "49152"}]
     }
     assert await engine.endpoint(sandbox_id) == "http://127.0.0.1:49152"
+    assert client.containers.create_calls[0]["environment"] == {
+        "ZENDESK_BASE_URL": "https://example.zendesk.com"
+    }
+
+
+def test_sandbox_environment_rejects_database_credentials() -> None:
+    with pytest.raises(ValueError, match="database credentials"):
+        DockerSandboxEngine(
+            client=_docker(FakeDockerClient()),
+            http=FakeHttp([]),
+            installation_id="install-1",
+            controller_id="controller-1",
+            environment={"DATABASE_URL": "postgresql://forbidden"},
+        )
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,12 @@ from contextlib import suppress
 
 import pytest
 
-from casework_harness.composition import HarnessReadiness, create_app
+from casework_harness.composition import (
+    HarnessReadiness,
+    SandboxEnvironmentError,
+    create_app,
+    sandbox_environment,
+)
 
 
 class _ReadyDatabase:
@@ -29,6 +34,35 @@ def test_production_harness_factory_requires_database_and_sandbox_image(
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://localhost/casework")
     with pytest.raises(RuntimeError, match="SANDBOX_IMAGE"):
         create_app()
+
+
+def test_sandbox_environment_is_explicit_and_never_contains_database_url() -> None:
+    environment = sandbox_environment(
+        {
+            "DATABASE_URL": "postgresql://must-not-cross-boundary",
+            "ZENDESK_BASE_URL": "https://example.zendesk.com",
+            "ZENDESK_EMAIL": "agent@example.com",
+            "ZENDESK_API_TOKEN": "token",
+            "CASEWORK_MODEL_BASE_URL": "https://model.example.com",
+            "CASEWORK_MODEL_API_KEY": "model-token",
+            "CASEWORK_MODEL_NAME": "root-model",
+            "CASEWORK_TOOL_CONFIG": "[]",
+            "UNRELATED_SECRET": "must-not-cross-boundary",
+        }
+    )
+
+    assert set(environment) == {
+        "ZENDESK_BASE_URL",
+        "ZENDESK_EMAIL",
+        "ZENDESK_API_TOKEN",
+        "CASEWORK_MODEL_BASE_URL",
+        "CASEWORK_MODEL_API_KEY",
+        "CASEWORK_MODEL_NAME",
+        "CASEWORK_TOOL_CONFIG",
+    }
+
+    with pytest.raises(SandboxEnvironmentError, match="ZENDESK_API_TOKEN"):
+        sandbox_environment({})
 
 
 @pytest.mark.asyncio

@@ -38,3 +38,7 @@ On Linux, set `DOCKER_GID` to the numeric group owner of
 requires it explicitly so the non-root Harness process can create and destroy
 ephemeral Sandbox containers. Release manifests render image, source and
 configuration revisions; database credentials remain externally injected.
+
+The Harness forwards only the explicit Sandbox adapter allowlist
+(`ZENDESK_*`, `CASEWORK_MODEL_*`, and `CASEWORK_TOOL_CONFIG`) to each ephemeral
+container. It never forwards `DATABASE_URL` or unrelated process secrets.
