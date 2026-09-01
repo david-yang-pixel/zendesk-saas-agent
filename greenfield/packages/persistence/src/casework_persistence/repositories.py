@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from hashlib import md5
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
@@ -41,6 +42,14 @@ def _rowcount(result: Result[Any]) -> int:
     """Read DML row counts without weakening the async session port type."""
 
     return int(cast(CursorResult[Any], result).rowcount or 0)
+
+
+def _default_session_id(job_id: str) -> str:
+    candidate = f"session-{job_id}"
+    if len(candidate) <= 255:
+        return candidate
+    digest = md5(job_id.encode(), usedforsecurity=False).hexdigest()
+    return f"session-{job_id[:214]}-{digest}"
 
 
 class OutboxStatus(StrEnum):
@@ -409,7 +418,7 @@ class JobRepository:
             )
 
         new_job_id = job_id or f"job-{uuid4()}"
-        new_session_id = session_id or f"session-{new_job_id}"
+        new_session_id = session_id or _default_session_id(new_job_id)
         if not new_session_id.strip():
             raise ValueError("session_id must not be blank")
         await self.session.execute(

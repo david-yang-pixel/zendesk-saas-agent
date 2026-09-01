@@ -12,7 +12,14 @@ from starlette.types import Lifespan
 
 from .fakes import InMemoryCancelSink, InMemoryIdempotency, InMemoryJobSink
 from .metrics import IngressMetricsPort, InMemoryIngressMetrics
-from .ports import AdmissionEvent, AdmissionPort, CancelSink, IdempotencyPort, JobSink
+from .ports import (
+    AdmissionEvent,
+    AdmissionPort,
+    AdmissionUnavailable,
+    CancelSink,
+    IdempotencyPort,
+    JobSink,
+)
 from .processing_rules import (
     NormalizedZendeskEvent,
     ProcessingDecision,
@@ -180,14 +187,17 @@ def create_app(
 
     async def webhook(payload: ZendeskWebhookPayload) -> WebhookResponse:
         if admission is not None:
-            admitted = await admission.admit(
-                AdmissionEvent(
-                    event_id=payload.event_id,
-                    received_at=datetime.now(UTC),
-                    normalized=payload.to_normalized_event(),
-                    raw_payload=payload.model_dump(mode="json"),
+            try:
+                admitted = await admission.admit(
+                    AdmissionEvent(
+                        event_id=payload.event_id,
+                        received_at=datetime.now(UTC),
+                        normalized=payload.to_normalized_event(),
+                        raw_payload=payload.model_dump(mode="json"),
+                    )
                 )
-            )
+            except AdmissionUnavailable as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
             return respond(
                 action=admitted.action,
                 reason=admitted.reason,

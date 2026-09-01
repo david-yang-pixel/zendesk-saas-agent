@@ -13,7 +13,14 @@ def upgrade() -> None:
     op.add_column(
         "case_jobs", sa.Column("session_id", sa.String(length=255), nullable=True)
     )
-    op.execute(sa.text("UPDATE case_jobs SET session_id = 'session-' || job_id"))
+    op.execute(
+        sa.text(
+            "UPDATE case_jobs SET session_id = "
+            "CASE WHEN length('session-' || job_id) <= 255 "
+            "THEN 'session-' || job_id "
+            "ELSE 'session-' || left(job_id, 214) || '-' || md5(job_id) END"
+        )
+    )
     op.alter_column(
         "case_jobs",
         "session_id",

@@ -12,7 +12,11 @@ from casework_ingress.fakes import (
     InMemoryIdempotency,
     InMemoryJobSink,
 )
-from casework_ingress.ports import AdmissionEvent, AdmissionResult
+from casework_ingress.ports import (
+    AdmissionEvent,
+    AdmissionResult,
+    AdmissionUnavailable,
+)
 from casework_ingress.processing_rules import ProcessingRuleConfig
 
 
@@ -35,6 +39,11 @@ class _Admission:
             reason="eligible",
             ticket_id=event.normalized.ticket_id,
         )
+
+
+class _UnavailableAdmission:
+    async def admit(self, event: AdmissionEvent) -> AdmissionResult:
+        raise AdmissionUnavailable("configuration_not_ready")
 
 
 class _Readiness:
@@ -88,6 +97,18 @@ def test_readyz_fails_closed_without_postgres() -> None:
 
     assert client.get("/healthz").status_code == 200
     assert client.get("/readyz").status_code == 503
+
+
+def test_webhook_fails_closed_when_durable_configuration_is_missing() -> None:
+    client = cast(
+        _TypedTestClient,
+        TestClient(create_app(admission=_UnavailableAdmission())),
+    )
+
+    response = client.post("/webhook/zendesk", json=_payload())
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "configuration_not_ready"}
 
 
 def test_metrics_reports_webhook_decisions_without_ticket_identifiers() -> None:

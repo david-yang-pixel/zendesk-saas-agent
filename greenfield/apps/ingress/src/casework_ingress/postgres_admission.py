@@ -12,12 +12,17 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from casework_ingress.ports import AdmissionEvent, AdmissionResult
+from casework_ingress.ports import (
+    AdmissionEvent,
+    AdmissionResult,
+    AdmissionUnavailable,
+)
 from casework_ingress.processing_rules import (
     ProcessingRuleConfig,
     evaluate_processing_rules,
 )
 from casework_persistence.repositories import (
+    ConfigRevisionMissing,
     ConfigRevisionRepository,
     ConfigSnapshot,
     EventRepository,
@@ -79,6 +84,12 @@ class PostgresAdmission:
         self._transaction_scope = transaction_scope
 
     async def admit(self, event: AdmissionEvent) -> AdmissionResult:
+        try:
+            return await self._admit(event)
+        except ConfigRevisionMissing as error:
+            raise AdmissionUnavailable("configuration_not_ready") from error
+
+    async def _admit(self, event: AdmissionEvent) -> AdmissionResult:
         async with self._transaction_scope() as session:
             revision = await ConfigRevisionRepository(session).current()
             runtime = _RuntimeConfig.model_validate(revision.config)

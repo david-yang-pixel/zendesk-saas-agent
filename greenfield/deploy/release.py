@@ -92,6 +92,7 @@ def render_environment(manifest: ReleaseManifest) -> dict[str, str]:
         for name, image in manifest.images.items()
     }
     environment["CASEWORK_RELEASE_REVISION"] = manifest.git_revision
+    environment["CASEWORK_CONFIG_REVISION"] = manifest.git_revision
     environment["CASEWORK_MIGRATION_REVISION"] = manifest.migration_revision
     return dict(sorted(environment.items()))
 

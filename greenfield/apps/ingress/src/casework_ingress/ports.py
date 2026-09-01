@@ -11,6 +11,10 @@ from casework_ingress.processing_rules import NormalizedZendeskEvent
 AdmissionAction = Literal["enqueue", "ignore", "cancel", "duplicate"]
 
 
+class AdmissionUnavailable(RuntimeError):
+    """Raised when durable admission cannot safely make a decision."""
+
+
 @dataclass(frozen=True, slots=True)
 class AdmissionEvent:
     event_id: str

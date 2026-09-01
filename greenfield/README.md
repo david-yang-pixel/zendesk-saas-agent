@@ -32,3 +32,9 @@ docker compose -f deploy/compose.yaml up --build
 `casework-sandbox` is an image only, not a long-running Compose service. The
 Harness creates a fresh container for each run and removes it on every terminal
 path. Build that image before starting the long-running services.
+
+On Linux, set `DOCKER_GID` to the numeric group owner of
+`/var/run/docker.sock` before starting the Harness. The release Compose file
+requires it explicitly so the non-root Harness process can create and destroy
+ephemeral Sandbox containers. Release manifests render image, source and
+configuration revisions; database credentials remain externally injected.

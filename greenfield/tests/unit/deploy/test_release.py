@@ -14,9 +14,11 @@ def test_release_manifest_renders_only_digest_pinned_images() -> None:
     environment = render_environment(manifest)
 
     assert environment["CASEWORK_RELEASE_REVISION"] == "e9d4958"
+    assert environment["CASEWORK_CONFIG_REVISION"] == "e9d4958"
     assert environment["CASEWORK_MIGRATION_REVISION"] == "0004_job_session_id"
     assert set(environment) == {
         "CASEWORK_ADMIN_IMAGE",
+        "CASEWORK_CONFIG_REVISION",
         "CASEWORK_HARNESS_IMAGE",
         "CASEWORK_INGRESS_IMAGE",
         "CASEWORK_MIGRATION_REVISION",

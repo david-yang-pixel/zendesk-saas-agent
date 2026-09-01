@@ -42,6 +42,10 @@ services:
     ports: ["8102:8102"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:?set DOCKER_GID to the docker.sock group id}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       migration:
         condition: service_completed_successfully

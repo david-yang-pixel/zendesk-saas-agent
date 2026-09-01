@@ -163,6 +163,32 @@ async def test_enqueue_allows_only_one_active_job_per_ticket(
 
 
 @pytest.mark.asyncio
+async def test_enqueue_bounds_default_session_id_for_maximum_job_id(
+    db_session: AsyncSessionShim,
+) -> None:
+    await EventRepository(db_session).record(
+        event_id="evt-long-job",
+        ticket_id=4000,
+        occurred_at=NOW,
+        source="zendesk",
+        customer_origin="customer",
+    )
+    job_id = "j" * 255
+
+    result = await JobRepository(db_session).enqueue(
+        ticket_id=4000,
+        event_id="evt-long-job",
+        config=CONFIG,
+        job_id=job_id,
+    )
+
+    assert result.accepted is True
+    job = cast(CaseJobRow, db_session.get(CaseJobRow, job_id))
+    assert len(job.session_id) == 255
+    assert job.session_id.startswith("session-" + ("j" * 214) + "-")
+
+
+@pytest.mark.asyncio
 async def test_claim_and_heartbeat_use_a_lease_and_reclaim_expired_claim(
     db_session: AsyncSessionShim,
 ) -> None:

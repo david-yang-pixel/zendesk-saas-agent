@@ -86,3 +86,12 @@ def test_sandbox_is_an_ephemeral_image_not_a_compose_runtime_service() -> None:
     assert 'profiles: ["image-build-only"]' in compose
     assert "  sandbox:\n" not in compose
     assert "SANDBOX_IMAGE: casework-sandbox:dev" in compose
+
+
+def test_harness_compose_has_socket_group_and_linux_host_gateway() -> None:
+    for name in ("compose.yaml", "compose.release.yaml"):
+        compose = (GREENFIELD_ROOT / "deploy" / name).read_text(encoding="utf-8")
+
+        assert "group_add:" in compose
+        assert "DOCKER_GID" in compose
+        assert '"host.docker.internal:host-gateway"' in compose
