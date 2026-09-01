@@ -1,0 +1,89 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+import AppIcon from './components/AppIcon.vue'
+import { navItems } from './data/mockData'
+
+const route = useRoute()
+const currentLabel = computed(() => String(route.meta.label ?? '运行总览'))
+</script>
+
+<template>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true"><span>c</span></div>
+        <div>
+          <p class="brand-name">Casework</p>
+          <p class="brand-caption">OPERATIONS CONSOLE</p>
+        </div>
+      </div>
+
+      <div class="workspace-switcher" aria-label="当前工作区">
+        <div class="workspace-avatar">DS</div>
+        <div class="workspace-copy">
+          <span class="workspace-label">工作区</span>
+          <strong>Dify SaaS Support</strong>
+        </div>
+        <AppIcon name="chevron" :size="15" />
+      </div>
+
+      <p class="nav-section-label">控制台</p>
+      <nav class="primary-nav" aria-label="主导航">
+        <RouterLink
+          v-for="item in navItems"
+          :key="item.path"
+          :to="item.path"
+          class="nav-item"
+          :data-nav="item.path === '/' ? 'overview' : item.path.slice(1)"
+        >
+          <span class="nav-item__icon"><AppIcon :name="item.icon" :size="18" /></span>
+          <span class="nav-item__copy">
+            <span>{{ item.label }}</span>
+            <small>{{ item.hint }}</small>
+          </span>
+          <span v-if="item.path === '/runs'" class="nav-count">7</span>
+        </RouterLink>
+      </nav>
+
+      <div class="sidebar-spacer" />
+      <div class="sidebar-status">
+        <span class="pulse-dot" aria-hidden="true" />
+        <div>
+          <strong>系统运行正常</strong>
+          <span>所有服务已连接</span>
+        </div>
+      </div>
+      <div class="sidebar-footer">
+        <div class="avatar">YL</div>
+        <div class="user-copy"><strong>Yang Yonggang</strong><span>Administrator</span></div>
+        <button type="button" class="icon-button icon-button--muted" aria-label="用户菜单">
+          <AppIcon name="more" :size="17" />
+        </button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div class="breadcrumbs" aria-label="面包屑">
+          <span>Casework</span><span class="breadcrumb-divider">/</span><strong>{{ currentLabel }}</strong>
+        </div>
+        <div class="topbar-actions">
+          <span class="environment-chip"><span class="pulse-dot" aria-hidden="true" /> Production</span>
+          <button type="button" class="icon-button" aria-label="搜索">
+            <AppIcon name="search" :size="18" />
+          </button>
+          <button type="button" class="icon-button notification-button" aria-label="通知">
+            <AppIcon name="bell" :size="18" /><span class="notification-dot" aria-hidden="true" />
+          </button>
+          <div class="topbar-divider" />
+          <span class="revision-label">Config <strong>r42</strong></span>
+        </div>
+      </header>
+
+      <div class="page-container">
+        <RouterView />
+      </div>
+    </main>
+  </div>
+</template>
