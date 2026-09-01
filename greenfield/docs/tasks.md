@@ -94,6 +94,13 @@ credentials.
 
 ## Slice 10: Production composition
 
+- [x] Add PostgreSQL-backed configuration revisions, atomic ingress admission,
+  durable root session IDs, queue leases, and worker heartbeats.
+- [x] Add runnable Ingress, Harness, and Admin composition roots with database
+  schema readiness and owned startup/shutdown lifecycles.
+- [x] Make the deployment migration gate execute `alembic upgrade head` and
+  point the long-running images at their production composition roots.
+
 - [ ] Resolve frozen config and credential references inside a sandbox without
   persisting secret values in job/session records.
 - [ ] Add production root-model and depth-one child-model runners using each

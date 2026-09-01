@@ -61,6 +61,8 @@ services:
       - "8102:8102"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       migration:
         condition: service_completed_successfully

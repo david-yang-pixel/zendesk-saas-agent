@@ -35,7 +35,7 @@ RUN addgroup --system casework \
 USER casework
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
-    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('SERVICE_PORT','8100') + '/healthz', timeout=2)"
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('SERVICE_PORT','8100') + '/readyz', timeout=2)"
 
 
 FROM app-base AS ingress
@@ -45,7 +45,7 @@ COPY --chown=casework:casework packages/contracts ./packages/contracts
 COPY --chown=casework:casework packages/persistence ./packages/persistence
 COPY --chown=casework:casework apps/ingress ./apps/ingress
 EXPOSE 8101
-CMD ["/app/.venv/bin/uvicorn", "casework_ingress.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8101"]
+CMD ["/app/.venv/bin/uvicorn", "casework_ingress.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8101"]
 
 
 FROM app-base AS harness
@@ -55,9 +55,10 @@ COPY --chown=casework:casework packages/contracts ./packages/contracts
 COPY --chown=casework:casework packages/persistence ./packages/persistence
 COPY --chown=casework:casework apps/harness ./apps/harness
 COPY --chown=casework:casework migrations ./migrations
+COPY --chown=casework:casework alembic.ini ./alembic.ini
 COPY --chown=casework:casework deploy/migrate.py ./deploy/migrate.py
 EXPOSE 8102
-CMD ["/app/.venv/bin/uvicorn", "casework_harness.service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8102"]
+CMD ["/app/.venv/bin/uvicorn", "casework_harness.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8102"]
 
 
 FROM app-base AS sandbox
@@ -81,4 +82,4 @@ COPY --chown=casework:casework packages/persistence ./packages/persistence
 COPY --chown=casework:casework apps/admin-api ./apps/admin-api
 COPY --from=admin-web-build --chown=casework:casework /src/apps/admin-web/dist /app/apps/admin-web/dist
 EXPOSE 8104
-CMD ["/app/.venv/bin/uvicorn", "casework_admin.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]
+CMD ["/app/.venv/bin/uvicorn", "casework_admin.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]

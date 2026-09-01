@@ -8,7 +8,7 @@ metadata:
   generatedAt: "2026-09-01T00:00:00Z"
 spec:
   gitRevision: e9d4958
-  migrationRevision: 0001_greenfield_initial
+  migrationRevision: 0004_job_session_id
   images:
     ingress:
       repository: registry.example.invalid/casework-ingress
