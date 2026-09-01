@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -68,6 +70,8 @@ class JobQueuePort(Protocol):
 
     async def transition(self, lease: JobLease, status: str) -> None: ...
 
+    async def heartbeat(self, lease: JobLease) -> None: ...
+
     async def finish(self, lease: JobLease, status: str) -> None: ...
 
 
@@ -88,10 +92,14 @@ class HarnessWorker:
         jobs: JobQueuePort,
         sandboxes: SandboxRunPort,
         delivery: OutcomeDeliveryPort,
+        heartbeat_interval_seconds: float = 20.0,
     ) -> None:
+        if heartbeat_interval_seconds <= 0:
+            raise ValueError("heartbeat_interval_seconds must be positive")
         self._jobs = jobs
         self._sandboxes = sandboxes
         self._delivery = delivery
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
 
     async def process_once(self) -> bool:
         lease = await self._jobs.claim()
@@ -100,7 +108,9 @@ class HarnessWorker:
         try:
             await self._jobs.transition(lease, "sandbox_creating")
             await self._jobs.transition(lease, "running")
-            outcome = await self._sandboxes.run(SandboxRunRequest.from_lease(lease))
+            outcome = await self._run_with_heartbeat(
+                lease, SandboxRunRequest.from_lease(lease)
+            )
             self._validate_outcome(lease, outcome)
             await self._jobs.transition(lease, "finalizing")
             if outcome.delivery_eligible:
@@ -110,6 +120,25 @@ class HarnessWorker:
             await self._jobs.finish(lease, "failed")
             raise
         return True
+
+    async def _run_with_heartbeat(
+        self, lease: JobLease, request: SandboxRunRequest
+    ) -> Outcome:
+        sandbox_task = asyncio.create_task(self._sandboxes.run(request))
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    {sandbox_task},
+                    timeout=self._heartbeat_interval_seconds,
+                )
+                if sandbox_task in done:
+                    return await sandbox_task
+                await self._jobs.heartbeat(lease)
+        except BaseException:
+            sandbox_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sandbox_task
+            raise
 
     @staticmethod
     def _validate_outcome(lease: JobLease, outcome: Outcome) -> None:

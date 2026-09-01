@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 import pytest
@@ -17,6 +18,8 @@ class FakeJobs:
     lease: JobLease | None
     transitions: list[str] = field(default_factory=list[str])
     finished: list[str] = field(default_factory=list[str])
+    heartbeats: int = 0
+    heartbeat_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def claim(self) -> JobLease | None:
         lease, self.lease = self.lease, None
@@ -24,6 +27,10 @@ class FakeJobs:
 
     async def transition(self, lease: JobLease, status: str) -> None:
         self.transitions.append(status)
+
+    async def heartbeat(self, lease: JobLease) -> None:
+        self.heartbeats += 1
+        self.heartbeat_event.set()
 
     async def finish(self, lease: JobLease, status: str) -> None:
         self.finished.append(status)
@@ -127,3 +134,23 @@ async def test_worker_returns_false_when_queue_is_empty() -> None:
 
     assert await worker.process_once() is False
 
+
+@pytest.mark.asyncio
+async def test_worker_heartbeats_while_the_sandbox_is_running() -> None:
+    jobs = FakeJobs(_lease())
+
+    class _WaitForHeartbeat:
+        async def run(self, request: SandboxRunRequest) -> Outcome:
+            await jobs.heartbeat_event.wait()
+            return _answer()
+
+    worker = HarnessWorker(
+        jobs=jobs,
+        sandboxes=_WaitForHeartbeat(),
+        delivery=FakeDelivery(),
+        heartbeat_interval_seconds=0.001,
+    )
+
+    await worker.process_once()
+
+    assert jobs.heartbeats >= 1
