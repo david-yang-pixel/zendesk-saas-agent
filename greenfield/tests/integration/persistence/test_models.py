@@ -12,6 +12,8 @@ from casework_persistence.models import (
     ACTIVE_JOB_STATUSES,
     Base,
     CaseJobRow,
+    ConfigHeadRow,
+    ConfigRevisionRow,
     EventRecord,
     OutboxMessage,
     TicketState,
@@ -20,9 +22,14 @@ from casework_persistence.repositories import ConfigSnapshot
 
 
 def test_schema_has_durable_event_dedup_and_ticket_generation_tables() -> None:
-    assert {"events", "ticket_states", "case_jobs", "outbox_messages"} <= set(
-        Base.metadata.tables
-    )
+    assert {
+        "events",
+        "ticket_states",
+        "case_jobs",
+        "outbox_messages",
+        "config_revisions",
+        "config_head",
+    } <= set(Base.metadata.tables)
     event_table = cast(Table, EventRecord.__table__)
     state_table = cast(Table, TicketState.__table__)
     job_table = cast(Table, CaseJobRow.__table__)
@@ -31,6 +38,11 @@ def test_schema_has_durable_event_dedup_and_ticket_generation_tables() -> None:
     assert list(state_table.primary_key.columns.keys()) == ["ticket_id"]
     assert bool(job_table.c.event_id.unique)
     assert bool(outbox_table.c.idempotency_key.unique)
+    revision_table = cast(Table, ConfigRevisionRow.__table__)
+    assert list(revision_table.primary_key.columns.keys()) == ["revision"]
+    assert list(cast(Table, ConfigHeadRow.__table__).primary_key.columns.keys()) == [
+        "head_id"
+    ]
 
 
 def test_case_job_has_postgres_partial_unique_index_for_one_active_job() -> None:

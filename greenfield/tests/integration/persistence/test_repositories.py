@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 
 from casework_persistence.models import Base, CaseJobRow, OutboxMessage
 from casework_persistence.repositories import (
+    ConfigRevisionConflict,
+    ConfigRevisionRepository,
     ConfigSnapshot,
     EventRepository,
     HumanCancelRepository,
@@ -29,6 +31,15 @@ CONFIG = ConfigSnapshot(
     skill_digest="sha256:skills",
     tool_digest="sha256:tools",
 )
+
+ADMIN_CONFIG: dict[str, object] = {
+    "desired_state": "paused",
+    "root_model": {
+        "provider": "openai",
+        "model": "gpt-5.6-sol",
+        "credential_ref": "secret://root-model",
+    },
+}
 
 
 class AsyncSessionShim:
@@ -56,6 +67,41 @@ def db_session() -> Iterator[AsyncSessionShim]:
     with Session(engine) as session:
         yield AsyncSessionShim(session)
         session.commit()
+
+
+@pytest.mark.asyncio
+async def test_config_revisions_bootstrap_and_append_with_compare_and_swap(
+    db_session: AsyncSessionShim,
+) -> None:
+    configs = ConfigRevisionRepository(db_session)
+    bootstrapped = await configs.bootstrap(
+        revision="cfg-1",
+        config=ADMIN_CONFIG,
+        actor="bootstrap",
+        created_at=NOW,
+    )
+    assert bootstrapped.revision == "cfg-1"
+    assert bootstrapped.config == ADMIN_CONFIG
+
+    updated_config = {**ADMIN_CONFIG, "desired_state": "running"}
+    appended = await configs.append(
+        expected_revision="cfg-1",
+        revision="cfg-2",
+        config=updated_config,
+        actor="operator@example.com",
+        created_at=NOW + timedelta(seconds=1),
+    )
+    assert appended.revision == "cfg-2"
+    assert (await configs.current()).config == updated_config
+
+    with pytest.raises(ConfigRevisionConflict):
+        await configs.append(
+            expected_revision="cfg-1",
+            revision="cfg-stale",
+            config=ADMIN_CONFIG,
+            actor="stale-operator",
+            created_at=NOW + timedelta(seconds=2),
+        )
 
 
 @pytest.mark.asyncio

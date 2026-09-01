@@ -82,6 +82,39 @@ class TicketState(Base):
     )
 
 
+class ConfigRevisionRow(Base):
+    """One immutable management configuration revision."""
+
+    __tablename__ = "config_revisions"
+
+    revision: Mapped[str] = mapped_column(String(255), primary_key=True)
+    config: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ConfigHeadRow(Base):
+    """Singleton pointer serialized by configuration compare-and-swap writes."""
+
+    __tablename__ = "config_head"
+
+    head_id: Mapped[str] = mapped_column(
+        String(32), primary_key=True, default="current", server_default="current"
+    )
+    revision: Mapped[str] = mapped_column(
+        String(255), ForeignKey("config_revisions.revision"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("head_id = 'current'", name="ck_config_head_singleton"),
+    )
+
+
 class CaseJobRow(Base):
     """Durable worker queue row and immutable configuration snapshot."""
 
@@ -200,6 +233,8 @@ __all__ = [
     "ACTIVE_JOB_STATUSES",
     "Base",
     "CaseJobRow",
+    "ConfigHeadRow",
+    "ConfigRevisionRow",
     "EventRecord",
     "OutboxMessage",
     "TicketState",

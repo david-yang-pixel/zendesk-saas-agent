@@ -25,6 +25,8 @@ from casework_persistence.models import (
     ACTIVE_JOB_STATUSES,
     Base,
     CaseJobRow,
+    ConfigHeadRow,
+    ConfigRevisionRow,
     EventRecord,
     OutboxMessage,
     TicketState,
@@ -56,6 +58,14 @@ class GenerationFenceError(RuntimeError):
 
 class MissingConfigSnapshotError(ValueError):
     """Raised before a job can enter the durable queue without frozen config."""
+
+
+class ConfigRevisionConflict(RuntimeError):
+    """Raised when a configuration writer presents a stale head revision."""
+
+
+class ConfigRevisionMissing(RuntimeError):
+    """Raised before the durable configuration has been bootstrapped."""
 
 
 class SessionPort(Protocol):
@@ -198,6 +208,97 @@ class EventRepository:
         )
         return result.scalar_one_or_none() is not None
 
+
+class ConfigRevisionRepository:
+    """Append-only configuration history with a locked singleton head."""
+
+    _HEAD_ID = "current"
+
+    def __init__(self, session: SessionPort) -> None:
+        self.session = session
+
+    async def current(self) -> ConfigRevisionRow:
+        result = await self.session.execute(
+            select(ConfigRevisionRow)
+            .join(ConfigHeadRow, ConfigHeadRow.revision == ConfigRevisionRow.revision)
+            .where(ConfigHeadRow.head_id == self._HEAD_ID)
+        )
+        current = result.scalar_one_or_none()
+        if current is None:
+            raise ConfigRevisionMissing("configuration has not been bootstrapped")
+        return current
+
+    async def bootstrap(
+        self,
+        *,
+        revision: str,
+        config: dict[str, object],
+        actor: str,
+        created_at: datetime | None = None,
+    ) -> ConfigRevisionRow:
+        self._validate(revision=revision, config=config, actor=actor)
+        revision_insert = pg_insert(ConfigRevisionRow).values(
+            revision=revision,
+            config=config,
+            actor=actor,
+            created_at=created_at or utc_now(),
+        )
+        await self.session.execute(revision_insert.on_conflict_do_nothing())
+        head_insert = pg_insert(ConfigHeadRow).values(
+            head_id=self._HEAD_ID,
+            revision=revision,
+            updated_at=created_at or utc_now(),
+        )
+        await self.session.execute(head_insert.on_conflict_do_nothing())
+        return await self.current()
+
+    async def append(
+        self,
+        *,
+        expected_revision: str,
+        revision: str,
+        config: dict[str, object],
+        actor: str,
+        created_at: datetime | None = None,
+    ) -> ConfigRevisionRow:
+        self._validate(revision=revision, config=config, actor=actor)
+        if not expected_revision.strip():
+            raise ValueError("expected_revision must not be blank")
+        result = await self.session.execute(
+            select(ConfigHeadRow)
+            .where(ConfigHeadRow.head_id == self._HEAD_ID)
+            .with_for_update()
+        )
+        head = result.scalar_one_or_none()
+        if head is None:
+            raise ConfigRevisionMissing("configuration has not been bootstrapped")
+        if head.revision != expected_revision:
+            raise ConfigRevisionConflict("configuration revision is stale")
+        timestamp = created_at or utc_now()
+        await self.session.execute(
+            insert(ConfigRevisionRow).values(
+                revision=revision,
+                config=config,
+                actor=actor,
+                created_at=timestamp,
+            )
+        )
+        await self.session.execute(
+            update(ConfigHeadRow)
+            .where(
+                ConfigHeadRow.head_id == self._HEAD_ID,
+                ConfigHeadRow.revision == expected_revision,
+            )
+            .values(revision=revision, updated_at=timestamp)
+        )
+        return await self.current()
+
+    @staticmethod
+    def _validate(*, revision: str, config: dict[str, object], actor: str) -> None:
+        if not revision.strip() or not actor.strip():
+            raise ValueError("revision and actor must not be blank")
+        if not config:
+            raise ValueError("configuration must not be empty")
 
 class TicketRepository:
     """Generation and human-cancellation fence operations."""
@@ -813,6 +914,7 @@ class CaseworkPersistence:
 
     def __init__(self, session: SessionPort) -> None:
         self.events = EventRepository(session)
+        self.config_revisions = ConfigRevisionRepository(session)
         self.tickets = TicketRepository(session)
         self.jobs = JobRepository(session)
         self.human_cancel = HumanCancelRepository(session)
@@ -824,6 +926,9 @@ __all__ = [
     "CancelResult",
     "CaseworkPersistence",
     "ClaimResult",
+    "ConfigRevisionConflict",
+    "ConfigRevisionMissing",
+    "ConfigRevisionRepository",
     "ConfigSnapshot",
     "EnqueueResult",
     "EventRepository",
