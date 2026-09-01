@@ -40,12 +40,266 @@ from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
 from contracts._base import ContractModel
 from contracts.outcome import Outcome, OutcomeKind
 from contracts.sandbox import SandboxCancelRequest, SandboxStartRequest
-from contracts.todo import Todo
+from contracts.todo import Todo, TodoStatus
 from contracts.tool import ToolDefinition, ToolResult
 
 
 class SandboxConfigurationError(ValueError):
     """Required external adapter configuration is absent or invalid."""
+
+
+_TODO_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "task_id",
+        "goal",
+        "status",
+        "assigned_to",
+        "dependencies",
+        "skill",
+        "suggested_tools",
+        "required_evidence",
+        "attempts",
+        "completion_condition",
+    ],
+    "properties": {
+        "task_id": {"type": "string"},
+        "goal": {"type": "string"},
+        "status": {
+            "type": "string",
+            "enum": [
+                "pending",
+                "ready",
+                "running",
+                "completed",
+                "failed",
+                "blocked",
+                "cancelled",
+            ],
+        },
+        "assigned_to": {"type": "string"},
+        "dependencies": {"type": "array", "items": {"type": "string"}},
+        "skill": {"type": ["string", "null"]},
+        "suggested_tools": {"type": "array", "items": {"type": "string"}},
+        "required_evidence": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "attempts": {"type": "integer", "minimum": 0},
+        "completion_condition": {"type": "string"},
+    },
+}
+
+_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["todos"],
+    "properties": {
+        "todos": {
+            "type": "array",
+            "maxItems": 128,
+            "items": _TODO_SCHEMA,
+        }
+    },
+}
+
+_ANSWER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["answer"],
+    "properties": {"answer": {"type": "string"}},
+}
+
+_CHILD_STEP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["action", "tool_call", "summary", "evidence_ids"],
+    "properties": {
+        "action": {"type": "string", "enum": ["tool_call", "report"]},
+        "tool_call": {
+            "type": ["object", "null"],
+            "additionalProperties": False,
+            "required": ["name", "arguments"],
+            "properties": {
+                "name": {"type": "string"},
+                # Responses strict JSON schemas require closed object
+                # properties. Encode arbitrary tool arguments as JSON text and
+                # validate/decode them immediately before registry execution.
+                "arguments": {"type": "string"},
+            },
+        },
+        "summary": {"type": ["string", "null"]},
+        "evidence_ids": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+_SENSITIVE_MARKERS = (
+    "hidden_reasoning",
+    "chain_of_thought",
+    "api_key",
+    "authorization:",
+    "bearer ",
+    "private_key",
+    "-----begin ",
+)
+
+
+def _contains_sensitive_marker(value: str) -> bool:
+    folded = value.casefold()
+    return any(marker in folded for marker in _SENSITIVE_MARKERS)
+
+
+def _safe_model_summary(value: str) -> str:
+    if _contains_sensitive_marker(value):
+        return "Tool result admitted as evidence."
+    return value[:2048]
+
+
+async def _post_responses(
+    *,
+    client: httpx.AsyncClient,
+    base_url: str,
+    provider: str,
+    model: str,
+    api_key: str,
+    instructions: str,
+    payload: dict[str, Any],
+    schema_name: str,
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    """Call an OpenAI-compatible Responses endpoint and decode JSON text."""
+
+    request_payload = {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": instructions}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ),
+                    }
+                ],
+            },
+        ],
+        "metadata": {"casework_provider": provider},
+        "store": False,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            }
+        },
+    }
+    try:
+        response = await client.post(
+            f"{base_url.rstrip('/')}/v1/responses",
+            headers={"authorization": f"Bearer {api_key}"},
+            json=request_payload,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError) as error:
+        raise RuntimeError("configured model adapter request failed") from error
+    if not isinstance(data, dict):
+        raise RuntimeError("configured model adapter returned a non-object")
+    response_data = cast(dict[str, Any], data)
+    text = response_data.get("output_text")
+    if not isinstance(text, str):
+        output = response_data.get("output")
+        if isinstance(output, list):
+            for item in cast(list[object], output):
+                if not isinstance(item, dict):
+                    continue
+                output_item = cast(dict[str, Any], item)
+                content = output_item.get("content")
+                if not isinstance(content, list):
+                    continue
+                for part in cast(list[object], content):
+                    if not isinstance(part, dict):
+                        continue
+                    output_part = cast(dict[str, Any], part)
+                    if (
+                        output_part.get("type") == "output_text"
+                        and isinstance(output_part.get("text"), str)
+                    ):
+                        text = cast(str, output_part["text"])
+                        break
+                if text is not None:
+                    break
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("model response is missing output text")
+    try:
+        decoded = json.loads(text)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise RuntimeError("model response output is not valid JSON") from error
+    if not isinstance(decoded, dict):
+        raise RuntimeError("model response JSON must be an object")
+    decoded_object = cast(dict[str, Any], decoded)
+    properties = schema.get("properties")
+    if isinstance(properties, dict) and set(decoded_object) != set(
+        cast(dict[str, Any], properties)
+    ):
+        raise RuntimeError("model response JSON contains unexpected fields")
+    return decoded_object
+
+
+def _validate_todo_plan(
+    plan: TodoPlan,
+    *,
+    available_tools: tuple[str, ...],
+    available_child_slots: tuple[str, ...],
+) -> None:
+    """Reject model plans that cannot be safely executed by the runtime."""
+
+    task_ids = tuple(item.task_id for item in plan.items)
+    if len(set(task_ids)) != len(task_ids):
+        raise ValueError("model plan contains duplicate Todo task IDs")
+    task_id_set = set(task_ids)
+    available_tool_set = set(available_tools)
+    available_slot_set = set(available_child_slots)
+    for item in plan.items:
+        if item.status is not TodoStatus.PENDING or item.attempts != 0:
+            raise ValueError("model plan Todo must start pending with zero attempts")
+        if any(not value.strip() for value in item.dependencies):
+            raise ValueError("model plan contains a blank dependency")
+        if any(dependency not in task_id_set for dependency in item.dependencies):
+            raise ValueError("model plan contains an unknown dependency")
+        if any(not value.strip() for value in item.suggested_tools):
+            raise ValueError("model plan contains a blank tool name")
+        if any(
+            tool_name not in available_tool_set for tool_name in item.suggested_tools
+        ):
+            raise ValueError("model plan selected an unavailable tool")
+        if item.assigned_to != "root" and item.assigned_to not in available_slot_set:
+            raise ValueError("model plan selected an unavailable child slot")
+
+    # A dependency cycle would leave the runtime with no ready Todo forever.
+    remaining = {item.task_id: set(item.dependencies) for item in plan.items}
+    completed: set[str] = set()
+    while remaining:
+        ready = {
+            task_id
+            for task_id, dependencies in remaining.items()
+            if dependencies.issubset(completed)
+        }
+        if not ready:
+            raise ValueError("model plan contains a dependency cycle")
+        completed.update(ready)
+        for task_id in ready:
+            del remaining[task_id]
 
 
 class ToolEndpointConfig(ContractModel):
@@ -169,7 +423,7 @@ class HttpInvestigationTool:
 
 
 class HttpCaseworkModel:
-    """OpenAI-compatible casework model adapter with typed plan/answer responses."""
+    """OpenAI-compatible Responses adapter with typed plan/answer responses."""
 
     def __init__(
         self,
@@ -179,14 +433,17 @@ class HttpCaseworkModel:
         provider: str,
         api_key: str,
         model_name: str,
+        available_child_slots: tuple[str, ...] = (),
     ) -> None:
         if not base_url.startswith("https://"):
             raise SandboxConfigurationError("CASEWORK_MODEL_BASE_URL must use HTTPS")
         self._client = client
         self._base_url = base_url.rstrip("/")
         self._provider = provider
+        self._api_key = api_key
         self._headers = {"authorization": f"Bearer {api_key}"}
         self._model_name = model_name
+        self._available_child_slots = available_child_slots
 
     async def plan(
         self,
@@ -195,26 +452,48 @@ class HttpCaseworkModel:
         skill: LoadedSkill,
         available_tools: tuple[str, ...],
     ) -> TodoPlan:
-        payload = await self._post(
-            "/v1/casework/plan",
-            {
-                "model": self._model_name,
-                "provider": self._provider,
+        payload = await _post_responses(
+            client=self._client,
+            base_url=self._base_url,
+            provider=self._provider,
+            model=self._model_name,
+            api_key=self._api_key,
+            instructions=(
+                "Create a minimal evidence-driven Todo plan. Assign each Todo "
+                "to root or an explicitly available child slot. suggested_tools "
+                "must contain only names from available_tools. Return JSON only."
+            ),
+            payload={
                 "ticket": snapshot.model_dump(mode="json"),
                 "question": question.model_dump(mode="json"),
                 "skill": skill.model_dump(mode="json"),
                 "available_tools": available_tools,
+                "available_child_slots": self._available_child_slots,
             },
+            schema_name="casework_todo_plan",
+            schema=_PLAN_SCHEMA,
         )
         todos = payload.get("todos")
         if not isinstance(todos, list):
             raise RuntimeError("model plan response is missing todos")
         try:
-            return TodoPlan(
+            plan = TodoPlan(
                 items=[
                     Todo.model_validate(todo) for todo in cast(list[object], todos)
                 ]
             )
+            _validate_todo_plan(
+                plan,
+                available_tools=available_tools,
+                available_child_slots=self._available_child_slots,
+            )
+            if any(
+                _contains_sensitive_marker(text)
+                for todo in plan.items
+                for text in (todo.goal, todo.completion_condition)
+            ):
+                raise ValueError("model plan contains sensitive text")
+            return plan
         except Exception as error:
             raise RuntimeError("model plan response contains invalid Todo") from error
 
@@ -224,46 +503,41 @@ class HttpCaseworkModel:
         question: ActiveQuestion,
         evidence_ids: tuple[str, ...],
     ) -> str:
-        payload = await self._post(
-            "/v1/casework/answer",
-            {
-                "model": self._model_name,
-                "provider": self._provider,
+        payload = await _post_responses(
+            client=self._client,
+            base_url=self._base_url,
+            provider=self._provider,
+            model=self._model_name,
+            api_key=self._api_key,
+            instructions=(
+                "Answer the customer's question using only the supplied evidence "
+                "IDs. Return JSON only with a concise customer-facing answer."
+            ),
+            payload={
                 "ticket": snapshot.model_dump(mode="json"),
                 "question": question.model_dump(mode="json"),
                 "evidence_ids": evidence_ids,
             },
+            schema_name="casework_answer",
+            schema=_ANSWER_SCHEMA,
         )
         answer = payload.get("answer")
         if not isinstance(answer, str) or not answer.strip():
             raise RuntimeError("model answer response is missing answer")
+        if len(answer) > 16_384:
+            raise RuntimeError("model answer response exceeds 16384 characters")
+        if _contains_sensitive_marker(answer):
+            raise RuntimeError("model answer response contains sensitive text")
         return answer.strip()
 
     async def ready(self) -> bool:
         try:
             response = await self._client.get(
-                f"{self._base_url}/healthz", headers=self._headers, timeout=3.0
+                f"{self._base_url}/v1/models", headers=self._headers, timeout=3.0
             )
             return response.is_success
         except httpx.HTTPError:
             return False
-
-    async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        try:
-            response = await self._client.post(
-                f"{self._base_url}{path}",
-                headers=self._headers,
-                json=payload,
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except (httpx.HTTPError, ValueError) as error:
-            raise RuntimeError("configured model adapter request failed") from error
-        if not isinstance(data, dict):
-            raise RuntimeError("configured model adapter returned a non-object")
-        return cast(dict[str, Any], data)
-
 
 class HttpChildAgentRunner:
     """Independent child model adapter used by the depth-one orchestrator."""
@@ -314,15 +588,39 @@ class HttpChildAgentRunner:
                 observations=observations,
                 round_number=round_number,
             )
+            action = child_payload.get("action")
             tool_call = child_payload.get("tool_call")
-            if tool_call is not None:
+            if action == "tool_call":
                 if not isinstance(tool_call, dict):
                     raise RuntimeError("child model tool_call must be an object")
                 call = cast(dict[str, Any], tool_call)
+                if set(call) != {"name", "arguments"}:
+                    raise RuntimeError(
+                        "child model tool_call contains unexpected fields"
+                    )
                 tool_name = call.get("name")
-                arguments = call.get("arguments", {})
+                arguments_value = call.get("arguments", "{}")
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     raise RuntimeError("child model tool_call is missing name")
+                if child_payload.get("summary") is not None:
+                    raise RuntimeError(
+                        "child model tool_call must not include a summary"
+                    )
+                if child_payload.get("evidence_ids") != []:
+                    raise RuntimeError(
+                        "child model tool_call must not include evidence IDs"
+                    )
+                if isinstance(arguments_value, str):
+                    try:
+                        arguments = json.loads(arguments_value)
+                    except json.JSONDecodeError as error:
+                        raise RuntimeError(
+                            "child model tool arguments are not valid JSON"
+                        ) from error
+                else:
+                    # Keep compatibility with existing OpenAI-compatible
+                    # gateways that return an object despite the schema.
+                    arguments = arguments_value
                 if not isinstance(arguments, dict):
                     raise RuntimeError("child model tool arguments must be an object")
                 result = await tools.execute(
@@ -341,12 +639,14 @@ class HttpChildAgentRunner:
                     {
                         "tool_name": tool_name,
                         "status": result.status.value,
-                        "summary": result.summary,
+                        "summary": _safe_model_summary(result.summary),
                         "evidence_id": result.evidence_id,
                         "artifact_refs": list(result.artifacts),
                     }
                 )
                 continue
+            if action != "report" or tool_call is not None:
+                raise RuntimeError("child model returned an invalid action")
             return self._report(
                 task=task,
                 payload=child_payload,
@@ -365,35 +665,32 @@ class HttpChildAgentRunner:
         observations: list[dict[str, object]],
         round_number: int,
     ) -> dict[str, Any]:
-        try:
-            response = await self._client.post(
-                f"{self._base_url}/v1/casework/subagent",
-                headers={"authorization": f"Bearer {api_key}"},
-                json={
-                    "provider": session.provider,
-                    "model": session.model,
-                    "ticket_id": session.ticket_id,
-                    "context_window_tokens": session.context_window,
-                    "round": round_number,
-                    "task": {
-                        "task_id": task.task_id,
-                        "objective": task.objective,
-                        "required_evidence": task.required_evidence,
-                    },
-                    "available_tools": available_tools,
-                    "observations": observations,
+        return await _post_responses(
+            client=self._client,
+            base_url=self._base_url,
+            provider=session.provider,
+            model=session.model,
+            api_key=api_key,
+            instructions=(
+                "Investigate only the assigned task. Choose tool_call to use "
+                "one available read-only tool, or report when evidence is ready. "
+                "Never invent evidence IDs. Return JSON only."
+            ),
+            payload={
+                "ticket_id": session.ticket_id,
+                "context_window_tokens": session.context_window,
+                "round": round_number,
+                "task": {
+                    "task_id": task.task_id,
+                    "objective": task.objective,
+                    "required_evidence": task.required_evidence,
                 },
-                timeout=30.0,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPError, ValueError) as error:
-            raise RuntimeError(
-                "configured child model adapter request failed"
-            ) from error
-        if not isinstance(payload, dict):
-            raise RuntimeError("configured child model adapter returned a non-object")
-        return cast(dict[str, Any], payload)
+                "available_tools": available_tools,
+                "observations": observations,
+            },
+            schema_name="casework_child_step",
+            schema=_CHILD_STEP_SCHEMA,
+        )
 
     @staticmethod
     def _report(
@@ -407,6 +704,8 @@ class HttpChildAgentRunner:
         evidence_ids = payload.get("evidence_ids", [])
         if not isinstance(summary, str) or not summary.strip():
             raise RuntimeError("child model response is missing summary")
+        if _contains_sensitive_marker(summary):
+            raise RuntimeError("child model response contains sensitive text")
         if not isinstance(evidence_ids, list) or not all(
             isinstance(value, str) and value.strip()
             for value in cast(list[object], evidence_ids)
@@ -505,13 +804,11 @@ class ProductionSandboxCommands:
         await self._http_client.aclose()
 
     async def _model_ready(self) -> bool:
-        try:
-            response = await self._http_client.get(
-                f"{self._model_base_url}/healthz", timeout=3.0
-            )
-            return response.is_success
-        except httpx.HTTPError:
-            return False
+        # The immutable per-job bootstrap supplies the model credential, so a
+        # Harness readiness probe cannot safely make an authenticated model
+        # request. Validate the direct Responses base URL here; the first
+        # per-job request remains fail-closed on auth or model errors.
+        return self._model_base_url.startswith("https://")
 
     def _agent_for(self, request: SandboxStartRequest) -> SandboxAgent:
         bootstrap = request.bootstrap
@@ -525,6 +822,9 @@ class ProductionSandboxCommands:
             provider=models.root.provider,
             api_key=models.root.api_key,
             model_name=models.root.model,
+            available_child_slots=tuple(
+                child.slot_id for child in bootstrap.enabled_child_slots
+            ),
         )
         slots = tuple(
             SubagentSlot(

@@ -7,16 +7,177 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from casework_agent_core.domain import ActiveQuestion, TicketSnapshot
 from casework_agent_core.runtime_config import MappingSecretResolver
+from casework_agent_core.skills import LoadedSkill, SkillManifest
 from casework_agent_core.subagents import ChildSession, SubagentTask
 from casework_sandbox.composition import (
+    HttpCaseworkModel,
     HttpChildAgentRunner,
     SandboxConfigurationError,
     SandboxRuntimeConfig,
     create_production_commands,
 )
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
+from contracts.ticket import TicketMessage
 from contracts.tool import ToolDefinition, ToolResult, ToolResultStatus
+
+
+def _model_inputs() -> tuple[TicketSnapshot, ActiveQuestion, LoadedSkill]:
+    now = datetime.now(UTC)
+    snapshot = TicketSnapshot(
+        ticket_id=3726,
+        status="open",
+        requester_id=1,
+        messages=(
+            TicketMessage(
+                event_id="evt-1",
+                author_origin="customer",
+                public=True,
+                body="Find the affected workspace",
+                created_at=now,
+            ),
+        ),
+        locale="en-US",
+        latest_customer_cursor="evt-1",
+        complete=True,
+        fetched_at=now,
+    )
+    question = ActiveQuestion(
+        original_event_id="evt-1",
+        original_request="Find the affected workspace",
+    )
+    skill = LoadedSkill(
+        manifest=SkillManifest(
+            name="core-casework",
+            version="1",
+            description="casework",
+        ),
+        content="Investigate with evidence.",
+    )
+    return snapshot, question, skill
+
+
+def _response_text(value: object) -> dict[str, str]:
+    return {"output_text": json.dumps(value)}
+
+
+@pytest.mark.asyncio
+async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v1/responses"
+        assert request.headers["authorization"] == "Bearer root-key"
+        payload = json.loads(request.content)
+        assert b"root-key" not in request.content
+        assert payload["model"] == "root-model"
+        assert payload["metadata"] == {"casework_provider": "openai"}
+        assert payload["text"]["format"]["type"] == "json_schema"
+        assert payload["text"]["format"]["strict"] is True
+        if calls == 1:
+            return httpx.Response(
+                200,
+                json=_response_text(
+                    {
+                        "todos": [
+                            {
+                                "task_id": "inspect",
+                                "goal": "Find evidence",
+                                "status": "pending",
+                                "assigned_to": "root",
+                                "dependencies": [],
+                                "skill": None,
+                                "suggested_tools": ["workspace_lookup"],
+                                "required_evidence": ["workspace_id"],
+                                "attempts": 0,
+                                "completion_condition": "evidence found",
+                            }
+                        ]
+                    }
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps({"answer": "Dify"}),
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    model = HttpCaseworkModel(
+        client=client,
+        base_url="https://api.openai.com",
+        provider="openai",
+        api_key="root-key",
+        model_name="root-model",
+    )
+    snapshot, question, skill = _model_inputs()
+
+    plan = await model.plan(snapshot, question, skill, ("workspace_lookup",))
+    answer = await model.compose_answer(snapshot, question, ("ev-1",))
+
+    assert plan.items[0].suggested_tools == ("workspace_lookup",)
+    assert answer == "Dify"
+    assert calls == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_root_model_fails_closed_on_non_json_responses_output() -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(200, json={"output_text": "not-json"})
+        )
+    )
+    model = HttpCaseworkModel(
+        client=client,
+        base_url="https://api.openai.com",
+        provider="openai",
+        api_key="root-key",
+        model_name="root-model",
+    )
+    snapshot, question, skill = _model_inputs()
+
+    with pytest.raises(RuntimeError, match="JSON"):
+        await model.plan(snapshot, question, skill, ("workspace_lookup",))
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_root_model_rejects_response_fields_outside_strict_schema() -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json=_response_text({"todos": [], "unexpected": "ignored"}),
+            )
+        )
+    )
+    model = HttpCaseworkModel(
+        client=client,
+        base_url="https://api.openai.com",
+        provider="openai",
+        api_key="root-key",
+        model_name="root-model",
+    )
+    snapshot, question, skill = _model_inputs()
+
+    with pytest.raises(RuntimeError, match="unexpected fields"):
+        await model.plan(snapshot, question, skill, ("workspace_lookup",))
+    await client.aclose()
 
 
 def test_production_config_fails_closed_when_an_external_adapter_is_missing() -> None:
@@ -112,19 +273,36 @@ async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
         requests += 1
         assert request.headers["authorization"] == "Bearer child-secret"
         observed.append(request.read())
+        assert b"child-secret" not in observed[-1]
+        assert request.url.path == "/v1/responses"
+        payload = json.loads(observed[-1])
+        assert payload["model"] == "child-model"
+        assert payload["metadata"] == {"casework_provider": "child-provider"}
         if requests == 1:
             return httpx.Response(
                 200,
-                json={
-                    "tool_call": {
-                        "name": "logs_lookup",
-                        "arguments": {"query": "error"},
+                json=_response_text(
+                    {
+                        "action": "tool_call",
+                        "tool_call": {
+                            "name": "logs_lookup",
+                            "arguments": json.dumps({"query": "error"}),
+                        },
+                        "summary": None,
+                        "evidence_ids": [],
                     }
-                },
+                ),
             )
         return httpx.Response(
             200,
-            json={"summary": "Child found evidence", "evidence_ids": ["ev-child"]},
+            json=_response_text(
+                {
+                    "action": "report",
+                    "tool_call": None,
+                    "summary": "Child found evidence",
+                    "evidence_ids": ["ev-child"],
+                }
+            ),
         )
 
     class _Tool:
@@ -188,8 +366,7 @@ async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
     assert report.evidence_ids == ("ev-child",)
     assert len(observed) == 2
     assert b'"model":"child-model"' in observed[0]
-    assert b'"provider":"child-provider"' in observed[0]
-    assert b'"evidence_id":"ev-child"' in observed[1]
+    assert b'"casework_provider":"child-provider"' in observed[0]
     await client.aclose()
 
 
@@ -198,7 +375,15 @@ async def test_child_adapter_rejects_unbacked_model_evidence() -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(
             lambda _request: httpx.Response(
-                200, json={"summary": "unsupported", "evidence_ids": ["made-up"]}
+                200,
+                json=_response_text(
+                    {
+                        "action": "report",
+                        "tool_call": None,
+                        "summary": "unsupported",
+                        "evidence_ids": ["made-up"],
+                    }
+                ),
             )
         )
     )
