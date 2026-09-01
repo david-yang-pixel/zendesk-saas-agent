@@ -300,20 +300,88 @@ class HttpChildAgentRunner:
             credential_ref=session.credential_ref,
         )
         resolved = resolve_model_credentials(binding, resolver=self._resolver)
+        observations: list[dict[str, object]] = []
+        admitted_evidence: set[str] = set()
+        artifact_refs: list[str] = []
+        for round_number in range(1, session.max_tool_rounds + 1):
+            if cancelled.is_set():
+                raise asyncio.CancelledError
+            child_payload = await self._step(
+                session=session,
+                task=task,
+                api_key=resolved.api_key,
+                available_tools=tools.names(),
+                observations=observations,
+                round_number=round_number,
+            )
+            tool_call = child_payload.get("tool_call")
+            if tool_call is not None:
+                if not isinstance(tool_call, dict):
+                    raise RuntimeError("child model tool_call must be an object")
+                call = cast(dict[str, Any], tool_call)
+                tool_name = call.get("name")
+                arguments = call.get("arguments", {})
+                if not isinstance(tool_name, str) or not tool_name.strip():
+                    raise RuntimeError("child model tool_call is missing name")
+                if not isinstance(arguments, dict):
+                    raise RuntimeError("child model tool arguments must be an object")
+                result = await tools.execute(
+                    tool_name,
+                    cast(dict[str, Any], arguments),
+                    context=ToolExecutionContext(
+                        ticket_id=session.ticket_id,
+                        session_id=session.session_id,
+                        root_session_id=session.root_session_id,
+                    ),
+                )
+                if result.evidence_id:
+                    admitted_evidence.add(result.evidence_id)
+                artifact_refs.extend(result.artifacts)
+                observations.append(
+                    {
+                        "tool_name": tool_name,
+                        "status": result.status.value,
+                        "summary": result.summary,
+                        "evidence_id": result.evidence_id,
+                        "artifact_refs": list(result.artifacts),
+                    }
+                )
+                continue
+            return self._report(
+                task=task,
+                payload=child_payload,
+                admitted_evidence=admitted_evidence,
+                artifact_refs=artifact_refs,
+            )
+        raise RuntimeError("child model exceeded max_tool_rounds without a report")
+
+    async def _step(
+        self,
+        *,
+        session: ChildSession,
+        task: SubagentTask,
+        api_key: str,
+        available_tools: tuple[str, ...],
+        observations: list[dict[str, object]],
+        round_number: int,
+    ) -> dict[str, Any]:
         try:
             response = await self._client.post(
                 f"{self._base_url}/v1/casework/subagent",
-                headers={"authorization": f"Bearer {resolved.api_key}"},
+                headers={"authorization": f"Bearer {api_key}"},
                 json={
-                    "provider": resolved.provider,
-                    "model": resolved.model,
+                    "provider": session.provider,
+                    "model": session.model,
                     "ticket_id": session.ticket_id,
+                    "context_window_tokens": session.context_window,
+                    "round": round_number,
                     "task": {
                         "task_id": task.task_id,
                         "objective": task.objective,
                         "required_evidence": task.required_evidence,
                     },
-                    "available_tools": tools.names(),
+                    "available_tools": available_tools,
+                    "observations": observations,
                 },
                 timeout=30.0,
             )
@@ -325,23 +393,34 @@ class HttpChildAgentRunner:
             ) from error
         if not isinstance(payload, dict):
             raise RuntimeError("configured child model adapter returned a non-object")
-        child_payload = cast(dict[str, Any], payload)
-        summary = child_payload.get("summary")
-        evidence_ids_value = child_payload.get("evidence_ids", [])
-        evidence_ids = evidence_ids_value
+        return cast(dict[str, Any], payload)
+
+    @staticmethod
+    def _report(
+        *,
+        task: SubagentTask,
+        payload: dict[str, Any],
+        admitted_evidence: set[str],
+        artifact_refs: list[str],
+    ) -> SubagentReport:
+        summary = payload.get("summary")
+        evidence_ids = payload.get("evidence_ids", [])
         if not isinstance(summary, str) or not summary.strip():
             raise RuntimeError("child model response is missing summary")
-        if not isinstance(evidence_ids, list):
-            raise RuntimeError("child model response contains invalid evidence_ids")
-        evidence_values = cast(list[object], evidence_ids)
-        if not all(
-            isinstance(value, str) and value.strip() for value in evidence_values
+        if not isinstance(evidence_ids, list) or not all(
+            isinstance(value, str) and value.strip()
+            for value in cast(list[object], evidence_ids)
         ):
             raise RuntimeError("child model response contains invalid evidence_ids")
+        raw_evidence = cast(list[object], evidence_ids)
+        evidence_values = tuple(cast(str, value) for value in raw_evidence)
+        if any(value not in admitted_evidence for value in evidence_values):
+            raise RuntimeError("child model reported evidence not returned by a tool")
         return SubagentReport(
             task_id=task.task_id,
             summary=summary.strip(),
-            evidence_ids=tuple(cast(str, value) for value in evidence_values),
+            evidence_ids=evidence_values,
+            artifact_refs=tuple(dict.fromkeys(artifact_refs)),
         )
 
 

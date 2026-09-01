@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -14,7 +15,8 @@ from casework_sandbox.composition import (
     SandboxRuntimeConfig,
     create_production_commands,
 )
-from casework_tool_sdk.registry import ToolRegistry
+from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
+from contracts.tool import ToolDefinition, ToolResult, ToolResultStatus
 
 
 def test_production_config_fails_closed_when_an_external_adapter_is_missing() -> None:
@@ -102,16 +104,54 @@ async def test_factory_wires_configured_external_adapters_without_database_or_do
 
 @pytest.mark.asyncio
 async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
-    observed: dict[str, object] = {}
+    observed: list[bytes] = []
+    requests = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
-        observed["authorization"] = request.headers["authorization"]
-        payload = request.read()
-        observed["payload"] = payload
+        nonlocal requests
+        requests += 1
+        assert request.headers["authorization"] == "Bearer child-secret"
+        observed.append(request.read())
+        if requests == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "tool_call": {
+                        "name": "logs_lookup",
+                        "arguments": {"query": "error"},
+                    }
+                },
+            )
         return httpx.Response(
             200,
             json={"summary": "Child found evidence", "evidence_ids": ["ev-child"]},
         )
+
+    class _Tool:
+        definition = ToolDefinition(
+            name="logs_lookup",
+            description="Inspect logs",
+            input_schema={
+                "type": "object",
+                "required": ["query"],
+                "properties": {"query": {"type": "string"}},
+            },
+        )
+
+        async def __call__(
+            self,
+            arguments: dict[str, object],
+            context: ToolExecutionContext,
+        ) -> ToolResult:
+            assert arguments == {"query": "error"}
+            assert context.session_id == "sub-1"
+            assert context.root_session_id == "root-1"
+            return ToolResult(
+                status=ToolResultStatus.SUCCESS,
+                summary="one matching log",
+                evidence_id="ev-child",
+                observed_at=datetime.now(UTC),
+            )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     runner = HttpChildAgentRunner(
@@ -135,15 +175,57 @@ async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
         ticket_id=3726,
     )
 
+    registry = ToolRegistry()
+    tool = _Tool()
+    registry.register(tool.definition, tool)
     report = await runner.run(
         session=session,
         task=SubagentTask(task_id="t-1", objective="inspect logs"),
-        tools=ToolRegistry(),
+        tools=registry,
         cancelled=asyncio.Event(),
     )
 
     assert report.evidence_ids == ("ev-child",)
-    assert observed["authorization"] == "Bearer child-secret"
-    assert b'"model":"child-model"' in observed["payload"]  # type: ignore[operator]
-    assert b'"provider":"child-provider"' in observed["payload"]  # type: ignore[operator]
+    assert len(observed) == 2
+    assert b'"model":"child-model"' in observed[0]
+    assert b'"provider":"child-provider"' in observed[0]
+    assert b'"evidence_id":"ev-child"' in observed[1]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_child_adapter_rejects_unbacked_model_evidence() -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, json={"summary": "unsupported", "evidence_ids": ["made-up"]}
+            )
+        )
+    )
+    runner = HttpChildAgentRunner(
+        client=client,
+        base_url="https://model.example.com",
+        resolver=MappingSecretResolver({"secret/child": "child-secret"}),
+    )
+    session = ChildSession(
+        session_id="sub-1",
+        root_session_id="root-1",
+        parent_session_id="root-1",
+        slot_id="logs",
+        provider="child-provider",
+        model="child-model",
+        credential_ref="secret/child",
+        context_window=1_000,
+        max_tool_rounds=2,
+        workdir="/tmp/sub-1",
+        ticket_id=3726,
+    )
+
+    with pytest.raises(RuntimeError, match="not returned by a tool"):
+        await runner.run(
+            session=session,
+            task=SubagentTask(task_id="t-1", objective="inspect logs"),
+            tools=ToolRegistry(),
+            cancelled=asyncio.Event(),
+        )
     await client.aclose()
