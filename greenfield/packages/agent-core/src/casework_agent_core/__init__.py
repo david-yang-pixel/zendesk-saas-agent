@@ -9,16 +9,28 @@ from casework_agent_core.domain import (
 )
 from casework_agent_core.evidence import EvidenceGate
 from casework_agent_core.skills import LoadedSkill, SkillLoader, SkillManifest
+from casework_agent_core.subagents import (
+    ChildSession,
+    SubagentOrchestrator,
+    SubagentReport,
+    SubagentSlot,
+    SubagentTask,
+)
 from casework_agent_core.todo import TodoPlan, TodoPlanner
 
 __all__ = [
     "ActiveQuestion",
+    "ChildSession",
     "ContextCheckpoint",
     "ContextGovernance",
     "EvidenceGate",
     "LoadedSkill",
     "SkillLoader",
     "SkillManifest",
+    "SubagentOrchestrator",
+    "SubagentReport",
+    "SubagentSlot",
+    "SubagentTask",
     "TicketComment",
     "TicketSnapshot",
     "TodoPlan",
