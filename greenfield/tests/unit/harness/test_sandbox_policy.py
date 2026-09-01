@@ -2,6 +2,7 @@ from casework_harness.sandbox_policy import (
     SandboxFailure,
     SandboxResourcePolicy,
 )
+from contracts.sandbox import SandboxResources
 
 
 def test_first_attempt_uses_fixed_default_resources() -> None:
@@ -43,6 +44,7 @@ def test_non_resource_failure_never_receives_larger_retry() -> None:
         is None
     )
 
+
 def test_resource_retry_is_available_only_once() -> None:
     policy = SandboxResourcePolicy()
 
@@ -53,3 +55,23 @@ def test_resource_retry_is_available_only_once() -> None:
         )
         is None
     )
+
+
+def test_harness_policy_matches_cross_image_resource_contract() -> None:
+    policy = SandboxResourcePolicy()
+
+    for attempt, previous_failure in (
+        (1, None),
+        (2, SandboxFailure.RESOURCE_EXHAUSTED),
+    ):
+        allocation = policy.allocation_for(
+            attempt=attempt, previous_failure=previous_failure
+        )
+        contract = SandboxResources(
+            cpu=allocation.cpus,
+            memory_mb=allocation.memory_bytes // 1024**2,
+            timeout_seconds=allocation.timeout_seconds,
+        )
+
+        assert contract.cpu == allocation.cpus
+        assert contract.memory_mb == 1024

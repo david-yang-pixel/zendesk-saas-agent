@@ -70,4 +70,4 @@ ENV SERVICE_PORT=8104 \
     ADMIN_WEB_DIST=/app/apps/admin-web/dist
 COPY --from=admin-web-build --chown=casework:casework /src/apps/admin-web/dist /app/apps/admin-web/dist
 EXPOSE 8104
-CMD ["/app/.venv/bin/uvicorn", "casework_admin.service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]
+CMD ["/app/.venv/bin/uvicorn", "casework_admin.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]
