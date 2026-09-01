@@ -88,3 +88,26 @@ def test_context_governance_checkpoint_preserves_exact_ids_and_compacts() -> Non
     assert checkpoint.level == "hard"
     assert checkpoint.exact_identifiers == ("3726", "evt-01")
     assert checkpoint.active_question.original_request == "Find my workspace"
+
+
+def test_context_governance_uses_configured_thresholds_and_rebuilds() -> None:
+    governance = ContextGovernance(
+        window_tokens=100,
+        soft_compaction_percent=40,
+        hard_checkpoint_percent=70,
+        retain_rounds=1,
+    )
+    active_question = ActiveQuestion(
+        original_event_id="evt-02",
+        original_request="Investigate the run",
+    )
+    governance.add("ticket 3726 first historical result", tokens=30)
+    governance.add("second result", tokens=15)
+
+    before = governance.checkpoint(active_question=active_question)
+    assert before.level == "soft"
+    rebuilt = governance.compact_if_needed(active_question=active_question)
+
+    assert rebuilt.used_tokens < before.used_tokens
+    assert "3726" in rebuilt.exact_identifiers
+    assert rebuilt.active_question == active_question

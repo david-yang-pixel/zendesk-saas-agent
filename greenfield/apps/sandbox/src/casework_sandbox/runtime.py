@@ -107,7 +107,15 @@ class SandboxAgent:
             if bootstrap is not None
             else self._max_tool_rounds
         )
-        context = ContextGovernance(window_tokens=context_window_tokens)
+        context = ContextGovernance(
+            window_tokens=context_window_tokens,
+            soft_compaction_percent=(
+                bootstrap.soft_compaction_percent if bootstrap is not None else 60
+            ),
+            hard_checkpoint_percent=(
+                bootstrap.hard_checkpoint_percent if bootstrap is not None else 80
+            ),
+        )
         try:
             snapshot = await self._zendesk.fetch_ticket(ticket_id)
             if snapshot.ticket_id != ticket_id:
@@ -122,6 +130,7 @@ class SandboxAgent:
                 question.original_request,
                 tokens=max(1, len(question.original_request) // 4),
             )
+            context.compact_if_needed(active_question=question)
             skill_name = (
                 bootstrap.enabled_skills[0]
                 if bootstrap is not None and bootstrap.enabled_skills
@@ -190,6 +199,7 @@ class SandboxAgent:
                     )
                     plan.mark_completed(task.task_id)
                     context.add(report.summary, tokens=max(1, len(report.summary) // 4))
+                    context.compact_if_needed(active_question=question)
                     continue
                 if not task.suggested_tools:
                     break
@@ -238,6 +248,7 @@ class SandboxAgent:
                 )
                 plan.mark_completed(task.task_id)
                 context.add(result.summary, tokens=max(1, len(result.summary) // 4))
+                context.compact_if_needed(active_question=question)
             evidence_ids = tuple(item.evidence_id for item in gate.records())
             checkpoint = context.checkpoint(active_question=question)
             telemetry = self._telemetry(

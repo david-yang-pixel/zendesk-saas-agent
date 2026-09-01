@@ -22,9 +22,24 @@ class ContextCheckpoint:
 class ContextGovernance:
     """A small in-memory checkpoint manager used by one sandbox run."""
 
-    def __init__(self, *, window_tokens: int, retain_rounds: int = 4) -> None:
-        self._budget = ContextBudget(window_tokens=window_tokens)
+    def __init__(
+        self,
+        *,
+        window_tokens: int,
+        retain_rounds: int = 4,
+        soft_compaction_percent: int = 60,
+        hard_checkpoint_percent: int = 80,
+        summary_char_limit: int = 4096,
+    ) -> None:
+        self._budget = ContextBudget(
+            window_tokens=window_tokens,
+            soft_ratio=soft_compaction_percent / 100,
+            hard_ratio=hard_checkpoint_percent / 100,
+        )
+        if retain_rounds < 1 or summary_char_limit < 1:
+            raise ValueError("context retention limits must be positive")
         self._retain_rounds = retain_rounds
+        self._summary_char_limit = summary_char_limit
         self._items: list[tuple[str, int]] = []
         self._used_tokens = 0
 
@@ -42,10 +57,10 @@ class ContextGovernance:
         identifiers = self._extract_identifiers(texts, active_question)
         if level is CompactionLevel.HARD:
             retained = tuple(texts[-self._retain_rounds :])
-            summary = " ".join(texts)
+            summary = self._bounded_summary(texts[:-self._retain_rounds])
         elif level is CompactionLevel.SOFT:
             retained = tuple(texts[-self._retain_rounds :])
-            summary = " ".join(texts[:-self._retain_rounds])
+            summary = self._bounded_summary(texts[:-self._retain_rounds])
         else:
             retained = tuple(texts)
             summary = ""
@@ -57,6 +72,16 @@ class ContextGovernance:
             retained_rounds=retained,
             summary=summary,
         )
+
+    def compact_if_needed(
+        self, *, active_question: ActiveQuestion
+    ) -> ContextCheckpoint:
+        """Checkpoint and rebuild immediately when a configured threshold fires."""
+
+        checkpoint = self.checkpoint(active_question=active_question)
+        if checkpoint.level is CompactionLevel.NONE:
+            return checkpoint
+        return self.rebuild(checkpoint)
 
     def rebuild(self, checkpoint: ContextCheckpoint) -> ContextCheckpoint:
         """Rebuild a bounded context from a validated checkpoint.
@@ -80,6 +105,12 @@ class ContextGovernance:
             self._items.append((text, tokens))
             self._used_tokens += tokens
         return self.checkpoint(active_question=checkpoint.active_question)
+
+    def _bounded_summary(self, values: list[str]) -> str:
+        summary = " ".join(values)
+        if len(summary) <= self._summary_char_limit:
+            return summary
+        return summary[: self._summary_char_limit].rstrip()
 
     @staticmethod
     def _extract_identifiers(
