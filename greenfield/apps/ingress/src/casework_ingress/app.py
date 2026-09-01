@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal, Protocol
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from starlette.types import Lifespan
 
 from .fakes import InMemoryCancelSink, InMemoryIdempotency, InMemoryJobSink
+from .messaging import (
+    MessagingPayloadError,
+    decode_json_body,
+    parse_messaging_payload,
+    verify_zendesk_signature,
+)
 from .metrics import IngressMetricsPort, InMemoryIngressMetrics
 from .ports import (
     AdmissionEvent,
@@ -26,6 +33,7 @@ from .processing_rules import (
     ProcessingRuleConfig,
     evaluate_processing_rules,
 )
+from .zendesk import ZendeskTicketError, ZendeskTicketReader
 
 WEBHOOK_PATH = "/webhook/zendesk"
 
@@ -146,6 +154,11 @@ def create_app(
     admission: AdmissionPort | None = None,
     readiness: ReadinessPort | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
+    ticket_reader: ZendeskTicketReader | None = None,
+    messaging_signing_secret: str | None = None,
+    messaging_secret: str | None = None,
+    messaging_signature_max_age_seconds: float = 300.0,
+    messaging_clock: Callable[[], float] | None = None,
 ) -> FastAPI:
     """Build the ingress app with injected side-effect destinations.
 
@@ -160,12 +173,18 @@ def create_app(
     cancellations = cancel_sink or InMemoryCancelSink()
     event_ids = idempotency or InMemoryIdempotency()
     ingress_metrics = metrics or InMemoryIngressMetrics()
+    signing_secret = (
+        messaging_signing_secret
+        if messaging_signing_secret is not None
+        else messaging_secret or ""
+    )
 
     app = FastAPI(title="casework-ingress", lifespan=lifespan)
     app.state.job_sink = jobs
     app.state.cancel_sink = cancellations
     app.state.idempotency = event_ids
     app.state.metrics = ingress_metrics
+    app.state.ticket_reader = ticket_reader
 
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
@@ -241,12 +260,115 @@ def create_app(
             ticket_id=decision.ticket_id,
         )
 
+    async def messaging_webhook(request: Request) -> WebhookResponse:
+        body = await request.body()
+        if not verify_zendesk_signature(
+            secret=signing_secret,
+            timestamp=request.headers.get(
+                "X-Zendesk-Webhook-Signature-Timestamp", ""
+            ),
+            body=body,
+            signature=request.headers.get("X-Zendesk-Webhook-Signature", ""),
+            now=messaging_clock() if messaging_clock is not None else None,
+            max_age_seconds=messaging_signature_max_age_seconds,
+        ):
+            raise HTTPException(status_code=401, detail="bad_signature")
+        try:
+            event = parse_messaging_payload(decode_json_body(body))
+        except MessagingPayloadError as error:
+            raise HTTPException(status_code=400, detail="bad_payload") from error
+
+        # Agent, system, unknown-origin, and non-public messages are never
+        # looked up or persisted as work candidates.
+        if not event.is_customer_message:
+            return respond(
+                action="ignore",
+                reason="not_customer_message",
+                ticket_id=event.ticket_id,
+            )
+        if ticket_reader is None:
+            raise HTTPException(
+                status_code=503, detail="zendesk_ticket_reader_not_configured"
+            )
+        try:
+            ticket = await ticket_reader.fetch_ticket(event.ticket_id)
+        except (ZendeskTicketError, OSError) as error:
+            raise HTTPException(
+                status_code=503, detail="zendesk_unavailable"
+            ) from error
+
+        try:
+            normalized = event.to_normalized_event(ticket)
+        except MessagingPayloadError as error:
+            raise HTTPException(
+                status_code=503, detail="zendesk_unavailable"
+            ) from error
+        if admission is not None:
+            try:
+                admitted = await admission.admit(
+                    AdmissionEvent(
+                        event_id=event.event_id,
+                        received_at=datetime.now(UTC),
+                        normalized=normalized,
+                        raw_payload=event.safe_payload(),
+                    )
+                )
+            except AdmissionUnavailable as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+            return respond(
+                action=admitted.action,
+                reason=admitted.reason,
+                ticket_id=admitted.ticket_id,
+            )
+
+        if not await event_ids.claim(event.event_id):
+            return respond(
+                action="duplicate",
+                reason="event_id_seen",
+                ticket_id=event.ticket_id,
+            )
+        decision = evaluate_processing_rules(normalized, processing_config)
+        if decision.action == "enqueue":
+            accepted = await jobs.submit_ticket(
+                ticket_id=decision.ticket_id,
+                event_id=event.event_id,
+            )
+            if accepted is False:
+                return respond(
+                    action="duplicate",
+                    reason="event_id_seen",
+                    ticket_id=decision.ticket_id,
+                )
+        elif decision.action == "cancel":
+            accepted = await cancellations.cancel_ticket(
+                ticket_id=decision.ticket_id,
+                event_id=event.event_id,
+            )
+            if accepted is False:
+                return respond(
+                    action="duplicate",
+                    reason="event_id_seen",
+                    ticket_id=decision.ticket_id,
+                )
+        return respond(
+            action=decision.action,
+            reason=decision.reason,
+            ticket_id=decision.ticket_id,
+        )
+
     app.add_api_route("/healthz", healthz, methods=["GET"])
     app.add_api_route("/readyz", readyz, methods=["GET"])
     app.add_api_route("/metrics", metrics_endpoint, methods=["GET"])
     app.add_api_route(
         WEBHOOK_PATH,
         webhook,
+        methods=["POST"],
+        status_code=202,
+        response_model=WebhookResponse,
+    )
+    app.add_api_route(
+        "/webhook/zendesk-messaging",
+        messaging_webhook,
         methods=["POST"],
         status_code=202,
         response_model=WebhookResponse,
