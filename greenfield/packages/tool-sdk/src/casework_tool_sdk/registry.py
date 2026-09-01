@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from casework_tool_sdk.artifacts import ArtifactStore
 from contracts.tool import ToolDefinition, ToolResult
 
 
@@ -43,9 +45,18 @@ class ToolRegistry:
     child sessions, as required by the casework design.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        artifact_store: ArtifactStore | None = None,
+        max_inline_bytes: int = 16_384,
+    ) -> None:
+        if max_inline_bytes < 1:
+            raise ValueError("max_inline_bytes must be positive")
         self._definitions: dict[str, ToolDefinition] = {}
         self._handlers: dict[str, ToolHandler] = {}
+        self._artifact_store = artifact_store
+        self._max_inline_bytes = max_inline_bytes
 
     def register(self, definition: ToolDefinition, handler: ToolHandler) -> None:
         if definition.name in self._definitions:
@@ -81,11 +92,37 @@ class ToolRegistry:
         try:
             value = handler(dict(arguments), context)
             result = await value if inspect.isawaitable(value) else value
-            return ToolResult.model_validate(result)
+            validated = ToolResult.model_validate(result)
+            return self._externalize_large_data(validated)
         except ToolExecutionError:
             raise
         except Exception as error:
             raise ToolExecutionError(f"tool {name} failed") from error
+
+    def _externalize_large_data(self, result: ToolResult) -> ToolResult:
+        if result.data is None or self._artifact_store is None:
+            return result
+        payload = json.dumps(
+            result.data,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        if len(payload) <= self._max_inline_bytes:
+            return result
+        artifact = self._artifact_store.write_json(result.data)
+        return result.model_copy(
+            update={
+                "data": {
+                    "artifact_ref": artifact.reference,
+                    "bytes": artifact.size_bytes,
+                    "media_type": artifact.media_type,
+                    "sha256": artifact.sha256,
+                },
+                "artifacts": (*result.artifacts, artifact.reference),
+                "truncated": True,
+            }
+        )
 
     @staticmethod
     def _validate_arguments(

@@ -114,6 +114,9 @@ async def test_sandbox_runtime_fetches_by_ticket_plans_calls_tool_and_returns_ou
     assert outcome.answer == "The affected workspace is Dify's workspace."
     assert outcome.evidence_ids == ("ev-ws-dify",)
     assert outcome.todo_summary.completed == 1
+    assert outcome.reply_locale == "en-US"
+    assert outcome.snapshot_cursor == "evt-3726"
+    assert outcome.delivery_eligible is True
 
 
 @pytest.mark.asyncio
