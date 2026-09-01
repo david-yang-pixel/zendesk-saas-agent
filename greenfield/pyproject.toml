@@ -30,7 +30,7 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers --import-mode=importlib"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = [
