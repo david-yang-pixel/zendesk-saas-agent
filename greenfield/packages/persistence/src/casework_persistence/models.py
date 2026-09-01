@@ -1,0 +1,206 @@
+"""SQLAlchemy persistence schema for the Greenfield Casework queue.
+
+The schema is deliberately boring: PostgreSQL is the queue and the source of
+truth.  State transitions are performed by repository methods, while the
+database enforces the two invariants that are unsafe to leave to a worker:
+event de-duplication and one active job per ticket.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+ACTIVE_JOB_STATUSES = frozenset(
+    {"queued", "claimed", "sandbox_creating", "running", "finalizing"}
+)
+
+
+class Base(DeclarativeBase):
+    """Declarative metadata shared by the migration and repositories."""
+
+
+class EventRecord(Base):
+    __tablename__ = "events"
+
+    event_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    customer_origin: Mapped[str] = mapped_column(String(100), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    message_id: Mapped[str | None] = mapped_column(String(255))
+    payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("ticket_id > 0", name="ck_events_ticket_id_positive"),
+    )
+
+
+class TicketState(Base):
+    """One row per ticket used as the generation and cancellation fence."""
+
+    __tablename__ = "ticket_states"
+
+    ticket_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=False
+    )
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_event_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("events.event_id")
+    )
+    human_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("ticket_id > 0", name="ck_ticket_states_ticket_id_positive"),
+        CheckConstraint(
+            "generation >= 0", name="ck_ticket_states_generation_nonnegative"
+        ),
+    )
+
+
+class CaseJobRow(Base):
+    """Durable worker queue row and immutable configuration snapshot."""
+
+    __tablename__ = "case_jobs"
+
+    job_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    event_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("events.event_id"), nullable=False, unique=True
+    )
+    ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="queued", server_default="queued"
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(255))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    config_revision: Mapped[str] = mapped_column(String(255), nullable=False)
+    root_model_config_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    child_model_config_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    model_digest: Mapped[str] = mapped_column(String(255), nullable=False)
+    skill_digest: Mapped[str] = mapped_column(String(255), nullable=False)
+    tool_digest: Mapped[str] = mapped_column(String(255), nullable=False)
+    dead_letter_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("ticket_id > 0", name="ck_case_jobs_ticket_id_positive"),
+        CheckConstraint("generation >= 0", name="ck_case_jobs_generation_nonnegative"),
+        CheckConstraint("attempts >= 0", name="ck_case_jobs_attempts_nonnegative"),
+        CheckConstraint(
+            "status IN ('queued', 'claimed', 'sandbox_creating', 'running', "
+            "'finalizing', 'completed', 'awaiting_customer', 'human_takeover', "
+            "'failed', 'cancelled')",
+            name="ck_case_jobs_status",
+        ),
+        Index(
+            "uq_case_jobs_one_active_ticket",
+            "ticket_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('queued', 'claimed', 'sandbox_creating', "
+                "'running', 'finalizing')"
+            ),
+        ),
+        Index("ix_case_jobs_claimable", "status", "available_at", "created_at"),
+        Index("ix_case_jobs_ticket_generation", "ticket_id", "generation"),
+    )
+
+
+class OutboxMessage(Base):
+    """Controller-owned customer reply with a generation cancellation fence."""
+
+    __tablename__ = "outbox_messages"
+
+    outbox_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    job_id: Mapped[str | None] = mapped_column(
+        String(255), ForeignKey("case_jobs.job_id")
+    )
+    ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snapshot_cursor: Mapped[str] = mapped_column(String(255), nullable=False)
+    locale: Mapped[str] = mapped_column(String(32), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(
+        String(512), nullable=False, unique=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    provider_message_id: Mapped[str | None] = mapped_column(String(255))
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("ticket_id > 0", name="ck_outbox_ticket_id_positive"),
+        CheckConstraint("generation >= 0", name="ck_outbox_generation_nonnegative"),
+        CheckConstraint("attempt_count >= 0", name="ck_outbox_attempts_nonnegative"),
+        CheckConstraint(
+            "status IN ('pending', 'attempted', 'sent', 'confirmed', "
+            "'ambiguous', 'cancelled')",
+            name="ck_outbox_status",
+        ),
+        UniqueConstraint(
+            "ticket_id",
+            "generation",
+            "snapshot_cursor",
+            name="uq_outbox_ticket_generation_cursor",
+        ),
+        Index("ix_outbox_claimable", "status", "created_at"),
+        Index("ix_outbox_ticket_generation", "ticket_id", "generation"),
+    )
+
+
+__all__ = [
+    "ACTIVE_JOB_STATUSES",
+    "Base",
+    "CaseJobRow",
+    "EventRecord",
+    "OutboxMessage",
+    "TicketState",
+]
