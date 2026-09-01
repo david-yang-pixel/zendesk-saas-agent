@@ -7,12 +7,14 @@ import os
 import socket
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 import docker
 import structlog
 from fastapi import FastAPI
 
+from casework_harness.credential_file import CredentialFileEnvironment
 from casework_harness.delivery import (
     ControllerDeliveryAdapter,
     DeliveryController,
@@ -61,10 +63,10 @@ class SandboxEnvironmentError(RuntimeError):
     """Required Sandbox adapter configuration is incomplete."""
 
 
-def sandbox_environment(environ: Mapping[str, str]) -> dict[str, str]:
-    environment = {
-        key: environ.get(key, "").strip() for key in _SANDBOX_ENV_KEYS
-    }
+def sandbox_environment(
+    environ: Mapping[str, str], *, include_credentials: bool = True
+) -> dict[str, str]:
+    environment = {key: environ.get(key, "").strip() for key in _SANDBOX_ENV_KEYS}
     missing = [key for key, value in environment.items() if not value]
     if missing:
         raise SandboxEnvironmentError(
@@ -72,13 +74,14 @@ def sandbox_environment(environ: Mapping[str, str]) -> dict[str, str]:
         )
     # Credential values are passed only through the explicitly namespaced
     # secret bridge.  They are never part of the runtime bootstrap or queue.
-    environment.update(
-        {
-            key: value.strip()
-            for key, value in environ.items()
-            if key.startswith("CASEWORK_CREDENTIAL_") and value.strip()
-        }
-    )
+    if include_credentials:
+        environment.update(
+            {
+                key: value.strip()
+                for key, value in environ.items()
+                if key.startswith("CASEWORK_CREDENTIAL_") and value.strip()
+            }
+        )
     return environment
 
 
@@ -177,14 +180,18 @@ def create_app() -> FastAPI:
     sandbox_image = os.environ.get("SANDBOX_IMAGE", "").strip()
     if not sandbox_image:
         raise RuntimeError("SANDBOX_IMAGE is required for production Harness")
-    runtime_environment = sandbox_environment(os.environ)
+    credential_file = os.environ.get("CASEWORK_CREDENTIAL_FILE", "").strip()
+    runtime_environment = sandbox_environment(
+        os.environ, include_credentials=not credential_file
+    )
+    credential_environment = (
+        CredentialFileEnvironment(Path(credential_file)) if credential_file else None
+    )
     try:
         delivery_mode = resolve_delivery_mode(os.environ)
     except ValueError as error:
         raise RuntimeError(str(error)) from error
-    canary_ticket_ids = _canary_ticket_ids(
-        os.environ.get("CASEWORK_CANARY_TICKET_IDS")
-    )
+    canary_ticket_ids = _canary_ticket_ids(os.environ.get("CASEWORK_CANARY_TICKET_IDS"))
 
     installation_id = os.environ.get(
         "CASEWORK_INSTALLATION_ID", "casework-greenfield"
@@ -207,6 +214,7 @@ def create_app() -> FastAPI:
         controller_id=controller_id,
         host=os.environ.get("SANDBOX_HOST", "host.docker.internal"),
         environment=runtime_environment,
+        credential_environment=credential_environment,
     )
     sandbox_probe = SandboxLaunchProbe(
         client=docker_client,
@@ -221,9 +229,7 @@ def create_app() -> FastAPI:
     if delivery_mode is DeliveryMode.DRY_RUN:
         zendesk_sender, close_zendesk_sender = create_zendesk_reply_sender({})
     else:
-        zendesk_sender, close_zendesk_sender = create_zendesk_reply_sender(
-            os.environ
-        )
+        zendesk_sender, close_zendesk_sender = create_zendesk_reply_sender(os.environ)
     delivery_adapter = PostgresDeliveryAdapter(
         transaction_scope=postgres_delivery_transaction_scope(sessions)
     )

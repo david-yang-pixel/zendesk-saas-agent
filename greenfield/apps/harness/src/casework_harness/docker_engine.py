@@ -77,9 +77,7 @@ class SandboxHttpResponse:
 
 
 class SandboxHttpPort(Protocol):
-    async def get(
-        self, url: str, *, timeout_seconds: int
-    ) -> SandboxHttpResponse: ...
+    async def get(self, url: str, *, timeout_seconds: int) -> SandboxHttpResponse: ...
 
     async def post(
         self,
@@ -98,9 +96,7 @@ class HttpxSandboxHttp:
         # callers can inject a shared AsyncClient or let us create one lazily.
         self._client = client
 
-    async def get(
-        self, url: str, *, timeout_seconds: int
-    ) -> SandboxHttpResponse:
+    async def get(self, url: str, *, timeout_seconds: int) -> SandboxHttpResponse:
         client = await self._get_client()
         response = await client.get(url, timeout=timeout_seconds)
         return _http_response(response)
@@ -242,9 +238,7 @@ class SandboxLaunchProbe:
                 return SandboxProbeResult(
                     ready=False, reason="docker_permission_denied"
                 )
-            return SandboxProbeResult(
-                ready=False, reason="sandbox_image_unavailable"
-            )
+            return SandboxProbeResult(ready=False, reason="sandbox_image_unavailable")
 
         self._probe_number += 1
         probe_id = f"launch-probe-{self._probe_number}"
@@ -272,9 +266,7 @@ class SandboxLaunchProbe:
                 )
                 result = SandboxProbeResult(ready=True, reason="ready")
             except SandboxResourceExhaustedError:
-                result = SandboxProbeResult(
-                    ready=False, reason="resource_exhausted"
-                )
+                result = SandboxProbeResult(ready=False, reason="resource_exhausted")
             except Exception:
                 result = SandboxProbeResult(ready=False, reason="readiness_failed")
         finally:
@@ -399,6 +391,7 @@ class DockerSandboxEngine:
         container_port: int = _SANDBOX_PORT,
         host: str = "127.0.0.1",
         environment: Mapping[str, str] | None = None,
+        credential_environment: Callable[[], Mapping[str, str]] | None = None,
         poll_interval_seconds: float = 0.25,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -420,6 +413,7 @@ class DockerSandboxEngine:
         self._container_port = container_port
         self._host = host
         self._environment = sandbox_environment
+        self._credential_environment = credential_environment
         self._poll_interval_seconds = poll_interval_seconds
         self._clock = clock or (lambda: datetime.now(UTC))
         self._endpoints: dict[str, str] = {}
@@ -448,12 +442,26 @@ class DockerSandboxEngine:
                 ),
             }
         )
+        launch_environment = dict(self._environment)
+        if self._credential_environment is not None:
+            credentials = dict(self._credential_environment())
+            if not credentials or any(
+                not key.startswith("CASEWORK_CREDENTIAL_") for key in credentials
+            ):
+                raise ValueError(
+                    "dynamic sandbox credentials must use the credential namespace"
+                )
+            launch_environment.update(credentials)
+        if _DATABASE_ENV_KEYS.intersection(launch_environment):
+            raise ValueError(
+                "sandbox environment must not include database credentials"
+            )
         container = await _call_sync(
             self._client.containers.create,
             image=image,
             detach=True,
             labels=merged_labels,
-            environment=self._environment,
+            environment=launch_environment,
             ports={f"{self._container_port}/tcp": None},
             **limits,
         )
@@ -522,9 +530,7 @@ class DockerSandboxEngine:
         except Exception:
             container = await self._inspect(sandbox_id)
             resource_error = (
-                None
-                if container is None
-                else _resource_error_code(container)
+                None if container is None else _resource_error_code(container)
             )
             if resource_error is not None:
                 return SandboxExecution(
@@ -595,9 +601,7 @@ class DockerSandboxEngine:
         network = _mapping(attrs.get("NetworkSettings"))
         ports = _mapping(network.get("Ports"))
         bindings = ports.get(f"{self._container_port}/tcp")
-        if not isinstance(bindings, Sequence) or isinstance(
-            bindings, (str, bytes)
-        ):
+        if not isinstance(bindings, Sequence) or isinstance(bindings, (str, bytes)):
             raise RuntimeError("sandbox container did not publish its HTTP port")
         for binding in cast(Sequence[object], bindings):
             item = _mapping(binding)

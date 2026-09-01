@@ -55,14 +55,13 @@ services:
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}
       CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:?set CASEWORK_MODEL_BASE_URL}
       CASEWORK_TOOL_CONFIG: ${CASEWORK_TOOL_CONFIG:?set CASEWORK_TOOL_CONFIG}
+      CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
       CASEWORK_DELIVERY_MODE: ${CASEWORK_DELIVERY_MODE:-dry_run}
       CASEWORK_CANARY_TICKET_IDS: ${CASEWORK_CANARY_TICKET_IDS:-}
-    env_file:
-      - path: ${CASEWORK_CREDENTIAL_ENV_FILE:?set CASEWORK_CREDENTIAL_ENV_FILE}
-        required: true
     ports: ["127.0.0.1:${CASEWORK_HARNESS_PORT:-18102}:8102"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}:/run/casework-credentials:ro
     group_add:
       - "${DOCKER_GID:?set DOCKER_GID to the docker.sock group id}"
     extra_hosts:
@@ -79,7 +78,11 @@ services:
     environment:
       <<: *common-environment
       CASEWORK_TOOL_PROBE_ENDPOINTS: ${CASEWORK_TOOL_PROBE_ENDPOINTS:-}
+      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:?set CASEWORK_MODEL_BASE_URL}
+      CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
     ports: ["127.0.0.1:${CASEWORK_ADMIN_PORT:-18104}:8104"]
+    volumes:
+      - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}:/run/casework-credentials
     depends_on:
       migration:
         condition: service_completed_successfully

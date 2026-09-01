@@ -2,6 +2,8 @@ import type {
   AdminConfig,
   AdminConfigSnapshot,
   ConnectionProbe,
+  ModelCredentialReplaceResult,
+  ModelCredentialStatus,
   OverviewData,
   RegistryData,
   RunListData,
@@ -193,6 +195,43 @@ interface ApiConnectionProbe {
   detail: string | null
 }
 
+interface ApiModelCredentialBinding {
+  provider: string
+  model: string
+  credential_ref: string
+}
+
+interface ApiModelCredentialStatus {
+  credential_ref: string
+  configured: boolean
+  masked_value: string | null
+  updated_at: string | null
+  bindings: ApiModelCredentialBinding[]
+}
+
+interface ApiModelCredentialList {
+  items: ApiModelCredentialStatus[]
+}
+
+interface ApiModelCredentialReplaceResult {
+  credential: ApiModelCredentialStatus
+  probe: { status: 'connected' | 'degraded'; latency_ms: number | null; error_code: string | null }
+}
+
+function toModelCredential(value: ApiModelCredentialStatus): ModelCredentialStatus {
+  return {
+    credentialRef: value.credential_ref,
+    configured: value.configured,
+    maskedValue: value.masked_value,
+    updatedAt: value.updated_at,
+    bindings: value.bindings.map((binding) => ({
+      provider: binding.provider,
+      model: binding.model,
+      credentialRef: binding.credential_ref,
+    })),
+  }
+}
+
 function toRecentRun(value: ApiRecentRun): RecentRun {
   return {
     ticketId: value.ticket_id,
@@ -328,6 +367,8 @@ export interface AdminApiClient {
   getRun(sessionId: string): Promise<RunRecord>
   getRegistry(): Promise<RegistryData>
   testTool(toolId: string): Promise<ConnectionProbe>
+  getModelCredentials(): Promise<ModelCredentialStatus[]>
+  replaceModelCredential(input: { credentialRef: string; secret: string }): Promise<ModelCredentialReplaceResult>
 }
 
 export function createAdminApiClient(transport: AdminApiTransport = new FetchAdminApiTransport()): AdminApiClient {
@@ -395,6 +436,25 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
         latencyMs: value.latency_ms,
         errorCode: value.error_code,
         detail: value.detail,
+      }
+    },
+    async getModelCredentials() {
+      const value = await transport.request<ApiModelCredentialList>('/api/model-credentials')
+      return value.items.map(toModelCredential)
+    },
+    async replaceModelCredential({ credentialRef, secret }) {
+      const value = await transport.request<ApiModelCredentialReplaceResult>('/api/model-credentials', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Admin-Actor': 'admin-web' },
+        body: JSON.stringify({ credential_ref: credentialRef, secret }),
+      })
+      return {
+        credential: toModelCredential(value.credential),
+        probe: {
+          status: value.probe.status,
+          latencyMs: value.probe.latency_ms,
+          errorCode: value.probe.error_code,
+        },
       }
     },
   }

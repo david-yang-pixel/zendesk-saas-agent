@@ -169,4 +169,35 @@ describe('Admin API client', () => {
     })
     expect(JSON.stringify(result)).not.toContain('Bearer')
   })
+
+  it('maps masked credential status and sends a candidate only to the replace endpoint', async () => {
+    const transport = transportFor({
+      '/api/model-credentials': {
+        items: [{
+          credential_ref: 'secret/root',
+          configured: true,
+          masked_value: '••••••••1234',
+          updated_at: '2026-09-02T00:00:00Z',
+          bindings: [{ provider: 'openai', model: 'gpt-root', credential_ref: 'secret/root' }],
+        }],
+        credential: {
+          credential_ref: 'secret/root',
+          configured: true,
+          masked_value: '••••••••5678',
+          updated_at: '2026-09-02T00:01:00Z',
+          bindings: [{ provider: 'openai', model: 'gpt-root', credential_ref: 'secret/root' }],
+        },
+        probe: { status: 'connected', latency_ms: 14, error_code: null },
+      },
+    })
+    const client = createAdminApiClient(transport)
+
+    const listed = await client.getModelCredentials()
+    const replaced = await client.replaceModelCredential({ credentialRef: 'secret/root', secret: 'candidate-secret' })
+
+    expect(listed[0]).toMatchObject({ credentialRef: 'secret/root', maskedValue: '••••••••1234' })
+    expect(replaced.credential.maskedValue).toBe('••••••••5678')
+    expect(transport.calls[1]?.init?.method).toBe('PUT')
+    expect(JSON.parse(String(transport.calls[1]?.init?.body))).toEqual({ credential_ref: 'secret/root', secret: 'candidate-secret' })
+  })
 })

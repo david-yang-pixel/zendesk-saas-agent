@@ -1,0 +1,375 @@
+"""Secret-file backed model credential management for the Admin API.
+
+Only masked metadata crosses the API boundary. Candidate secrets are verified
+against the same Responses endpoint used by Sandbox before an atomic replace.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import fcntl
+import json
+import os
+import re
+import stat
+import tempfile
+import time
+from collections import defaultdict
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Protocol, cast
+
+import httpx
+from pydantic import BaseModel, ConfigDict, Field
+
+from casework_admin.config import AdminConfig, ModelConfig
+
+_SAFE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
+_SAFE_ERROR_CODE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def credential_environment_key(credential_ref: str) -> str:
+    if not _SAFE_REFERENCE.fullmatch(credential_ref):
+        raise ValueError("credential reference is invalid")
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", credential_ref).strip("_").upper()
+    if not normalized:
+        raise ValueError("credential reference is invalid")
+    return f"CASEWORK_CREDENTIAL_{normalized}"
+
+
+def parse_credential_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        if not name.startswith("CASEWORK_CREDENTIAL_"):
+            continue
+        if len(value) >= 2 and value[0] == value[-1] == '"':
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(decoded, str):
+                continue
+            value = decoded.replace("$$", "$")
+        elif len(value) >= 2 and value[0] == value[-1] == "'":
+            value = value[1:-1]
+        if value and "\n" not in value and "\r" not in value:
+            values[name] = value
+    return values
+
+
+def _dotenv_line(name: str, value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$")
+    return f'{name}="{escaped}"\n'
+
+
+class CredentialStore(Protocol):
+    async def metadata(
+        self, credential_ref: str
+    ) -> tuple[bool, str | None, datetime | None]: ...
+
+    async def replace(self, credential_ref: str, secret: str) -> None: ...
+
+
+class FileCredentialStore:
+    """Atomically update one namespaced credential in a dedicated file."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    async def metadata(
+        self, credential_ref: str
+    ) -> tuple[bool, str | None, datetime | None]:
+        return await asyncio.to_thread(self._metadata_sync, credential_ref)
+
+    def _metadata_sync(
+        self, credential_ref: str
+    ) -> tuple[bool, str | None, datetime | None]:
+        key = credential_environment_key(credential_ref)
+        values = parse_credential_file(self._path)
+        secret = values.get(key)
+        if not secret:
+            return False, None, None
+        changed = datetime.fromtimestamp(self._path.stat().st_mtime, tz=UTC)
+        suffix = secret[-4:] if len(secret) > 4 else ""
+        masked = f"••••••••{suffix}" if suffix else "••••••••"
+        return True, masked, changed
+
+    async def replace(self, credential_ref: str, secret: str) -> None:
+        await asyncio.to_thread(self._replace_sync, credential_ref, secret)
+
+    def _replace_sync(self, credential_ref: str, secret: str) -> None:
+        key = credential_environment_key(credential_ref)
+        if not secret.strip() or secret != secret.strip():
+            raise ValueError(
+                "credential must be non-empty without surrounding whitespace"
+            )
+        if "\n" in secret or "\r" in secret or len(secret) > 8192:
+            raise ValueError("credential must be a bounded single-line value")
+        self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lock_path = self._path.parent / ".credentials.lock"
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            lock_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            self._replace_locked(key, secret)
+
+    def _replace_locked(self, key: str, secret: str) -> None:
+        values = parse_credential_file(self._path)
+        values[key] = secret
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=".credentials-", suffix=".tmp", dir=self._path.parent
+        )
+        temporary_path = Path(temporary)
+        try:
+            os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                descriptor = -1
+                for name, value in sorted(values.items()):
+                    stream.write(_dotenv_line(name, value))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_path, self._path)
+            directory = os.open(self._path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            temporary_path.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelBinding:
+    provider: str
+    model: str
+    credential_ref: str
+
+
+class ModelProbeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: str
+    latency_ms: int | None = None
+    error_code: str | None = None
+
+
+class ModelCredentialStatus(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    credential_ref: str
+    configured: bool
+    masked_value: str | None = None
+    updated_at: datetime | None = None
+    bindings: tuple[ModelBinding, ...]
+
+
+class ModelCredentialList(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: tuple[ModelCredentialStatus, ...]
+
+
+class ModelCredentialReplaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+    credential_ref: str = Field(min_length=1, max_length=255)
+    secret: str = Field(min_length=8, max_length=8192)
+
+
+class ModelCredentialReplaceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    credential: ModelCredentialStatus
+    probe: ModelProbeResult
+
+
+class ModelCredentialValidationError(RuntimeError):
+    def __init__(self, result: ModelProbeResult) -> None:
+        self.result = result
+        detail = result.error_code or "unavailable"
+        super().__init__(f"model credential validation failed: {detail}")
+
+
+class ModelCredentialNotConfigured(ValueError):
+    pass
+
+
+class ModelCredentialProbe(Protocol):
+    async def validate(
+        self, *, provider: str, model: str, secret: str
+    ) -> ModelProbeResult: ...
+
+
+class OpenAIResponsesCredentialProbe:
+    def __init__(
+        self, *, base_url: str, client: httpx.AsyncClient | None = None
+    ) -> None:
+        normalized = base_url.strip().rstrip("/")
+        if not normalized.startswith("https://"):
+            raise ValueError("model base URL must use HTTPS")
+        self._base_url = normalized
+        self._client = client or httpx.AsyncClient()
+        self._owns_client = client is None
+
+    async def validate(
+        self, *, provider: str, model: str, secret: str
+    ) -> ModelProbeResult:
+        started = time.monotonic()
+        try:
+            response = await self._client.post(
+                f"{self._base_url}/v1/responses",
+                headers={"authorization": f"Bearer {secret}"},
+                json={
+                    "model": model,
+                    "input": "Reply with OK.",
+                    "max_output_tokens": 16,
+                    "metadata": {
+                        "casework_provider": provider,
+                        "purpose": "credential_test",
+                    },
+                    "store": False,
+                },
+                timeout=30.0,
+            )
+        except httpx.TimeoutException:
+            return ModelProbeResult(status="degraded", error_code="timeout")
+        except httpx.HTTPError:
+            return ModelProbeResult(status="degraded", error_code="unavailable")
+        latency = max(0, round((time.monotonic() - started) * 1000))
+        if response.is_success:
+            return ModelProbeResult(status="connected", latency_ms=latency)
+        return ModelProbeResult(
+            status="degraded",
+            latency_ms=latency,
+            error_code=f"HTTP_{response.status_code}_{_provider_error_code(response)}",
+        )
+
+    async def aclose(self) -> None:
+        if self._owns_client:
+            await self._client.aclose()
+
+
+def _provider_error_code(response: httpx.Response) -> str:
+    code = "provider_error"
+    try:
+        payload = response.json()
+    except ValueError:
+        return code
+    if not isinstance(payload, dict):
+        return code
+    error = cast(dict[str, Any], payload).get("error")
+    if not isinstance(error, dict):
+        return code
+    error_mapping = cast(dict[str, Any], error)
+    candidate = error_mapping.get("code") or error_mapping.get("type")
+    if isinstance(candidate, str) and _SAFE_ERROR_CODE.fullmatch(candidate.strip()):
+        return candidate.strip()
+    return code
+
+
+def model_bindings(config: AdminConfig) -> tuple[ModelBinding, ...]:
+    models: Iterable[ModelConfig] = (config.root_model, *config.subagent_slots)
+    return tuple(
+        ModelBinding(
+            provider=binding.provider,
+            model=binding.model,
+            credential_ref=binding.credential_ref,
+        )
+        for binding in models
+    )
+
+
+class ModelCredentialService:
+    def __init__(self, *, store: CredentialStore, probe: ModelCredentialProbe) -> None:
+        self._store = store
+        self._probe = probe
+
+    async def list(self, config: AdminConfig) -> ModelCredentialList:
+        grouped = _group_bindings(model_bindings(config))
+        items: list[ModelCredentialStatus] = []
+        for credential_ref, bindings in grouped.items():
+            configured, masked, updated_at = await self._store.metadata(credential_ref)
+            items.append(
+                ModelCredentialStatus(
+                    credential_ref=credential_ref,
+                    configured=configured,
+                    masked_value=masked,
+                    updated_at=updated_at,
+                    bindings=bindings,
+                )
+            )
+        return ModelCredentialList(items=tuple(items))
+
+    async def replace(
+        self, *, config: AdminConfig, credential_ref: str, secret: str
+    ) -> ModelCredentialReplaceResponse:
+        grouped = _group_bindings(model_bindings(config))
+        bindings = grouped.get(credential_ref)
+        if not bindings:
+            raise ModelCredentialNotConfigured(
+                "credential reference is not used by model configuration"
+            )
+        last_probe: ModelProbeResult | None = None
+        for binding in bindings:
+            last_probe = await self._probe.validate(
+                provider=binding.provider, model=binding.model, secret=secret
+            )
+            if last_probe.status != "connected":
+                raise ModelCredentialValidationError(last_probe)
+        await self._store.replace(credential_ref, secret)
+        configured, masked, updated_at = await self._store.metadata(credential_ref)
+        assert last_probe is not None
+        return ModelCredentialReplaceResponse(
+            credential=ModelCredentialStatus(
+                credential_ref=credential_ref,
+                configured=configured,
+                masked_value=masked,
+                updated_at=updated_at,
+                bindings=bindings,
+            ),
+            probe=last_probe,
+        )
+
+
+def _group_bindings(
+    bindings: Iterable[ModelBinding],
+) -> dict[str, tuple[ModelBinding, ...]]:
+    grouped: defaultdict[str, list[ModelBinding]] = defaultdict(list)
+    environment_keys: dict[str, str] = {}
+    for binding in bindings:
+        key = credential_environment_key(binding.credential_ref)
+        previous = environment_keys.get(key)
+        if previous is not None and previous != binding.credential_ref:
+            raise ValueError("model credential references collide after normalization")
+        environment_keys[key] = binding.credential_ref
+        if binding not in grouped[binding.credential_ref]:
+            grouped[binding.credential_ref].append(binding)
+    return {key: tuple(value) for key, value in grouped.items()}
+
+
+__all__ = [
+    "FileCredentialStore",
+    "ModelCredentialList",
+    "ModelCredentialNotConfigured",
+    "ModelCredentialProbe",
+    "ModelCredentialReplaceRequest",
+    "ModelCredentialReplaceResponse",
+    "ModelCredentialService",
+    "ModelCredentialValidationError",
+    "ModelProbeResult",
+    "OpenAIResponsesCredentialProbe",
+    "credential_environment_key",
+    "model_bindings",
+    "parse_credential_file",
+]

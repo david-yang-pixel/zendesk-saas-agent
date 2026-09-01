@@ -9,10 +9,12 @@ copy that can drift from the deployed services.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import secrets
 import stat
+import tempfile
 import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -115,10 +117,27 @@ def _dotenv_quote(value: str) -> str:
 
 
 def _write_dotenv(path: Path, values: dict[str, str]) -> None:
-    path.write_text(
-        "".join(f"{name}={_dotenv_quote(value)}\n" for name, value in values.items())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent
     )
-    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(
+                "".join(
+                    f"{name}={_dotenv_quote(value)}\n" for name, value in values.items()
+                )
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
 
 
 def _json_response(body: str) -> dict[str, Any]:
@@ -205,19 +224,43 @@ def prepare(
     delivery_mode = existing.get("CASEWORK_DELIVERY_MODE", "dry_run")
     canary_ids = existing.get("CASEWORK_CANARY_TICKET_IDS", "")
 
-    credentials = {
-        "CASEWORK_CREDENTIAL_OPENAI_PRIMARY": _required(legacy, "OPENAI_API_KEY"),
-    }
+    credential_dir = state_dir / "credentials"
+    credential_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    credential_dir.chmod(0o700)
+    credentials_path = credential_dir / "credentials.env"
+    legacy_credentials_path = state_dir / "credentials.env"
+    if os.geteuid() == 0:
+        os.chown(credential_dir, 10_001, 10_001)
     all_tools: list[dict[str, object]] = []
+    service_credentials: dict[str, str] = {}
     for service in READ_ONLY_SERVICES:
         secret = _required(legacy, service.secret_name)
-        credentials[
+        service_credentials[
             "CASEWORK_CREDENTIAL_" + service.credential_ref.replace("-", "_").upper()
         ] = secret
         all_tools.extend(_discover_tools(service, secret))
 
-    credentials_path = state_dir / "credentials.env"
-    _write_dotenv(credentials_path, credentials)
+    lock_path = credential_dir / ".credentials.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        lock_path.chmod(0o600)
+        if os.geteuid() == 0:
+            os.chown(lock_path, 10_001, 10_001)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if credentials_path.exists():
+            credentials = _parse_dotenv(credentials_path)
+        elif legacy_credentials_path.exists():
+            credentials = _parse_dotenv(legacy_credentials_path)
+        else:
+            credentials = {}
+        # Admin replacements are authoritative and must survive later deploys.
+        credentials.setdefault(
+            "CASEWORK_CREDENTIAL_OPENAI_PRIMARY",
+            _required(legacy, "OPENAI_API_KEY"),
+        )
+        credentials.update(service_credentials)
+        _write_dotenv(credentials_path, credentials)
+    if os.geteuid() == 0:
+        os.chown(credentials_path, 10_001, 10_001)
 
     images = {
         name: _required(os.environ, name)
@@ -247,6 +290,7 @@ def prepare(
             all_tools, ensure_ascii=False, separators=(",", ":")
         ),
         "CASEWORK_CREDENTIAL_ENV_FILE": str(credentials_path),
+        "CASEWORK_CREDENTIAL_DIR": str(credential_dir),
         "CASEWORK_DELIVERY_MODE": delivery_mode,
         "CASEWORK_CANARY_TICKET_IDS": canary_ids,
         "DOCKER_GID": str(docker_socket.stat().st_gid),

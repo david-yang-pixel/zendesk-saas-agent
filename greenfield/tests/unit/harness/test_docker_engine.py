@@ -155,6 +155,41 @@ async def test_create_starts_container_and_resolves_published_endpoint() -> None
     }
 
 
+@pytest.mark.asyncio
+async def test_create_reloads_dynamic_credentials_for_each_new_sandbox() -> None:
+    client = FakeDockerClient()
+    credentials = {"CASEWORK_CREDENTIAL_OPENAI_PRIMARY": "first-secret"}
+    engine = DockerSandboxEngine(
+        client=_docker(client),
+        http=FakeHttp([]),
+        installation_id="install-1",
+        controller_id="controller-1",
+        environment={"CASEWORK_MODEL_BASE_URL": "https://api.openai.com"},
+        credential_environment=lambda: credentials,
+    )
+
+    await engine.create(
+        image="sandbox", limits=_limits(), labels={"casework.job_id": "job-1"}
+    )
+    credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] = "second-secret"
+    await engine.create(
+        image="sandbox", limits=_limits(), labels={"casework.job_id": "job-2"}
+    )
+
+    assert (
+        client.containers.create_calls[0]["environment"][
+            "CASEWORK_CREDENTIAL_OPENAI_PRIMARY"
+        ]
+        == "first-secret"
+    )
+    assert (
+        client.containers.create_calls[1]["environment"][
+            "CASEWORK_CREDENTIAL_OPENAI_PRIMARY"
+        ]
+        == "second-secret"
+    )
+
+
 def test_sandbox_environment_rejects_database_credentials() -> None:
     with pytest.raises(ValueError, match="database credentials"):
         DockerSandboxEngine(
@@ -246,9 +281,7 @@ async def test_oom_state_is_reported_as_resource_exhausted() -> None:
 @pytest.mark.asyncio
 async def test_readiness_oom_raises_typed_resource_error_for_controller_retry() -> None:
     client = FakeDockerClient()
-    http = FakeHttp(
-        [SandboxHttpResponse(status_code=503, body={"status": "starting"})]
-    )
+    http = FakeHttp([SandboxHttpResponse(status_code=503, body={"status": "starting"})])
     engine = DockerSandboxEngine(
         client=_docker(client),
         http=http,

@@ -27,8 +27,8 @@ FROM python-deps AS app-base
 
 ENV PYTHONPATH=/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/apps/admin-api/src
 
-RUN addgroup --system casework \
-    && adduser --system --ingroup casework casework \
+RUN addgroup --system --gid 10001 casework \
+    && adduser --system --uid 10001 --ingroup casework casework \
     && chown -R casework:casework /app
 USER casework
 

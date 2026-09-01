@@ -34,6 +34,8 @@ function apiFixture(): AdminApiClient {
     getRun: async () => unknownRun,
     getRegistry: async () => ({ skills: [], tools: [] }),
     testTool: async () => ({ toolId: 'unknown', status: 'untested', latencyMs: null, errorCode: 'unknown_tool' as const, detail: 'Tool is not registered' }),
+    getModelCredentials: async () => [],
+    replaceModelCredential: async () => { throw new Error('not used') },
   }
 }
 

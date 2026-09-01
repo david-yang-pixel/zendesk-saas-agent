@@ -62,13 +62,12 @@ services:
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:-unconfigured}
       CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://example.invalid}
       CASEWORK_TOOL_CONFIG: ${CASEWORK_TOOL_CONFIG:-[]}
-    env_file:
-      - path: ${CASEWORK_CREDENTIAL_ENV_FILE:-./credentials.env}
-        required: false
+      CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
     ports:
       - "8102:8102"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${CASEWORK_CREDENTIAL_DIR:-./credentials}:/run/casework-credentials:ro
     group_add:
       - "${DOCKER_GID:-0}"
     extra_hosts:
@@ -92,8 +91,12 @@ services:
     environment:
       <<: *common-environment
       ADMIN_API_BASE_URL: http://admin:8104
+      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://api.openai.com}
+      CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
     ports:
       - "8104:8104"
+    volumes:
+      - ${CASEWORK_CREDENTIAL_DIR:-./credentials}:/run/casework-credentials
     depends_on:
       migration:
         condition: service_completed_successfully

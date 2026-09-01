@@ -2,6 +2,7 @@
 import { inject, onMounted, reactive, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import ModelCredentialPanel from '../components/ModelCredentialPanel.vue'
 import { ADMIN_API_KEY } from '../api/client'
 import type { AdminApiClient } from '../api/client'
 import type { AdminConfig, HarnessConfig, SandboxPolicy } from '../types'
@@ -216,6 +217,8 @@ onMounted(() => { void loadConfig() })
         </article>
       </div>
     </section>
+
+    <ModelCredentialPanel />
 
     <div class="content-grid content-grid--config">
       <section class="panel settings-panel">

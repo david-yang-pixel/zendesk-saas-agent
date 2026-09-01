@@ -24,6 +24,14 @@ from casework_admin.config import (
     ModelConfig,
     ProcessingRulesConfig,
 )
+from casework_admin.model_credentials import (
+    ModelCredentialList,
+    ModelCredentialNotConfigured,
+    ModelCredentialReplaceRequest,
+    ModelCredentialReplaceResponse,
+    ModelCredentialService,
+    ModelCredentialValidationError,
+)
 from casework_admin.read_models import (
     AdminReadRepository,
     ConnectionProbeResponse,
@@ -84,6 +92,7 @@ def create_app(
     repository: ConfigRepository | None = None,
     read_repository: AdminReadRepository | None = None,
     readiness: ReadinessPort | None = None,
+    model_credentials: ModelCredentialService | None = None,
     lifespan: Lifespan[FastAPI] | None = None,
 ) -> FastAPI:
     configs = repository or InMemoryConfigRepository(initial=default_config())
@@ -91,9 +100,7 @@ def create_app(
     service = AdminConfigService(repository=configs)
     app = FastAPI(title="casework-admin", lifespan=lifespan)
 
-    async def validation_error(
-        _request: Request, _error: Exception
-    ) -> JSONResponse:
+    async def validation_error(_request: Request, _error: Exception) -> JSONResponse:
         # FastAPI's default 422 serializer includes the invalid ``input``
         # value.  That is unsafe for a rejected credential accidentally sent
         # to this boundary, so return only a stable, non-sensitive message.
@@ -156,14 +163,53 @@ def create_app(
         except ConfigConflict as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
 
+    async def list_model_credentials() -> ModelCredentialList:
+        if model_credentials is None:
+            raise HTTPException(
+                status_code=503, detail="model credential store unavailable"
+            )
+        current = await service.current()
+        try:
+            return await model_credentials.list(current.config)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=409, detail="model credential references are invalid"
+            ) from error
+
+    async def replace_model_credential(
+        request: ModelCredentialReplaceRequest,
+        _actor: str = Header(alias="X-Admin-Actor", min_length=1),
+    ) -> ModelCredentialReplaceResponse:
+        if model_credentials is None:
+            raise HTTPException(
+                status_code=503, detail="model credential store unavailable"
+            )
+        current = await service.current()
+        try:
+            return await model_credentials.replace(
+                config=current.config,
+                credential_ref=request.credential_ref,
+                secret=request.secret,
+            )
+        except ModelCredentialNotConfigured as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ModelCredentialValidationError as error:
+            code = error.result.error_code or "unavailable"
+            raise HTTPException(
+                status_code=422,
+                detail=f"model credential validation failed: {code}",
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail="invalid model credential"
+            ) from error
+
     app.add_api_route("/healthz", healthz, methods=["GET"])
     app.add_api_route("/readyz", readyz, methods=["GET"])
     app.add_api_route(
         "/api/config", current_config, methods=["GET"], response_model=ConfigSnapshot
     )
-    app.add_api_route(
-        "/api/config/sandbox-policy", sandbox_policy, methods=["GET"]
-    )
+    app.add_api_route("/api/config/sandbox-policy", sandbox_policy, methods=["GET"])
     app.add_api_route(
         "/api/overview", overview, methods=["GET"], response_model=OverviewResponse
     )
@@ -184,6 +230,18 @@ def create_app(
     )
     app.add_api_route(
         "/api/config", update_config, methods=["PUT"], response_model=ConfigSnapshot
+    )
+    app.add_api_route(
+        "/api/model-credentials",
+        list_model_credentials,
+        methods=["GET"],
+        response_model=ModelCredentialList,
+    )
+    app.add_api_route(
+        "/api/model-credentials",
+        replace_model_credential,
+        methods=["PUT"],
+        response_model=ModelCredentialReplaceResponse,
     )
     web_dist_value = os.environ.get("ADMIN_WEB_DIST")
     web_dist = Path(web_dist_value) if web_dist_value else None

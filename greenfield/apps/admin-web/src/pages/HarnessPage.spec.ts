@@ -48,6 +48,23 @@ function apiFixture(saveCalls: Array<Parameters<AdminApiClient['saveConfig']>[0]
     getRun: async () => { throw new Error('not used') },
     getRegistry: async () => ({ skills: [], tools: [] }),
     testTool: async () => ({ toolId: 'unknown', status: 'untested', latencyMs: null, errorCode: 'unknown_tool', detail: 'Tool is not registered' }),
+    getModelCredentials: async () => ([{
+      credentialRef: 'secret/root',
+      configured: true,
+      maskedValue: '••••••••1234',
+      updatedAt: '2026-09-01T00:00:00Z',
+      bindings: [{ provider: 'openai', model: 'gpt-5.6-sol', credentialRef: 'secret/root' }],
+    }]),
+    replaceModelCredential: async ({ credentialRef }) => ({
+      credential: {
+        credentialRef,
+        configured: true,
+        maskedValue: '••••••••5678',
+        updatedAt: '2026-09-02T00:00:00Z',
+        bindings: [{ provider: 'openai', model: 'gpt-5.6-sol', credentialRef }],
+      },
+      probe: { status: 'connected', latencyMs: 12, errorCode: null },
+    }),
   }
 }
 
@@ -95,5 +112,38 @@ describe('HarnessPage independent subagent configuration', () => {
     expect((wrapper.get('[data-testid="slot-credential-ref-1"]').element as HTMLInputElement).value).toBe('secret/subagent-2')
     await wrapper.get('[data-testid="remove-slot-1"]').trigger('click')
     expect(wrapper.findAll('[data-testid^="subagent-card-"]')).toHaveLength(1)
+  })
+
+  it('replaces a credential through the masked credential panel', async () => {
+    const saveCalls: Array<Parameters<AdminApiClient['saveConfig']>[0]> = []
+    const api = apiFixture(saveCalls)
+    const replacements: Array<{ credentialRef: string; secret: string }> = []
+    api.replaceModelCredential = async (input) => {
+      replacements.push(input)
+      return {
+        credential: {
+          credentialRef: input.credentialRef,
+          configured: true,
+          maskedValue: '••••••••new1',
+          updatedAt: '2026-09-02T00:00:00Z',
+          bindings: [{ provider: 'openai', model: 'gpt-5.6-sol', credentialRef: input.credentialRef }],
+        },
+        probe: { status: 'connected', latencyMs: 12, errorCode: null },
+      }
+    }
+    const wrapper = mount(HarnessPage, {
+      global: { provide: { [ADMIN_API_KEY as symbol]: api } },
+    })
+    await flushPromises()
+
+    const input = wrapper.get('[data-testid="credential-input-secret/root"]')
+    await input.setValue('new-valid-secret')
+    await wrapper.get('[data-testid="credential-replace-secret/root"]').trigger('click')
+    await flushPromises()
+
+    expect(replacements).toEqual([{ credentialRef: 'secret/root', secret: 'new-valid-secret' }])
+    expect((input.element as HTMLInputElement).value).toBe('')
+    expect(wrapper.text()).toContain('后续新沙箱立即使用')
+    expect(wrapper.text()).not.toContain('new-valid-secret')
   })
 })

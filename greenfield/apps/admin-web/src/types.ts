@@ -137,6 +137,31 @@ export interface SandboxPolicy {
   retryCondition: string
 }
 
+export interface ModelCredentialBinding {
+  readonly provider: string
+  readonly model: string
+  readonly credentialRef: string
+}
+
+export interface ModelCredentialStatus {
+  readonly credentialRef: string
+  readonly configured: boolean
+  readonly maskedValue: string | null
+  readonly updatedAt: string | null
+  readonly bindings: ModelCredentialBinding[]
+}
+
+export interface ModelCredentialProbe {
+  readonly status: 'connected' | 'degraded'
+  readonly latencyMs: number | null
+  readonly errorCode: string | null
+}
+
+export interface ModelCredentialReplaceResult {
+  readonly credential: ModelCredentialStatus
+  readonly probe: ModelCredentialProbe
+}
+
 export interface OverviewData {
   desiredState: AgentDesiredState
   configRevision: string

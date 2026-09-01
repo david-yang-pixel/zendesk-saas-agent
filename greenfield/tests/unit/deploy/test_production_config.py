@@ -74,7 +74,7 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
         state_dir / "runtime.env"
     )
     credentials = prepare_runtime._parse_dotenv(  # pyright: ignore[reportPrivateUsage]
-        state_dir / "credentials.env"
+        state_dir / "credentials" / "credentials.env"
     )
     tools = json.loads(runtime["CASEWORK_TOOL_CONFIG"])
     assert runtime["CASEWORK_CONFIG_REVISION"] == "b" * 40
@@ -87,7 +87,52 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] == "openai-secret"
     assert "OPENAI_API_KEY" not in runtime
     assert os.stat(state_dir / "runtime.env").st_mode & 0o777 == 0o600
-    assert os.stat(state_dir / "credentials.env").st_mode & 0o777 == 0o600
+    assert (
+        os.stat(state_dir / "credentials" / "credentials.env").st_mode & 0o777 == 0o600
+    )
+
+
+def test_prepare_runtime_preserves_admin_replaced_model_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_env = tmp_path / "legacy.env"
+    state_dir = tmp_path / "state"
+    credential_dir = state_dir / "credentials"
+    credential_dir.mkdir(parents=True)
+    socket = tmp_path / "docker.sock"
+    socket.touch()
+    _source_environment(source_env)
+    (credential_dir / "credentials.env").write_text(
+        'CASEWORK_CREDENTIAL_OPENAI_PRIMARY="admin-replaced"\n'
+    )
+    digest = "sha256:" + ("a" * 64)
+    for name in (
+        "CASEWORK_INGRESS_IMAGE",
+        "CASEWORK_HARNESS_IMAGE",
+        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_ADMIN_IMAGE",
+    ):
+        monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
+
+    def _discover(
+        _service: prepare_runtime.McpService, _secret: str
+    ) -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", _discover)
+
+    prepare_runtime.prepare(
+        source_env=source_env,
+        state_dir=state_dir,
+        revision="b" * 40,
+        docker_socket=socket,
+    )
+
+    credentials = prepare_runtime._parse_dotenv(  # pyright: ignore[reportPrivateUsage]
+        credential_dir / "credentials.env"
+    )
+    assert credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] == "admin-replaced"
 
 
 def test_configure_runtime_sets_rules_models_skills_and_tools(

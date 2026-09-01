@@ -5,6 +5,11 @@
 set -euo pipefail
 umask 077
 
+if [[ "$EUID" -ne 0 ]]; then
+  echo "Greenfield production deployment must run as root for credential ownership" >&2
+  exit 1
+fi
+
 CODE_DIR="${ZD_AGENT_CODE_DIR:-/opt/zd-agent/code}"
 STATE_DIR="${CASEWORK_STATE_DIR:-/opt/zd-agent/greenfield}"
 SOURCE_ENV="${ZD_AGENT_SOURCE_ENV:-/opt/zd-agent/.env}"

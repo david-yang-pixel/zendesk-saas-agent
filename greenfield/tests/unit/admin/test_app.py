@@ -14,6 +14,12 @@ from casework_admin.config import (
     ModelConfig,
     ProcessingRulesConfig,
 )
+from casework_admin.model_credentials import (
+    FileCredentialStore,
+    ModelCredentialService,
+    ModelProbeResult,
+    parse_credential_file,
+)
 from casework_admin.read_models import (
     ConnectionProbeResponse,
     InMemoryAdminReadRepository,
@@ -39,6 +45,20 @@ class _Readiness:
 
     async def check(self) -> bool:
         return self.ready
+
+
+class _ModelProbe:
+    def __init__(self, result: ModelProbeResult) -> None:
+        self.result = result
+        self.secrets: list[str] = []
+
+    async def validate(
+        self, *, provider: str, model: str, secret: str
+    ) -> ModelProbeResult:
+        assert provider == "openai"
+        assert model == "root"
+        self.secrets.append(secret)
+        return self.result
 
 
 def _config() -> AdminConfig:
@@ -304,6 +324,89 @@ def test_config_validation_does_not_echo_rejected_credential_material() -> None:
 
     assert response.status_code == 422
     assert secret not in response.text
+
+
+def test_model_credential_status_is_masked_and_successful_replace_is_atomic(
+    tmp_path: Path,
+) -> None:
+    credential_file = tmp_path / "credentials.env"
+    credential_file.write_text(
+        'CASEWORK_CREDENTIAL_SECRET_ROOT="previous-secret"\n', encoding="utf-8"
+    )
+    probe = _ModelProbe(ModelProbeResult(status="connected", latency_ms=17))
+    model_credentials = ModelCredentialService(
+        store=FileCredentialStore(credential_file), probe=probe
+    )
+    client = cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                model_credentials=model_credentials,
+            )
+        ),
+    )
+
+    before = client.get("/api/model-credentials")
+    replaced = client.put(
+        "/api/model-credentials",
+        json={"credential_ref": "secret/root", "secret": "replacement-secret"},
+        headers={"X-Admin-Actor": "operator@example.com"},
+    )
+
+    assert before.status_code == 200
+    assert before.json()["items"][0]["masked_value"].endswith("cret")
+    assert "previous-secret" not in before.text
+    assert replaced.status_code == 200
+    assert replaced.json()["probe"] == {
+        "status": "connected",
+        "latency_ms": 17,
+        "error_code": None,
+    }
+    assert "replacement-secret" not in replaced.text
+    assert (
+        parse_credential_file(credential_file)["CASEWORK_CREDENTIAL_SECRET_ROOT"]
+        == "replacement-secret"
+    )
+
+
+def test_failed_model_credential_probe_does_not_replace_or_echo_candidate(
+    tmp_path: Path,
+) -> None:
+    credential_file = tmp_path / "credentials.env"
+    credential_file.write_text(
+        'CASEWORK_CREDENTIAL_SECRET_ROOT="previous-secret"\n', encoding="utf-8"
+    )
+    model_credentials = ModelCredentialService(
+        store=FileCredentialStore(credential_file),
+        probe=_ModelProbe(
+            ModelProbeResult(status="degraded", error_code="HTTP_401_invalid_api_key")
+        ),
+    )
+    client = cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                model_credentials=model_credentials,
+            )
+        ),
+    )
+    candidate = "invalid-candidate-secret"
+
+    response = client.put(
+        "/api/model-credentials",
+        json={"credential_ref": "secret/root", "secret": candidate},
+        headers={"X-Admin-Actor": "operator@example.com"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"].endswith("HTTP_401_invalid_api_key")
+    assert candidate not in response.text
+    assert (
+        parse_credential_file(credential_file)["CASEWORK_CREDENTIAL_SECRET_ROOT"]
+        == "previous-secret"
+    )
 
 
 def test_admin_api_keeps_unpersisted_run_activity_as_json_null() -> None:

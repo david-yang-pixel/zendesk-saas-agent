@@ -30,6 +30,8 @@ function apiFixture(): AdminApiClient {
       errorCode: 'timeout' as const,
       detail: 'Tool connection probe timed out',
     }),
+    getModelCredentials: async () => [],
+    replaceModelCredential: async () => { throw new Error('not used') },
   }
 }
 

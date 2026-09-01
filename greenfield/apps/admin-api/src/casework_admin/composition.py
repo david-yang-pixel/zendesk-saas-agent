@@ -6,12 +6,18 @@ import json
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import cast
 
 from fastapi import FastAPI
 
 from casework_admin.app import create_app as create_admin_app
 from casework_admin.app import default_config
+from casework_admin.model_credentials import (
+    FileCredentialStore,
+    ModelCredentialService,
+    OpenAIResponsesCredentialProbe,
+)
 from casework_admin.postgres_config import (
     PostgresConfigRepository,
     postgres_gateway_scope,
@@ -49,8 +55,7 @@ def tool_probe_from_environment() -> HttpToolProbe | None:
     ):
         raise RuntimeError("CASEWORK_TOOL_PROBE_ENDPOINTS must map tool ids to URLs")
     endpoints = {
-        cast(str, tool_id): cast(str, endpoint)
-        for tool_id, endpoint in entries.items()
+        cast(str, tool_id): cast(str, endpoint) for tool_id, endpoint in entries.items()
     }
     return HttpToolProbe(endpoints)
 
@@ -63,13 +68,21 @@ def create_app() -> FastAPI:
     engine = create_engine(database_url)
     sessions = create_session_factory(engine)
     readiness = DatabaseReadiness(sessions, expected_revision=SCHEMA_HEAD)
-    configs = PostgresConfigRepository(
-        gateway_scope=postgres_gateway_scope(sessions)
-    )
+    configs = PostgresConfigRepository(gateway_scope=postgres_gateway_scope(sessions))
     tool_probe = tool_probe_from_environment()
     reads = PostgresAdminReadRepository(
         transaction_scope=postgres_read_transaction_scope(sessions),
         tool_probe=tool_probe,
+    )
+    credential_file = os.environ.get("CASEWORK_CREDENTIAL_FILE", "").strip()
+    model_base_url = os.environ.get("CASEWORK_MODEL_BASE_URL", "").strip()
+    if not credential_file:
+        raise RuntimeError("CASEWORK_CREDENTIAL_FILE is required for the Admin API")
+    if not model_base_url:
+        raise RuntimeError("CASEWORK_MODEL_BASE_URL is required for the Admin API")
+    model_probe = OpenAIResponsesCredentialProbe(base_url=model_base_url)
+    model_credentials = ModelCredentialService(
+        store=FileCredentialStore(Path(credential_file)), probe=model_probe
     )
 
     @asynccontextmanager
@@ -82,12 +95,14 @@ def create_app() -> FastAPI:
         finally:
             if tool_probe is not None:
                 await tool_probe.aclose()
+            await model_probe.aclose()
             await engine.dispose()
 
     return create_admin_app(
         repository=configs,
         read_repository=reads,
         readiness=readiness,
+        model_credentials=model_credentials,
         lifespan=lifespan,
     )
 
