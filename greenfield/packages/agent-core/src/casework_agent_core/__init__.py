@@ -8,6 +8,12 @@ from casework_agent_core.domain import (
     resolve_active_question,
 )
 from casework_agent_core.evidence import EvidenceGate
+from casework_agent_core.memory import (
+    MemoryProposal,
+    MemoryProposalStatus,
+    WorkingFact,
+    WorkingMemory,
+)
 from casework_agent_core.skills import LoadedSkill, SkillLoader, SkillManifest
 from casework_agent_core.subagents import (
     ChildSession,
@@ -25,6 +31,8 @@ __all__ = [
     "ContextGovernance",
     "EvidenceGate",
     "LoadedSkill",
+    "MemoryProposal",
+    "MemoryProposalStatus",
     "SkillLoader",
     "SkillManifest",
     "SubagentOrchestrator",
@@ -35,5 +43,7 @@ __all__ = [
     "TicketSnapshot",
     "TodoPlan",
     "TodoPlanner",
+    "WorkingFact",
+    "WorkingMemory",
     "resolve_active_question",
 ]
