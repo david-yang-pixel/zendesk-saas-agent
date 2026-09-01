@@ -178,6 +178,7 @@ class SandboxLaunchProbe:
         image: str,
         cache_ttl_seconds: float = 30.0,
         failure_retry_seconds: float = 5.0,
+        readiness_timeout_seconds: int = 30,
         monotonic_clock: Callable[[], float] | None = None,
     ) -> None:
         if not image.strip():
@@ -186,11 +187,14 @@ class SandboxLaunchProbe:
             raise ValueError("cache_ttl_seconds must be positive")
         if failure_retry_seconds < 0:
             raise ValueError("failure_retry_seconds must not be negative")
+        if not 1 <= readiness_timeout_seconds <= 120:
+            raise ValueError("readiness_timeout_seconds must be between 1 and 120")
         self._client = client
         self._engine = engine
         self._image = image
         self._cache_ttl_seconds = cache_ttl_seconds
         self._failure_retry_seconds = failure_retry_seconds
+        self._readiness_timeout_seconds = readiness_timeout_seconds
         self._monotonic = monotonic_clock or time.monotonic
         self._lock = asyncio.Lock()
         self._cached: tuple[float, SandboxProbeResult] | None = None
@@ -263,7 +267,8 @@ class SandboxLaunchProbe:
                     },
                 )
                 await self._engine.wait_ready(
-                    sandbox_id, timeout_seconds=30 * 60
+                    sandbox_id,
+                    timeout_seconds=self._readiness_timeout_seconds,
                 )
                 result = SandboxProbeResult(ready=True, reason="ready")
             except SandboxResourceExhaustedError:

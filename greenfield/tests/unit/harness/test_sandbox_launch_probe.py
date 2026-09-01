@@ -108,6 +108,7 @@ async def test_probe_inspects_image_launches_readyz_and_always_destroys() -> Non
     assert "ticket_id" not in engine.create_calls[0]["labels"]
     assert engine.destroyed == ["probe-sandbox-1"]
     assert engine.execute_called is False
+    assert engine.wait_calls == [("probe-sandbox-1", 30)]
 
     cached = await probe.probe()
 

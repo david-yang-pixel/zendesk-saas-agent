@@ -106,12 +106,22 @@ separate deployment/write authorization and live credentials.
 - [x] Add a mockable Zendesk reply sender with provider receipts; keep live and
   canary fail-closed when complete credentials are absent.
 
-- [ ] Resolve frozen config and credential references inside a sandbox without
+- [x] Resolve frozen config and credential references inside a sandbox without
   persisting secret values in job/session records.
-- [ ] Add production root-model and depth-one child-model runners using each
+- [x] Add production root-model and depth-one child-model runners using each
   slot's explicit provider/model/credential reference.
-- [ ] Register the production investigation Tool adapters and connection
+- [x] Register the production investigation Tool adapters and connection
   probes; keep delivery and orchestration outside the Tool registry.
 - [x] Compose PostgreSQL ingress, worker, outbox, Admin read models, Docker
   engine, and orphan sweeper in runnable service factories.
-- [ ] Build all four images with a live Docker daemon and record their digests.
+- [x] Build all four images with a live Docker daemon and record their digests.
+  - Local verification (2026-09-01): ingress
+    `sha256:903449963ac42655f39e74e0dcd4459c775877e37146ec258472a0ccdca86e8b`,
+    harness
+    `sha256:60b1b3362bcf073ca77bb5385d86b5a965faac65b477aa0eabedaf43cced5c83`,
+    sandbox
+    `sha256:225a63392f4efa2960b70bee35c58a83d36f37057e4b2b039394953092b04825`,
+    admin
+    `sha256:ab08e9149b4ec443f838731da51bf7bdaa5d87a0597e7b182138ad472d0c4ade`.
+  - These are local BuildKit image IDs, not registry digests and not a
+    production deployment record.
