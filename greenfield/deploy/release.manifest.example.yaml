@@ -1,0 +1,33 @@
+# Example only.  CI replaces each digest with the digest returned by the
+# registry before a release is accepted.  Deployments must use digests, never
+# the mutable ``latest`` tag.
+apiVersion: casework.dify.ai/v1alpha1
+kind: ReleaseManifest
+metadata:
+  name: casework-2026-09-01-e9d4958
+  generatedAt: "2026-09-01T00:00:00Z"
+spec:
+  gitRevision: e9d4958
+  images:
+    ingress:
+      repository: registry.example.invalid/casework-ingress
+      tag: 2026.09.01-e9d4958
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000001
+    harness:
+      repository: registry.example.invalid/casework-harness
+      tag: 2026.09.01-e9d4958
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000002
+    sandbox:
+      repository: registry.example.invalid/casework-sandbox
+      tag: 2026.09.01-e9d4958
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000003
+    admin:
+      repository: registry.example.invalid/casework-admin
+      tag: 2026.09.01-e9d4958
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000004
+  rollout:
+    requireDigest: true
+    migration: forward-only-before-apps
+    rollback:
+      previousManifest: release.manifest.previous.yaml
+      preserveLegacyImage: true

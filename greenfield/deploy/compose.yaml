@@ -1,0 +1,103 @@
+name: casework-greenfield
+
+x-python-build: &python-build
+  context: ..
+  dockerfile: deploy/Dockerfile
+
+x-common-environment: &common-environment
+  DATABASE_URL: postgresql+asyncpg://casework:casework@postgres:5432/casework
+  CASEWORK_CONFIG_REVISION: ${CASEWORK_CONFIG_REVISION:-dev}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: casework
+      POSTGRES_USER: casework
+      POSTGRES_PASSWORD: casework
+    volumes:
+      - casework-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casework -d casework"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migration:
+    image: casework-harness:dev
+    build:
+      <<: *python-build
+      target: harness
+    command: ["/app/.venv/bin/python", "/app/deploy/migrate.py"]
+    environment:
+      <<: *common-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  ingress:
+    image: casework-ingress:dev
+    build:
+      <<: *python-build
+      target: ingress
+    environment:
+      <<: *common-environment
+    ports:
+      - "8101:8101"
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+  harness:
+    image: casework-harness:dev
+    build:
+      <<: *python-build
+      target: harness
+    environment:
+      <<: *common-environment
+      SANDBOX_IMAGE: casework-sandbox:dev
+    ports:
+      - "8102:8102"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+  sandbox:
+    image: casework-sandbox:dev
+    build:
+      <<: *python-build
+      target: sandbox
+    environment:
+      <<: *common-environment
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+    mem_limit: 1G
+    memswap_limit: 1G
+    ports:
+      - "8103:8103"
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+  admin:
+    image: casework-admin:dev
+    build:
+      <<: *python-build
+      target: admin
+    environment:
+      <<: *common-environment
+      ADMIN_API_BASE_URL: http://admin:8104
+    ports:
+      - "8104:8104"
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+volumes:
+  casework-postgres:
