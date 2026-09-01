@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Protocol, cast
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from casework_sandbox.service import create_app
@@ -19,6 +20,8 @@ NOW = datetime(2026, 9, 1, tzinfo=UTC)
 
 class _Client(Protocol):
     def post(self, url: str, *, json: object) -> httpx.Response: ...
+
+    def get(self, url: str) -> httpx.Response: ...
 
 
 class FakeCommands:
@@ -86,3 +89,35 @@ def test_cancel_run_reaches_same_sandbox_session() -> None:
     assert response.json() == {"status": "accepted"}
     assert commands.cancels == [cancel]
 
+
+def test_default_factory_fails_closed_without_external_adapter_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "ZENDESK_BASE_URL",
+        "ZENDESK_EMAIL",
+        "ZENDESK_API_TOKEN",
+        "CASEWORK_MODEL_BASE_URL",
+        "CASEWORK_MODEL_API_KEY",
+        "CASEWORK_MODEL_NAME",
+        "CASEWORK_TOOL_CONFIG",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    from casework_sandbox.composition import SandboxConfigurationError
+
+    with pytest.raises(SandboxConfigurationError):
+        create_app()
+
+
+def test_unconfigured_commands_are_not_ready_and_cannot_start() -> None:
+    # Explicit dependency injection remains available to tests and local
+    # composition. The production default must fail closed instead.
+    from casework_sandbox.service import UnconfiguredSandboxCommands
+
+    commands = UnconfiguredSandboxCommands()
+    client = cast(_Client, TestClient(create_app(commands=commands)))
+
+    assert client.get("/readyz").status_code == 503
+    response = client.post("/v1/runs", json=_start().model_dump(mode="json"))
+    assert response.status_code == 503

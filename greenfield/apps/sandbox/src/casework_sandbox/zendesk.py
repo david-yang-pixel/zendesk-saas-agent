@@ -79,6 +79,19 @@ class ZendeskApiReader:
             fetched_at=datetime.now(UTC),
         )
 
+    async def ready(self) -> bool:
+        """Verify that Zendesk credentials and the configured origin work."""
+
+        try:
+            response = await self._client.get(
+                self._origin.join("/api/v2/users/me.json"),
+                auth=self._auth,
+                timeout=3.0,
+            )
+            return response.is_success
+        except httpx.HTTPError:
+            return False
+
     async def _fetch_comments(
         self, ticket_id: int, *, requester_id: int
     ) -> tuple[TicketMessage, ...]:

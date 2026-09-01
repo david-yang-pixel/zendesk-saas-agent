@@ -7,6 +7,7 @@ small; the versioned StartRun/RunResult contracts carry the actual work.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -27,6 +28,9 @@ class SandboxCommandHandler(Protocol):
 
 
 class UnconfiguredSandboxCommands:
+    async def is_ready(self) -> bool:
+        return False
+
     async def run(self, request: SandboxStartRequest) -> Outcome:
         raise HTTPException(status_code=503, detail="sandbox runtime is unconfigured")
 
@@ -42,9 +46,37 @@ async def readyz() -> dict[str, str]:
     return {"status": "ready"}
 
 
+_legacy_healthz = healthz
+_legacy_readyz = readyz
+
+
 def create_app(commands: SandboxCommandHandler | None = None) -> FastAPI:
-    command_handler = commands or UnconfiguredSandboxCommands()
-    app = FastAPI(title="casework-sandbox")
+    if commands is None:
+        from casework_sandbox.composition import create_production_commands
+
+        command_handler = create_production_commands()
+    else:
+        command_handler = commands
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            close = getattr(command_handler, "aclose", None)
+            if close is not None:
+                await close()
+
+    app = FastAPI(title="casework-sandbox", lifespan=lifespan)
+
+    async def ready() -> dict[str, str]:
+        try:
+            readiness = getattr(command_handler, "is_ready", None)
+            if readiness is None or await readiness():
+                return {"status": "ready"}
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="sandbox runtime is not ready")
 
     async def start_run(request: SandboxStartRequest) -> SandboxResultMessage:
         outcome = await command_handler.run(request)
@@ -60,7 +92,7 @@ def create_app(commands: SandboxCommandHandler | None = None) -> FastAPI:
         return {"status": "accepted"}
 
     app.add_api_route("/healthz", healthz, methods=["GET"])
-    app.add_api_route("/readyz", readyz, methods=["GET"])
+    app.add_api_route("/readyz", ready, methods=["GET"])
     app.add_api_route(
         "/v1/runs",
         start_run,
@@ -71,6 +103,3 @@ def create_app(commands: SandboxCommandHandler | None = None) -> FastAPI:
         "/v1/cancel", cancel_run, methods=["POST"], status_code=202
     )
     return app
-
-
-app = create_app()
