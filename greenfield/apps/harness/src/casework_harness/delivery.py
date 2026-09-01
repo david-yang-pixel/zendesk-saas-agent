@@ -21,7 +21,12 @@ import httpx
 from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from casework_persistence.models import EventRecord, OutboxMessage, TicketState
+from casework_persistence.models import (
+    ConfigRevisionRow,
+    EventRecord,
+    OutboxMessage,
+    TicketState,
+)
 from casework_persistence.repositories import (
     OutboxDraft,
     OutboxRepository,
@@ -39,6 +44,7 @@ class DeliveryDisposition(StrEnum):
     STALE = "stale"
     FENCED = "fenced"
     NOT_ELIGIBLE = "not_eligible"
+    DISABLED = "disabled"
     FAILED = "failed"
 
 
@@ -61,6 +67,59 @@ class DeliveryPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenDeliveryConfig:
+    """The delivery-only projection captured by one immutable config revision."""
+
+    revision: str
+    reply_enabled: bool
+    default_locale: str
+    footers: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if not self.revision.strip():
+            raise ValueError("delivery config revision must not be empty")
+        if type(self.reply_enabled) is not bool:
+            raise ValueError("delivery config reply_enabled must be boolean")
+        if not self.default_locale.strip():
+            raise ValueError("delivery config default_locale must not be empty")
+        normalized: dict[str, str] = {}
+        for locale, text in self.footers.items():
+            if type(locale) is not str or type(text) is not str:
+                raise ValueError("delivery config footers must contain strings")
+            locale_key = locale.strip()
+            text_value = text.strip()
+            if not locale_key or not text_value:
+                raise ValueError(
+                    "delivery config footers must contain non-empty values"
+                )
+            normalized[locale_key] = text_value
+        if self.reply_enabled:
+            FooterCatalog(
+                default_locale=self.default_locale,
+                footers=normalized,
+            )
+        object.__setattr__(self, "revision", self.revision.strip())
+        object.__setattr__(self, "default_locale", self.default_locale.strip())
+        object.__setattr__(self, "footers", normalized)
+
+    def footer_catalog(self) -> FooterCatalog:
+        if not self.reply_enabled:
+            raise ValueError("reply delivery is disabled")
+        return FooterCatalog(
+            default_locale=self.default_locale,
+            footers=self.footers,
+        )
+
+
+class DeliveryConfigPort(Protocol):
+    async def load(self, *, config_revision: str) -> FrozenDeliveryConfig: ...
+
+
+class DeliveryConfigUnavailable(RuntimeError):
+    """Raised when an immutable delivery config cannot be loaded safely."""
+
+
+@dataclass(frozen=True, slots=True)
 class DeliveryRequest:
     """The immutable delivery inputs captured by one Harness run."""
 
@@ -68,12 +127,15 @@ class DeliveryRequest:
     generation: int
     snapshot_cursor: str | None = None
     locale: str | None = None
+    config_revision: str | None = None
 
     def __post_init__(self) -> None:
         if self.generation < 1:
             raise ValueError("generation must be positive")
         if self.snapshot_cursor is not None and not self.snapshot_cursor.strip():
             raise ValueError("snapshot_cursor must not be empty")
+        if self.config_revision is not None and not self.config_revision.strip():
+            raise ValueError("config_revision must not be empty")
         if (
             self.snapshot_cursor is not None
             and self.outcome.snapshot_cursor is not None
@@ -378,13 +440,15 @@ class DeliveryController:
         freshness: TicketFreshnessPort,
         outbox: DeliveryOutboxPort,
         sender: ZendeskReplyPort,
-        footer_catalog: FooterCatalog,
+        footer_catalog: FooterCatalog | None = None,
+        config_loader: DeliveryConfigPort | None = None,
         policy: DeliveryPolicy | None = None,
     ) -> None:
         self._freshness = freshness
         self._outbox = outbox
         self._sender = sender
         self._footer_catalog = footer_catalog
+        self._config_loader = config_loader
         self._policy = policy or DeliveryPolicy()
 
     async def deliver(self, request: DeliveryRequest) -> DeliveryResult:
@@ -411,6 +475,28 @@ class DeliveryController:
                 ticket_id=ticket_id,
                 reason="ticket_not_in_canary_allowlist",
             )
+
+        try:
+            delivery_config = await self._load_delivery_config(request)
+        except Exception:
+            return DeliveryResult(
+                disposition=DeliveryDisposition.FAILED,
+                ticket_id=ticket_id,
+                reason="delivery_config_unavailable",
+            )
+        if delivery_config is None:
+            return DeliveryResult(
+                disposition=DeliveryDisposition.FAILED,
+                ticket_id=ticket_id,
+                reason="delivery_config_unavailable",
+            )
+        if not delivery_config.reply_enabled:
+            return DeliveryResult(
+                disposition=DeliveryDisposition.DISABLED,
+                ticket_id=ticket_id,
+                reason="reply_delivery_disabled",
+            )
+
         if (
             self._policy.mode in {DeliveryMode.LIVE, DeliveryMode.CANARY}
             and getattr(self._sender, "ready", True) is False
@@ -424,7 +510,9 @@ class DeliveryController:
         # Eligible outcomes carry the source-of-truth metadata.  The request
         # wrapper may omit duplicate values, but may never override them.
         snapshot_cursor = outcome.snapshot_cursor or request.snapshot_cursor
-        locale = outcome.reply_locale or request.locale
+        locale = (
+            outcome.reply_locale or request.locale or delivery_config.default_locale
+        )
         if not snapshot_cursor or not locale:
             return DeliveryResult(
                 disposition=DeliveryDisposition.NOT_ELIGIBLE,
@@ -442,7 +530,7 @@ class DeliveryController:
         rendered = append_localized_footer(
             body,
             locale=locale,
-            catalog=self._footer_catalog,
+            catalog=delivery_config.footer_catalog(),
         )
         if self._policy.mode is DeliveryMode.DRY_RUN:
             return DeliveryResult(
@@ -551,6 +639,34 @@ class DeliveryController:
             provider_message_id=provider_message_id,
         )
 
+    async def _load_delivery_config(
+        self, request: DeliveryRequest
+    ) -> FrozenDeliveryConfig | None:
+        if self._config_loader is not None:
+            revision = request.config_revision
+            if revision is None:
+                raise DeliveryConfigUnavailable(
+                    "eligible delivery request is missing config revision"
+                )
+            config = await self._config_loader.load(config_revision=revision)
+            if config.revision != revision:
+                raise DeliveryConfigUnavailable(
+                    "loaded delivery config revision does not match request"
+                )
+            return config
+        # The static catalog is retained for isolated unit callers that do
+        # not model persistence.  Production composition always injects the
+        # frozen-revision loader and therefore cannot use this compatibility
+        # path for a leased job.
+        if request.config_revision is not None or self._footer_catalog is None:
+            return None
+        return FrozenDeliveryConfig(
+            revision="legacy-static",
+            reply_enabled=True,
+            default_locale=self._footer_catalog.default_locale,
+            footers=self._footer_catalog.footers,
+        )
+
     async def _read_current(self, ticket_id: int) -> TicketFreshness:
         return _freshness(await self._freshness.latest(ticket_id))
 
@@ -648,6 +764,77 @@ def resolve_delivery_mode(environment: Mapping[str, str] | None = None) -> Deliv
     return parse_delivery_mode(
         values.get("DELIVERY_MODE") or values.get("CASEWORK_DELIVERY_MODE")
     )
+
+
+def _parse_frozen_delivery_config(
+    *, revision: str, config: Mapping[str, object]
+) -> FrozenDeliveryConfig:
+    raw_rules = config.get("rules")
+    if not isinstance(raw_rules, Mapping):
+        raise DeliveryConfigUnavailable(
+            "delivery config rules must be an object"
+        )
+    rules = cast(Mapping[str, object], raw_rules)
+    raw_reply_enabled = rules.get("reply_enabled")
+    if not isinstance(raw_reply_enabled, bool):
+        raise DeliveryConfigUnavailable(
+            "delivery config rules.reply_enabled must be boolean"
+        )
+    raw_default_locale = rules.get("default_locale")
+    if not isinstance(raw_default_locale, str) or not raw_default_locale.strip():
+        raise DeliveryConfigUnavailable(
+            "delivery config rules.default_locale must be a non-empty string"
+        )
+    raw_footers = rules.get("footers")
+    if not isinstance(raw_footers, Mapping):
+        raise DeliveryConfigUnavailable(
+            "delivery config rules.footers must be an object"
+        )
+    footers: dict[str, str] = {}
+    footers_mapping = cast(Mapping[object, object], raw_footers)
+    for locale, text in footers_mapping.items():
+        if type(locale) is not str or type(text) is not str:
+            raise DeliveryConfigUnavailable(
+                "delivery config rules.footers must contain strings"
+            )
+        footers[locale] = text
+    try:
+        return FrozenDeliveryConfig(
+            revision=revision,
+            reply_enabled=raw_reply_enabled,
+            default_locale=raw_default_locale,
+            footers=footers,
+        )
+    except ValueError as error:
+        raise DeliveryConfigUnavailable(str(error)) from error
+
+
+class PostgresDeliveryConfigLoader:
+    """Load only the delivery projection from a job's frozen config row."""
+
+    def __init__(self, *, transaction_scope: DeliveryTransactionScope) -> None:
+        self._transaction_scope = transaction_scope
+
+    async def load(self, *, config_revision: str) -> FrozenDeliveryConfig:
+        if not config_revision.strip():
+            raise DeliveryConfigUnavailable(
+                "delivery config revision must not be empty"
+            )
+        async with self._transaction_scope() as session:
+            result = await session.execute(
+                select(ConfigRevisionRow).where(
+                    ConfigRevisionRow.revision == config_revision
+                )
+            )
+            row = result.scalar_one_or_none()
+        if row is None:
+            raise DeliveryConfigUnavailable(
+                f"delivery config revision is unavailable: {config_revision}"
+            )
+        return _parse_frozen_delivery_config(
+            revision=row.revision,
+            config=row.config,
+        )
 
 
 class PostgresDeliveryAdapter:
@@ -852,9 +1039,15 @@ class ControllerDeliveryAdapter:
     def __init__(self, controller: DeliveryController) -> None:
         self._controller = controller
 
-    async def deliver(self, outcome: Outcome, generation: int) -> DeliveryResult:
+    async def deliver(
+        self, outcome: Outcome, generation: int, config_revision: str
+    ) -> DeliveryResult:
         return await self._controller.deliver(
-            DeliveryRequest(outcome=outcome, generation=generation)
+            DeliveryRequest(
+                outcome=outcome,
+                generation=generation,
+                config_revision=config_revision,
+            )
         )
 
 
@@ -864,6 +1057,8 @@ class ProtocolCallable(Protocol):
 
 __all__ = [
     "ControllerDeliveryAdapter",
+    "DeliveryConfigPort",
+    "DeliveryConfigUnavailable",
     "DeliveryController",
     "DeliveryDisposition",
     "DeliveryMode",
@@ -873,7 +1068,9 @@ __all__ = [
     "DeliveryResult",
     "DeliveryTransactionScope",
     "DeliveryUnavailableError",
+    "FrozenDeliveryConfig",
     "PostgresDeliveryAdapter",
+    "PostgresDeliveryConfigLoader",
     "ProtocolCallable",
     "TicketFreshness",
     "TicketFreshnessPort",

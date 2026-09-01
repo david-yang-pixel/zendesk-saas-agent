@@ -11,11 +11,15 @@ from sqlalchemy.engine import Result
 from sqlalchemy.orm import Session
 
 from casework_harness.delivery import (
+    DeliveryConfigUnavailable,
     DeliveryTransactionScope,
+    FrozenDeliveryConfig,
     PostgresDeliveryAdapter,
+    PostgresDeliveryConfigLoader,
 )
 from casework_persistence.models import (
     Base,
+    ConfigRevisionRow,
     EventRecord,
     OutboxMessage,
     TicketState,
@@ -86,6 +90,70 @@ def seed_delivery_state(session: Session) -> None:
         )
     )
     session.commit()
+
+
+def seed_delivery_config(
+    session: Session,
+    *,
+    revision: str,
+    reply_enabled: bool = True,
+    footer: str = "Frozen footer",
+) -> None:
+    session.add(
+        ConfigRevisionRow(
+            revision=revision,
+            actor="test",
+            config={
+                "rules": {
+                    "reply_enabled": reply_enabled,
+                    "default_locale": "en-US",
+                    "footers": {"en-US": footer, "ja-JP": footer},
+                }
+            },
+            created_at=NOW,
+        )
+    )
+    session.commit()
+
+
+@pytest.mark.asyncio
+async def test_postgres_delivery_config_loader_reads_requested_immutable_revision(
+    db_session: Session,
+) -> None:
+    seed_delivery_config(db_session, revision="cfg-a", footer="Footer A")
+    seed_delivery_config(db_session, revision="cfg-b", footer="Footer B")
+    loader = PostgresDeliveryConfigLoader(
+        transaction_scope=transaction_scope(db_session)
+    )
+
+    config = await loader.load(config_revision="cfg-b")
+
+    assert isinstance(config, FrozenDeliveryConfig)
+    assert config.revision == "cfg-b"
+    assert config.reply_enabled is True
+    assert config.default_locale == "en-US"
+    assert config.footers["en-US"] == "Footer B"
+
+
+@pytest.mark.asyncio
+async def test_postgres_delivery_config_loader_fails_closed_for_missing_rules(
+    db_session: Session,
+) -> None:
+    db_session.add(
+        ConfigRevisionRow(
+            revision="cfg-invalid",
+            actor="test",
+            config={"rules": {"reply_enabled": True}},
+            created_at=NOW,
+        )
+    )
+    db_session.commit()
+    loader = PostgresDeliveryConfigLoader(
+        transaction_scope=transaction_scope(db_session)
+    )
+
+    with pytest.raises(DeliveryConfigUnavailable, match="delivery config"):
+        await loader.load(config_revision="cfg-invalid")
 
 
 @pytest.mark.asyncio

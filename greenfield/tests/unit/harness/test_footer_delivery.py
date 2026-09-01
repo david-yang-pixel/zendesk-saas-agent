@@ -12,6 +12,7 @@ from casework_harness.delivery import (
     DeliveryMode,
     DeliveryPolicy,
     DeliveryRequest,
+    FrozenDeliveryConfig,
     UnavailableZendeskReplySender,
     ZendeskReplyReceipt,
     parse_delivery_mode,
@@ -134,6 +135,16 @@ class FakeFreshness:
             await self.release_first_read.wait()
             return result
         return self.generation, self.cursor
+
+
+@dataclass
+class FakeDeliveryConfigLoader:
+    configs: dict[str, FrozenDeliveryConfig]
+    revisions: list[str] = field(default_factory=list[str])
+
+    async def load(self, *, config_revision: str) -> FrozenDeliveryConfig:
+        self.revisions.append(config_revision)
+        return self.configs[config_revision]
 
 
 @dataclass(frozen=True)
@@ -263,6 +274,20 @@ def _request(
     )
 
 
+def _frozen_config(
+    revision: str,
+    *,
+    reply_enabled: bool = True,
+    footer: str = "Configured footer",
+) -> FrozenDeliveryConfig:
+    return FrozenDeliveryConfig(
+        revision=revision,
+        reply_enabled=reply_enabled,
+        default_locale="en-US",
+        footers={"en-US": footer, "ja-JP": footer},
+    )
+
+
 def test_delivery_generation_starts_at_one() -> None:
     with pytest.raises(ValueError, match="generation"):
         _request(generation=0)
@@ -335,6 +360,74 @@ async def test_live_without_sender_fails_closed_before_creating_outbox() -> None
     assert result.disposition is DeliveryDisposition.FAILED
     assert result.reason == "live_sender_not_ready"
     assert outbox.entries == {}
+
+
+@pytest.mark.asyncio
+async def test_delivery_uses_footer_from_job_frozen_config_revision() -> None:
+    configs = FakeDeliveryConfigLoader(
+        {
+            "cfg-a": _frozen_config("cfg-a", footer="Footer A"),
+            "cfg-b": _frozen_config("cfg-b", footer="Footer B"),
+        }
+    )
+    outbox = FakeOutbox()
+    controller = DeliveryController(
+        freshness=FakeFreshness(),
+        outbox=outbox,
+        sender=FakeSender(),
+        config_loader=configs,
+        policy=DeliveryPolicy(mode=DeliveryMode.DRY_RUN),
+    )
+
+    first = await controller.deliver(
+        DeliveryRequest(
+            outcome=_outcome(OutcomeKind.ANSWER, answer="Answer A"),
+            generation=7,
+            config_revision="cfg-a",
+        )
+    )
+    second = await controller.deliver(
+        DeliveryRequest(
+            outcome=_outcome(OutcomeKind.ANSWER, answer="Answer B"),
+            generation=7,
+            config_revision="cfg-b",
+        )
+    )
+
+    assert first.body is not None and first.body.endswith("Footer A")
+    assert second.body is not None and second.body.endswith("Footer B")
+    assert configs.revisions == ["cfg-a", "cfg-b"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_frozen_config_does_not_read_or_write_any_delivery_port(
+) -> None:
+    freshness = FakeFreshness()
+    outbox = FakeOutbox()
+    sender = FakeSender()
+    controller = DeliveryController(
+        freshness=freshness,
+        outbox=outbox,
+        sender=sender,
+        config_loader=FakeDeliveryConfigLoader(
+            {"cfg-disabled": _frozen_config("cfg-disabled", reply_enabled=False)}
+        ),
+        policy=DeliveryPolicy(mode=DeliveryMode.LIVE),
+    )
+
+    result = await controller.deliver(
+        DeliveryRequest(
+            outcome=_outcome(OutcomeKind.ANSWER, answer="No write"),
+            generation=7,
+            config_revision="cfg-disabled",
+        )
+    )
+
+    assert result.disposition is DeliveryDisposition.DISABLED
+    assert result.reason == "reply_delivery_disabled"
+    assert freshness.reads == 0
+    assert outbox.entries == {}
+    assert sender.sent == []
 
 
 @pytest.mark.asyncio

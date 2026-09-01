@@ -92,7 +92,7 @@ class SandboxRunPort(Protocol):
 
 class OutcomeDeliveryPort(Protocol):
     async def deliver(
-        self, outcome: Outcome, generation: int
+        self, outcome: Outcome, generation: int, config_revision: str
     ) -> DeliveryResult | None: ...
 
 
@@ -142,7 +142,7 @@ class HarnessWorker:
             await self._jobs.transition(lease, "finalizing")
             if outcome.delivery_eligible:
                 delivery_result = await self._delivery.deliver(
-                    outcome, lease.generation
+                    outcome, lease.generation, lease.config_revision
                 )
                 if delivery_result is not None:
                     terminal_status = self._delivery_terminal_status(
@@ -266,4 +266,6 @@ class HarnessWorker:
             return "human_takeover"
         if result.disposition is DeliveryDisposition.STALE:
             return "cancelled"
+        if result.disposition is DeliveryDisposition.DISABLED:
+            return HarnessWorker._terminal_status(outcome_kind)
         return "failed"

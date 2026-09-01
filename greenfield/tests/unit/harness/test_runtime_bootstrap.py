@@ -76,8 +76,10 @@ class _Sandbox:
 
 
 class _Delivery:
-    async def deliver(self, outcome: Outcome, generation: int) -> DeliveryResult | None:
-        del outcome, generation
+    async def deliver(
+        self, outcome: Outcome, generation: int, config_revision: str
+    ) -> DeliveryResult | None:
+        del outcome, generation, config_revision
         return None
 
 

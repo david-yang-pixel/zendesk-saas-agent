@@ -49,19 +49,22 @@ class FakeSandboxRuns:
 
 @dataclass
 class FakeDelivery:
-    delivered: list[tuple[Outcome, int]] = field(
-        default_factory=list[tuple[Outcome, int]]
+    delivered: list[tuple[Outcome, int, str]] = field(
+        default_factory=list[tuple[Outcome, int, str]]
     )
 
-    async def deliver(self, outcome: Outcome, generation: int) -> None:
-        self.delivered.append((outcome, generation))
+    async def deliver(
+        self, outcome: Outcome, generation: int, config_revision: str
+    ) -> None:
+        self.delivered.append((outcome, generation, config_revision))
 
 
 @dataclass
 class FailedDelivery:
     async def deliver(
-        self, outcome: Outcome, generation: int
+        self, outcome: Outcome, generation: int, config_revision: str
     ) -> DeliveryResult:
+        del config_revision
         return DeliveryResult(
             disposition=DeliveryDisposition.FAILED,
             ticket_id=outcome.ticket_id,
@@ -69,11 +72,24 @@ class FailedDelivery:
         )
 
 
+@dataclass
+class DisabledDelivery:
+    async def deliver(
+        self, outcome: Outcome, generation: int, config_revision: str
+    ) -> DeliveryResult:
+        del generation, config_revision
+        return DeliveryResult(
+            disposition=DeliveryDisposition.DISABLED,
+            ticket_id=outcome.ticket_id,
+            reason="reply_delivery_disabled",
+        )
+
+
 class RaisingDelivery:
     async def deliver(
-        self, outcome: Outcome, generation: int
+        self, outcome: Outcome, generation: int, config_revision: str
     ) -> DeliveryResult:
-        del outcome, generation
+        del outcome, generation, config_revision
         raise RuntimeError("delivery unavailable")
 
 
@@ -134,7 +150,7 @@ async def test_worker_passes_ticket_id_to_sandbox_and_finishes_after_delivery() 
     assert sandboxes.requests[0].business_input == {"ticket_id": 3726}
     assert sandboxes.requests[0].config_revision == "config-1"
     assert jobs.transitions == ["sandbox_creating", "running", "finalizing"]
-    assert delivery.delivered == [(_answer(), 7)]
+    assert delivery.delivered == [(_answer(), 7, "config-1")]
     assert jobs.finished == ["completed"]
 
 
@@ -174,6 +190,20 @@ async def test_worker_finalizes_failed_delivery_as_failed_job() -> None:
     await worker.process_once()
 
     assert jobs.finished == ["failed"]
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_mark_disabled_delivery_as_failed() -> None:
+    jobs = FakeJobs(_lease())
+    worker = HarnessWorker(
+        jobs=jobs,
+        sandboxes=FakeSandboxRuns(_answer()),
+        delivery=DisabledDelivery(),
+    )
+
+    await worker.process_once()
+
+    assert jobs.finished == ["completed"]
 
 
 @pytest.mark.asyncio

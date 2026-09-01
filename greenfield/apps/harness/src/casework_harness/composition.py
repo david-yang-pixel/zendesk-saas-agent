@@ -19,6 +19,7 @@ from casework_harness.delivery import (
     DeliveryMode,
     DeliveryPolicy,
     PostgresDeliveryAdapter,
+    PostgresDeliveryConfigLoader,
     create_zendesk_reply_sender,
     postgres_delivery_transaction_scope,
     resolve_delivery_mode,
@@ -30,7 +31,6 @@ from casework_harness.docker_engine import (
     HttpxSandboxHttp,
     SandboxLaunchProbe,
 )
-from casework_harness.footer import FooterCatalog
 from casework_harness.postgres_queue import (
     PostgresJobQueue,
     postgres_job_gateway_scope,
@@ -227,18 +227,14 @@ def create_app() -> FastAPI:
     delivery_adapter = PostgresDeliveryAdapter(
         transaction_scope=postgres_delivery_transaction_scope(sessions)
     )
+    delivery_config_loader = PostgresDeliveryConfigLoader(
+        transaction_scope=postgres_delivery_transaction_scope(sessions)
+    )
     delivery_controller = DeliveryController(
         freshness=delivery_adapter,
         outbox=delivery_adapter,
         sender=zendesk_sender,
-        footer_catalog=FooterCatalog(
-            default_locale=os.environ.get("CASEWORK_DEFAULT_LOCALE", "en-US"),
-            footers={
-                "en-US": "This reply was sent by Dify AI Agent.",
-                "zh-CN": "此回复由 Dify AI Agent 发送。",
-                "ja-JP": "この返信は Dify AI Agent によって送信されました。",
-            },
-        ),
+        config_loader=delivery_config_loader,
         policy=DeliveryPolicy(
             mode=delivery_mode,
             canary_ticket_ids=frozenset(canary_ticket_ids),
