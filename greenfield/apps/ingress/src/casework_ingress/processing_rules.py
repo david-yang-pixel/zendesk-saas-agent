@@ -7,6 +7,7 @@ to cancel an active run after a customer asks for a human.
 
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal
@@ -20,6 +21,19 @@ def _normalise_text(value: object) -> str:
     """Return a comparison-safe representation of one configured string."""
 
     return str(value).strip().casefold()
+
+
+def _normalise_human_text(value: object) -> str:
+    """Normalize a whole-message human alias without enabling substring matches."""
+
+    normalized = unicodedata.normalize("NFKC", str(value)).strip().casefold()
+    start = 0
+    end = len(normalized)
+    while start < end and unicodedata.category(normalized[start]).startswith("P"):
+        start += 1
+    while end > start and unicodedata.category(normalized[end - 1]).startswith("P"):
+        end -= 1
+    return normalized[start:end].strip()
 
 
 def _normalise_tags(tags: Iterable[object] | str | None) -> tuple[str, ...]:
@@ -75,24 +89,26 @@ class ProcessingRuleConfig:
             raise ValueError("saas_assignee must not be empty")
         object.__setattr__(self, "saas_tag", _normalise_text(self.saas_tag))
         object.__setattr__(
-            self, "human_aliases", _normalise_strings(self.human_aliases)
+            self, "human_aliases", _normalise_human_strings(self.human_aliases)
         )
-        keywords = _normalise_strings(self.human_keywords)
+        keywords = _normalise_human_strings(self.human_keywords)
         if _HUMAN_KEYWORD not in keywords:
             keywords = (_HUMAN_KEYWORD, *keywords)
         object.__setattr__(self, "human_keywords", keywords)
 
 
-def _normalise_strings(values: Iterable[object] | str | None) -> tuple[str, ...]:
+def _normalise_human_strings(
+    values: Iterable[object] | str | None,
+) -> tuple[str, ...]:
     if isinstance(values, str):
         values = (values,)
     if values is None:
         return ()
     result: list[str] = []
     for value in values:
-        normalised = _normalise_text(value)
-        if normalised and normalised not in result:
-            result.append(normalised)
+        normalized = _normalise_human_text(value)
+        if normalized and normalized not in result:
+            result.append(normalized)
     return tuple(result)
 
 
@@ -131,7 +147,7 @@ def _decision(
 def _has_human_request(
     event: NormalizedZendeskEvent, config: ProcessingRuleConfig
 ) -> bool:
-    text = _normalise_text(event.message_text)
+    text = _normalise_human_text(event.message_text)
     if not text:
         return False
     triggers = (*config.human_keywords, *config.human_aliases)

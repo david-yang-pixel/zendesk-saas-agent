@@ -101,6 +101,25 @@ def test_human_aliases_match_case_insensitively_but_only_as_exact_text() -> None
     ).action == "enqueue"
 
 
+def test_human_normalization_accepts_width_and_surrounding_punctuation() -> None:
+    config = ProcessingRuleConfig(
+        saas_tag="saas",
+        saas_assignee="saas-support",
+        human_aliases=("真人",),
+    )
+
+    assert evaluate_processing_rules(
+        _event(message_text="（ＨＵＭＡＮ！）"),  # noqa: RUF001
+        config=config,
+    ).action == "cancel"
+    assert evaluate_processing_rules(
+        _event(message_text="「真人」"), config=config
+    ).action == "cancel"
+    assert evaluate_processing_rules(
+        _event(message_text="please human!"), config=config
+    ).action == "enqueue"
+
+
 def test_human_text_in_non_customer_message_does_not_cancel() -> None:
     decision = evaluate_processing_rules(
         _event(is_customer_message=False, message_text="human"),
