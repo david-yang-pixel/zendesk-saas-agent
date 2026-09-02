@@ -95,6 +95,11 @@ wait_ready ingress http://127.0.0.1:18101/readyz
 wait_ready admin http://127.0.0.1:18104/readyz
 wait_ready harness http://127.0.0.1:18102/readyz
 
+python3 "$CODE_DIR/greenfield/deploy/migrate_legacy_model_config.py" \
+  --base-url http://127.0.0.1:18104 \
+  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
+  --state-dir "$STATE_DIR"
+
 python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
   --base-url http://127.0.0.1:18104 \
   --internal-token-file "$STATE_DIR/admin-auth/internal-token" \

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from deploy import configure_runtime, prepare_runtime
+from deploy import configure_runtime, migrate_legacy_model_config, prepare_runtime
 
 from casework_sandbox.composition import SandboxRuntimeConfig
 
@@ -296,3 +296,161 @@ def test_configure_runtime_preserves_admin_model_configuration(
     assert config["root_model"] == configured_root
     assert config["subagent_slots"] == configured_children
     assert config["desired_state"] == "paused"
+
+
+def test_legacy_model_migration_imports_root_and_disables_keyless_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_state = tmp_path / "legacy"
+    legacy_state.mkdir()
+    (legacy_state / "admin_overrides.yaml").write_text("llm: {}\n")
+    marker = tmp_path / "state" / "legacy-model-migration.json"
+    legacy_secret = "legacy-admin-secret"
+    legacy = {
+        "root": {
+            "provider": "openai",
+            "base_url": "https://api.tokener.dev/v1",
+            "model": "gpt-5.6-terra",
+            "api_key": legacy_secret,
+        },
+        "slots": [
+            {
+                "slot_id": "subagent-1",
+                "enabled": True,
+                "provider": "openai",
+                "base_url": "https://api.tokener.dev/v1/",
+                "model": "gpt-5.6-luna",
+                "api_key": "",
+            }
+        ],
+    }
+    saved_configs: list[dict[str, Any]] = []
+    credential_updates: list[dict[str, Any]] = []
+
+    def _export_legacy(_container: str) -> dict[str, Any]:
+        return legacy
+
+    monkeypatch.setattr(migrate_legacy_model_config, "_export_legacy", _export_legacy)
+
+    def _request(
+        url: str,
+        *,
+        internal_token: str,
+        method: str = "GET",
+        payload: object | None = None,
+    ) -> dict[str, Any]:
+        assert internal_token == "internal-token"
+        if url.endswith("/api/config") and method == "GET":
+            return {
+                "revision": "revision-1",
+                "config": {
+                    "root_model": {
+                        "provider": "openai",
+                        "base_url": "https://api.openai.com",
+                        "model": "gpt-5.5",
+                        "credential_ref": "openai-primary",
+                    },
+                    "subagent_slots": [],
+                },
+            }
+        assert isinstance(payload, dict)
+        typed_payload = cast(dict[str, Any], payload)
+        if url.endswith("/api/model-catalog"):
+            assert typed_payload["secret"] == legacy_secret
+            return {"models": ["gpt-5.6-terra"]}
+        if url.endswith("/api/config"):
+            saved_configs.append(cast(dict[str, Any], typed_payload["config"]))
+            return {"revision": "revision-2"}
+        if url.endswith("/api/model-credentials"):
+            credential_updates.append(typed_payload)
+            return {"credential": {"configured": True}}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    monkeypatch.setattr(migrate_legacy_model_config, "_request", _request)
+
+    status = migrate_legacy_model_config.migrate(
+        base_url="http://127.0.0.1:18104",
+        internal_token="internal-token",
+        marker_path=marker,
+        legacy_state_dir=legacy_state,
+        legacy_container="legacy-agent",
+    )
+
+    assert status == "applied"
+    assert saved_configs[0]["root_model"] == {
+        "provider": "openai",
+        "base_url": "https://api.tokener.dev/v1",
+        "model": "gpt-5.6-terra",
+        "credential_ref": "openai-primary",
+    }
+    assert saved_configs[0]["subagent_slots"][0] == {
+        "slot_id": "subagent-1",
+        "enabled": False,
+        "provider": "openai",
+        "base_url": "https://api.tokener.dev/v1/",
+        "model": "gpt-5.6-luna",
+        "credential_ref": "legacy-subagent-subagent-1",
+        "context_window_tokens": 32_000,
+        "max_tool_rounds": 12,
+        "max_parallel": 1,
+    }
+    assert credential_updates == [
+        {"credential_ref": "openai-primary", "secret": legacy_secret}
+    ]
+    marker_text = marker.read_text()
+    assert legacy_secret not in marker_text
+    assert json.loads(marker_text)["subagent_slots"] == [
+        {"slot_id": "subagent-1", "enabled": False}
+    ]
+
+
+def test_legacy_model_migration_does_not_overwrite_new_admin_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_state = tmp_path / "legacy"
+    legacy_state.mkdir()
+    (legacy_state / "admin_overrides.yaml").write_text("llm: {}\n")
+    marker = tmp_path / "state" / "legacy-model-migration.json"
+
+    def _export_legacy(_container: str) -> dict[str, Any]:
+        return {"root": {}, "slots": []}
+
+    monkeypatch.setattr(migrate_legacy_model_config, "_export_legacy", _export_legacy)
+
+    def _request(
+        _url: str,
+        *,
+        internal_token: str,
+        method: str = "GET",
+        payload: object | None = None,
+    ) -> dict[str, Any]:
+        assert internal_token == "internal-token"
+        assert method == "GET"
+        assert payload is None
+        return {
+            "revision": "revision-1",
+            "config": {
+                "root_model": {
+                    "provider": "openai",
+                    "base_url": "https://models.example.com",
+                    "model": "operator-selected",
+                    "credential_ref": "operator-secret",
+                },
+                "subagent_slots": [],
+            },
+        }
+
+    monkeypatch.setattr(migrate_legacy_model_config, "_request", _request)
+
+    status = migrate_legacy_model_config.migrate(
+        base_url="http://127.0.0.1:18104",
+        internal_token="internal-token",
+        marker_path=marker,
+        legacy_state_dir=legacy_state,
+        legacy_container="legacy-agent",
+    )
+
+    assert status == "skipped-admin-configured"
+    assert json.loads(marker.read_text())["status"] == "skipped-admin-configured"
