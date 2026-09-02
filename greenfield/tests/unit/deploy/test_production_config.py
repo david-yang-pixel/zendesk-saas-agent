@@ -234,3 +234,65 @@ def test_configure_runtime_sets_rules_models_skills_and_tools(
     assert config["rules"]["reply_enabled"] is True
     assert config["enabled_skills"] == ["core-casework", "app-run-investigation"]
     assert config["enabled_tools"] == ["get_ticket", "source_search"]
+
+
+def test_configure_runtime_preserves_admin_model_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_names = tmp_path / "tool-names.json"
+    tool_names.write_text("[]")
+    configured_root = {
+        "provider": "openai",
+        "base_url": "https://api.tokener.dev",
+        "model": "gpt-5.6-terra",
+        "credential_ref": "legacy-root",
+    }
+    configured_children = [
+        {
+            "slot_id": "subagent-1",
+            "enabled": True,
+            "provider": "openai",
+            "base_url": "https://api.tokener.dev",
+            "model": "gpt-5.6-luna",
+            "credential_ref": "legacy-child",
+            "context_window_tokens": 32_000,
+            "max_tool_rounds": 12,
+            "max_parallel": 1,
+        }
+    ]
+    saved: dict[str, object] = {}
+
+    def _request(
+        _url: str,
+        *,
+        internal_token: str,
+        method: str = "GET",
+        payload: object | None = None,
+    ) -> dict[str, Any]:
+        assert internal_token == "internal-token"
+        if method == "GET":
+            return {
+                "revision": "revision-1",
+                "config": {
+                    "root_model": configured_root,
+                    "subagent_slots": configured_children,
+                },
+            }
+        assert isinstance(payload, dict)
+        saved.update(cast(dict[str, object], payload))
+        return {"revision": "revision-2"}
+
+    monkeypatch.setattr(configure_runtime, "_request", _request)
+
+    configure_runtime.configure(
+        base_url="http://127.0.0.1:18104",
+        activate=False,
+        tool_names_path=tool_names,
+        internal_token="internal-token",
+    )
+
+    config = cast(dict[str, Any], saved["config"])
+    assert config["root_model"] == configured_root
+    assert config["subagent_slots"] == configured_children
+    assert config["desired_state"] == "paused"

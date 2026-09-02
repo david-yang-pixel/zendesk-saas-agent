@@ -70,17 +70,28 @@ def configure(
         raise RuntimeError("tool-names.json is invalid")
     tool_names = [cast(str, name) for name in tool_name_values]
 
+    root_model = config.get("root_model")
+    root_is_unconfigured = not isinstance(root_model, dict) or any(
+        root_model.get(field) in (None, "", "unconfigured")
+        for field in ("provider", "model", "credential_ref")
+    )
+    if root_is_unconfigured:
+        root_model = {
+            "provider": "openai",
+            "base_url": os.environ.get(
+                "CASEWORK_ROOT_MODEL_BASE_URL", "https://api.openai.com"
+            ),
+            "model": os.environ.get("CASEWORK_ROOT_MODEL", "gpt-5.5"),
+            "credential_ref": "openai-primary",
+        }
+
     config.update(
         {
             "desired_state": "running" if activate else "paused",
-            "root_model": {
-                "provider": "openai",
-                "base_url": os.environ.get(
-                    "CASEWORK_ROOT_MODEL_BASE_URL", "https://api.openai.com"
-                ),
-                "model": os.environ.get("CASEWORK_ROOT_MODEL", "gpt-5.5"),
-                "credential_ref": "openai-primary",
-            },
+            # The Admin revision is authoritative after the initial bootstrap.
+            # Deployments may pause/start the Agent, but must never reset a model,
+            # endpoint, credential reference, or independently configured child.
+            "root_model": root_model,
             # Child slots must be configured independently in Admin.  Never
             # synthesize an inherited child binding during bootstrap.
             "subagent_slots": config.get("subagent_slots", []),
