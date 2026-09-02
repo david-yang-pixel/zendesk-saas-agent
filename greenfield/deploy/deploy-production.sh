@@ -118,4 +118,4 @@ for service in ingress harness admin; do
   container="casework-greenfield-${service}-1"
   docker inspect "$container" --format '{{.Name}} {{.Image}} {{.State.Health.Status}}'
 done
-echo "Greenfield bundle is ready in paused dry-run mode; public routing is unchanged."
+echo "Greenfield bundle is ready; the existing Agent run state was preserved."

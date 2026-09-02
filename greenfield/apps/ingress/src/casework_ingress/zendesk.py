@@ -19,7 +19,7 @@ class ZendeskTicket:
 
     ticket_id: int
     tags: tuple[str, ...]
-    assignee: str | int | None
+    group_id: str | int | None
     status: str
 
 
@@ -120,16 +120,16 @@ class ZendeskApiTicketReader:
         status = raw_ticket.get("status")
         if not isinstance(status, str) or not status.strip():
             raise ZendeskTicketError("Zendesk ticket status was invalid")
-        raw_assignee = raw_ticket.get("assignee_id")
-        assignee = (
+        raw_group_id = raw_ticket.get("group_id")
+        group_id = (
             None
-            if raw_assignee is None
-            else self._positive_integer(raw_assignee)
+            if raw_group_id is None
+            else self._positive_integer(raw_group_id)
         )
         return ZendeskTicket(
             ticket_id=ticket_id,
             tags=tuple(tags),
-            assignee=assignee,
+            group_id=group_id,
             status=status,
         )
 

@@ -167,7 +167,7 @@ def test_customer_raw_webhook_fetches_ticket_and_admits_minimal_projection() -> 
         ZendeskTicket(
             ticket_id=2757,
             tags=("saas",),
-            assignee=123,
+            group_id=123,
             status="open",
         )
     )
@@ -202,7 +202,7 @@ def test_customer_raw_webhook_fetches_ticket_and_admits_minimal_projection() -> 
 
 def test_agent_actor_is_ignored_without_ticket_api_or_admission() -> None:
     reader = _TicketReader(
-        ZendeskTicket(ticket_id=2757, tags=("saas",), assignee=123, status="open")
+        ZendeskTicket(ticket_id=2757, tags=("saas",), group_id=123, status="open")
     )
     admission = _Admission()
     client, _, _ = _client(reader=reader, admission=admission)
@@ -217,7 +217,7 @@ def test_agent_actor_is_ignored_without_ticket_api_or_admission() -> None:
 
 def test_unknown_actor_shape_is_ignored_without_inspecting_message() -> None:
     reader = _TicketReader(
-        ZendeskTicket(ticket_id=2757, tags=("saas",), assignee=123, status="open")
+        ZendeskTicket(ticket_id=2757, tags=("saas",), group_id=123, status="open")
     )
     admission = _Admission()
     client, _, _ = _client(reader=reader, admission=admission)
@@ -241,7 +241,7 @@ def test_unknown_actor_shape_is_ignored_without_inspecting_message() -> None:
 
 def test_human_customer_message_is_admitted_as_cancel_only() -> None:
     reader = _TicketReader(
-        ZendeskTicket(ticket_id=2757, tags=(), assignee=None, status="solved")
+        ZendeskTicket(ticket_id=2757, tags=(), group_id=None, status="solved")
     )
     admission = _Admission(action="cancel", reason="human")
     client, _, _ = _client(reader=reader, admission=admission)
@@ -255,7 +255,7 @@ def test_human_customer_message_is_admitted_as_cancel_only() -> None:
 
 def test_raw_human_message_uses_cancel_sink_without_creating_a_job() -> None:
     reader = _TicketReader(
-        ZendeskTicket(ticket_id=2757, tags=(), assignee=None, status="solved")
+        ZendeskTicket(ticket_id=2757, tags=(), group_id=None, status="solved")
     )
     jobs = InMemoryJobSink()
     cancellations = InMemoryCancelSink()
@@ -285,7 +285,7 @@ def test_raw_matching_message_submits_only_ticket_id_to_job_sink() -> None:
         ZendeskTicket(
             ticket_id=2757,
             tags=("saas",),
-            assignee="saas-support",
+            group_id="saas-support",
             status="open",
         )
     )
@@ -313,7 +313,7 @@ def test_raw_matching_message_submits_only_ticket_id_to_job_sink() -> None:
 
 def test_bad_signature_and_ticket_api_failure_do_not_admit() -> None:
     reader = _TicketReader(
-        ZendeskTicket(ticket_id=2757, tags=("saas",), assignee=123, status="open")
+        ZendeskTicket(ticket_id=2757, tags=("saas",), group_id=123, status="open")
     )
     admission = _Admission()
     client, _, _ = _client(reader=reader, admission=admission)
@@ -336,7 +336,7 @@ def test_bad_signature_and_ticket_api_failure_do_not_admit() -> None:
 
 def test_non_public_customer_message_is_ignored_without_ticket_lookup() -> None:
     reader = _TicketReader(
-        ZendeskTicket(ticket_id=2757, tags=("saas",), assignee=123, status="open")
+        ZendeskTicket(ticket_id=2757, tags=("saas",), group_id=123, status="open")
     )
     client, _, _ = _client(reader=reader, admission=_Admission())
 
@@ -392,7 +392,8 @@ async def test_zendesk_ticket_reader_uses_read_only_projection() -> None:
                 "ticket": {
                     "id": 2757,
                     "tags": ["saas", "priority"],
-                    "assignee_id": 123,
+                    "group_id": 40685275477140,
+                    "assignee_id": None,
                     "status": "open",
                     "description": "sensitive content is not projected",
                 }
@@ -414,7 +415,7 @@ async def test_zendesk_ticket_reader_uses_read_only_projection() -> None:
     assert ticket == ZendeskTicket(
         ticket_id=2757,
         tags=("saas", "priority"),
-        assignee=123,
+        group_id=40685275477140,
         status="open",
     )
     assert len(requests) == 1

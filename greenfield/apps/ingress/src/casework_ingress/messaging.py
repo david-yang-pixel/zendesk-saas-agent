@@ -47,7 +47,9 @@ class MessagingEvent:
         return NormalizedZendeskEvent(
             ticket_id=ticket.ticket_id,
             tags=ticket.tags,
-            assignee=ticket.assignee,
+            # ProcessingRuleConfig keeps the legacy ``saas_assignee`` storage
+            # key, but routing is intentionally based on the Zendesk group.
+            assignee=ticket.group_id,
             status=ticket.status,
             is_customer_message=self.is_customer_message,
             message_text=self.message_text,

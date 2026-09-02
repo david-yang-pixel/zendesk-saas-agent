@@ -52,7 +52,7 @@ def probe(*, ticket_id: int, timeout_seconds: int, internal_token: str) -> str:
             "event_id": event_id,
             "ticket_id": ticket_id,
             "tags": ["saas", "production"],
-            "assignee_id": "46493567999892",
+            "group_id": "40685275477140",
             "status": "open",
             "is_customer_message": True,
             "message_text": "Please investigate the latest question in this ticket.",

@@ -354,7 +354,7 @@ def prepare(
         "CASEWORK_INGRESS_PORT": "18101",
         "CASEWORK_HARNESS_PORT": "18102",
         "CASEWORK_ADMIN_PORT": "18104",
-        "CASEWORK_SAAS_ASSIGNEE": "46493567999892",
+        "CASEWORK_SAAS_GROUP_ID": "40685275477140",
         "CASEWORK_ROOT_MODEL": "gpt-5.5",
         "CASEWORK_ROOT_MODEL_BASE_URL": "https://api.openai.com",
     }

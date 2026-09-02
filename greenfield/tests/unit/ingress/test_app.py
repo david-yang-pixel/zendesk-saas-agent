@@ -151,6 +151,32 @@ def test_matching_webhook_submits_only_ticket_id_and_event_metadata() -> None:
     assert cancellations.cancelled == []
 
 
+def test_matching_webhook_uses_saas_group_when_individual_assignee_is_empty() -> None:
+    jobs = InMemoryJobSink()
+    app = create_app(
+        config=ProcessingRuleConfig(
+            saas_tag="saas",
+            saas_assignee="40685275477140",
+        ),
+        job_sink=jobs,
+    )
+    client = cast(_TypedTestClient, TestClient(app))
+
+    response = client.post(
+        "/webhook/zendesk",
+        json=_payload(
+            event_id="evt-group-only",
+            assignee=None,
+            assignee_id=None,
+            group_id="40685275477140",
+        ),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["action"] == "enqueue"
+    assert [job.ticket_id for job in jobs.submitted] == [3726]
+
+
 def test_durable_admission_owns_the_complete_webhook_transaction() -> None:
     admission = _Admission()
     client = cast(

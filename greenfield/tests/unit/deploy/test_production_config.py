@@ -83,6 +83,8 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert runtime["DOCKER_GID"] == str(socket.stat().st_gid)
     assert runtime["CASEWORK_ADMIN_AUTH_DIR"] == str(state_dir / "admin-auth")
     assert runtime["CASEWORK_ADMIN_PUBLIC_ORIGIN"] == "https://zendesk.smlershou.top"
+    assert runtime["CASEWORK_SAAS_GROUP_ID"] == "40685275477140"
+    assert "CASEWORK_SAAS_ASSIGNEE" not in runtime
     assert len(tools) == len(prepare_runtime.READ_ONLY_SERVICES)
     parsed = SandboxRuntimeConfig.from_env(runtime)
     assert len(parsed.tool_configs) == len(prepare_runtime.READ_ONLY_SERVICES)
@@ -231,6 +233,7 @@ def test_configure_runtime_sets_rules_models_skills_and_tools(
     assert config["root_model"]["base_url"] == "https://api.openai.com"
     assert config["subagent_slots"] == []
     assert config["rules"]["statuses"] == ["new", "open"]
+    assert config["rules"]["saas_assignee"] == "40685275477140"
     assert config["rules"]["reply_enabled"] is True
     assert config["enabled_skills"] == ["core-casework", "app-run-investigation"]
     assert config["enabled_tools"] == ["get_ticket", "source_search"]
@@ -296,6 +299,55 @@ def test_configure_runtime_preserves_admin_model_configuration(
     assert config["root_model"] == configured_root
     assert config["subagent_slots"] == configured_children
     assert config["desired_state"] == "paused"
+
+
+def test_configure_runtime_preserves_running_state_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_names = tmp_path / "tool-names.json"
+    tool_names.write_text("[]")
+    saved: dict[str, object] = {}
+
+    def _request(
+        _url: str,
+        *,
+        internal_token: str,
+        method: str = "GET",
+        payload: object | None = None,
+    ) -> dict[str, Any]:
+        assert internal_token == "internal-token"
+        if method == "GET":
+            return {
+                "revision": "revision-1",
+                "config": {
+                    "desired_state": "running",
+                    "rules": {
+                        # Existing production revisions used the AI Agent user
+                        # ID here. Deployment must migrate it to the SaaS group.
+                        "saas_assignee": "46493567999892",
+                        "reply_enabled": True,
+                    },
+                    "subagent_slots": [],
+                },
+            }
+        assert isinstance(payload, dict)
+        saved.update(cast(dict[str, object], payload))
+        return {"revision": "revision-2"}
+
+    monkeypatch.setattr(configure_runtime, "_request", _request)
+
+    configure_runtime.configure(
+        base_url="http://127.0.0.1:18104",
+        activate=None,
+        tool_names_path=tool_names,
+        internal_token="internal-token",
+    )
+
+    config = cast(dict[str, Any], saved["config"])
+    assert config["desired_state"] == "running"
+    assert config["rules"]["reply_enabled"] is True
+    assert config["rules"]["saas_assignee"] == "40685275477140"
 
 
 def test_legacy_model_migration_imports_root_and_disables_keyless_child(

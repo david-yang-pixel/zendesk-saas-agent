@@ -26,7 +26,7 @@ let snapshot: AdminConfigSnapshot = {
     }],
     rules: {
       saasTag: 'saas',
-      assignee: '46493567999892',
+      assignee: '40685275477140',
       statuses: ['new', 'open'],
       humanAliases: ['human', '人工', '真人'],
       replyEnabled: true,

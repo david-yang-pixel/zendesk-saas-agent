@@ -32,7 +32,8 @@ rollback_on_error() {
     python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
       --base-url http://127.0.0.1:18104 \
       --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
-      --tool-names "$STATE_DIR/tool-names.json" || true
+      --tool-names "$STATE_DIR/tool-names.json" \
+      --pause || true
     "${compose[@]}" up -d --force-recreate harness >/dev/null 2>&1 || true
   fi
   exit "$status"

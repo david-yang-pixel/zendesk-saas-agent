@@ -52,7 +52,11 @@ def _request(
 
 
 def configure(
-    *, base_url: str, activate: bool, tool_names_path: Path, internal_token: str
+    *,
+    base_url: str,
+    activate: bool | None,
+    tool_names_path: Path,
+    internal_token: str,
 ) -> str:
     current = _request(
         f"{base_url.rstrip('/')}/api/config", internal_token=internal_token
@@ -89,9 +93,41 @@ def configure(
             "credential_ref": "openai-primary",
         }
 
+    previous_state = config.get("desired_state")
+    desired_state = (
+        previous_state
+        if activate is None and previous_state in {"running", "paused"}
+        else "running" if activate else "paused"
+    )
+    raw_rules = config.get("rules")
+    existing_rules = (
+        cast(dict[str, object], raw_rules) if isinstance(raw_rules, dict) else {}
+    )
+    if activate is None:
+        previous_reply_enabled = existing_rules.get("reply_enabled")
+        reply_enabled = (
+            previous_reply_enabled
+            if isinstance(previous_reply_enabled, bool)
+            else desired_state == "running"
+        )
+    else:
+        reply_enabled = activate
+    configured_group_id = (
+        os.environ.get("CASEWORK_SAAS_GROUP_ID", "").strip()
+        or os.environ.get("CASEWORK_SAAS_ASSIGNEE", "").strip()
+        or "40685275477140"
+    )
+    previous_assignment = existing_rules.get("saas_assignee")
+    saas_group_id = (
+        previous_assignment
+        if isinstance(previous_assignment, (str, int))
+        and str(previous_assignment).strip() not in {"", "46493567999892"}
+        else configured_group_id
+    )
+
     config.update(
         {
-            "desired_state": "running" if activate else "paused",
+            "desired_state": desired_state,
             # The Admin revision is authoritative after the initial bootstrap.
             # Deployments may pause/start the Agent, but must never reset a model,
             # endpoint, credential reference, or independently configured child.
@@ -101,12 +137,12 @@ def configure(
             "subagent_slots": config.get("subagent_slots", []),
             "rules": {
                 "saas_tag": "saas",
-                "saas_assignee": os.environ.get(
-                    "CASEWORK_SAAS_ASSIGNEE", "46493567999892"
-                ),
+                # The persisted key is retained for API compatibility. Its
+                # value is the Zendesk SaaS group ID, never a user assignee ID.
+                "saas_assignee": saas_group_id,
                 "statuses": ["new", "open"],
                 "human_aliases": ["human", "人工", "真人"],
-                "reply_enabled": activate,
+                "reply_enabled": reply_enabled,
                 "default_locale": "en",
                 "footers": FOOTERS,
             },
@@ -127,11 +163,7 @@ def configure(
     updated_revision = updated.get("revision")
     if not isinstance(updated_revision, str):
         raise RuntimeError("Admin API did not return the new revision")
-    print(
-        "Activated Greenfield configuration."
-        if activate
-        else "Prepared paused Greenfield configuration."
-    )
+    print(f"Configured Greenfield runtime in {desired_state} state.")
     return updated_revision
 
 
@@ -140,7 +172,14 @@ def main() -> None:
     parser.add_argument("--base-url", default="http://127.0.0.1:18104")
     parser.add_argument("--tool-names", type=Path, required=True)
     parser.add_argument("--internal-token-file", type=Path, required=True)
-    parser.add_argument("--activate", action="store_true")
+    state = parser.add_mutually_exclusive_group()
+    state.add_argument(
+        "--activate", dest="activate", action="store_const", const=True
+    )
+    state.add_argument(
+        "--pause", dest="activate", action="store_const", const=False
+    )
+    parser.set_defaults(activate=None)
     args = parser.parse_args()
     configure(
         base_url=args.base_url,

@@ -50,6 +50,7 @@ class ZendeskWebhookPayload(BaseModel):
     event_id: str = Field(min_length=1)
     ticket_id: StrictInt = Field(gt=0)
     tags: tuple[str, ...] | None = None
+    group_id: str | int | None = None
     assignee: str | int | None = None
     assignee_id: str | int | None = None
     status: str | None = None
@@ -92,7 +93,9 @@ class ZendeskWebhookPayload(BaseModel):
 
     def _has_all_rule_fields(self) -> bool:
         present = self.model_fields_set
-        has_assignee = bool(
+        has_assignment_group = bool(
+            "group_id" in present and self.group_id is not None
+        ) or bool(
             "assignee" in present and self.assignee is not None
         ) or bool("assignee_id" in present and self.assignee_id is not None)
         has_message = bool(
@@ -102,7 +105,7 @@ class ZendeskWebhookPayload(BaseModel):
         )
         return (
             {"tags", "status", "is_customer_message"}.issubset(present)
-            and has_assignee
+            and has_assignment_group
             and has_message
         )
 
@@ -115,10 +118,17 @@ class ZendeskWebhookPayload(BaseModel):
         message_text = self.message_text
         if message_text is None:
             message_text = self.message if isinstance(self.message, str) else ""
+        assignment_group = self.group_id
+        if assignment_group is None:
+            # Compatibility for an older custom webhook template. New
+            # templates and Messaging ticket lookups must supply group_id.
+            assignment_group = (
+                self.assignee if self.assignee is not None else self.assignee_id
+            )
         return NormalizedZendeskEvent(
             ticket_id=self.ticket_id,
             tags=self.tags or (),
-            assignee=self.assignee if self.assignee is not None else self.assignee_id,
+            assignee=assignment_group,
             status=self.status or "",
             is_customer_message=customer_message,
             message_text=message_text,
