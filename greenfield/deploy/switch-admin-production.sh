@@ -29,6 +29,11 @@ if not isinstance(value.get("users", {}).get("admin", {}).get("password"), dict)
     raise SystemExit("migrated admin account is unavailable")
 PY
 
+# This backup is specific to the current admin-only attempt. Do not reuse an
+# older full-cutover backup because unrelated Nginx routes may have changed.
+cp -- "$NGINX_CONFIG" "$BACKUP"
+chmod 600 "$BACKUP"
+
 changed=0
 rollback_on_error() {
   status=$?
@@ -48,9 +53,22 @@ changed=1
 nginx -t
 systemctl reload nginx
 
-curl -fsS --max-time 10 https://zendesk.smlershou.top/admin/ >/dev/null
-status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+curl -fsS --resolve zendesk.smlershou.top:443:127.0.0.1 --max-time 10 \
+  https://zendesk.smlershou.top/admin/ >/dev/null
+local_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+  --resolve zendesk.smlershou.top:443:127.0.0.1 --max-time 10 \
   https://zendesk.smlershou.top/admin/api/config)"
+test "$local_status" = "401"
+
+# Nginx reload and public edge propagation can briefly serve the previous
+# worker. Retry a bounded number of times before rolling back.
+status=""
+for _attempt in {1..20}; do
+  status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+    https://zendesk.smlershou.top/admin/api/config || true)"
+  [[ "$status" == "401" ]] && break
+  sleep 0.5
+done
 test "$status" = "401"
 grep -q '127.0.0.1:18104' "$NGINX_CONFIG"
 grep -q 'location /webhook/' "$NGINX_CONFIG"
