@@ -154,3 +154,30 @@ async def test_registry_validates_required_typed_arguments_before_execution() ->
             ),
         )
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_normalizes_tool_exceptions_for_model_repair() -> None:
+    registry = ToolRegistry()
+    definition = ToolDefinition(
+        name="typed_lookup",
+        description="Typed lookup",
+        input_schema={
+            "type": "object",
+            "required": ["query"],
+            "properties": {"query": {"type": "string"}},
+        },
+    )
+    registry.register(definition, FakeLookupTool())
+
+    result = await ToolLoop(registry=registry, max_rounds=1).run(
+        calls=[("typed_lookup", {})],
+        context=ToolExecutionContext(
+            ticket_id=3726,
+            session_id="root-01",
+            root_session_id="root-01",
+        ),
+    )
+
+    assert result.results[0].status is ToolResultStatus.FAILURE
+    assert result.results[0].summary == "tool typed_lookup requires argument query"

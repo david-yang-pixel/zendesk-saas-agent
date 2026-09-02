@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
-from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
-from contracts.tool import ToolResult
+from casework_tool_sdk.registry import (
+    ToolExecutionContext,
+    ToolExecutionError,
+    ToolNotFoundError,
+    ToolRegistry,
+)
+from contracts.tool import ToolResult, ToolResultStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +58,16 @@ class ToolLoop:
                         termination_reason="max_rounds",
                         rounds=rounds,
                     )
-                result = await self._registry.execute(
-                    name, arguments, context=context
-                )
+                try:
+                    result = await self._registry.execute(
+                        name, arguments, context=context
+                    )
+                except (ToolExecutionError, ToolNotFoundError) as error:
+                    result = ToolResult(
+                        status=ToolResultStatus.FAILURE,
+                        summary=str(error),
+                        observed_at=datetime.now(UTC),
+                    )
                 results.append(result)
                 rounds += 1
                 if not result.retryable or retries >= self._max_retries_per_call:
