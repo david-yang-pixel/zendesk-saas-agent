@@ -158,12 +158,18 @@ def test_durable_admission_owns_the_complete_webhook_transaction() -> None:
         TestClient(create_app(admission=admission)),
     )
 
-    response = client.post("/webhook/zendesk", json=_payload())
+    response = client.post(
+        "/webhook/zendesk",
+        json=_payload(snapshot_cursor="messaging:latest-customer-message"),
+    )
 
     assert response.json()["action"] == "enqueue"
     assert len(admission.events) == 1
     assert admission.events[0].event_id == "evt-01"
     assert admission.events[0].normalized.ticket_id == 3726
+    assert admission.events[0].raw_payload["snapshot_cursor"] == (
+        "messaging:latest-customer-message"
+    )
 
 
 def test_duplicate_matching_webhook_is_deduplicated_by_event_id() -> None:

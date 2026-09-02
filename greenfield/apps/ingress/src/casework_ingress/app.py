@@ -60,6 +60,7 @@ class ZendeskWebhookPayload(BaseModel):
     visibility: object | None = None
     message_visibility: object | None = None
     is_public: object | None = None
+    snapshot_cursor: str | None = Field(default=None, min_length=1)
 
     @staticmethod
     def _normalise_origin_value(value: object | None) -> str | None:
