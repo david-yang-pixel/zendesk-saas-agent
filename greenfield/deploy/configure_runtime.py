@@ -71,10 +71,14 @@ def configure(
     tool_names = [cast(str, name) for name in tool_name_values]
 
     root_model = config.get("root_model")
-    root_is_unconfigured = not isinstance(root_model, dict) or any(
-        root_model.get(field) in (None, "", "unconfigured")
-        for field in ("provider", "model", "credential_ref")
-    )
+    if isinstance(root_model, dict):
+        root_values = cast(dict[str, object], root_model)
+        root_is_unconfigured = any(
+            root_values.get(field) in (None, "", "unconfigured")
+            for field in ("provider", "model", "credential_ref")
+        )
+    else:
+        root_is_unconfigured = True
     if root_is_unconfigured:
         root_model = {
             "provider": "openai",
