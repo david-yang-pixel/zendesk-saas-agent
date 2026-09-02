@@ -70,6 +70,28 @@ for _ in $(seq 1 60); do
 done
 curl -fsS --max-time 5 http://127.0.0.1:18102/readyz >/dev/null
 
+# Docker health status can lag behind a successful HTTP readiness response by
+# one healthcheck interval after a forced recreation. Wait for that status to
+# converge before exposing the new routes so a healthy service is not treated
+# as a failed cutover merely because it is still marked "starting".
+for service in ingress harness admin; do
+  container="casework-greenfield-${service}-1"
+  healthy=0
+  for _ in $(seq 1 60); do
+    status="$(docker inspect "$container" --format '{{.State.Health.Status}}')"
+    if [[ "$status" == "healthy" ]]; then
+      healthy=1
+      break
+    fi
+    if [[ "$status" == "unhealthy" ]]; then
+      docker logs --tail 100 "$container" >&2 || true
+      break
+    fi
+    sleep 2
+  done
+  test "$healthy" = "1"
+done
+
 # Render, validate and expose only the Greenfield routes. The legacy process
 # remains available only until the public Greenfield checks have passed.
 python3 "$CODE_DIR/greenfield/deploy/nginx_switch.py" \
@@ -81,10 +103,6 @@ systemctl reload nginx
 curl -fsS --max-time 10 https://zendesk.smlershou.top/healthz >/dev/null
 curl -fsS --max-time 10 https://zendesk.smlershou.top/admin/ >/dev/null
 
-for service in ingress harness admin; do
-  container="casework-greenfield-${service}-1"
-  test "$(docker inspect "$container" --format '{{.State.Health.Status}}')" = "healthy"
-done
 test -z "$(docker ps --filter 'label=casework.managed=true' --format '{{.Names}}')"
 
 # The new routes and services are healthy. Permanently remove the legacy
