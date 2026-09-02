@@ -67,9 +67,7 @@ async def test_mcp_tool_initializes_then_calls_remote_tool_with_bearer() -> None
                 "jsonrpc": "2.0",
                 "id": payload["id"],
                 "result": {
-                    "content": [
-                        {"type": "text", "text": "Found workspace ws-1"}
-                    ],
+                    "content": [{"type": "text", "text": "Found workspace ws-1"}],
                     "structuredContent": {"workspace_id": "ws-1"},
                 },
             },
@@ -97,8 +95,7 @@ async def test_mcp_tool_initializes_then_calls_remote_tool_with_bearer() -> None
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_supports_streamable_http_sse_responses_and_initializes_once(
-) -> None:
+async def test_mcp_tool_handles_sse_and_initializes_once() -> None:
     methods: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -178,6 +175,48 @@ async def test_mcp_tool_never_returns_remote_error_as_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mcp_tool_preserves_sanitized_tool_error_for_model_repair() -> None:
+    remote_error = json.dumps(
+        {
+            "success": False,
+            "code": "QUERY_ERROR",
+            "error": 'invalid input syntax for type uuid: "{{app_id}}"',
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        if payload["method"] == "initialize":
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": payload["id"], "result": {}},
+            )
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": payload["id"],
+                "result": {
+                    "isError": True,
+                    "content": [{"type": "text", "text": remote_error}],
+                },
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        result = await _tool(client)({}, _context())
+    finally:
+        await client.aclose()
+
+    assert result.status is ToolResultStatus.FAILURE
+    assert result.summary == remote_error
+    assert result.data == {
+        "content": [{"type": "text", "text": remote_error}],
+    }
+
+
+@pytest.mark.asyncio
 async def test_mcp_tool_rejects_a_json_rpc_response_for_another_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -212,9 +251,7 @@ async def test_mcp_tool_redacts_credential_if_remote_service_echoes_it() -> None
                 "jsonrpc": "2.0",
                 "id": payload["id"],
                 "result": {
-                    "content": [
-                        {"type": "text", "text": "token=secret-token"}
-                    ],
+                    "content": [{"type": "text", "text": "token=secret-token"}],
                     "structuredContent": {"token": "secret-token"},
                 },
             },
@@ -232,8 +269,9 @@ async def test_mcp_tool_redacts_credential_if_remote_service_echoes_it() -> None
 
 
 @pytest.mark.asyncio
-async def test_mcp_tool_ready_only_initializes_and_missing_secret_fails_closed(
-) -> None:
+async def test_mcp_tool_ready_only_initializes_and_missing_secret_fails_closed() -> (
+    None
+):
     methods: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from casework_agent_core.context import ContextGovernance
 from casework_agent_core.domain import (
@@ -54,8 +54,67 @@ def test_snapshot_resolves_original_question_and_plans_a_dynamic_todo() -> None:
     assert ready.suggested_tools == ("workspace_lookup",)
 
 
-def test_evidence_gate_admits_success_and_rejects_answer_without_bound_evidence(
-) -> None:
+def test_active_question_starts_after_latest_public_agent_reply() -> None:
+    snapshot = TicketSnapshot(
+        ticket_id=3726,
+        status="open",
+        requester_id=1,
+        assignee_id=2,
+        tags=("saas",),
+        messages=(
+            TicketComment(
+                event_id="customer-old",
+                author_origin="customer",
+                public=True,
+                body="Hello",
+                created_at=NOW,
+            ),
+            TicketComment(
+                event_id="agent-reply",
+                author_origin="agent",
+                public=True,
+                body="Which workspace is affected?",
+                created_at=NOW + timedelta(seconds=1),
+            ),
+            TicketComment(
+                event_id="customer-current",
+                author_origin="customer",
+                public=True,
+                body="Check the installed OpenAI plugin version.",
+                created_at=NOW + timedelta(seconds=2),
+            ),
+            TicketComment(
+                event_id="agent-internal",
+                author_origin="agent",
+                public=False,
+                body="Internal processing marker",
+                created_at=NOW + timedelta(seconds=3),
+            ),
+            TicketComment(
+                event_id="customer-clarification",
+                author_origin="customer",
+                public=True,
+                body="Please check the current workspace.",
+                created_at=NOW + timedelta(seconds=4),
+            ),
+        ),
+        locale="en-US",
+        latest_customer_cursor="customer-clarification",
+        complete=True,
+        fetched_at=NOW + timedelta(seconds=5),
+    )
+
+    question = resolve_active_question(snapshot)
+
+    assert question.original_event_id == "customer-current"
+    assert question.original_request == "Check the installed OpenAI plugin version."
+    assert question.clarification_event_ids == ("customer-clarification",)
+    assert question.current_facts == ("Please check the current workspace.",)
+
+
+def test_evidence_gate_admits_success_and_rejects_answer_without_bound_evidence() -> (
+    None
+):
     gate = EvidenceGate()
     result = ToolResult(
         status=ToolResultStatus.SUCCESS,

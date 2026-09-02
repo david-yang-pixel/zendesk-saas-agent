@@ -104,7 +104,7 @@ class McpStreamableHttpTool:
             raise McpProtocolError("MCP tools/call response is missing result")
         result = cast(Mapping[str, Any], raw_result)
         if bool(result.get("isError")):
-            return self._failure_result("MCP tool call returned an error")
+            return self._normalize_failure(result)
         return self._normalize_result(result)
 
     async def _ensure_initialized(self) -> None:
@@ -183,9 +183,7 @@ class McpStreamableHttpTool:
         safe_mapping = _mapping(safe_result)
         raw_content = safe_mapping.get("content", [])
         content = (
-            cast(list[JsonValue], raw_content)
-            if isinstance(raw_content, list)
-            else []
+            cast(list[JsonValue], raw_content) if isinstance(raw_content, list) else []
         )
         text_parts = _text_parts(content)
         summary = " ".join(part for part in text_parts if part).strip()
@@ -209,6 +207,30 @@ class McpStreamableHttpTool:
             summary=summary,
             data=data or None,
             evidence_id=evidence_id,
+            observed_at=datetime.now(UTC),
+        )
+
+    def _normalize_failure(self, result: Mapping[str, Any]) -> ToolResult:
+        secret = self._credential()
+        safe_mapping = _mapping(_redact(result, secret))
+        raw_content = safe_mapping.get("content", [])
+        content = (
+            cast(list[JsonValue], raw_content) if isinstance(raw_content, list) else []
+        )
+        summary = " ".join(_text_parts(content)).strip()
+        if not summary:
+            summary = "MCP tool call returned an error"
+        data: dict[str, JsonValue] | None = None
+        if content:
+            data = {"content": content}
+        structured = safe_mapping.get("structuredContent")
+        if structured is not None:
+            data = data or {}
+            data["structured_content"] = cast(JsonValue, structured)
+        return ToolResult(
+            status=ToolResultStatus.FAILURE,
+            summary=summary,
+            data=data,
             observed_at=datetime.now(UTC),
         )
 
@@ -260,10 +282,7 @@ def _redact(value: object, secret: str) -> JsonValue:
         return value
     if isinstance(value, Mapping):
         mapping_value = cast(Mapping[object, object], value)
-        return {
-            str(key): _redact(item, secret)
-            for key, item in mapping_value.items()
-        }
+        return {str(key): _redact(item, secret) for key, item in mapping_value.items()}
     if isinstance(value, list):
         list_value = cast(list[object], value)
         return [_redact(item, secret) for item in list_value]
