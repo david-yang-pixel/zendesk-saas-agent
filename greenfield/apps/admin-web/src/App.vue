@@ -65,23 +65,22 @@ onMounted(async () => {
   <div v-else class="app-shell">
     <aside class="sidebar">
       <div class="brand-lockup">
-        <div class="brand-mark" aria-hidden="true"><span>c</span></div>
+        <div class="brand-mark" aria-hidden="true"><span>C</span></div>
         <div>
-          <p class="brand-name">Casework</p>
-          <p class="brand-caption">OPERATIONS CONSOLE</p>
+          <p class="brand-name">Dify Casework</p>
+          <p class="brand-caption">Agent Harness</p>
         </div>
       </div>
 
       <div class="workspace-switcher" aria-label="当前工作区">
-        <div class="workspace-avatar">DS</div>
+        <div class="workspace-avatar">D</div>
         <div class="workspace-copy">
-          <span class="workspace-label">工作区</span>
           <strong>Dify SaaS Support</strong>
+          <span class="workspace-label">Production workspace</span>
         </div>
-        <AppIcon name="chevron" :size="15" />
       </div>
 
-      <p class="nav-section-label">控制台</p>
+      <p class="nav-section-label">Workspace</p>
       <nav class="primary-nav" aria-label="主导航">
         <RouterLink
           v-for="item in navItems"
@@ -95,21 +94,13 @@ onMounted(async () => {
             <span>{{ item.label }}</span>
             <small>{{ item.hint }}</small>
           </span>
-          <span v-if="item.path === '/runs'" class="nav-count">7</span>
         </RouterLink>
       </nav>
 
       <div class="sidebar-spacer" />
-      <div class="sidebar-status">
-        <span class="pulse-dot" aria-hidden="true" />
-        <div>
-          <strong>系统运行正常</strong>
-          <span>所有服务已连接</span>
-        </div>
-      </div>
       <div class="sidebar-footer">
-        <div class="avatar">YL</div>
-        <div class="user-copy"><strong>{{ session?.username }}</strong><span>Administrator</span></div>
+        <div class="avatar">{{ session?.username?.slice(0, 1).toUpperCase() }}</div>
+        <div class="user-copy"><strong>{{ session?.username }}</strong><span>管理员</span></div>
         <button type="button" class="icon-button icon-button--muted" aria-label="退出登录" @click="signOut">
           <AppIcon name="logout" :size="17" />
         </button>
@@ -118,19 +109,12 @@ onMounted(async () => {
 
     <main class="main-content">
       <header class="topbar">
-        <div class="breadcrumbs" aria-label="面包屑">
-          <span>Casework</span><span class="breadcrumb-divider">/</span><strong>{{ currentLabel }}</strong>
+        <div class="breadcrumbs" aria-label="当前页面">
+          <strong>{{ currentLabel }}</strong>
         </div>
         <div class="topbar-actions">
-          <span class="environment-chip"><span class="pulse-dot" aria-hidden="true" /> Production</span>
-          <button type="button" class="icon-button" aria-label="搜索">
-            <AppIcon name="search" :size="18" />
-          </button>
-          <button type="button" class="icon-button notification-button" aria-label="通知">
-            <AppIcon name="bell" :size="18" /><span class="notification-dot" aria-hidden="true" />
-          </button>
-          <div class="topbar-divider" />
-          <span class="revision-label">Config <strong>r42</strong></span>
+          <span class="environment-chip"><span class="pulse-dot" aria-hidden="true" />Production</span>
+          <span class="topbar-account">{{ session?.username }}</span>
         </div>
       </header>
 

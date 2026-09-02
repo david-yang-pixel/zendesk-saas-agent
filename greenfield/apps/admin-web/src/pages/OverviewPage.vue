@@ -125,7 +125,7 @@ onMounted(() => { void refreshOverview() })
         </div>
       </div>
       <div class="agent-banner__meta">
-          <div><span>当前版本</span><strong>Harness {{ overview.configRevision }}</strong></div>
+        <div><span>当前版本</span><strong>Harness {{ overview.configRevision }}</strong></div>
         <div><span>心跳</span><strong>{{ overview.heartbeat ?? '暂无数据' }}</strong></div>
         <button
           type="button"
@@ -149,11 +149,11 @@ onMounted(() => { void refreshOverview() })
       <section class="panel queue-panel">
         <div class="panel-heading">
           <div><p class="eyebrow">QUEUE HEALTH</p><h2>队列健康度</h2></div>
-          <button type="button" class="text-button">查看全部 <AppIcon name="external" :size="13" /></button>
+          <RouterLink to="/runs" class="text-button">查看全部 <AppIcon name="external" :size="13" /></RouterLink>
         </div>
         <div class="queue-summary">
           <div class="queue-total"><strong>{{ activeQueueTotal }}</strong><span>个活动任务</span></div>
-          <div class="queue-track" aria-label="队列任务分布">
+          <div class="queue-track" role="img" aria-label="队列任务分布">
             <span v-for="(item, index) in overview.queueHealth" :key="item.label" class="queue-segment" :class="`queue-segment--${['blue', 'green', 'amber', 'red'][index % 4]}`" :style="{ width: queueWidth(item) }" />
           </div>
         </div>
@@ -162,6 +162,9 @@ onMounted(() => { void refreshOverview() })
             <div class="queue-row__label"><span class="queue-marker" :class="`marker-${item.tone}`" />{{ item.label }}</div>
             <div class="queue-row__description">{{ item.description }}</div>
             <strong>{{ item.count }}</strong>
+          </div>
+          <div v-if="overview.queueHealth.length === 0" class="empty-state" role="status">
+            <AppIcon name="check" :size="17" />暂无活动队列数据
           </div>
         </div>
       </section>
@@ -177,6 +180,9 @@ onMounted(() => { void refreshOverview() })
             <div class="failure-copy"><strong>{{ failure.title }}</strong><span>{{ failure.detail }}</span></div>
             <time>{{ failure.time }}</time>
           </article>
+          <div v-if="overview.failures.length === 0" class="empty-state" role="status">
+            <AppIcon name="check" :size="17" />当前没有需要关注的异常
+          </div>
         </div>
       </section>
     </div>
@@ -188,17 +194,17 @@ onMounted(() => { void refreshOverview() })
       </div>
       <div class="table-wrap">
         <table class="data-table">
-          <thead><tr><th>工单</th><th>主题</th><th>状态</th><th>开始时间</th><th>耗时</th><th>Tool steps</th><th /></tr></thead>
+          <thead><tr><th>工单</th><th>主题</th><th>状态</th><th>开始时间</th><th>耗时</th><th>Tool steps</th></tr></thead>
           <tbody>
-            <tr v-for="run in overview.recentRuns" :key="run.ticketId">
-              <td><a href="#" class="ticket-link" @click.prevent>{{ `#${run.ticketId}` }}</a></td>
+            <tr v-for="run in overview.recentRuns" :key="`${run.ticketId}-${run.startedAt}`">
+              <td><RouterLink to="/runs" class="ticket-link">{{ `#${run.ticketId}` }}</RouterLink></td>
               <td class="subject-cell">{{ run.subject }}</td>
               <td><StatusBadge :label="run.statusLabel" :tone="statusTone(run.status)" /></td>
               <td class="muted-cell">{{ run.startedAt }}</td>
               <td class="mono-cell">{{ run.duration }}</td>
               <td class="mono-cell">{{ run.steps ?? '未知' }}</td>
-              <td><button type="button" class="icon-button icon-button--small" aria-label="打开运行详情"><AppIcon name="chevron" :size="15" /></button></td>
             </tr>
+            <tr v-if="overview.recentRuns.length === 0"><td colspan="6" class="empty-cell"><AppIcon name="activity" :size="20" /><strong>暂无运行记录</strong><span>符合规则的工单进入 Harness 后会显示在这里。</span></td></tr>
           </tbody>
         </table>
       </div>

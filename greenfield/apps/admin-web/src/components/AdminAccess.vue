@@ -63,8 +63,8 @@ async function submitPasswordChange() {
   <main class="access-page">
     <section class="access-card" aria-labelledby="access-title">
       <div class="access-brand">
-        <div class="brand-mark" aria-hidden="true"><span>c</span></div>
-        <div><strong>Casework</strong><small>OPERATIONS CONSOLE</small></div>
+        <div class="brand-mark" aria-hidden="true"><span>C</span></div>
+        <div><strong>Dify Casework</strong><small>Agent Harness</small></div>
       </div>
 
       <template v-if="changingPassword">
@@ -85,14 +85,14 @@ async function submitPasswordChange() {
             <input v-model="confirmPassword" type="password" autocomplete="new-password" required minlength="12" maxlength="256">
           </label>
           <p v-if="errorMessage" class="access-error" role="alert">{{ errorMessage }}</p>
-          <button class="button access-submit" type="submit" :disabled="busy">{{ busy ? '正在更新…' : '更新密码' }}</button>
+          <button class="button button--primary access-submit" type="submit" :disabled="busy">{{ busy ? '正在更新…' : '更新密码' }}</button>
         </form>
       </template>
 
       <template v-else>
         <p class="eyebrow">SECURE ADMIN ACCESS</p>
         <h1 id="access-title">登录管理后台</h1>
-        <p class="access-description">使用现有管理员账号进入 Greenfield 控制台。</p>
+      <p class="access-description">使用管理员账号进入 Casework 控制台。</p>
         <p v-if="notice" class="access-notice" role="status">{{ notice }}</p>
         <form class="access-form" @submit.prevent="submitLogin">
           <label>
@@ -104,7 +104,7 @@ async function submitPasswordChange() {
             <input v-model="password" type="password" autocomplete="current-password" required maxlength="256">
           </label>
           <p v-if="errorMessage" class="access-error" role="alert">{{ errorMessage }}</p>
-          <button class="button access-submit" type="submit" :disabled="busy">{{ busy ? '正在登录…' : '登录管理后台' }}</button>
+          <button class="button button--primary access-submit" type="submit" :disabled="busy">{{ busy ? '正在登录…' : '登录管理后台' }}</button>
         </form>
       </template>
       <p class="access-security">受 HTTPS、会话 Cookie 与 CSRF 防护保护</p>

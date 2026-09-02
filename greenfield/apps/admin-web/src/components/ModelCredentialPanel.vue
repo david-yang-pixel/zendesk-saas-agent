@@ -114,17 +114,17 @@ onMounted(() => { void loadCredentials() })
 <style scoped>
 .credential-panel { margin-top: 18px; }
 .credential-list { display: grid; gap: 10px; }
-.credential-row { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(320px, 1.2fr); gap: 20px; align-items: end; padding: 14px; border: 1px solid #e2e7ee; border-radius: 7px; background: #fbfcfe; }
+.credential-row { display: grid; grid-template-columns: minmax(220px, .8fr) minmax(320px, 1.2fr); gap: 20px; align-items: end; padding: 15px; border: 1px solid #e2e2df; border-radius: 10px; background: #fafaf8; }
 .credential-identity { display: grid; gap: 5px; min-width: 0; }
 .credential-title { display: flex; align-items: center; gap: 8px; }
-.credential-title code { overflow: hidden; color: #53647c; font: 500 10px 'DM Mono', monospace; text-overflow: ellipsis; }
-.credential-identity > span { color: #6e7e93; font: 500 10px 'DM Mono', monospace; }
-.credential-identity small { overflow: hidden; color: #98a4b3; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.credential-title code { overflow: hidden; color: #4d4d50; font: 500 10px ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; }
+.credential-identity > span { color: #69696d; font: 500 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.credential-identity small { overflow: hidden; color: #96969a; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .credential-replace { display: grid; gap: 6px; }
-.credential-replace > label { color: #8190a3; font-size: 9px; font-weight: 600; }
+.credential-replace > label { color: #77777b; font-size: 9px; font-weight: 600; }
 .credential-input-row { display: grid; grid-template-columns: minmax(160px, 1fr) auto; gap: 8px; }
 .credential-input-row .button { white-space: nowrap; }
-.credential-message, .credential-empty { margin-bottom: 10px; padding: 9px 11px; border-radius: 5px; font-size: 10px; }
+.credential-message, .credential-empty { margin-bottom: 10px; padding: 10px 12px; border-radius: 8px; font-size: 10px; }
 .credential-message--danger { color: #a94d59; background: #fff4f5; }
 .credential-message--success { color: #3d8062; background: #f0faf5; }
 .credential-empty { color: #8c99aa; background: #f7f9fc; }
