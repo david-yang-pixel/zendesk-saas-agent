@@ -81,6 +81,8 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert runtime["ZENDESK_BASE_URL"] == "https://example.zendesk.com"
     assert runtime["CASEWORK_DELIVERY_MODE"] == "dry_run"
     assert runtime["DOCKER_GID"] == str(socket.stat().st_gid)
+    assert runtime["CASEWORK_ADMIN_AUTH_DIR"] == str(state_dir / "admin-auth")
+    assert runtime["CASEWORK_ADMIN_PUBLIC_ORIGIN"] == "https://zendesk.smlershou.top"
     assert len(tools) == len(prepare_runtime.READ_ONLY_SERVICES)
     parsed = SandboxRuntimeConfig.from_env(runtime)
     assert len(parsed.tool_configs) == len(prepare_runtime.READ_ONLY_SERVICES)
@@ -90,6 +92,57 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert (
         os.stat(state_dir / "credentials" / "credentials.env").st_mode & 0o777 == 0o600
     )
+    assert os.stat(state_dir / "admin-auth" / "internal-token").st_mode & 0o777 == 0o600
+
+
+def test_prepare_runtime_migrates_legacy_admin_password_hash_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_env = tmp_path / "legacy.env"
+    state_dir = tmp_path / "state"
+    socket = tmp_path / "docker.sock"
+    legacy_auth = tmp_path / "admin_auth.json"
+    socket.touch()
+    _source_environment(source_env)
+    legacy_auth.write_text(
+        json.dumps(
+            {
+                "users": {
+                    "admin": {
+                        "password": {"algorithm": "pbkdf2_sha256"},
+                        "force_password_change": False,
+                    }
+                }
+            }
+        )
+    )
+    digest = "sha256:" + ("a" * 64)
+    for name in (
+        "CASEWORK_INGRESS_IMAGE",
+        "CASEWORK_HARNESS_IMAGE",
+        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_ADMIN_IMAGE",
+    ):
+        monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
+
+    def _discover_empty(
+        _service: prepare_runtime.McpService, _secret: str
+    ) -> list[dict[str, object]]:
+        return []
+
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", _discover_empty)
+
+    prepare_runtime.prepare(
+        source_env=source_env,
+        state_dir=state_dir,
+        revision="b" * 40,
+        docker_socket=socket,
+        legacy_auth_path=legacy_auth,
+    )
+
+    migrated = json.loads((state_dir / "admin-auth" / "admin_auth.json").read_text())
+    assert migrated == json.loads(legacy_auth.read_text())
 
 
 def test_prepare_runtime_preserves_admin_replaced_model_credential(
@@ -144,8 +197,13 @@ def test_configure_runtime_sets_rules_models_skills_and_tools(
     calls: list[tuple[str, str, object | None]] = []
 
     def _request(
-        url: str, *, method: str = "GET", payload: object | None = None
+        url: str,
+        *,
+        internal_token: str,
+        method: str = "GET",
+        payload: object | None = None,
     ) -> dict[str, Any]:
+        assert internal_token == "internal-token"
         calls.append((url, method, payload))
         if method == "GET":
             return {
@@ -159,6 +217,7 @@ def test_configure_runtime_sets_rules_models_skills_and_tools(
         base_url="http://127.0.0.1:18104",
         activate=True,
         tool_names_path=tool_names,
+        internal_token="internal-token",
     )
 
     assert revision == "revision-2"
@@ -169,6 +228,7 @@ def test_configure_runtime_sets_rules_models_skills_and_tools(
     assert isinstance(config, dict)
     assert config["desired_state"] == "running"
     assert config["root_model"]["credential_ref"] == "openai-primary"
+    assert config["root_model"]["base_url"] == "https://api.openai.com"
     assert config["subagent_slots"] == []
     assert config["rules"]["statuses"] == ["new", "open"]
     assert config["rules"]["reply_enabled"] is True

@@ -33,7 +33,14 @@ def test_probe_ignores_historical_failed_run(monkeypatch: Any) -> None:
         },
     ]
 
-    def fake_request(_url: str, _payload: object | None = None) -> dict[str, Any]:
+    def fake_request(
+        _url: str,
+        _payload: object | None = None,
+        *,
+        internal_token: str | None = None,
+    ) -> dict[str, Any]:
+        if "/api/runs" in _url:
+            assert internal_token == "internal-token"
         return responses.pop(0)
 
     monkeypatch.setattr(
@@ -42,7 +49,14 @@ def test_probe_ignores_historical_failed_run(monkeypatch: Any) -> None:
         fake_request,
     )
 
-    assert dry_run_probe.probe(ticket_id=3726, timeout_seconds=1) == "new-session"
+    assert (
+        dry_run_probe.probe(
+            ticket_id=3726,
+            timeout_seconds=1,
+            internal_token="internal-token",
+        )
+        == "new-session"
+    )
 
 
 def test_ticket_session_ids_filters_other_tickets_and_invalid_sessions() -> None:

@@ -23,6 +23,10 @@ from contracts.ticket import TicketMessage
 from contracts.tool import ToolDefinition, ToolResult, ToolResultStatus
 
 
+async def _allow_public_endpoint(_base_url: str) -> None:
+    return None
+
+
 def _model_inputs() -> tuple[TicketSnapshot, ActiveQuestion, LoadedSkill]:
     now = datetime.now(UTC)
     snapshot = TicketSnapshot(
@@ -123,6 +127,7 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
         provider="openai",
         api_key="root-key",
         model_name="root-model",
+        endpoint_guard=_allow_public_endpoint,
     )
     snapshot, question, skill = _model_inputs()
 
@@ -148,6 +153,7 @@ async def test_root_model_fails_closed_on_non_json_responses_output() -> None:
         provider="openai",
         api_key="root-key",
         model_name="root-model",
+        endpoint_guard=_allow_public_endpoint,
     )
     snapshot, question, skill = _model_inputs()
 
@@ -178,6 +184,7 @@ async def test_root_model_reports_sanitized_http_status_and_error_code() -> None
         provider="openai",
         api_key="root-key",
         model_name="root-model",
+        endpoint_guard=_allow_public_endpoint,
     )
     snapshot, question, skill = _model_inputs()
 
@@ -207,6 +214,7 @@ async def test_root_model_rejects_response_fields_outside_strict_schema() -> Non
         provider="openai",
         api_key="root-key",
         model_name="root-model",
+        endpoint_guard=_allow_public_endpoint,
     )
     snapshot, question, skill = _model_inputs()
 
@@ -220,8 +228,9 @@ def test_production_config_fails_closed_when_an_external_adapter_is_missing() ->
         SandboxRuntimeConfig.from_env({})
 
 
-def test_production_config_requires_at_least_one_registered_investigation_tool(
-) -> None:
+def test_production_config_requires_at_least_one_registered_investigation_tool() -> (
+    None
+):
     env = {
         "ZENDESK_BASE_URL": "https://tenant.zendesk.com",
         "ZENDESK_EMAIL": "support@example.com",
@@ -313,8 +322,9 @@ def test_mcp_tool_config_is_parsed_with_remote_name_and_credential_reference() -
 
 
 @pytest.mark.asyncio
-async def test_factory_wires_mcp_streamable_http_adapter_and_bearer_credential(
-) -> None:
+async def test_factory_wires_mcp_streamable_http_adapter_and_bearer_credential() -> (
+    None
+):
     env = {
         "ZENDESK_BASE_URL": "https://tenant.zendesk.com",
         "ZENDESK_EMAIL": "support@example.com",
@@ -410,6 +420,7 @@ async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
         nonlocal requests
         requests += 1
         assert request.headers["authorization"] == "Bearer child-secret"
+        assert request.url.host == "child-model.example.com"
         observed.append(request.read())
         assert b"child-secret" not in observed[-1]
         assert request.url.path == "/v1/responses"
@@ -476,6 +487,7 @@ async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
         resolver=MappingSecretResolver(
             {"secret/root": "root-secret", "secret/child": "child-secret"}
         ),
+        endpoint_guard=_allow_public_endpoint,
     )
     session = ChildSession(
         session_id="sub-1",
@@ -483,6 +495,7 @@ async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
         parent_session_id="root-1",
         slot_id="logs",
         provider="child-provider",
+        base_url="https://child-model.example.com",
         model="child-model",
         credential_ref="secret/child",
         context_window=1_000,
@@ -529,6 +542,7 @@ async def test_child_adapter_rejects_unbacked_model_evidence() -> None:
         client=client,
         base_url="https://model.example.com",
         resolver=MappingSecretResolver({"secret/child": "child-secret"}),
+        endpoint_guard=_allow_public_endpoint,
     )
     session = ChildSession(
         session_id="sub-1",
@@ -536,6 +550,7 @@ async def test_child_adapter_rejects_unbacked_model_evidence() -> None:
         parent_session_id="root-1",
         slot_id="logs",
         provider="child-provider",
+        base_url="https://child-model.example.com",
         model="child-model",
         credential_ref="secret/child",
         context_window=1_000,

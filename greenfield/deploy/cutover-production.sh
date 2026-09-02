@@ -31,6 +31,7 @@ rollback_on_error() {
     sed -i 's/^CASEWORK_DELIVERY_MODE=.*/CASEWORK_DELIVERY_MODE="dry_run"/' "$RUNTIME_ENV" || true
     python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
       --base-url http://127.0.0.1:18104 \
+      --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
       --tool-names "$STATE_DIR/tool-names.json" || true
     "${compose[@]}" up -d --force-recreate harness >/dev/null 2>&1 || true
   fi
@@ -53,10 +54,12 @@ done
 # exercise the real ticket fetch, model, Tool Loop and Sandbox lifecycle.
 python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
   --base-url http://127.0.0.1:18104 \
+  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
   --tool-names "$STATE_DIR/tool-names.json" \
   --activate
 python3 "$CODE_DIR/greenfield/deploy/dry_run_probe.py" \
-  --ticket-id "$PROBE_TICKET_ID" --timeout-seconds 900
+  --ticket-id "$PROBE_TICKET_ID" --timeout-seconds 900 \
+  --internal-token-file "$STATE_DIR/admin-auth/internal-token"
 
 # Turn on the delivery adapter only after the no-write run has completed.
 sed -i 's/^CASEWORK_DELIVERY_MODE=.*/CASEWORK_DELIVERY_MODE="live"/' "$RUNTIME_ENV"

@@ -8,16 +8,22 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 
-def _json_request(url: str, payload: object | None = None) -> dict[str, Any]:
+def _json_request(
+    url: str, payload: object | None = None, *, internal_token: str | None = None
+) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
         url,
         data=data,
         method="GET" if payload is None else "POST",
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            **({"Authorization": f"Bearer {internal_token}"} if internal_token else {}),
+        },
     )
     with urllib.request.urlopen(request, timeout=20) as response:
         result = json.loads(response.read())
@@ -26,9 +32,12 @@ def _json_request(url: str, payload: object | None = None) -> dict[str, Any]:
     return cast(dict[str, Any], result)
 
 
-def probe(*, ticket_id: int, timeout_seconds: int) -> str:
+def probe(*, ticket_id: int, timeout_seconds: int, internal_token: str) -> str:
     query = urllib.parse.quote(str(ticket_id))
-    before = _json_request(f"http://127.0.0.1:18104/api/runs?query={query}")
+    before = _json_request(
+        f"http://127.0.0.1:18104/api/runs?query={query}",
+        internal_token=internal_token,
+    )
     existing_sessions = _ticket_session_ids(before, ticket_id=ticket_id)
     event_id = f"greenfield-dry-run-{ticket_id}-{time.time_ns()}"
     admitted = _json_request(
@@ -51,7 +60,10 @@ def probe(*, ticket_id: int, timeout_seconds: int) -> str:
 
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        runs = _json_request(f"http://127.0.0.1:18104/api/runs?query={query}")
+        runs = _json_request(
+            f"http://127.0.0.1:18104/api/runs?query={query}",
+            internal_token=internal_token,
+        )
         items = runs.get("items")
         if isinstance(items, list):
             for raw in cast(list[object], items):
@@ -93,8 +105,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ticket-id", type=int, default=3726)
     parser.add_argument("--timeout-seconds", type=int, default=900)
+    parser.add_argument("--internal-token-file", type=Path, required=True)
     args = parser.parse_args()
-    probe(ticket_id=args.ticket_id, timeout_seconds=args.timeout_seconds)
+    probe(
+        ticket_id=args.ticket_id,
+        timeout_seconds=args.timeout_seconds,
+        internal_token=args.internal_token_file.read_text(encoding="utf-8").strip(),
+    )
 
 
 if __name__ == "__main__":

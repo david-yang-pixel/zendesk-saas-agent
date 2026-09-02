@@ -42,6 +42,7 @@ class _Projection(BaseModel):
 
 class _ModelConfig(_Projection):
     provider: str = Field(min_length=1)
+    base_url: str = Field(default="https://api.openai.com", min_length=1)
     model: str = Field(min_length=1)
     credential_ref: str = Field(min_length=1)
 

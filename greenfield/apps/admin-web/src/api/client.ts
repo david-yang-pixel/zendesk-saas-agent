@@ -2,6 +2,7 @@ import type {
   AdminConfig,
   AdminConfigSnapshot,
   ConnectionProbe,
+  ModelCatalog,
   ModelCredentialReplaceResult,
   ModelCredentialStatus,
   OverviewData,
@@ -17,6 +18,7 @@ export { adminApiBasePath, adminBasePath } from '../base-path'
 
 export interface AdminApiTransport {
   request<T>(path: string, init?: RequestInit): Promise<T>
+  setCsrfToken?(token: string | null): void
 }
 
 export class AdminApiHttpError extends Error {
@@ -27,12 +29,25 @@ export class AdminApiHttpError extends Error {
 }
 
 class FetchAdminApiTransport implements AdminApiTransport {
+  private csrfToken: string | null = null
+
   constructor(private readonly baseUrl = adminBasePath()) {}
+
+  setCsrfToken(token: string | null) {
+    this.csrfToken = token
+  }
 
   async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       ...init,
-      headers: { Accept: 'application/json', ...init?.headers },
+      credentials: 'same-origin',
+      headers: {
+        Accept: 'application/json',
+        ...(init?.method && !['GET', 'HEAD', 'OPTIONS'].includes(init.method.toUpperCase()) && this.csrfToken
+          ? { 'X-CSRF-Token': this.csrfToken }
+          : {}),
+        ...init?.headers,
+      },
     })
     if (!response.ok) {
       let message = response.statusText || 'Admin API request failed'
@@ -50,6 +65,7 @@ class FetchAdminApiTransport implements AdminApiTransport {
 
 interface ApiModelConfig {
   provider: string
+  base_url: string
   model: string
   credential_ref: string
 }
@@ -197,6 +213,7 @@ interface ApiConnectionProbe {
 
 interface ApiModelCredentialBinding {
   provider: string
+  base_url: string
   model: string
   credential_ref: string
 }
@@ -218,6 +235,26 @@ interface ApiModelCredentialReplaceResult {
   probe: { status: 'connected' | 'degraded'; latency_ms: number | null; error_code: string | null }
 }
 
+export interface AdminSession {
+  username: string
+  csrfToken: string
+  forcePasswordChange: boolean
+}
+
+interface ApiAdminSession {
+  username: string
+  csrf_token: string
+  force_password_change: boolean
+}
+
+function toAdminSession(value: ApiAdminSession): AdminSession {
+  return {
+    username: value.username,
+    csrfToken: value.csrf_token,
+    forcePasswordChange: value.force_password_change,
+  }
+}
+
 function toModelCredential(value: ApiModelCredentialStatus): ModelCredentialStatus {
   return {
     credentialRef: value.credential_ref,
@@ -226,6 +263,7 @@ function toModelCredential(value: ApiModelCredentialStatus): ModelCredentialStat
     updatedAt: value.updated_at,
     bindings: value.bindings.map((binding) => ({
       provider: binding.provider,
+      baseUrl: binding.base_url,
       model: binding.model,
       credentialRef: binding.credential_ref,
     })),
@@ -282,6 +320,7 @@ function toConfig(value: ApiAdminConfig): AdminConfig {
     desiredState: value.desired_state,
     rootModel: {
       provider: value.root_model.provider,
+      baseUrl: value.root_model.base_url,
       model: value.root_model.model,
       credentialRef: value.root_model.credential_ref,
     },
@@ -289,6 +328,7 @@ function toConfig(value: ApiAdminConfig): AdminConfig {
       slotId: slot.slot_id,
       enabled: slot.enabled,
       provider: slot.provider,
+      baseUrl: slot.base_url,
       model: slot.model,
       credentialRef: slot.credential_ref,
       maxParallel: slot.max_parallel,
@@ -318,6 +358,7 @@ function toApiConfig(value: AdminConfig): ApiAdminConfig {
     desired_state: value.desiredState,
     root_model: {
       provider: value.rootModel.provider,
+      base_url: value.rootModel.baseUrl,
       model: value.rootModel.model,
       credential_ref: value.rootModel.credentialRef,
     },
@@ -325,6 +366,7 @@ function toApiConfig(value: AdminConfig): ApiAdminConfig {
       slot_id: slot.slotId,
       enabled: slot.enabled,
       provider: slot.provider,
+      base_url: slot.baseUrl,
       model: slot.model,
       credential_ref: slot.credentialRef,
       max_parallel: slot.maxParallel,
@@ -359,6 +401,10 @@ function toSnapshot(value: ApiConfigSnapshot): AdminConfigSnapshot {
 }
 
 export interface AdminApiClient {
+  getSession(): Promise<AdminSession>
+  login(input: { username: string; password: string }): Promise<AdminSession>
+  logout(): Promise<void>
+  changePassword(input: { currentPassword: string; newPassword: string }): Promise<void>
   getConfig(): Promise<AdminConfigSnapshot>
   saveConfig(input: { expectedRevision: string; config: AdminConfig }): Promise<AdminConfigSnapshot>
   getSandboxPolicy(): Promise<SandboxPolicy>
@@ -369,10 +415,37 @@ export interface AdminApiClient {
   testTool(toolId: string): Promise<ConnectionProbe>
   getModelCredentials(): Promise<ModelCredentialStatus[]>
   replaceModelCredential(input: { credentialRef: string; secret: string }): Promise<ModelCredentialReplaceResult>
+  discoverModels(input: { provider: string; baseUrl: string; secret: string }): Promise<ModelCatalog>
 }
 
 export function createAdminApiClient(transport: AdminApiTransport = new FetchAdminApiTransport()): AdminApiClient {
   return {
+    async getSession() {
+      const session = toAdminSession(await transport.request<ApiAdminSession>('/api/auth/session'))
+      transport.setCsrfToken?.(session.csrfToken)
+      return session
+    },
+    async login({ username, password }) {
+      const session = toAdminSession(await transport.request<ApiAdminSession>('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      }))
+      transport.setCsrfToken?.(session.csrfToken)
+      return session
+    },
+    async logout() {
+      await transport.request('/api/auth/logout', { method: 'POST' })
+      transport.setCsrfToken?.(null)
+    },
+    async changePassword({ currentPassword, newPassword }) {
+      await transport.request('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      })
+      transport.setCsrfToken?.(null)
+    },
     async getConfig() {
       return toSnapshot(await transport.request<ApiConfigSnapshot>('/api/config'))
     },
@@ -380,7 +453,7 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
       return toSnapshot(
         await transport.request<ApiConfigSnapshot>('/api/config', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'X-Admin-Actor': 'admin-web' },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ expected_revision: expectedRevision, config: toApiConfig(config) }),
         }),
       )
@@ -445,7 +518,7 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
     async replaceModelCredential({ credentialRef, secret }) {
       const value = await transport.request<ApiModelCredentialReplaceResult>('/api/model-credentials', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Admin-Actor': 'admin-web' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential_ref: credentialRef, secret }),
       })
       return {
@@ -455,6 +528,19 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
           latencyMs: value.probe.latency_ms,
           errorCode: value.probe.error_code,
         },
+      }
+    },
+    async discoverModels({ provider, baseUrl, secret }) {
+      const value = await transport.request<{ provider: string; base_url: string; models: string[]; latency_ms: number }>('/api/model-catalog', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, base_url: baseUrl, secret }),
+      })
+      return {
+        provider: value.provider,
+        baseUrl: value.base_url,
+        models: value.models,
+        latencyMs: value.latency_ms,
       }
     },
   }

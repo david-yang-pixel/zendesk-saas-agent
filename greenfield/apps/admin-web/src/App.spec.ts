@@ -8,7 +8,7 @@ async function mountConsole(path = '/') {
   const router = createAppRouter(createMemoryHistory())
   router.push(path)
   await router.isReady()
-  const wrapper = mount(App, { global: { plugins: [router] } })
+  const wrapper = mount(App, { props: { skipAuthentication: true }, global: { plugins: [router] } })
   return { wrapper, router }
 }
 

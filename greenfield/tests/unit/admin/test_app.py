@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -8,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from casework_admin.app import create_app
+from casework_admin.auth import AdminAuthStore, hash_password
 from casework_admin.config import (
     AdminConfig,
     InMemoryConfigRepository,
@@ -16,6 +18,7 @@ from casework_admin.config import (
 )
 from casework_admin.model_credentials import (
     FileCredentialStore,
+    ModelCatalogResponse,
     ModelCredentialService,
     ModelProbeResult,
     parse_credential_file,
@@ -30,12 +33,24 @@ from casework_admin.read_models import (
 
 
 class _Client(Protocol):
-    def get(self, url: str) -> httpx.Response: ...
+    def get(
+        self, url: str, *, headers: dict[str, str] | None = None
+    ) -> httpx.Response: ...
 
-    def post(self, url: str) -> httpx.Response: ...
+    def post(
+        self,
+        url: str,
+        *,
+        json: object | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response: ...
 
     def put(
-        self, url: str, *, json: object, headers: dict[str, str]
+        self,
+        url: str,
+        *,
+        json: object,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response: ...
 
 
@@ -53,12 +68,25 @@ class _ModelProbe:
         self.secrets: list[str] = []
 
     async def validate(
-        self, *, provider: str, model: str, secret: str
+        self, *, provider: str, base_url: str, model: str, secret: str
     ) -> ModelProbeResult:
         assert provider == "openai"
+        assert base_url == "https://api.openai.com"
         assert model == "root"
         self.secrets.append(secret)
         return self.result
+
+    async def discover(
+        self, *, provider: str, base_url: str, secret: str
+    ) -> ModelCatalogResponse:
+        assert provider == "openai"
+        self.secrets.append(secret)
+        return ModelCatalogResponse(
+            provider=provider,
+            base_url=base_url.rstrip("/v1"),
+            models=("gpt-a", "gpt-b"),
+            latency_ms=11,
+        )
 
 
 def _config() -> AdminConfig:
@@ -76,6 +104,147 @@ def _config() -> AdminConfig:
 def _client() -> _Client:
     repository = InMemoryConfigRepository(initial=_config())
     return cast(_Client, TestClient(create_app(repository=repository)))
+
+
+def _authenticated_client(tmp_path: Path, *, force_change: bool = False) -> _Client:
+    auth_file = tmp_path / "admin_auth.json"
+    auth_file.write_text(
+        json.dumps(
+            {
+                "users": {
+                    "admin": {
+                        "password": hash_password("correct-password"),
+                        "force_password_change": force_change,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                auth_store=AdminAuthStore(auth_file),
+                internal_token="internal-token-with-at-least-thirty-two-characters",
+                public_origin="https://admin.example.com",
+                session_cookie_path="/",
+                secure_cookie=False,
+            )
+        ),
+    )
+
+
+def test_admin_api_requires_session_and_csrf(tmp_path: Path) -> None:
+    client = _authenticated_client(tmp_path)
+
+    assert client.get("/api/config").status_code == 401
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "correct-password"},
+        ).status_code
+        == 403
+    )
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "correct-password"},
+        headers={"Origin": "https://admin.example.com"},
+    )
+
+    assert login.status_code == 200
+    assert "HttpOnly" in login.headers["set-cookie"]
+    assert "SameSite=strict" in login.headers["set-cookie"]
+    csrf = login.json()["csrf_token"]
+    current = client.get("/api/config")
+    update = {
+        "expected_revision": current.json()["revision"],
+        "config": current.json()["config"],
+    }
+    assert (
+        client.put(
+            "/api/config",
+            json=update,
+            headers={"Origin": "https://admin.example.com"},
+        ).status_code
+        == 403
+    )
+    saved = client.put(
+        "/api/config",
+        json=update,
+        headers={
+            "Origin": "https://admin.example.com",
+            "X-CSRF-Token": csrf,
+        },
+    )
+    assert saved.status_code == 200
+    assert saved.json()["actor"] == "admin"
+
+
+def test_internal_deployment_token_bypasses_browser_session(tmp_path: Path) -> None:
+    client = _authenticated_client(tmp_path)
+    response = client.get(
+        "/api/config",
+        headers={
+            "Authorization": (
+                "Bearer internal-token-with-at-least-thirty-two-characters"
+            )
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def test_login_rate_limit_returns_retry_after_without_echoing_password(
+    tmp_path: Path,
+) -> None:
+    client = _authenticated_client(tmp_path)
+    password = "incorrect-password-must-not-leak"
+    responses = [
+        client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": password},
+            headers={"Origin": "https://admin.example.com"},
+        )
+        for _ in range(6)
+    ]
+
+    assert [response.status_code for response in responses] == [
+        401,
+        401,
+        401,
+        401,
+        401,
+        429,
+    ]
+    assert int(responses[-1].headers["retry-after"]) > 0
+    assert all(password not in response.text for response in responses)
+
+
+def test_forced_password_change_blocks_console_until_completed(tmp_path: Path) -> None:
+    client = _authenticated_client(tmp_path, force_change=True)
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "correct-password"},
+        headers={"Origin": "https://admin.example.com"},
+    )
+    csrf = login.json()["csrf_token"]
+
+    assert client.get("/api/config").status_code == 403
+    changed = client.post(
+        "/api/auth/change-password",
+        json={
+            "current_password": "correct-password",
+            "new_password": "new-correct-password",
+        },
+        headers={
+            "Origin": "https://admin.example.com",
+            "X-CSRF-Token": csrf,
+        },
+    )
+    assert changed.status_code == 200
+    assert client.get("/api/config").status_code == 401
 
 
 def test_admin_health_and_fixed_policy_are_read_only() -> None:
@@ -145,6 +314,7 @@ def test_config_update_accepts_independent_subagent_limits() -> None:
                 "slot_id": "investigator",
                 "enabled": True,
                 "provider": "openai",
+                "base_url": "https://api.openai.com",
                 "model": "gpt-5.6-luna",
                 "credential_ref": "secret/child",
                 "context_window_tokens": 24_000,
@@ -166,6 +336,7 @@ def test_config_update_accepts_independent_subagent_limits() -> None:
             "slot_id": "investigator",
             "enabled": True,
             "provider": "openai",
+            "base_url": "https://api.openai.com",
             "model": "gpt-5.6-luna",
             "credential_ref": "secret/child",
             "context_window_tokens": 24_000,
@@ -368,6 +539,40 @@ def test_model_credential_status_is_masked_and_successful_replace_is_atomic(
         parse_credential_file(credential_file)["CASEWORK_CREDENTIAL_SECRET_ROOT"]
         == "replacement-secret"
     )
+
+
+def test_model_catalog_uses_candidate_without_echoing_or_persisting_it(
+    tmp_path: Path,
+) -> None:
+    credential_file = tmp_path / "credentials.env"
+    probe = _ModelProbe(ModelProbeResult(status="connected"))
+    service = ModelCredentialService(
+        store=FileCredentialStore(credential_file), probe=probe
+    )
+    client = cast(
+        _Client,
+        TestClient(
+            create_app(
+                repository=InMemoryConfigRepository(initial=_config()),
+                model_credentials=service,
+            )
+        ),
+    )
+    candidate = "catalog-candidate-secret"
+
+    response = client.post(
+        "/api/model-catalog",
+        json={
+            "provider": "openai",
+            "base_url": "https://models.example.com/v1",
+            "secret": candidate,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["models"] == ["gpt-a", "gpt-b"]
+    assert candidate not in response.text
+    assert not credential_file.exists()
 
 
 def test_failed_model_credential_probe_does_not_replace_or_echo_candidate(

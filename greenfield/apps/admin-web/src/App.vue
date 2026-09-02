@@ -1,18 +1,68 @@
 <script setup lang="ts">
-import { computed, inject, provide } from 'vue'
+import { computed, inject, onMounted, provide, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import AppIcon from './components/AppIcon.vue'
-import { ADMIN_API_KEY, createAdminApiClient } from './api/client'
+import AdminAccess from './components/AdminAccess.vue'
+import { ADMIN_API_KEY, createAdminApiClient, type AdminSession } from './api/client'
 import { navItems } from './navigation'
 
+const props = withDefaults(defineProps<{ skipAuthentication?: boolean }>(), { skipAuthentication: false })
 const route = useRoute()
 const currentLabel = computed(() => String(route.meta.label ?? '运行总览'))
 const api = inject(ADMIN_API_KEY, createAdminApiClient())
 provide(ADMIN_API_KEY, api)
+const authState = ref<'loading' | 'signed-out' | 'signed-in'>('loading')
+const session = ref<AdminSession | null>(null)
+const authNotice = ref('')
+
+function authenticated(value: AdminSession) {
+  session.value = value
+  authState.value = 'signed-in'
+  authNotice.value = ''
+}
+
+async function signOut() {
+  try {
+    await api.logout()
+  } finally {
+    session.value = null
+    authState.value = 'signed-out'
+    authNotice.value = '已安全退出管理后台。'
+  }
+}
+
+function passwordChanged() {
+  session.value = null
+  authState.value = 'signed-out'
+  authNotice.value = '密码已更新，请使用新密码重新登录。'
+}
+
+onMounted(async () => {
+  if (props.skipAuthentication) {
+    authenticated({ username: 'test-admin', csrfToken: 'test-csrf', forcePasswordChange: false })
+    return
+  }
+  try {
+    authenticated(await api.getSession())
+  } catch {
+    authState.value = 'signed-out'
+  }
+})
 </script>
 
 <template>
-  <div class="app-shell">
+  <main v-if="authState === 'loading'" class="access-page" aria-busy="true" aria-label="正在验证管理会话">
+    <div class="access-loading"><span class="pulse-dot" aria-hidden="true" />正在验证安全会话…</div>
+  </main>
+  <AdminAccess
+    v-else-if="authState === 'signed-out' || session?.forcePasswordChange"
+    :api="api"
+    :session="session"
+    :notice="authNotice"
+    @authenticated="authenticated"
+    @password-changed="passwordChanged"
+  />
+  <div v-else class="app-shell">
     <aside class="sidebar">
       <div class="brand-lockup">
         <div class="brand-mark" aria-hidden="true"><span>c</span></div>
@@ -59,9 +109,9 @@ provide(ADMIN_API_KEY, api)
       </div>
       <div class="sidebar-footer">
         <div class="avatar">YL</div>
-        <div class="user-copy"><strong>Yang Yonggang</strong><span>Administrator</span></div>
-        <button type="button" class="icon-button icon-button--muted" aria-label="用户菜单">
-          <AppIcon name="more" :size="17" />
+        <div class="user-copy"><strong>{{ session?.username }}</strong><span>Administrator</span></div>
+        <button type="button" class="icon-button icon-button--muted" aria-label="退出登录" @click="signOut">
+          <AppIcon name="logout" :size="17" />
         </button>
       </div>
     </aside>

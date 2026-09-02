@@ -26,6 +26,10 @@ const unknownRun = {
 
 function apiFixture(): AdminApiClient {
   return {
+    getSession: async () => ({ username: 'admin', csrfToken: 'csrf', forcePasswordChange: false }),
+    login: async () => ({ username: 'admin', csrfToken: 'csrf', forcePasswordChange: false }),
+    logout: async () => undefined,
+    changePassword: async () => undefined,
     getConfig: async () => { throw new Error('not used') },
     saveConfig: async () => { throw new Error('not used') },
     getSandboxPolicy: async () => { throw new Error('not used') },
@@ -36,6 +40,7 @@ function apiFixture(): AdminApiClient {
     testTool: async () => ({ toolId: 'unknown', status: 'untested', latencyMs: null, errorCode: 'unknown_tool' as const, detail: 'Tool is not registered' }),
     getModelCredentials: async () => [],
     replaceModelCredential: async () => { throw new Error('not used') },
+    discoverModels: async () => { throw new Error('not used') },
   }
 }
 

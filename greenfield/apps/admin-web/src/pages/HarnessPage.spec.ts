@@ -10,11 +10,12 @@ const snapshot: AdminConfigSnapshot = {
   actor: 'bootstrap',
   config: {
     desiredState: 'running',
-    rootModel: { provider: 'openai', model: 'gpt-5.6-sol', credentialRef: 'secret/root' },
+    rootModel: { provider: 'openai', baseUrl: 'https://api.openai.com', model: 'gpt-5.6-sol', credentialRef: 'secret/root' },
     subagentSlots: [{
       slotId: 'investigator',
       enabled: true,
       provider: 'openai',
+      baseUrl: 'https://models.example.com',
       model: 'gpt-5.6-luna',
       credentialRef: 'secret/investigator',
       contextWindowTokens: 32_000,
@@ -33,6 +34,10 @@ const snapshot: AdminConfigSnapshot = {
 
 function apiFixture(saveCalls: Array<Parameters<AdminApiClient['saveConfig']>[0]>): AdminApiClient {
   return {
+    getSession: async () => ({ username: 'admin', csrfToken: 'csrf', forcePasswordChange: false }),
+    login: async () => ({ username: 'admin', csrfToken: 'csrf', forcePasswordChange: false }),
+    logout: async () => undefined,
+    changePassword: async () => undefined,
     getConfig: async () => snapshot,
     saveConfig: async (input) => {
       saveCalls.push(input)
@@ -53,7 +58,7 @@ function apiFixture(saveCalls: Array<Parameters<AdminApiClient['saveConfig']>[0]
       configured: true,
       maskedValue: '••••••••1234',
       updatedAt: '2026-09-01T00:00:00Z',
-      bindings: [{ provider: 'openai', model: 'gpt-5.6-sol', credentialRef: 'secret/root' }],
+      bindings: [{ provider: 'openai', baseUrl: 'https://api.openai.com', model: 'gpt-5.6-sol', credentialRef: 'secret/root' }],
     }]),
     replaceModelCredential: async ({ credentialRef }) => ({
       credential: {
@@ -61,10 +66,11 @@ function apiFixture(saveCalls: Array<Parameters<AdminApiClient['saveConfig']>[0]
         configured: true,
         maskedValue: '••••••••5678',
         updatedAt: '2026-09-02T00:00:00Z',
-        bindings: [{ provider: 'openai', model: 'gpt-5.6-sol', credentialRef }],
+        bindings: [{ provider: 'openai', baseUrl: 'https://api.openai.com', model: 'gpt-5.6-sol', credentialRef }],
       },
       probe: { status: 'connected', latencyMs: 12, errorCode: null },
     }),
+    discoverModels: async ({ provider, baseUrl }) => ({ provider, baseUrl, models: ['gpt-5.6-sol'], latencyMs: 12 }),
   }
 }
 
@@ -126,7 +132,7 @@ describe('HarnessPage independent subagent configuration', () => {
           configured: true,
           maskedValue: '••••••••new1',
           updatedAt: '2026-09-02T00:00:00Z',
-          bindings: [{ provider: 'openai', model: 'gpt-5.6-sol', credentialRef: input.credentialRef }],
+          bindings: [{ provider: 'openai', baseUrl: 'https://api.openai.com', model: 'gpt-5.6-sol', credentialRef: input.credentialRef }],
         },
         probe: { status: 'connected', latencyMs: 12, errorCode: null },
       }

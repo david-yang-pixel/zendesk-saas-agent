@@ -31,6 +31,7 @@ const iconPaths: Record<IconName, string[]> = {
   activity: ['M3 12h4l3-8 4 16 3-8h4'],
   terminal: ['m5 7 4 5-4 5', 'M12 17h7'],
   download: ['M12 3v12', 'm7 10 5 5 5-5', 'M5 21h14'],
+  logout: ['M10 5H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h5', 'M14 8l4 4-4 4', 'M18 12H9'],
 }
 
 const paths = computed(() => iconPaths[props.name])

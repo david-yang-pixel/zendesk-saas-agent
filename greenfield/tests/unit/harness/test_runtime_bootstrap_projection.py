@@ -14,6 +14,7 @@ def _config() -> dict[str, object]:
         "desired_state": "running",
         "root_model": {
             "provider": "openai",
+            "base_url": "https://root-models.example.com",
             "model": "root",
             "credential_ref": "secret/root",
         },
@@ -22,6 +23,7 @@ def _config() -> dict[str, object]:
                 "slot_id": "disabled",
                 "enabled": False,
                 "provider": "openai",
+                "base_url": "https://unused-models.example.com",
                 "model": "unused",
                 "credential_ref": "secret/unused",
             },
@@ -29,6 +31,7 @@ def _config() -> dict[str, object]:
                 "slot_id": "logs",
                 "enabled": True,
                 "provider": "openai",
+                "base_url": "https://child-models.example.com",
                 "model": "child",
                 "credential_ref": "secret/logs",
                 "context_window_tokens": 64000,
@@ -54,6 +57,8 @@ def test_projection_keeps_enabled_slots_and_only_credential_references() -> None
     assert bootstrap.child_models[0].max_parallel == 2
     assert bootstrap.child_models[0].context_window_tokens == 64000
     assert bootstrap.child_models[0].max_tool_rounds == 9
+    assert bootstrap.root_model.base_url == "https://root-models.example.com"
+    assert bootstrap.child_models[0].base_url == "https://child-models.example.com"
     assert "secret/root" in bootstrap.model_dump_json()
     assert "secret/logs" in bootstrap.model_dump_json()
 

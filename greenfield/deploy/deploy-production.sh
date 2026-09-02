@@ -97,6 +97,7 @@ wait_ready harness http://127.0.0.1:18102/readyz
 
 python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
   --base-url http://127.0.0.1:18104 \
+  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
   --tool-names "$STATE_DIR/tool-names.json"
 
 cat >"$RELEASE_ENV" <<EOF

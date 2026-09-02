@@ -16,6 +16,7 @@ def _bootstrap() -> RuntimeBootstrap:
         config_revision="cfg-1",
         root_model=ModelBinding(
             provider="openai",
+            base_url="https://root-models.example.com",
             model="gpt-5.6-sol",
             credential_ref="secret/root",
         ),
@@ -23,6 +24,7 @@ def _bootstrap() -> RuntimeBootstrap:
             ChildModelBinding(
                 slot_id="logs",
                 provider="openai",
+                base_url="https://child-models.example.com",
                 model="gpt-5.6-luna",
                 credential_ref="secret/logs",
             ),
@@ -40,6 +42,8 @@ def test_runtime_bootstrap_is_versioned_immutable_and_contains_refs_only() -> No
 
     assert bootstrap.version == 1
     assert bootstrap.root_model.credential_ref == "secret/root"
+    assert bootstrap.root_model.base_url == "https://root-models.example.com"
+    assert bootstrap.child_models[0].base_url == "https://child-models.example.com"
     assert bootstrap.child_models[0].model == "gpt-5.6-luna"
     encoded = bootstrap.model_dump_json()
     assert "secret/root" in encoded

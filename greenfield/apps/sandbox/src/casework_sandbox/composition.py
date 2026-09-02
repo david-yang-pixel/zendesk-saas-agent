@@ -10,11 +10,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Mapping
+import socket
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import Field, JsonValue, ValidationError, model_validator
@@ -157,6 +160,40 @@ def _safe_model_summary(value: str) -> str:
     return value[:2048]
 
 
+ModelEndpointGuard = Callable[[str], Awaitable[None]]
+
+
+async def _validate_public_model_endpoint(base_url: str) -> None:
+    parsed = urlsplit(base_url)
+    hostname = parsed.hostname
+    if parsed.scheme != "https" or hostname is None:
+        raise RuntimeError("configured model endpoint is unsafe")
+    try:
+        records = cast(
+            list[
+                tuple[
+                    int,
+                    int,
+                    int,
+                    str,
+                    tuple[str, int] | tuple[str, int, int, int],
+                ]
+            ],
+            await asyncio.to_thread(
+                socket.getaddrinfo,
+                hostname,
+                parsed.port or 443,
+                family=socket.AF_UNSPEC,
+                type=socket.SOCK_STREAM,
+            ),
+        )
+    except socket.gaierror as error:
+        raise RuntimeError("configured model endpoint is unavailable") from error
+    addresses = {record[4][0].split("%", 1)[0] for record in records}
+    if not addresses or any(not ip_address(address).is_global for address in addresses):
+        raise RuntimeError("configured model endpoint is unsafe")
+
+
 async def _post_responses(
     *,
     client: httpx.AsyncClient,
@@ -168,6 +205,7 @@ async def _post_responses(
     payload: dict[str, Any],
     schema_name: str,
     schema: dict[str, Any],
+    endpoint_guard: ModelEndpointGuard,
 ) -> dict[str, Any]:
     """Call an OpenAI-compatible Responses endpoint and decode JSON text."""
 
@@ -203,6 +241,7 @@ async def _post_responses(
             }
         },
     }
+    await endpoint_guard(base_url)
     try:
         response = await client.post(
             f"{base_url.rstrip('/')}/v1/responses",
@@ -250,9 +289,8 @@ async def _post_responses(
                     if not isinstance(part, dict):
                         continue
                     output_part = cast(dict[str, Any], part)
-                    if (
-                        output_part.get("type") == "output_text"
-                        and isinstance(output_part.get("text"), str)
+                    if output_part.get("type") == "output_text" and isinstance(
+                        output_part.get("text"), str
                     ):
                         text = cast(str, output_part["text"])
                         break
@@ -360,9 +398,7 @@ class SandboxRuntimeConfig:
     tool_configs: tuple[ToolEndpointConfig, ...]
 
     @classmethod
-    def from_env(
-        cls, environ: Mapping[str, str] | None = None
-    ) -> SandboxRuntimeConfig:
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> SandboxRuntimeConfig:
         values = os.environ if environ is None else environ
         required = (
             "ZENDESK_BASE_URL",
@@ -437,9 +473,7 @@ class HttpInvestigationTool:
         if self._config.health_url is None:
             return False
         try:
-            response = await self._client.get(
-                self._config.health_url, timeout=3.0
-            )
+            response = await self._client.get(self._config.health_url, timeout=3.0)
             return response.is_success
         except httpx.HTTPError:
             return False
@@ -474,6 +508,7 @@ class HttpCaseworkModel:
         api_key: str,
         model_name: str,
         available_child_slots: tuple[str, ...] = (),
+        endpoint_guard: ModelEndpointGuard = _validate_public_model_endpoint,
     ) -> None:
         if not base_url.startswith("https://"):
             raise SandboxConfigurationError("CASEWORK_MODEL_BASE_URL must use HTTPS")
@@ -484,6 +519,7 @@ class HttpCaseworkModel:
         self._headers = {"authorization": f"Bearer {api_key}"}
         self._model_name = model_name
         self._available_child_slots = available_child_slots
+        self._endpoint_guard = endpoint_guard
 
     async def plan(
         self,
@@ -512,15 +548,14 @@ class HttpCaseworkModel:
             },
             schema_name="casework_todo_plan",
             schema=_PLAN_SCHEMA,
+            endpoint_guard=self._endpoint_guard,
         )
         todos = payload.get("todos")
         if not isinstance(todos, list):
             raise RuntimeError("model plan response is missing todos")
         try:
             plan = TodoPlan(
-                items=[
-                    Todo.model_validate(todo) for todo in cast(list[object], todos)
-                ]
+                items=[Todo.model_validate(todo) for todo in cast(list[object], todos)]
             )
             _validate_todo_plan(
                 plan,
@@ -560,6 +595,7 @@ class HttpCaseworkModel:
             },
             schema_name="casework_answer",
             schema=_ANSWER_SCHEMA,
+            endpoint_guard=self._endpoint_guard,
         )
         answer = payload.get("answer")
         if not isinstance(answer, str) or not answer.strip():
@@ -572,12 +608,14 @@ class HttpCaseworkModel:
 
     async def ready(self) -> bool:
         try:
+            await self._endpoint_guard(self._base_url)
             response = await self._client.get(
                 f"{self._base_url}/v1/models", headers=self._headers, timeout=3.0
             )
             return response.is_success
         except httpx.HTTPError:
             return False
+
 
 class HttpChildAgentRunner:
     """Independent child model adapter used by the depth-one orchestrator."""
@@ -588,12 +626,14 @@ class HttpChildAgentRunner:
         client: httpx.AsyncClient,
         base_url: str,
         resolver: SecretResolver,
+        endpoint_guard: ModelEndpointGuard = _validate_public_model_endpoint,
     ) -> None:
         if not base_url.startswith("https://"):
             raise SandboxConfigurationError("CASEWORK_MODEL_BASE_URL must use HTTPS")
         self._client = client
         self._base_url = base_url.rstrip("/")
         self._resolver = resolver
+        self._endpoint_guard = endpoint_guard
 
     async def run(
         self,
@@ -610,6 +650,7 @@ class HttpChildAgentRunner:
 
         binding = ModelBinding(
             provider=session.provider,
+            base_url=session.base_url,
             model=session.model,
             credential_ref=session.credential_ref,
         )
@@ -707,7 +748,7 @@ class HttpChildAgentRunner:
     ) -> dict[str, Any]:
         return await _post_responses(
             client=self._client,
-            base_url=self._base_url,
+            base_url=session.base_url,
             provider=session.provider,
             model=session.model,
             api_key=api_key,
@@ -730,6 +771,7 @@ class HttpChildAgentRunner:
             },
             schema_name="casework_child_step",
             schema=_CHILD_STEP_SCHEMA,
+            endpoint_guard=self._endpoint_guard,
         )
 
     @staticmethod
@@ -852,13 +894,11 @@ class ProductionSandboxCommands:
 
     def _agent_for(self, request: SandboxStartRequest) -> SandboxAgent:
         bootstrap = request.bootstrap
-        models = resolve_runtime_models(
-            bootstrap, resolver=self._secret_resolver
-        )
+        models = resolve_runtime_models(bootstrap, resolver=self._secret_resolver)
         runtime_tools = self._tools.allowlist(bootstrap.enabled_tools)
         root = HttpCaseworkModel(
             client=self._http_client,
-            base_url=self._model_base_url,
+            base_url=models.root.base_url,
             provider=models.root.provider,
             api_key=models.root.api_key,
             model_name=models.root.model,
@@ -870,6 +910,7 @@ class ProductionSandboxCommands:
             SubagentSlot(
                 slot_id=child.slot_id,
                 provider=child.provider,
+                base_url=child.base_url,
                 model=child.model,
                 credential_ref=child.credential_ref,
                 context_window=child.context_window_tokens,

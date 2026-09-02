@@ -52,6 +52,7 @@ compose=(docker compose --project-name casework-greenfield --env-file "$RUNTIME_
 sed -i 's/^CASEWORK_DELIVERY_MODE=.*/CASEWORK_DELIVERY_MODE="dry_run"/' "$RUNTIME_ENV"
 python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
   --base-url http://127.0.0.1:18104 \
+  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
   --tool-names "$STATE_DIR/tool-names.json"
 "${compose[@]}" stop ingress harness admin
 
@@ -84,6 +85,7 @@ done
 
 python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
   --base-url http://127.0.0.1:18104 \
+  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
   --tool-names "$STATE_DIR/tool-names.json"
 sed -i 's/^CASEWORK_DELIVERY_MODE=.*/CASEWORK_DELIVERY_MODE="live"/' "$RUNTIME_ENV"
 "${compose[@]}" up -d --force-recreate harness
@@ -98,6 +100,7 @@ done
 test "$harness_ready" = "1"
 python3 "$CODE_DIR/greenfield/deploy/configure_runtime.py" \
   --base-url http://127.0.0.1:18104 \
+  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
   --tool-names "$STATE_DIR/tool-names.json" \
   --activate
 

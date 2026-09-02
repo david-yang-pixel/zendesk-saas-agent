@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from typing import Literal, Protocol
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -15,6 +17,7 @@ class _ConfigModel(BaseModel):
 
 class ModelConfig(_ConfigModel):
     provider: str = Field(min_length=1)
+    base_url: str = "https://api.openai.com"
     model: str = Field(min_length=1)
     credential_ref: str = Field(min_length=1)
 
@@ -31,6 +34,35 @@ class ModelConfig(_ConfigModel):
         if "\n" in value or "\r" in value:
             raise ValueError("credential_ref must be a single-line reference")
         return value
+
+    @field_validator("base_url")
+    @classmethod
+    def _safe_base_url(cls, value: str) -> str:
+        return normalize_model_base_url(value)
+
+
+def normalize_model_base_url(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("model base_url must use HTTPS")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("model base_url must not contain credentials or query data")
+    hostname = parsed.hostname.casefold().rstrip(".")
+    if hostname == "localhost" or hostname.endswith(
+        (".localhost", ".local", ".internal", ".home.arpa")
+    ):
+        raise ValueError("model base_url must not target a local network name")
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        if not address.is_global:
+            raise ValueError("model base_url must use a public address")
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    return urlunsplit(("https", parsed.netloc, path.rstrip("/"), "", ""))
 
 
 class SubagentSlotConfig(ModelConfig):

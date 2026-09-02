@@ -28,7 +28,11 @@ FOOTERS = {
 
 
 def _request(
-    url: str, *, method: str = "GET", payload: object | None = None
+    url: str,
+    *,
+    internal_token: str,
+    method: str = "GET",
+    payload: object | None = None,
 ) -> dict[str, Any]:
     data = None if payload is None else json.dumps(payload).encode()
     request = urllib.request.Request(
@@ -36,8 +40,8 @@ def _request(
         data=data,
         method=method,
         headers={
+            "Authorization": f"Bearer {internal_token}",
             "Content-Type": "application/json",
-            "X-Admin-Actor": "production-cutover",
         },
     )
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -47,8 +51,12 @@ def _request(
     return cast(dict[str, Any], result)
 
 
-def configure(*, base_url: str, activate: bool, tool_names_path: Path) -> str:
-    current = _request(f"{base_url.rstrip('/')}/api/config")
+def configure(
+    *, base_url: str, activate: bool, tool_names_path: Path, internal_token: str
+) -> str:
+    current = _request(
+        f"{base_url.rstrip('/')}/api/config", internal_token=internal_token
+    )
     revision = current.get("revision")
     raw_config = current.get("config")
     if not isinstance(revision, str) or not isinstance(raw_config, dict):
@@ -67,6 +75,9 @@ def configure(*, base_url: str, activate: bool, tool_names_path: Path) -> str:
             "desired_state": "running" if activate else "paused",
             "root_model": {
                 "provider": "openai",
+                "base_url": os.environ.get(
+                    "CASEWORK_ROOT_MODEL_BASE_URL", "https://api.openai.com"
+                ),
                 "model": os.environ.get("CASEWORK_ROOT_MODEL", "gpt-5.5"),
                 "credential_ref": "openai-primary",
             },
@@ -94,6 +105,7 @@ def configure(*, base_url: str, activate: bool, tool_names_path: Path) -> str:
     )
     updated = _request(
         f"{base_url.rstrip('/')}/api/config",
+        internal_token=internal_token,
         method="PUT",
         payload={"expected_revision": revision, "config": config},
     )
@@ -112,12 +124,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:18104")
     parser.add_argument("--tool-names", type=Path, required=True)
+    parser.add_argument("--internal-token-file", type=Path, required=True)
     parser.add_argument("--activate", action="store_true")
     args = parser.parse_args()
     configure(
         base_url=args.base_url,
         activate=args.activate,
         tool_names_path=args.tool_names,
+        internal_token=args.internal_token_file.read_text(encoding="utf-8").strip(),
     )
 
 

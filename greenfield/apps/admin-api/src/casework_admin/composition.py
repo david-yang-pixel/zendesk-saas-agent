@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from casework_admin.app import create_app as create_admin_app
 from casework_admin.app import default_config
+from casework_admin.auth import AdminAuthStore
 from casework_admin.model_credentials import (
     FileCredentialStore,
     ModelCredentialService,
@@ -80,6 +81,23 @@ def create_app() -> FastAPI:
         raise RuntimeError("CASEWORK_CREDENTIAL_FILE is required for the Admin API")
     if not model_base_url:
         raise RuntimeError("CASEWORK_MODEL_BASE_URL is required for the Admin API")
+    auth_file = os.environ.get("CASEWORK_ADMIN_AUTH_FILE", "").strip()
+    internal_token_file = os.environ.get(
+        "CASEWORK_ADMIN_INTERNAL_TOKEN_FILE", ""
+    ).strip()
+    public_origin = os.environ.get("CASEWORK_ADMIN_PUBLIC_ORIGIN", "").strip()
+    if not auth_file:
+        raise RuntimeError("CASEWORK_ADMIN_AUTH_FILE is required for the Admin API")
+    if not internal_token_file:
+        raise RuntimeError(
+            "CASEWORK_ADMIN_INTERNAL_TOKEN_FILE is required for the Admin API"
+        )
+    if not public_origin.startswith("https://"):
+        raise RuntimeError("CASEWORK_ADMIN_PUBLIC_ORIGIN must use HTTPS")
+    internal_token = Path(internal_token_file).read_text(encoding="utf-8").strip()
+    if len(internal_token) < 32:
+        raise RuntimeError("Admin internal token is invalid")
+    auth = AdminAuthStore(Path(auth_file))
     model_probe = OpenAIResponsesCredentialProbe(base_url=model_base_url)
     model_credentials = ModelCredentialService(
         store=FileCredentialStore(Path(credential_file)), probe=model_probe
@@ -103,6 +121,9 @@ def create_app() -> FastAPI:
         read_repository=reads,
         readiness=readiness,
         model_credentials=model_credentials,
+        auth_store=auth,
+        internal_token=internal_token,
+        public_origin=public_origin,
         lifespan=lifespan,
     )
 

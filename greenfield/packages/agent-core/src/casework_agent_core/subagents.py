@@ -20,9 +20,10 @@ class SubagentSlot:
     context_window: int
     max_tool_rounds: int
     max_parallel: int
+    base_url: str = "https://api.openai.com"
 
     def __post_init__(self) -> None:
-        for name in ("slot_id", "provider", "model", "credential_ref"):
+        for name in ("slot_id", "provider", "base_url", "model", "credential_ref"):
             if not str(getattr(self, name)).strip():
                 raise ValueError(f"{name} must not be empty")
         if self.context_window <= 0:
@@ -56,6 +57,7 @@ class ChildSession:
     context_window: int
     max_tool_rounds: int
     workdir: str
+    base_url: str = "https://api.openai.com"
     ticket_id: int = 0
 
 
@@ -159,6 +161,7 @@ class SubagentOrchestrator:
             parent_session_id=self._root_session_id,
             slot_id=slot.slot_id,
             provider=slot.provider,
+            base_url=slot.base_url,
             model=slot.model,
             credential_ref=slot.credential_ref,
             context_window=slot.context_window,

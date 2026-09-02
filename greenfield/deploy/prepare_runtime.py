@@ -140,6 +140,52 @@ def _write_dotenv(path: Path, values: dict[str, str]) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
+def _write_private_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}-", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            descriptor = -1
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+
+
+def _prepare_admin_auth(*, state_dir: Path, legacy_auth_path: Path) -> Path:
+    auth_dir = state_dir / "admin-auth"
+    auth_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    auth_dir.chmod(0o700)
+    auth_path = auth_dir / "admin_auth.json"
+    if not auth_path.exists() and legacy_auth_path.is_file():
+        raw = legacy_auth_path.read_text(encoding="utf-8")
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("users"), dict):
+            raise RuntimeError("legacy admin authentication file is invalid")
+        _write_private_text(auth_path, raw)
+
+    token_path = auth_dir / "internal-token"
+    if not token_path.exists():
+        _write_private_text(token_path, secrets.token_urlsafe(48) + "\n")
+    if len(token_path.read_text(encoding="utf-8").strip()) < 32:
+        raise RuntimeError("admin internal token is invalid")
+
+    for path in (auth_dir, auth_path, token_path):
+        if path.exists():
+            path.chmod(0o700 if path.is_dir() else 0o600)
+            if os.geteuid() == 0:
+                os.chown(path, 10_001, 10_001)
+    return auth_dir
+
+
 def _json_response(body: str) -> dict[str, Any]:
     if body.lstrip().startswith("data:") or "\ndata:" in body:
         frames = [
@@ -211,6 +257,7 @@ def prepare(
     state_dir: Path,
     revision: str,
     docker_socket: Path = Path("/var/run/docker.sock"),
+    legacy_auth_path: Path = Path("/opt/zd-agent/resources/.state/admin_auth.json"),
 ) -> None:
     legacy = _parse_dotenv(source_env)
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -262,6 +309,10 @@ def prepare(
     if os.geteuid() == 0:
         os.chown(credentials_path, 10_001, 10_001)
 
+    admin_auth_dir = _prepare_admin_auth(
+        state_dir=state_dir, legacy_auth_path=legacy_auth_path
+    )
+
     images = {
         name: _required(os.environ, name)
         for name in (
@@ -291,6 +342,12 @@ def prepare(
         ),
         "CASEWORK_CREDENTIAL_ENV_FILE": str(credentials_path),
         "CASEWORK_CREDENTIAL_DIR": str(credential_dir),
+        "CASEWORK_ADMIN_AUTH_DIR": str(admin_auth_dir),
+        "CASEWORK_ADMIN_AUTH_FILE": "/run/casework-admin-auth/admin_auth.json",
+        "CASEWORK_ADMIN_INTERNAL_TOKEN_FILE": (
+            "/run/casework-admin-auth/internal-token"
+        ),
+        "CASEWORK_ADMIN_PUBLIC_ORIGIN": "https://zendesk.smlershou.top",
         "CASEWORK_DELIVERY_MODE": delivery_mode,
         "CASEWORK_CANARY_TICKET_IDS": canary_ids,
         "DOCKER_GID": str(docker_socket.stat().st_gid),
@@ -299,6 +356,7 @@ def prepare(
         "CASEWORK_ADMIN_PORT": "18104",
         "CASEWORK_SAAS_ASSIGNEE": "46493567999892",
         "CASEWORK_ROOT_MODEL": "gpt-5.5",
+        "CASEWORK_ROOT_MODEL_BASE_URL": "https://api.openai.com",
     }
     _write_dotenv(existing_runtime_path, runtime)
     (state_dir / "tool-names.json").write_text(
@@ -313,11 +371,17 @@ def main() -> None:
     parser.add_argument("--source-env", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument(
+        "--legacy-auth-path",
+        type=Path,
+        default=Path("/opt/zd-agent/resources/.state/admin_auth.json"),
+    )
     args = parser.parse_args()
     prepare(
         source_env=args.source_env,
         state_dir=args.state_dir,
         revision=args.revision,
+        legacy_auth_path=args.legacy_auth_path,
     )
 
 

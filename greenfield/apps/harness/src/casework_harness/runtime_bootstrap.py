@@ -52,9 +52,7 @@ def runtime_bootstrap_from_config(
     raw_children_value = config.get("subagent_slots", ())
     if not isinstance(raw_children_value, (list, tuple)):
         raise RuntimeBootstrapUnavailable("subagent_slots must be an array")
-    raw_children = cast(
-        list[object] | tuple[object, ...], raw_children_value
-    )
+    raw_children = cast(list[object] | tuple[object, ...], raw_children_value)
     children: list[ChildModelBinding] = []
     for raw in raw_children:
         child = _mapping(raw, "subagent_slots[]")
@@ -64,6 +62,7 @@ def runtime_bootstrap_from_config(
             ChildModelBinding(
                 slot_id=_string(child, "slot_id"),
                 provider=_string(child, "provider"),
+                base_url=_string_default(child, "base_url", "https://api.openai.com"),
                 model=_string(child, "model"),
                 credential_ref=_string(child, "credential_ref"),
                 context_window_tokens=_integer(
@@ -81,6 +80,7 @@ def runtime_bootstrap_from_config(
     tools = _strings(config.get("enabled_tools", ()), "enabled_tools")
     root_binding = ModelBinding(
         provider=_string(root, "provider"),
+        base_url=_string_default(root, "base_url", "https://api.openai.com"),
         model=_string(root, "model"),
         credential_ref=_string(root, "credential_ref"),
     )
@@ -102,9 +102,7 @@ def runtime_bootstrap_from_config(
         hard_checkpoint_percent=_integer(
             config.get("hard_checkpoint_percent"), 80, "hard_checkpoint_percent"
         ),
-        max_tool_rounds=_integer(
-            config.get("max_tool_rounds"), 24, "max_tool_rounds"
-        ),
+        max_tool_rounds=_integer(config.get("max_tool_rounds"), 24, "max_tool_rounds"),
     )
 
 
@@ -116,6 +114,13 @@ def _mapping(value: object, field: str) -> dict[str, Any]:
 
 def _string(value: dict[str, Any], field: str) -> str:
     item = value.get(field)
+    if not isinstance(item, str) or not item.strip():
+        raise RuntimeBootstrapUnavailable(f"{field} must be a non-empty string")
+    return item
+
+
+def _string_default(value: dict[str, Any], field: str, default: str) -> str:
+    item = value.get(field, default)
     if not isinstance(item, str) or not item.strip():
         raise RuntimeBootstrapUnavailable(f"{field} must be a non-empty string")
     return item

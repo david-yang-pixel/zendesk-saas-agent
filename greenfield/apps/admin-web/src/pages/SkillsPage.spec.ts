@@ -5,6 +5,10 @@ import { ADMIN_API_KEY, type AdminApiClient } from '../api/client'
 
 function apiFixture(): AdminApiClient {
   return {
+    getSession: async () => ({ username: 'admin', csrfToken: 'csrf', forcePasswordChange: false }),
+    login: async () => ({ username: 'admin', csrfToken: 'csrf', forcePasswordChange: false }),
+    logout: async () => undefined,
+    changePassword: async () => undefined,
     getConfig: async () => { throw new Error('not used') },
     saveConfig: async () => { throw new Error('not used') },
     getSandboxPolicy: async () => { throw new Error('not used') },
@@ -32,6 +36,7 @@ function apiFixture(): AdminApiClient {
     }),
     getModelCredentials: async () => [],
     replaceModelCredential: async () => { throw new Error('not used') },
+    discoverModels: async () => { throw new Error('not used') },
   }
 }
 

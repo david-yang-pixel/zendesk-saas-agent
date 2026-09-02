@@ -14,6 +14,8 @@ const api: AdminApiClient = injectedApi
 const config = reactive<HarnessConfig>({
   rootModel: 'unconfigured',
   rootProvider: 'unconfigured',
+  rootBaseUrl: 'https://api.openai.com',
+  rootCredentialRef: 'unconfigured',
   subagents: [],
   contextWindow: '128k tokens',
   softCompaction: 60,
@@ -29,6 +31,10 @@ const revision = ref('—')
 const snapshot = ref<Awaited<ReturnType<typeof api.getConfig>> | null>(null)
 const saveState = ref<'idle' | 'loading' | 'saving' | 'saved' | 'error'>('loading')
 const errorMessage = ref('')
+const catalogByBinding = reactive<Record<string, string[]>>({})
+const candidateSecret = reactive<Record<string, string>>({})
+const discoveryState = reactive<Record<string, 'idle' | 'loading' | 'ready' | 'error'>>({})
+const discoveryMessage = reactive<Record<string, string>>({})
 
 function displayProvider(provider: string): string {
   return provider === 'openai' ? 'OpenAI' : provider
@@ -38,13 +44,16 @@ function applySnapshot(next: Awaited<ReturnType<typeof api.getConfig>>, nextPoli
   snapshot.value = next
   revision.value = next.revision
   config.rootModel = next.config.rootModel.model
-  config.rootProvider = displayProvider(next.config.rootModel.provider)
+  config.rootProvider = next.config.rootModel.provider
+  config.rootBaseUrl = next.config.rootModel.baseUrl
+  config.rootCredentialRef = next.config.rootModel.credentialRef
   config.subagents = next.config.subagentSlots.map((slot) => ({
     id: slot.slotId,
     name: slot.slotId,
     purpose: '独立调查任务',
     model: slot.model,
     provider: slot.provider,
+    baseUrl: slot.baseUrl,
     credentialRef: slot.credentialRef,
     contextWindowTokens: slot.contextWindowTokens,
     maxToolRounds: slot.maxToolRounds,
@@ -87,11 +96,17 @@ function contextTokens(value: string): number {
 function configForSave(current: AdminConfig): AdminConfig {
   return {
     ...current,
-    rootModel: { ...current.rootModel, model: config.rootModel },
+    rootModel: {
+      provider: config.rootProvider,
+      baseUrl: config.rootBaseUrl,
+      model: config.rootModel,
+      credentialRef: config.rootCredentialRef,
+    },
     subagentSlots: config.subagents.map((slot) => ({
       slotId: slot.id,
       enabled: slot.enabled,
       provider: slot.provider,
+      baseUrl: slot.baseUrl,
       model: slot.model,
       credentialRef: slot.credentialRef,
       contextWindowTokens: slot.contextWindowTokens,
@@ -117,6 +132,7 @@ function addSubagent() {
     purpose: '独立调查任务',
     model: 'gpt-5.6-luna',
     provider: 'openai',
+    baseUrl: 'https://api.openai.com',
     credentialRef: `secret/${slotId}`,
     contextWindowTokens: 32_000,
     maxToolRounds: 12,
@@ -127,6 +143,33 @@ function addSubagent() {
 
 function removeSubagent(index: number) {
   config.subagents.splice(index, 1)
+}
+
+async function discoverModels(key: string, provider: string, baseUrl: string) {
+  const secret = candidateSecret[key] ?? ''
+  if (!secret) {
+    discoveryState[key] = 'error'
+    discoveryMessage[key] = '请先输入 API Key。'
+    return
+  }
+  discoveryState[key] = 'loading'
+  discoveryMessage[key] = ''
+  try {
+    const catalog = await api.discoverModels({ provider, baseUrl, secret })
+    catalogByBinding[key] = catalog.models
+    if (key === 'root') config.rootBaseUrl = catalog.baseUrl
+    else {
+      const slot = config.subagents.find((item) => item.id === key)
+      if (slot) slot.baseUrl = catalog.baseUrl
+    }
+    discoveryState[key] = 'ready'
+    discoveryMessage[key] = `已获取 ${catalog.models.length} 个模型 · ${catalog.latencyMs}ms`
+  } catch (error) {
+    discoveryState[key] = 'error'
+    discoveryMessage[key] = error instanceof Error ? error.message : '模型列表获取失败'
+  } finally {
+    candidateSecret[key] = ''
+  }
 }
 
 async function saveConfig() {
@@ -188,9 +231,23 @@ onMounted(() => { void loadConfig() })
         <article class="model-card model-card--root" data-testid="root-model">
           <div class="model-card__heading"><span class="model-avatar model-avatar--root"><AppIcon name="spark" :size="18" /></span><div><span class="card-kicker">ROOT AGENT</span><h3>Root Agent</h3></div><StatusBadge label="默认" tone="info" /></div>
           <p class="model-purpose">负责完整工单调查、Todo 编排与最终结构化结果。</p>
+          <label class="field-label" for="root-provider">Provider</label>
+          <input id="root-provider" v-model="config.rootProvider" class="field-control" type="text" autocomplete="off">
+          <label class="field-label" for="root-base-url">Base URL</label>
+          <input id="root-base-url" v-model="config.rootBaseUrl" class="field-control" data-testid="root-base-url" type="url" autocomplete="url" placeholder="https://api.openai.com">
+          <label class="field-label" for="root-credential-ref">Credential ref</label>
+          <input id="root-credential-ref" v-model="config.rootCredentialRef" class="field-control" type="text" autocomplete="off" placeholder="openai-primary">
+          <label class="field-label" for="root-api-key">API Key（仅用于本次查询）</label>
+          <div class="model-discovery-row">
+            <input id="root-api-key" v-model="candidateSecret.root" class="field-control" type="password" autocomplete="new-password" placeholder="输入后获取模型列表">
+            <button type="button" class="button button--secondary" :disabled="discoveryState.root === 'loading'" @click="discoverModels('root', config.rootProvider, config.rootBaseUrl)">{{ discoveryState.root === 'loading' ? '查询中…' : '获取模型' }}</button>
+          </div>
+          <small v-if="discoveryMessage.root" class="field-help" :class="{ 'field-help--error': discoveryState.root === 'error' }">{{ discoveryMessage.root }}</small>
           <label class="field-label" for="root-model">模型</label>
-          <select id="root-model" v-model="config.rootModel" class="field-control"><option>gpt-5.6-sol</option><option>gpt-5.6-terra</option><option>gpt-5.6-luna</option></select>
-          <div class="model-meta"><span>Provider</span><strong>{{ config.rootProvider }}</strong></div>
+          <input id="root-model" v-model="config.rootModel" class="field-control" list="root-model-catalog" type="text" autocomplete="off">
+          <datalist id="root-model-catalog"><option v-for="model in catalogByBinding.root" :key="model" :value="model" /></datalist>
+          <small class="field-help">选择模型并保存配置后，在下方凭据面板验证并更换对应 API Key。</small>
+          <div class="model-meta"><span>Provider</span><strong>{{ displayProvider(config.rootProvider) }}</strong></div>
           <div class="model-meta"><span>最大上下文</span><strong>{{ config.contextWindow }}</strong></div>
         </article>
         <article v-for="(agent, index) in config.subagents" :key="index" class="model-card" :data-testid="`subagent-card-${index}`">
@@ -200,8 +257,17 @@ onMounted(() => { void loadConfig() })
           <input :id="`slot-id-${index}`" v-model="agent.id" class="field-control" :data-testid="`slot-id-${index}`" type="text" autocomplete="off">
           <label class="field-label" :for="`slot-provider-${index}`">Provider</label>
           <input :id="`slot-provider-${index}`" v-model="agent.provider" class="field-control" :data-testid="`slot-provider-${index}`" type="text" autocomplete="off">
+          <label class="field-label" :for="`slot-base-url-${index}`">Base URL</label>
+          <input :id="`slot-base-url-${index}`" v-model="agent.baseUrl" class="field-control" :data-testid="`slot-base-url-${index}`" type="url" autocomplete="url" placeholder="https://api.openai.com">
+          <label class="field-label" :for="`slot-api-key-${index}`">API Key（仅用于本次查询）</label>
+          <div class="model-discovery-row">
+            <input :id="`slot-api-key-${index}`" v-model="candidateSecret[agent.id]" class="field-control" type="password" autocomplete="new-password" placeholder="输入后获取模型列表">
+            <button type="button" class="button button--secondary" :disabled="discoveryState[agent.id] === 'loading'" @click="discoverModels(agent.id, agent.provider, agent.baseUrl)">{{ discoveryState[agent.id] === 'loading' ? '查询中…' : '获取模型' }}</button>
+          </div>
+          <small v-if="discoveryMessage[agent.id]" class="field-help" :class="{ 'field-help--error': discoveryState[agent.id] === 'error' }">{{ discoveryMessage[agent.id] }}</small>
           <label class="field-label" :for="`slot-model-${index}`">模型</label>
-          <input :id="`slot-model-${index}`" v-model="agent.model" class="field-control" :data-testid="`slot-model-${index}`" type="text" autocomplete="off">
+          <input :id="`slot-model-${index}`" v-model="agent.model" class="field-control" :data-testid="`slot-model-${index}`" :list="`slot-model-catalog-${index}`" type="text" autocomplete="off">
+          <datalist :id="`slot-model-catalog-${index}`"><option v-for="model in catalogByBinding[agent.id]" :key="model" :value="model" /></datalist>
           <label class="field-label" :for="`slot-credential-ref-${index}`">Credential ref</label>
           <input :id="`slot-credential-ref-${index}`" v-model="agent.credentialRef" class="field-control" :data-testid="`slot-credential-ref-${index}`" type="text" autocomplete="off" placeholder="secret/subagent-id">
           <small class="field-help">仅保存 secret reference，不填写或显示明文凭据。</small>
@@ -218,7 +284,7 @@ onMounted(() => { void loadConfig() })
       </div>
     </section>
 
-    <ModelCredentialPanel />
+    <ModelCredentialPanel :key="revision" />
 
     <div class="content-grid content-grid--config">
       <section class="panel settings-panel">

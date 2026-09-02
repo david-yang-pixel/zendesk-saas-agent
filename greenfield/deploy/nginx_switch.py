@@ -10,6 +10,33 @@ from pathlib import Path
 BEGIN = "    # BEGIN casework-greenfield routes"
 END = "    # END casework-greenfield routes"
 
+ADMIN_CSP = (
+    "default-src 'self'; script-src 'self'; "
+    "style-src 'self' https://fonts.googleapis.com; "
+    "font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; "
+    "connect-src 'self'; object-src 'none'; base-uri 'self'; "
+    "frame-ancestors 'none'; form-action 'self'"
+)
+
+GREENFIELD_ADMIN = f"""    location = /admin {{
+        return 308 /admin/;
+    }}
+
+    location /admin/ {{
+        proxy_pass http://127.0.0.1:18104/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        add_header Content-Security-Policy "{ADMIN_CSP}" always;
+        add_header X-Frame-Options DENY always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        add_header Cache-Control "no-store" always;
+    }}
+"""
+
 GREENFIELD_ROUTES = """    # BEGIN casework-greenfield routes
     location = /webhook/zendesk {
         proxy_pass http://127.0.0.1:18101/webhook/zendesk;
@@ -61,6 +88,13 @@ def _remove_optional_location(text: str, header: str) -> str:
     return text[:start] + text[end:]
 
 
+def render_admin_greenfield(text: str) -> str:
+    admin_start, admin_end = _location_span(text, "    location = /admin {")
+    text = text[:admin_start] + text[admin_end:]
+    admin_slash_start, admin_slash_end = _location_span(text, "    location /admin/ {")
+    return text[:admin_slash_start] + GREENFIELD_ADMIN + text[admin_slash_end:]
+
+
 def render_greenfield(text: str) -> str:
     if BEGIN in text:
         return text
@@ -80,34 +114,17 @@ def render_greenfield(text: str) -> str:
 """
     text = text[:health_start] + health + text[health_end:]
 
-    admin_start, admin_end = _location_span(text, "    location = /admin {")
-    text = text[:admin_start] + text[admin_end:]
-    admin_slash_start, admin_slash_end = _location_span(text, "    location /admin/ {")
-    admin = """    location = /admin {
-        return 308 /admin/;
-    }
-
-    location /admin/ {
-        proxy_pass http://127.0.0.1:18104/;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 60s;
-        add_header X-Frame-Options DENY always;
-        add_header X-Content-Type-Options nosniff always;
-        add_header Referrer-Policy no-referrer always;
-        add_header Cache-Control "no-store" always;
-    }
-"""
-    return text[:admin_slash_start] + admin + text[admin_slash_end:]
+    return render_admin_greenfield(text)
 
 
-def switch(*, config: Path, backup: Path) -> None:
+def switch(*, config: Path, backup: Path, admin_only: bool = False) -> None:
     if not backup.exists():
         shutil.copy2(config, backup)
         backup.chmod(0o600)
-    candidate = render_greenfield(config.read_text())
+    source = config.read_text()
+    candidate = (
+        render_admin_greenfield(source) if admin_only else render_greenfield(source)
+    )
 
     temporary = config.with_name(f".{config.name}.casework.tmp")
     temporary.write_text(candidate)
@@ -120,13 +137,14 @@ def main() -> None:
     parser.add_argument(
         "--config", type=Path, default=Path("/etc/nginx/sites-enabled/zd-agent.conf")
     )
+    parser.add_argument("--admin-only", action="store_true")
     parser.add_argument(
         "--backup",
         type=Path,
         default=Path("/opt/zd-agent/greenfield/nginx.legacy.conf"),
     )
     args = parser.parse_args()
-    switch(config=args.config, backup=args.backup)
+    switch(config=args.config, backup=args.backup, admin_only=args.admin_only)
 
 
 if __name__ == "__main__":

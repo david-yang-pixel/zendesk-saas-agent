@@ -11,23 +11,63 @@ import fcntl
 import json
 import os
 import re
+import socket
 import stat
 import tempfile
 import time
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Protocol, cast
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from casework_admin.config import AdminConfig, ModelConfig
+from casework_admin.config import AdminConfig, ModelConfig, normalize_model_base_url
 
 _SAFE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$")
 _SAFE_ERROR_CODE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+EndpointGuard = Callable[[str], Awaitable[None]]
+
+
+async def validate_public_model_endpoint(base_url: str) -> None:
+    """Resolve immediately before use and reject non-public destinations."""
+
+    normalized = normalize_model_base_url(base_url)
+    parsed = urlsplit(normalized)
+    hostname = parsed.hostname
+    if hostname is None:
+        raise ValueError("model endpoint has no hostname")
+    port = parsed.port or 443
+    try:
+        records = cast(
+            list[
+                tuple[
+                    int,
+                    int,
+                    int,
+                    str,
+                    tuple[str, int] | tuple[str, int, int, int],
+                ]
+            ],
+            await asyncio.to_thread(
+                socket.getaddrinfo,
+                hostname,
+                port,
+                family=socket.AF_UNSPEC,
+                type=socket.SOCK_STREAM,
+            ),
+        )
+    except socket.gaierror as error:
+        raise ValueError("model endpoint DNS lookup failed") from error
+    addresses = {record[4][0].split("%", 1)[0] for record in records}
+    if not addresses or any(not ip_address(address).is_global for address in addresses):
+        raise ValueError("model endpoint must resolve only to public addresses")
 
 
 def credential_environment_key(credential_ref: str) -> str:
@@ -152,6 +192,7 @@ class FileCredentialStore:
 @dataclass(frozen=True, slots=True)
 class ModelBinding:
     provider: str
+    base_url: str
     model: str
     credential_ref: str
 
@@ -187,6 +228,23 @@ class ModelCredentialReplaceRequest(BaseModel):
     secret: str = Field(min_length=8, max_length=8192)
 
 
+class ModelCatalogRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
+
+    provider: str = Field(min_length=1, max_length=64)
+    base_url: str = Field(min_length=8, max_length=2048)
+    secret: str = Field(min_length=8, max_length=8192)
+
+
+class ModelCatalogResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: str
+    base_url: str
+    models: tuple[str, ...]
+    latency_ms: int
+
+
 class ModelCredentialReplaceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -207,28 +265,50 @@ class ModelCredentialNotConfigured(ValueError):
 
 class ModelCredentialProbe(Protocol):
     async def validate(
-        self, *, provider: str, model: str, secret: str
+        self, *, provider: str, base_url: str, model: str, secret: str
     ) -> ModelProbeResult: ...
+
+    async def discover(
+        self, *, provider: str, base_url: str, secret: str
+    ) -> ModelCatalogResponse: ...
 
 
 class OpenAIResponsesCredentialProbe:
     def __init__(
-        self, *, base_url: str, client: httpx.AsyncClient | None = None
+        self,
+        *,
+        base_url: str | None = None,
+        client: httpx.AsyncClient | None = None,
+        endpoint_guard: EndpointGuard = validate_public_model_endpoint,
     ) -> None:
-        normalized = base_url.strip().rstrip("/")
-        if not normalized.startswith("https://"):
-            raise ValueError("model base URL must use HTTPS")
-        self._base_url = normalized
+        self._base_url = (
+            normalize_model_base_url(base_url) if base_url is not None else None
+        )
         self._client = client or httpx.AsyncClient()
         self._owns_client = client is None
+        self._endpoint_guard = endpoint_guard
 
     async def validate(
-        self, *, provider: str, model: str, secret: str
+        self,
+        *,
+        provider: str,
+        base_url: str | None = None,
+        model: str,
+        secret: str,
     ) -> ModelProbeResult:
+        if provider != "openai":
+            return ModelProbeResult(
+                status="degraded", error_code="unsupported_provider"
+            )
+        normalized = normalize_model_base_url(base_url or self._base_url or "")
+        try:
+            await self._endpoint_guard(normalized)
+        except ValueError:
+            return ModelProbeResult(status="degraded", error_code="unsafe_endpoint")
         started = time.monotonic()
         try:
             response = await self._client.post(
-                f"{self._base_url}/v1/responses",
+                f"{normalized}/v1/responses",
                 headers={"authorization": f"Bearer {secret}"},
                 json={
                     "model": model,
@@ -253,6 +333,90 @@ class OpenAIResponsesCredentialProbe:
             status="degraded",
             latency_ms=latency,
             error_code=f"HTTP_{response.status_code}_{_provider_error_code(response)}",
+        )
+
+    async def discover(
+        self, *, provider: str, base_url: str, secret: str
+    ) -> ModelCatalogResponse:
+        if provider != "openai":
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="unsupported_provider")
+            )
+        normalized = normalize_model_base_url(base_url)
+        try:
+            await self._endpoint_guard(normalized)
+        except ValueError as error:
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="unsafe_endpoint")
+            ) from error
+        started = time.monotonic()
+        try:
+            response = await self._client.get(
+                f"{normalized}/v1/models",
+                headers={"authorization": f"Bearer {secret}"},
+                timeout=15.0,
+            )
+        except httpx.TimeoutException as error:
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="timeout")
+            ) from error
+        except httpx.HTTPError as error:
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="unavailable")
+            ) from error
+        latency = max(0, round((time.monotonic() - started) * 1000))
+        if not response.is_success:
+            raise ModelCredentialValidationError(
+                ModelProbeResult(
+                    status="degraded",
+                    latency_ms=latency,
+                    error_code=(
+                        f"HTTP_{response.status_code}_{_provider_error_code(response)}"
+                    ),
+                )
+            )
+        if len(response.content) > 1_000_000:
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="response_too_large")
+            )
+        try:
+            raw_payload: object = response.json()
+        except ValueError as error:
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="invalid_response")
+            ) from error
+        if not isinstance(raw_payload, dict):
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="invalid_response")
+            )
+        payload = cast(dict[str, object], raw_payload)
+        raw_data = payload.get("data")
+        if not isinstance(raw_data, list):
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="invalid_response")
+            )
+        data = cast(list[object], raw_data)
+        discovered: set[str] = set()
+        for raw_item in data[:500]:
+            if not isinstance(raw_item, dict):
+                continue
+            item = cast(dict[str, object], raw_item)
+            identifier = item.get("id")
+            if not isinstance(identifier, str):
+                continue
+            normalized_identifier = identifier.strip()
+            if 0 < len(normalized_identifier) <= 255:
+                discovered.add(normalized_identifier)
+        model_ids = tuple(sorted(discovered))
+        if not model_ids:
+            raise ModelCredentialValidationError(
+                ModelProbeResult(status="degraded", error_code="no_models")
+            )
+        return ModelCatalogResponse(
+            provider=provider,
+            base_url=normalized,
+            models=model_ids,
+            latency_ms=latency,
         )
 
     async def aclose(self) -> None:
@@ -283,6 +447,7 @@ def model_bindings(config: AdminConfig) -> tuple[ModelBinding, ...]:
     return tuple(
         ModelBinding(
             provider=binding.provider,
+            base_url=binding.base_url,
             model=binding.model,
             credential_ref=binding.credential_ref,
         )
@@ -323,7 +488,10 @@ class ModelCredentialService:
         last_probe: ModelProbeResult | None = None
         for binding in bindings:
             last_probe = await self._probe.validate(
-                provider=binding.provider, model=binding.model, secret=secret
+                provider=binding.provider,
+                base_url=binding.base_url,
+                model=binding.model,
+                secret=secret,
             )
             if last_probe.status != "connected":
                 raise ModelCredentialValidationError(last_probe)
@@ -339,6 +507,15 @@ class ModelCredentialService:
                 bindings=bindings,
             ),
             probe=last_probe,
+        )
+
+    async def discover(
+        self, *, provider: str, base_url: str, secret: str
+    ) -> ModelCatalogResponse:
+        if secret != secret.strip() or "\n" in secret or "\r" in secret:
+            raise ValueError("credential must be a bounded single-line value")
+        return await self._probe.discover(
+            provider=provider.strip(), base_url=base_url, secret=secret
         )
 
 

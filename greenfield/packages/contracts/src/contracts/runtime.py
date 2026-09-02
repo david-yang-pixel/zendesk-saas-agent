@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 
@@ -28,10 +29,26 @@ class ModelBinding(ContractModel):
     """Provider/model selection with a handle resolved outside the sandbox."""
 
     provider: str = Field(min_length=1)
+    base_url: str = Field(default="https://api.openai.com", min_length=1)
     model: str = Field(min_length=1)
     credential_ref: str = Field(min_length=1, max_length=255)
 
     _validate_credential_ref = field_validator("credential_ref")(_credential_reference)
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("model base_url must be a safe HTTPS origin or path")
+        return value.rstrip("/")
 
 
 class ChildModelBinding(ModelBinding):

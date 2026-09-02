@@ -36,6 +36,7 @@ export type IconName =
   | 'activity'
   | 'terminal'
   | 'download'
+  | 'logout'
 
 export interface MetricCard {
   readonly label: string
@@ -75,12 +76,15 @@ export interface RecentRun {
 export interface HarnessConfig {
   rootModel: string
   rootProvider: string
+  rootBaseUrl: string
+  rootCredentialRef: string
   subagents: Array<{
     id: string
     name: string
     purpose: string
     model: string
     provider: string
+    baseUrl: string
     credentialRef: string
     contextWindowTokens: number
     maxToolRounds: number
@@ -99,6 +103,7 @@ export interface HarnessConfig {
 
 export interface ModelRoutingConfig {
   provider: string
+  baseUrl: string
   model: string
   credentialRef: string
 }
@@ -139,6 +144,7 @@ export interface SandboxPolicy {
 
 export interface ModelCredentialBinding {
   readonly provider: string
+  readonly baseUrl: string
   readonly model: string
   readonly credentialRef: string
 }
@@ -160,6 +166,13 @@ export interface ModelCredentialProbe {
 export interface ModelCredentialReplaceResult {
   readonly credential: ModelCredentialStatus
   readonly probe: ModelCredentialProbe
+}
+
+export interface ModelCatalog {
+  readonly provider: string
+  readonly baseUrl: string
+  readonly models: string[]
+  readonly latencyMs: number
 }
 
 export interface OverviewData {

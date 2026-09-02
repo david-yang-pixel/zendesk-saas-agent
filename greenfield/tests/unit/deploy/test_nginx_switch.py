@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from deploy.nginx_switch import render_greenfield, switch
+from deploy.nginx_switch import render_admin_greenfield, render_greenfield, switch
 
 LEGACY = """server {
     location /webhook/ {
@@ -47,3 +47,13 @@ def test_switch_keeps_only_transient_backup(tmp_path: Path) -> None:
     switch(config=config, backup=backup)
     assert config.read_text() != LEGACY
     assert backup.read_text() == LEGACY
+
+
+def test_admin_only_switch_preserves_legacy_agent_routes() -> None:
+    rendered = render_admin_greenfield(LEGACY)
+
+    assert "proxy_pass http://127.0.0.1:18104/;" in rendered
+    assert "Content-Security-Policy" in rendered
+    assert "location /webhook/" in rendered
+    assert "location /agent/" in rendered
+    assert "127.0.0.1:8080" in rendered

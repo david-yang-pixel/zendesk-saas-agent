@@ -60,6 +60,7 @@ class ResolvedModelBinding:
     """In-memory model connection; deliberately not a contracts model."""
 
     provider: str
+    base_url: str
     model: str
     api_key: str
 
@@ -80,6 +81,7 @@ def resolve_model_credentials(
         raise RuntimeConfigError("model credential unavailable")
     return ResolvedModelBinding(
         provider=binding.provider,
+        base_url=binding.base_url,
         model=binding.model,
         api_key=secret,
     )

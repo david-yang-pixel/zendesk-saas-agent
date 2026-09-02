@@ -12,7 +12,10 @@ def _bootstrap() -> RuntimeBootstrap:
     return RuntimeBootstrap(
         config_revision="cfg-1",
         root_model=ModelBinding(
-            provider="openai", model="root", credential_ref="secret/root"
+            provider="openai",
+            base_url="https://root-models.example.com",
+            model="root",
+            credential_ref="secret/root",
         ),
         child_models=(),
         enabled_skills=("core-casework",),
@@ -32,6 +35,7 @@ def test_secret_resolver_resolves_refs_only_and_never_changes_bootstrap() -> Non
 
     assert resolved.api_key == "actual-secret"
     assert resolved.model == "root"
+    assert resolved.base_url == "https://root-models.example.com"
     assert "actual-secret" not in bootstrap.model_dump_json()
 
 
