@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from enum import StrEnum
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from contracts._base import ContractModel, unique_strings, validate_transition
 
@@ -42,6 +42,7 @@ class Todo(ContractModel):
     dependencies: tuple[str, ...] = ()
     skill: str | None = Field(default=None, min_length=1)
     suggested_tools: tuple[str, ...] = ()
+    tool_arguments: dict[str, JsonValue] = Field(default_factory=dict)
     required_evidence: tuple[str, ...] = ()
     attempts: int = Field(default=0, ge=0)
     completion_condition: str = Field(min_length=1)

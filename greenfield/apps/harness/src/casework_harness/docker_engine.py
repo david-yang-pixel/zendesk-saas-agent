@@ -712,12 +712,7 @@ def _execution_status(body: Mapping[str, Any]) -> SandboxExecutionStatus:
         for value in SandboxExecutionStatus:
             if normalized == value.value:
                 return value
-    outcome = _mapping(body.get("outcome"))
-    kind = outcome.get("kind")
-    if isinstance(kind, str) and kind.casefold() in {"failed", "cancelled"}:
-        return (
-            SandboxExecutionStatus.FAILED
-            if kind.casefold() == "failed"
-            else SandboxExecutionStatus.CANCELLED
-        )
+    # A typed failed/cancelled Outcome is still a successful sandbox transport.
+    # Preserve its reason and telemetry for the worker instead of collapsing it
+    # into the opaque ``sandbox_reported_failure`` adapter error.
     return SandboxExecutionStatus.SUCCEEDED

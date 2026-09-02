@@ -63,6 +63,7 @@ _TODO_SCHEMA: dict[str, Any] = {
         "dependencies",
         "skill",
         "suggested_tools",
+        "tool_arguments_json",
         "required_evidence",
         "attempts",
         "completion_condition",
@@ -86,6 +87,10 @@ _TODO_SCHEMA: dict[str, Any] = {
         "dependencies": {"type": "array", "items": {"type": "string"}},
         "skill": {"type": ["string", "null"]},
         "suggested_tools": {"type": "array", "items": {"type": "string"}},
+        # Strict Responses schemas cannot express arbitrary JSON object keys.
+        # The model therefore returns arguments as JSON text; the sandbox
+        # decodes and validates the object before it reaches the Tool Loop.
+        "tool_arguments_json": {"type": "string"},
         "required_evidence": {
             "type": "array",
             "items": {"type": "string"},
@@ -508,6 +513,7 @@ class HttpCaseworkModel:
         api_key: str,
         model_name: str,
         available_child_slots: tuple[str, ...] = (),
+        tool_definitions: tuple[ToolDefinition, ...] = (),
         endpoint_guard: ModelEndpointGuard = _validate_public_model_endpoint,
     ) -> None:
         if not base_url.startswith("https://"):
@@ -519,6 +525,7 @@ class HttpCaseworkModel:
         self._headers = {"authorization": f"Bearer {api_key}"}
         self._model_name = model_name
         self._available_child_slots = available_child_slots
+        self._tool_definitions = tool_definitions
         self._endpoint_guard = endpoint_guard
 
     async def plan(
@@ -537,13 +544,21 @@ class HttpCaseworkModel:
             instructions=(
                 "Create a minimal evidence-driven Todo plan. Assign each Todo "
                 "to root or an explicitly available child slot. suggested_tools "
-                "must contain only names from available_tools. Return JSON only."
+                "must contain at most one name from available_tools. For that "
+                "tool, encode exact schema-valid arguments in "
+                "tool_arguments_json. Todo execution state is controller-owned; "
+                "return pending and zero attempts. Return JSON only."
             ),
             payload={
                 "ticket": snapshot.model_dump(mode="json"),
                 "question": question.model_dump(mode="json"),
                 "skill": skill.model_dump(mode="json"),
                 "available_tools": available_tools,
+                "available_tool_definitions": [
+                    definition.model_dump(mode="json")
+                    for definition in self._tool_definitions
+                    if definition.name in available_tools
+                ],
                 "available_child_slots": self._available_child_slots,
             },
             schema_name="casework_todo_plan",
@@ -554,9 +569,28 @@ class HttpCaseworkModel:
         if not isinstance(todos, list):
             raise RuntimeError("model plan response is missing todos")
         try:
-            plan = TodoPlan(
-                items=[Todo.model_validate(todo) for todo in cast(list[object], todos)]
-            )
+            normalized_todos: list[Todo] = []
+            for raw_todo in cast(list[object], todos):
+                if not isinstance(raw_todo, dict):
+                    raise ValueError("model plan contains a non-object Todo")
+                todo = dict(cast(dict[str, Any], raw_todo))
+                raw_arguments = todo.pop("tool_arguments_json", "{}")
+                if not isinstance(raw_arguments, str):
+                    raise ValueError("model plan tool arguments must be JSON text")
+                arguments: object = json.loads(raw_arguments)
+                if not isinstance(arguments, dict):
+                    raise ValueError("model plan tool arguments must be an object")
+                suggested = todo.get("suggested_tools")
+                if isinstance(suggested, list):
+                    suggested_values = cast(list[object], suggested)
+                    if len(suggested_values) > 1:
+                        todo["suggested_tools"] = suggested_values[:1]
+                # The model describes work; the Harness owns lifecycle state.
+                todo["status"] = "pending"
+                todo["attempts"] = 0
+                todo["tool_arguments"] = arguments
+                normalized_todos.append(Todo.model_validate(todo))
+            plan = TodoPlan(items=normalized_todos)
             _validate_todo_plan(
                 plan,
                 available_tools=available_tools,
@@ -905,6 +939,7 @@ class ProductionSandboxCommands:
             available_child_slots=tuple(
                 child.slot_id for child in bootstrap.enabled_child_slots
             ),
+            tool_definitions=runtime_tools.definitions(),
         )
         slots = tuple(
             SubagentSlot(

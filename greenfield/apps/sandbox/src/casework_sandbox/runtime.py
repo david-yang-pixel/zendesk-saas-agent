@@ -227,7 +227,7 @@ class SandboxAgent:
                     calls=[
                         (
                             task.suggested_tools[0],
-                            {"query": question.original_request},
+                            task.tool_arguments,
                         )
                     ],
                     context=ToolExecutionContext(

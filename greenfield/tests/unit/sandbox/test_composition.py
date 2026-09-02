@@ -90,13 +90,17 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
                             {
                                 "task_id": "inspect",
                                 "goal": "Find evidence",
-                                "status": "pending",
+                                "status": "ready",
                                 "assigned_to": "root",
                                 "dependencies": [],
                                 "skill": None,
-                                "suggested_tools": ["workspace_lookup"],
+                                "suggested_tools": [
+                                    "workspace_lookup",
+                                    "ignored_second_tool",
+                                ],
+                                "tool_arguments_json": '{"ticket_id":3726}',
                                 "required_evidence": ["workspace_id"],
-                                "attempts": 0,
+                                "attempts": 3,
                                 "completion_condition": "evidence found",
                             }
                         ]
@@ -127,6 +131,17 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
         provider="openai",
         api_key="root-key",
         model_name="root-model",
+        tool_definitions=(
+            ToolDefinition(
+                name="workspace_lookup",
+                description="Find a workspace",
+                input_schema={
+                    "type": "object",
+                    "required": ["ticket_id"],
+                    "properties": {"ticket_id": {"type": "integer"}},
+                },
+            ),
+        ),
         endpoint_guard=_allow_public_endpoint,
     )
     snapshot, question, skill = _model_inputs()
@@ -135,6 +150,9 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
     answer = await model.compose_answer(snapshot, question, ("ev-1",))
 
     assert plan.items[0].suggested_tools == ("workspace_lookup",)
+    assert plan.items[0].status.value == "pending"
+    assert plan.items[0].attempts == 0
+    assert plan.items[0].tool_arguments == {"ticket_id": 3726}
     assert answer == "Dify"
     assert calls == 2
     await client.aclose()

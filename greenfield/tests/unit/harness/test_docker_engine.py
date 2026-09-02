@@ -247,6 +247,41 @@ async def test_readiness_and_run_use_versioned_sandbox_protocol() -> None:
 
 
 @pytest.mark.asyncio
+async def test_typed_failed_outcome_preserves_result_for_worker_telemetry() -> None:
+    client = FakeDockerClient()
+    body = {
+        "sandbox_id": "container-1",
+        "session_id": "session-1",
+        "outcome": {
+            "kind": "failed",
+            "reason": "model plan response contains invalid Todo",
+        },
+    }
+    http = FakeHttp([SandboxHttpResponse(status_code=200, body=body)])
+    engine = DockerSandboxEngine(
+        client=_docker(client),
+        http=http,
+        installation_id="install-1",
+        controller_id="controller-1",
+    )
+    sandbox_id = await engine.create(
+        image="sandbox",
+        limits=_limits(),
+        labels={"casework.job_id": "job-1"},
+    )
+
+    execution = await engine.execute(
+        sandbox_id,
+        request={"ticket_id": 3726},
+        timeout_seconds=30,
+    )
+
+    assert execution.status is SandboxExecutionStatus.SUCCEEDED
+    assert execution.result == body
+    assert execution.error_code is None
+
+
+@pytest.mark.asyncio
 async def test_oom_state_is_reported_as_resource_exhausted() -> None:
     client = FakeDockerClient()
     http = FakeHttp(
