@@ -59,6 +59,8 @@ def _start() -> SandboxStartRequest:
         sandbox_id="sandbox-1",
         job_id="job-1",
         session_id="session-1",
+        event_id="evt-1",
+        expected_event_id="messaging:evt-1",
         ticket_id=3726,
         generation=7,
         resource_attempt=1,

@@ -119,6 +119,9 @@ describe('Admin API client', () => {
           duration: '1m 0s',
           steps: null,
           session_id: 'session-3726',
+          event_id: 'evt-3726',
+          expected_event_id: 'messaging:evt-3726',
+          attempts: 1,
           config_revision: 'cfg-1',
           question: null,
           todo_completed: null,
@@ -129,6 +132,9 @@ describe('Admin API client', () => {
           checkpoint: null,
           sandbox: 'destroyed',
           outcome: 'completed',
+          failure_reason: null,
+          retry_classification: null,
+          snapshot_cursor: 'messaging:evt-3726',
         }],
       },
     })
@@ -137,6 +143,9 @@ describe('Admin API client', () => {
 
     expect(result.items[0]).toMatchObject({
       configRevision: 'cfg-1',
+      eventId: 'evt-3726',
+      expectedEventId: 'messaging:evt-3726',
+      snapshotCursor: 'messaging:evt-3726',
       question: null,
       todoCompleted: null,
       todoTotal: null,

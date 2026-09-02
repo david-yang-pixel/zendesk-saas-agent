@@ -158,6 +158,7 @@ def test_raw_payload_extracts_customer_event_without_retaining_full_body() -> No
         "ticket_id": 2757,
         "actor_type": "end_user",
         "message_id": "msg-1",
+        "snapshot_cursor": "messaging:msg-1",
         "public": True,
     }
 
@@ -196,6 +197,7 @@ def test_customer_raw_webhook_fetches_ticket_and_admits_minimal_projection() -> 
         "ticket_id": 2757,
         "actor_type": "end_user",
         "message_id": "msg-1",
+        "snapshot_cursor": "messaging:msg-1",
         "public": True,
     }
 

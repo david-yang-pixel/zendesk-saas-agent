@@ -32,6 +32,8 @@ class ControllerSandboxRunner:
         controller_request: dict[str, Any] = {
             "job_id": request.job_id,
             "session_id": request.session_id,
+            "event_id": request.event_id,
+            "expected_event_id": request.expected_event_id,
             "ticket_id": request.ticket_id,
             "generation": request.generation,
             "config_revision": request.config_revision,

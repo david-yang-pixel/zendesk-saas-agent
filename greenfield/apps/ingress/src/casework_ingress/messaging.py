@@ -58,13 +58,16 @@ class MessagingEvent:
     def safe_payload(self) -> dict[str, object]:
         """Return metadata only; never retain the raw body or message content."""
 
-        return {
+        payload: dict[str, object] = {
             "event_id": self.event_id,
             "ticket_id": self.ticket_id,
             "actor_type": self.actor_type,
             "message_id": self.message_id,
             "public": self.public,
         }
+        if self.message_id is not None:
+            payload["snapshot_cursor"] = f"messaging:{self.message_id}"
+        return payload
 
 
 def verify_zendesk_signature(

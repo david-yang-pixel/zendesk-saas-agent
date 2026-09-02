@@ -130,7 +130,7 @@ async def test_event_repository_deduplicates_event_id(
 
 
 @pytest.mark.asyncio
-async def test_enqueue_allows_only_one_active_job_per_ticket(
+async def test_enqueue_coalesces_new_event_into_the_queued_ticket_job(
     db_session: AsyncSessionShim,
 ) -> None:
     events = EventRepository(db_session)
@@ -158,8 +158,52 @@ async def test_enqueue_allows_only_one_active_job_per_ticket(
     assert first.accepted is True
     first_job = cast(CaseJobRow, db_session.get(CaseJobRow, "job-1"))
     assert first_job.session_id == "session-job-1"
-    assert second.accepted is False
-    assert second.reason == "active_ticket_job"
+    assert second.accepted is True
+    assert second.job_id == "job-1"
+    assert second.reason == "coalesced_event"
+    assert first_job.expected_event_id == "evt-2"
+
+
+@pytest.mark.asyncio
+async def test_enqueue_creates_successor_when_the_existing_job_is_running(
+    db_session: AsyncSessionShim,
+) -> None:
+    events = EventRepository(db_session)
+    jobs = JobRepository(db_session)
+    await events.record(
+        event_id="evt-running",
+        ticket_id=3726,
+        occurred_at=NOW,
+        source="zendesk",
+        customer_origin="customer",
+    )
+    await jobs.enqueue(
+        ticket_id=3726,
+        event_id="evt-running",
+        config=CONFIG,
+        job_id="job-running",
+        available_at=NOW,
+    )
+    assert await jobs.claim_next(worker_id="worker", now=NOW) is not None
+    await events.record(
+        event_id="evt-successor",
+        ticket_id=3726,
+        occurred_at=NOW + timedelta(seconds=1),
+        source="zendesk",
+        customer_origin="customer",
+    )
+
+    successor = await jobs.enqueue(
+        ticket_id=3726,
+        event_id="evt-successor",
+        expected_event_id="messaging:evt-successor",
+        config=CONFIG,
+        job_id="job-successor",
+        available_at=NOW + timedelta(seconds=1),
+    )
+
+    assert successor.accepted is True
+    assert successor.job_id == "job-successor"
 
 
 @pytest.mark.asyncio

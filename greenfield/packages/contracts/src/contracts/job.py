@@ -62,6 +62,7 @@ class CaseJob(ContractModel):
 
     job_id: str = Field(min_length=1)
     event_id: str = Field(min_length=1)
+    expected_event_id: str = Field(min_length=1)
     ticket_id: StrictInt = Field(gt=0)
     config_revision: str = Field(min_length=1)
     model_digest: str = Field(min_length=1)

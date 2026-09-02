@@ -20,6 +20,8 @@ class FakeJobs:
     transitions: list[str] = field(default_factory=list[str])
     finished: list[str] = field(default_factory=list[str])
     heartbeats: int = 0
+    retries: list[tuple[int, str]] = field(default_factory=list[tuple[int, str]])
+    retry_accepted: bool = True
     heartbeat_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def claim(self) -> JobLease | None:
@@ -35,6 +37,12 @@ class FakeJobs:
 
     async def finish(self, lease: JobLease, status: str) -> None:
         self.finished.append(status)
+
+    async def retry(
+        self, lease: JobLease, *, delay_seconds: int, reason: str
+    ) -> bool:
+        self.retries.append((delay_seconds, reason))
+        return self.retry_accepted
 
 
 @dataclass
@@ -114,8 +122,11 @@ def _lease() -> JobLease:
     return JobLease(
         job_id="job-1",
         session_id="session-1",
+        event_id="evt-1",
+        expected_event_id="messaging:evt-1",
         ticket_id=3726,
         generation=7,
+        attempts=1,
         config_revision="config-1",
         model_digest="model-sha",
         skill_digest="skill-sha",
@@ -148,10 +159,79 @@ async def test_worker_passes_ticket_id_to_sandbox_and_finishes_after_delivery() 
 
     assert processed is True
     assert sandboxes.requests[0].business_input == {"ticket_id": 3726}
+    assert sandboxes.requests[0].event_id == "evt-1"
+    assert sandboxes.requests[0].expected_event_id == "messaging:evt-1"
     assert sandboxes.requests[0].config_revision == "config-1"
     assert jobs.transitions == ["sandbox_creating", "running", "finalizing"]
     assert delivery.delivered == [(_answer(), 7, "config-1")]
     assert jobs.finished == ["completed"]
+
+
+@pytest.mark.asyncio
+async def test_worker_requeues_snapshot_not_ready_without_delivery() -> None:
+    outcome = Outcome(
+        outcome_id="outcome-stale",
+        session_id="session-1",
+        ticket_id=3726,
+        kind=OutcomeKind.FAILED,
+        reason=(
+            "trigger event messaging:evt-new is not visible; "
+            "latest customer cursor is messaging:evt-old"
+        ),
+        retry_classification="snapshot_not_ready",
+    )
+    jobs = FakeJobs(_lease())
+    delivery = FakeDelivery()
+    worker = HarnessWorker(
+        jobs=jobs,
+        sandboxes=FakeSandboxRuns(outcome),
+        delivery=delivery,
+    )
+
+    assert await worker.process_once() is True
+
+    assert jobs.retries == [
+        (
+            2,
+            "trigger event messaging:evt-new is not visible; "
+            "latest customer cursor is messaging:evt-old",
+        )
+    ]
+    assert jobs.finished == []
+    assert delivery.delivered == []
+    assert jobs.transitions == ["sandbox_creating", "running"]
+
+
+@pytest.mark.asyncio
+async def test_worker_finalizes_snapshot_timeout_after_retry_budget_exhausted() -> None:
+    outcome = Outcome(
+        outcome_id="outcome-stale",
+        session_id="session-1",
+        ticket_id=3726,
+        kind=OutcomeKind.FAILED,
+        reason=(
+            "trigger event messaging:evt-new is not visible; "
+            "latest customer cursor is messaging:evt-old"
+        ),
+        retry_classification="snapshot_not_ready",
+    )
+    jobs = FinalizingJobs(_lease(), retry_accepted=False)
+    worker = HarnessWorker(
+        jobs=jobs,
+        sandboxes=FakeSandboxRuns(outcome),
+        delivery=FakeDelivery(),
+    )
+
+    assert await worker.process_once() is True
+
+    assert jobs.retries == [
+        (
+            2,
+            "trigger event messaging:evt-new is not visible; "
+            "latest customer cursor is messaging:evt-old",
+        )
+    ]
+    assert jobs.finalized == [(outcome, "failed")]
 
 
 @pytest.mark.asyncio

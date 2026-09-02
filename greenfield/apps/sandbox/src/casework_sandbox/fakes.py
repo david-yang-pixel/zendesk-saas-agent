@@ -13,9 +13,13 @@ class FakeZendesk:
     def __init__(self, snapshot: TicketSnapshot) -> None:
         self._snapshot = snapshot
         self.fetched_ticket_ids: list[int] = []
+        self.expected_event_ids: list[str | None] = []
 
-    async def fetch_ticket(self, ticket_id: int) -> TicketSnapshot:
+    async def fetch_ticket(
+        self, ticket_id: int, *, expected_event_id: str | None = None
+    ) -> TicketSnapshot:
         self.fetched_ticket_ids.append(ticket_id)
+        self.expected_event_ids.append(expected_event_id)
         if ticket_id != self._snapshot.ticket_id:
             raise KeyError(ticket_id)
         return self._snapshot

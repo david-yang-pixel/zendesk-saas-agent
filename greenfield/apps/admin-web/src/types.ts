@@ -235,6 +235,9 @@ export interface ToolRecord {
 
 export interface RunRecord extends RecentRun {
   readonly sessionId: string
+  readonly eventId: string | null
+  readonly expectedEventId: string | null
+  readonly attempts: number
   readonly configRevision: string | null
   readonly question: string | null
   readonly todoCompleted: number | null
@@ -245,4 +248,7 @@ export interface RunRecord extends RecentRun {
   readonly checkpoint: string | null
   readonly sandbox: 'destroyed' | 'running'
   readonly outcome: string
+  readonly failureReason: string | null
+  readonly retryClassification: string | null
+  readonly snapshotCursor: string | null
 }

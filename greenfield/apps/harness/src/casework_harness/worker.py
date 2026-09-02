@@ -16,8 +16,11 @@ from contracts.runtime import RuntimeBootstrap
 class JobLease:
     job_id: str
     session_id: str
+    event_id: str
+    expected_event_id: str
     ticket_id: int
     generation: int
+    attempts: int
     config_revision: str
     model_digest: str
     skill_digest: str
@@ -25,11 +28,13 @@ class JobLease:
     bootstrap: RuntimeBootstrap | None = None
 
     def __post_init__(self) -> None:
-        if self.ticket_id <= 0 or self.generation < 1:
-            raise ValueError("ticket_id and generation must be positive")
+        if self.ticket_id <= 0 or self.generation < 1 or self.attempts < 1:
+            raise ValueError("ticket_id, generation and attempts must be positive")
         required = (
             self.job_id,
             self.session_id,
+            self.event_id,
+            self.expected_event_id,
             self.config_revision,
             self.model_digest,
             self.skill_digest,
@@ -43,8 +48,11 @@ class JobLease:
 class SandboxRunRequest:
     job_id: str
     session_id: str
+    event_id: str
+    expected_event_id: str
     ticket_id: int
     generation: int
+    attempts: int
     config_revision: str
     model_digest: str
     skill_digest: str
@@ -60,8 +68,11 @@ class SandboxRunRequest:
         return cls(
             job_id=lease.job_id,
             session_id=lease.session_id,
+            event_id=lease.event_id,
+            expected_event_id=lease.expected_event_id,
             ticket_id=lease.ticket_id,
             generation=lease.generation,
+            attempts=lease.attempts,
             config_revision=lease.config_revision,
             model_digest=lease.model_digest,
             skill_digest=lease.skill_digest,
@@ -82,6 +93,10 @@ class JobQueuePort(Protocol):
     async def transition(self, lease: JobLease, status: str) -> None: ...
 
     async def heartbeat(self, lease: JobLease) -> None: ...
+
+    async def retry(
+        self, lease: JobLease, *, delay_seconds: int, reason: str
+    ) -> bool: ...
 
     async def finish(self, lease: JobLease, status: str) -> None: ...
 
@@ -139,6 +154,17 @@ class HarnessWorker:
                 lease, await self._request_for(lease)
             )
             self._validate_outcome(lease, outcome)
+            if (
+                outcome.kind is OutcomeKind.FAILED
+                and outcome.retry_classification == "snapshot_not_ready"
+            ):
+                retry_delay = min(60, 2**lease.attempts)
+                if await self._jobs.retry(
+                    lease,
+                    delay_seconds=retry_delay,
+                    reason=outcome.reason or "snapshot_not_ready",
+                ):
+                    return True
             await self._jobs.transition(lease, "finalizing")
             if outcome.delivery_eligible:
                 delivery_result = await self._delivery.deliver(
@@ -188,8 +214,11 @@ class HarnessWorker:
             JobLease(
                 job_id=lease.job_id,
                 session_id=lease.session_id,
+                event_id=lease.event_id,
+                expected_event_id=lease.expected_event_id,
                 ticket_id=lease.ticket_id,
                 generation=lease.generation,
+                attempts=lease.attempts,
                 config_revision=lease.config_revision,
                 model_digest=lease.model_digest,
                 skill_digest=lease.skill_digest,

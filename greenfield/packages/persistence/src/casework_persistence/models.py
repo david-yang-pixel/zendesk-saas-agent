@@ -1,9 +1,10 @@
 """SQLAlchemy persistence schema for the Greenfield Casework queue.
 
 The schema is deliberately boring: PostgreSQL is the queue and the source of
-truth.  State transitions are performed by repository methods, while the
-database enforces the two invariants that are unsafe to leave to a worker:
-event de-duplication and one active job per ticket.
+truth. State transitions are performed by repository methods, while the
+database enforces event de-duplication and at most one queued successor per
+ticket. A running job may coexist with that successor so customer messages are
+not dropped while an older snapshot is being processed.
 """
 
 from __future__ import annotations
@@ -125,6 +126,7 @@ class CaseJobRow(Base):
     event_id: Mapped[str] = mapped_column(
         String(255), ForeignKey("events.event_id"), nullable=False, unique=True
     )
+    expected_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
     ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(
@@ -165,13 +167,11 @@ class CaseJobRow(Base):
             name="ck_case_jobs_status",
         ),
         Index(
-            "uq_case_jobs_one_active_ticket",
+            "uq_case_jobs_one_queued_ticket",
             "ticket_id",
             unique=True,
-            postgresql_where=text(
-                "status IN ('queued', 'claimed', 'sandbox_creating', "
-                "'running', 'finalizing')"
-            ),
+            postgresql_where=text("status = 'queued'"),
+            sqlite_where=text("status = 'queued'"),
         ),
         Index("ix_case_jobs_claimable", "status", "available_at", "created_at"),
         Index("ix_case_jobs_ticket_generation", "ticket_id", "generation"),

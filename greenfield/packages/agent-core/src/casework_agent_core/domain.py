@@ -9,6 +9,18 @@ from contracts.ticket import ActiveQuestion, TicketMessage, TicketSnapshot
 TicketComment = TicketMessage
 
 
+class TicketSnapshotNotReadyError(RuntimeError):
+    """The read model has not exposed the webhook's triggering event yet."""
+
+    def __init__(self, *, expected_event_id: str, observed_cursor: str) -> None:
+        self.expected_event_id = expected_event_id
+        self.observed_cursor = observed_cursor
+        super().__init__(
+            f"trigger event {expected_event_id} is not visible; "
+            f"latest customer cursor is {observed_cursor}"
+        )
+
+
 def resolve_active_question(snapshot: TicketSnapshot) -> ActiveQuestion:
     latest_public_agent_index = max(
         (

@@ -154,6 +154,7 @@ class PostgresAdmission:
             queued = await JobRepository(session).enqueue(
                 ticket_id=event.normalized.ticket_id,
                 event_id=event.event_id,
+                expected_event_id=self._expected_event_id(event),
                 config=self.frozen_config(revision.revision, runtime),
                 job_id=str(uuid4()),
                 available_at=event.received_at,
@@ -169,6 +170,13 @@ class PostgresAdmission:
                 reason="eligible",
                 ticket_id=event.normalized.ticket_id,
             )
+
+    @staticmethod
+    def _expected_event_id(event: AdmissionEvent) -> str:
+        cursor = event.raw_payload.get("snapshot_cursor")
+        if isinstance(cursor, str) and cursor.strip():
+            return cursor.strip()
+        return event.event_id
 
     @staticmethod
     def _duplicate(event: AdmissionEvent) -> AdmissionResult:

@@ -9,7 +9,6 @@ from sqlalchemy.schema import ColumnDefault, CreateIndex, CreateTable
 from sqlalchemy.sql.schema import Table
 
 from casework_persistence.models import (
-    ACTIVE_JOB_STATUSES,
     Base,
     CaseJobRow,
     ConfigHeadRow,
@@ -37,6 +36,7 @@ def test_schema_has_durable_event_dedup_and_ticket_generation_tables() -> None:
     assert list(event_table.primary_key.columns.keys()) == ["event_id"]
     assert list(state_table.primary_key.columns.keys()) == ["ticket_id"]
     assert bool(job_table.c.event_id.unique)
+    assert not job_table.c.expected_event_id.nullable
     assert bool(job_table.c.session_id.unique)
     assert bool(outbox_table.c.idempotency_key.unique)
     revision_table = cast(Table, ConfigRevisionRow.__table__)
@@ -51,13 +51,13 @@ def test_case_job_has_postgres_partial_unique_index_for_one_active_job() -> None
     index = next(
         index
         for index in job_table.indexes
-        if str(index.name) == "uq_case_jobs_one_active_ticket"
+        if str(index.name) == "uq_case_jobs_one_queued_ticket"
     )
     assert [column.name for column in index.columns] == ["ticket_id"]
     compiled = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
     assert "WHERE" in compiled
-    for status in ACTIVE_JOB_STATUSES:
-        assert status in compiled
+    assert "queued" in compiled
+    assert "running" not in compiled
 
 
 def test_required_config_snapshot_is_explicit_and_immutable() -> None:

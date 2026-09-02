@@ -31,8 +31,11 @@ def _lease() -> JobLease:
     return JobLease(
         job_id="job-1",
         session_id="session-1",
+        event_id="evt-1",
+        expected_event_id="messaging:evt-1",
         ticket_id=3726,
         generation=1,
+        attempts=1,
         config_revision="cfg-1",
         model_digest="model",
         skill_digest="skill",
@@ -56,6 +59,12 @@ class _Jobs:
 
     async def finish(self, lease: JobLease, status: str) -> None:
         del lease, status
+
+    async def retry(
+        self, lease: JobLease, *, delay_seconds: int, reason: str
+    ) -> bool:
+        del lease, delay_seconds, reason
+        return True
 
 
 @dataclass

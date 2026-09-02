@@ -75,7 +75,12 @@ CONFIG: dict[str, object] = {
 }
 
 
-def _event(*, event_id: str, message: str = "please investigate") -> AdmissionEvent:
+def _event(
+    *,
+    event_id: str,
+    message: str = "please investigate",
+    snapshot_cursor: str | None = None,
+) -> AdmissionEvent:
     return AdmissionEvent(
         event_id=event_id,
         received_at=datetime(2026, 9, 1, tzinfo=UTC),
@@ -87,7 +92,15 @@ def _event(*, event_id: str, message: str = "please investigate") -> AdmissionEv
             is_customer_message=True,
             message_text=message,
         ),
-        raw_payload={"event_id": event_id, "ticket_id": 3726},
+        raw_payload={
+            "event_id": event_id,
+            "ticket_id": 3726,
+            **(
+                {"snapshot_cursor": snapshot_cursor}
+                if snapshot_cursor is not None
+                else {}
+            ),
+        },
     )
 
 
@@ -102,7 +115,9 @@ async def test_postgres_admission_atomically_enqueues_and_deduplicates(
         )
     admission = PostgresAdmission(transaction_scope=sessions.transaction)
 
-    first = await admission.admit(_event(event_id="evt-1"))
+    first = await admission.admit(
+        _event(event_id="evt-1", snapshot_cursor="messaging:customer-1")
+    )
     duplicate = await admission.admit(_event(event_id="evt-1"))
 
     assert first.action == "enqueue"
@@ -114,6 +129,8 @@ async def test_postgres_admission_atomically_enqueues_and_deduplicates(
     assert jobs[0].generation == 1
     assert jobs[0].config_revision == "cfg-1"
     assert jobs[0].child_model_config_ids == ["logs"]
+    assert jobs[0].event_id == "evt-1"
+    assert jobs[0].expected_event_id == "messaging:customer-1"
 
 
 @pytest.mark.asyncio

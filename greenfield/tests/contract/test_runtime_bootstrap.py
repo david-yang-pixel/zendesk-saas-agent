@@ -68,6 +68,8 @@ def test_sandbox_start_carries_the_one_time_runtime_bootstrap() -> None:
         sandbox_id="sandbox-1",
         job_id="job-1",
         session_id="session-1",
+        event_id="evt-1",
+        expected_event_id="messaging:evt-1",
         ticket_id=3726,
         generation=1,
         resource_attempt=1,
@@ -81,6 +83,7 @@ def test_sandbox_start_carries_the_one_time_runtime_bootstrap() -> None:
     )
 
     assert request.bootstrap.config_revision == request.config_revision
+    assert request.event_id == "evt-1"
     assert request.model_dump(mode="json")["bootstrap"]["root_model"][
         "credential_ref"
     ] == "secret/root"

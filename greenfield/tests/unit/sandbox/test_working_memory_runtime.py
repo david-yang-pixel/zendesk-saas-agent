@@ -42,7 +42,10 @@ class _Reader:
     def __init__(self, snapshots: dict[int, TicketSnapshot]) -> None:
         self.snapshots = snapshots
 
-    async def fetch_ticket(self, ticket_id: int) -> TicketSnapshot:
+    async def fetch_ticket(
+        self, ticket_id: int, *, expected_event_id: str | None = None
+    ) -> TicketSnapshot:
+        del expected_event_id
         return self.snapshots[ticket_id]
 
 

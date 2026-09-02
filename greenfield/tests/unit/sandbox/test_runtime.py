@@ -2,7 +2,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from casework_agent_core.domain import ActiveQuestion, TicketComment, TicketSnapshot
+from casework_agent_core.domain import (
+    ActiveQuestion,
+    TicketComment,
+    TicketSnapshot,
+    TicketSnapshotNotReadyError,
+)
 from casework_agent_core.skills import LoadedSkill
 from casework_agent_core.todo import TodoPlan
 from casework_sandbox.fakes import FakeModel, FakeZendesk
@@ -139,6 +144,43 @@ class DependentModel:
     ) -> tuple[str, dict[str, object]] | None:
         del snapshot, question, todo, failed_tool_name, failure_summary, available_tools
         return None
+
+
+class _NotReadyReader:
+    def __init__(self) -> None:
+        self.expected_event_ids: list[str | None] = []
+
+    async def fetch_ticket(
+        self, ticket_id: int, *, expected_event_id: str | None = None
+    ) -> TicketSnapshot:
+        assert ticket_id == 3726
+        self.expected_event_ids.append(expected_event_id)
+        raise TicketSnapshotNotReadyError(
+            expected_event_id="messaging:evt-new",
+            observed_cursor="messaging:evt-old",
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_classifies_missing_trigger_event_for_harness_retry() -> None:
+    reader = _NotReadyReader()
+    outcome = await SandboxAgent(
+        zendesk=reader,
+        model=FakeModel(answer="unused"),
+        tools=ToolRegistry(),
+    ).run(
+        ticket_id=3726,
+        session_id="session-3726",
+        expected_event_id="evt-new",
+    )
+
+    assert reader.expected_event_ids == ["evt-new"]
+    assert outcome.kind is OutcomeKind.FAILED
+    assert outcome.retry_classification == "snapshot_not_ready"
+    assert outcome.reason == (
+        "trigger event messaging:evt-new is not visible; "
+        "latest customer cursor is messaging:evt-old"
+    )
 
 
 @pytest.mark.asyncio

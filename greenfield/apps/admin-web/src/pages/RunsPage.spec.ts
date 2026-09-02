@@ -12,6 +12,9 @@ const unknownRun = {
   duration: '1m 0s',
   steps: null,
   sessionId: 'session-3726',
+  eventId: 'evt-3726',
+  expectedEventId: 'messaging:evt-3726',
+  attempts: 3,
   configRevision: null,
   question: null,
   todoCompleted: null,
@@ -22,6 +25,9 @@ const unknownRun = {
   checkpoint: null,
   sandbox: 'destroyed' as const,
   outcome: 'completed',
+  failureReason: 'trigger event was delayed',
+  retryClassification: 'snapshot_not_ready',
+  snapshotCursor: 'messaging:evt-old',
 }
 
 function apiFixture(): AdminApiClient {
@@ -57,6 +63,9 @@ describe('RunsPage evidence honesty', () => {
     expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('Subagents')
     expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('Checkpoint')
     expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('未知（尚未持久化）')
-    expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('Config revision')
+    expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('配置版本')
+    expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('messaging:evt-3726')
+    expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('snapshot_not_ready')
+    expect(wrapper.get('[aria-label="运行详情"]').text()).toContain('trigger event was delayed')
   })
 })

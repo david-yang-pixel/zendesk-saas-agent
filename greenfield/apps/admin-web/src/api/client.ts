@@ -145,6 +145,9 @@ interface ApiRecentRun {
 
 interface ApiRunRecord extends ApiRecentRun {
   session_id: string
+  event_id: string | null
+  expected_event_id: string | null
+  attempts: number
   config_revision: string | null
   question: string | null
   todo_completed: number | null
@@ -155,6 +158,9 @@ interface ApiRunRecord extends ApiRecentRun {
   checkpoint: string | null
   sandbox: RunRecord['sandbox']
   outcome: string
+  failure_reason: string | null
+  retry_classification: string | null
+  snapshot_cursor: string | null
 }
 
 interface ApiOverview {
@@ -286,6 +292,9 @@ function toRun(value: ApiRunRecord): RunRecord {
   return {
     ...toRecentRun(value),
     sessionId: value.session_id,
+    eventId: value.event_id,
+    expectedEventId: value.expected_event_id,
+    attempts: value.attempts,
     configRevision: value.config_revision,
     question: value.question,
     todoCompleted: value.todo_completed,
@@ -296,6 +305,9 @@ function toRun(value: ApiRunRecord): RunRecord {
     checkpoint: value.checkpoint,
     sandbox: value.sandbox,
     outcome: value.outcome,
+    failureReason: value.failure_reason,
+    retryClassification: value.retry_classification,
+    snapshotCursor: value.snapshot_cursor,
   }
 }
 

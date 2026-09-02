@@ -153,7 +153,11 @@ def _record(row: CaseJobRow, run: RunRecordRow | None = None) -> RunRecord:
         if has_telemetry
         else None
     )
-    outcome_kind = run.outcome.get("kind") if run is not None else None
+    outcome_payload = run.outcome if run is not None else {}
+    outcome_kind = outcome_payload.get("kind")
+    outcome_reason = outcome_payload.get("reason")
+    retry_classification = outcome_payload.get("retry_classification")
+    snapshot_cursor = outcome_payload.get("snapshot_cursor")
     return RunRecord(
         ticket_id=row.ticket_id,
         subject=f"Ticket #{row.ticket_id}",
@@ -165,6 +169,9 @@ def _record(row: CaseJobRow, run: RunRecordRow | None = None) -> RunRecord:
         # unavailable Todo/tool/evidence/checkpoint data into fake zeros.
         steps=run.todo_total if has_telemetry and run is not None else None,
         session_id=row.session_id,
+        event_id=row.event_id,
+        expected_event_id=row.expected_event_id,
+        attempts=row.attempts,
         question=(active_question.original_request if active_question else None),
         todo_completed=(
             run.todo_completed if has_telemetry and run is not None else None
@@ -177,6 +184,19 @@ def _record(row: CaseJobRow, run: RunRecordRow | None = None) -> RunRecord:
         config_revision=row.config_revision,
         sandbox="running" if row.status in _ACTIVE else "destroyed",
         outcome=outcome_kind if isinstance(outcome_kind, str) else row.status,
+        failure_reason=(
+            outcome_reason
+            if isinstance(outcome_reason, str)
+            else row.dead_letter_reason
+        ),
+        retry_classification=(
+            retry_classification
+            if isinstance(retry_classification, str)
+            else None
+        ),
+        snapshot_cursor=(
+            snapshot_cursor if isinstance(snapshot_cursor, str) else None
+        ),
         active_question=active_question,
         todos=cast(tuple[RunTodo, ...], todos),
         tool_call_records=cast(tuple[RunToolCall, ...], tool_call_records),
@@ -271,11 +291,17 @@ class PostgresAdminReadRepository:
             ),
         )
         records = tuple(_record(row, run) for row, run in pairs)
+        run_by_job = {run.job_id: run for _row, run in pairs if run is not None}
         failures = tuple(
             FailureItem(
                 id=row.job_id,
                 title=f"Ticket #{row.ticket_id}",
-                detail=row.dead_letter_reason or "Harness job failed",
+                detail=(
+                    str(run_by_job[row.job_id].outcome.get("reason"))
+                    if row.job_id in run_by_job
+                    and run_by_job[row.job_id].outcome.get("reason")
+                    else row.dead_letter_reason or "Harness job failed"
+                ),
                 time=_timestamp(row.finished_at or row.updated_at),
                 tone="danger",
             )
@@ -328,6 +354,9 @@ class PostgresAdminReadRepository:
             recent_runs=tuple(
                 RecentRun(**record.model_dump(exclude={
                     "session_id",
+                    "event_id",
+                    "expected_event_id",
+                    "attempts",
                     "question",
                     "todo_completed",
                     "todo_total",
@@ -338,6 +367,9 @@ class PostgresAdminReadRepository:
                     "config_revision",
                     "sandbox",
                     "outcome",
+                    "failure_reason",
+                    "retry_classification",
+                    "snapshot_cursor",
                     "active_question",
                     "todos",
                     "tool_call_records",

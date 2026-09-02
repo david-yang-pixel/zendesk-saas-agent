@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-SCHEMA_HEAD = "0005_run_telemetry"
+SCHEMA_HEAD = "0007_queued_successor"
 
 
 def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:

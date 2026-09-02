@@ -1005,7 +1005,11 @@ class ProductionSandboxCommands:
                 reason=str(error),
             )
         task = asyncio.create_task(
-            agent.run(ticket_id=request.ticket_id, session_id=request.session_id)
+            agent.run(
+                ticket_id=request.ticket_id,
+                session_id=request.session_id,
+                expected_event_id=request.expected_event_id,
+            )
         )
         self._tasks[request.session_id] = task
         try:

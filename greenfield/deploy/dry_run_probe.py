@@ -84,6 +84,12 @@ def probe(*, ticket_id: int, timeout_seconds: int, internal_token: str) -> str:
                     continue
                 status = item.get("status")
                 if status in {"completed", "awaiting_customer"}:
+                    if not _run_contains_expected_event(
+                        item, expected_event_id=snapshot_cursor
+                    ):
+                        raise RuntimeError(
+                            "dry-run completed against a different customer event"
+                        )
                     print(
                         "Greenfield dry-run completed without a Zendesk write "
                         f"at {datetime.now(UTC).isoformat()}."
@@ -93,6 +99,19 @@ def probe(*, ticket_id: int, timeout_seconds: int, internal_token: str) -> str:
                     raise RuntimeError(f"dry-run reached terminal status {status}")
         time.sleep(3)
     raise RuntimeError("dry-run did not reach a safe terminal status before timeout")
+
+
+def _run_contains_expected_event(
+    item: dict[str, object], *, expected_event_id: str
+) -> bool:
+    active_question = item.get("active_question")
+    if not isinstance(active_question, dict):
+        return False
+    original = active_question.get("original_event_id")
+    if original == expected_event_id:
+        return True
+    clarifications = active_question.get("clarification_event_ids")
+    return isinstance(clarifications, list) and expected_event_id in clarifications
 
 
 def _ticket_session_ids(payload: dict[str, Any], *, ticket_id: int) -> set[str]:

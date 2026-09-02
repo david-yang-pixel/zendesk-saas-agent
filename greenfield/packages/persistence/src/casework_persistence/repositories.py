@@ -366,18 +366,22 @@ class JobRepository:
         *,
         ticket_id: int,
         event_id: str,
+        expected_event_id: str | None = None,
         config: ConfigSnapshot,
         available_at: datetime | None = None,
         created_at: datetime | None = None,
         job_id: str | None = None,
         session_id: str | None = None,
     ) -> EnqueueResult:
-        """Create at most one active job for the ticket's current generation."""
+        """Create or advance one queued successor for the current generation."""
 
         if ticket_id <= 0:
             raise ValueError("ticket_id must be positive")
         if not event_id.strip():
             raise ValueError("event_id must not be blank")
+        expected_event_id = expected_event_id or event_id
+        if not expected_event_id.strip():
+            raise ValueError("expected_event_id must not be blank")
 
         # Reconstruct to apply the invariant checks even when a caller passes
         # a ConfigSnapshot subclass or values reconstructed from JSON.
@@ -404,22 +408,30 @@ class JobRepository:
                 reason="duplicate_event",
             )
 
-        active = await self.session.execute(
-            select(CaseJobRow.job_id)
+        queued_result = await self.session.execute(
+            select(CaseJobRow)
             .where(
                 CaseJobRow.ticket_id == ticket_id,
-                CaseJobRow.status.in_(ACTIVE_JOB_STATUSES),
+                CaseJobRow.generation == generation,
+                CaseJobRow.status == "queued",
             )
+            .with_for_update()
             .limit(1)
         )
-        active_id = active.scalar_one_or_none()
-        if active_id is not None:
+        queued = queued_result.scalar_one_or_none()
+        if queued is not None:
+            timestamp = created_at or utc_now()
+            queued.expected_event_id = expected_event_id
+            queued.attempts = 0
+            queued.available_at = available_at or timestamp
+            queued.dead_letter_reason = None
+            queued.updated_at = timestamp
             return EnqueueResult(
-                accepted=False,
-                job_id=active_id,
+                accepted=True,
+                job_id=queued.job_id,
                 ticket_id=ticket_id,
                 generation=generation,
-                reason="active_ticket_job",
+                reason="coalesced_event",
             )
 
         new_job_id = job_id or f"job-{uuid4()}"
@@ -432,6 +444,7 @@ class JobRepository:
                 job_id=new_job_id,
                 session_id=new_session_id,
                 event_id=event_id,
+                expected_event_id=expected_event_id,
                 ticket_id=ticket_id,
                 generation=generation,
                 status="queued",

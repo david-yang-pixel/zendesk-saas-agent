@@ -169,6 +169,122 @@ async def test_postgres_lease_heartbeat_and_expiry_reclaim(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_retry_preserves_trigger_and_human_cancels_queued_retry(
+    postgres_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    async with postgres_sessions() as session, session.begin():
+        await EventRepository(session).record(
+            event_id="evt-snapshot",
+            ticket_id=4106,
+            occurred_at=NOW,
+            source="zendesk",
+            customer_origin="customer",
+        )
+        await JobRepository(session).enqueue(
+            ticket_id=4106,
+            event_id="evt-snapshot",
+            expected_event_id="messaging:evt-snapshot",
+            config=CONFIG,
+            job_id="job-snapshot",
+            available_at=NOW,
+            created_at=NOW,
+        )
+        claimed = await JobRepository(session).claim_next(
+            worker_id="worker-snapshot", now=NOW
+        )
+        assert claimed is not None
+        assert await JobRepository(session).retry(
+            job_id=claimed.job_id,
+            worker_id="worker-snapshot",
+            delay_seconds=4,
+            reason=(
+                "trigger event messaging:evt-snapshot is not visible; "
+                "latest customer cursor is messaging:evt-old"
+            ),
+            now=NOW,
+        )
+
+    async with postgres_sessions() as session, session.begin():
+        retrying = await JobRepository(session).get("job-snapshot")
+        assert retrying is not None
+        assert retrying.status == "queued"
+        assert retrying.expected_event_id == "messaging:evt-snapshot"
+        assert retrying.attempts == 1
+        await HumanCancelRepository(session).apply(
+            event_id="evt-human-snapshot",
+            ticket_id=4106,
+            occurred_at=NOW + timedelta(seconds=1),
+            reason="human",
+        )
+
+    async with postgres_sessions() as session:
+        cancelled = await JobRepository(session).get("job-snapshot")
+        assert cancelled is not None
+        assert cancelled.status == "cancelled"
+        assert (
+            await JobRepository(session).claim_next(
+                worker_id="worker-late", now=NOW + timedelta(seconds=10)
+            )
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_running_job_accepts_one_coalescing_queued_successor(
+    postgres_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    await _seed_job(
+        postgres_sessions,
+        event_id="evt-running",
+        ticket_id=4107,
+        job_id="job-running",
+    )
+    async with postgres_sessions() as session, session.begin():
+        assert await JobRepository(session).claim_next(
+            worker_id="worker-running", now=NOW
+        )
+    async with postgres_sessions() as session, session.begin():
+        events = EventRepository(session)
+        jobs = JobRepository(session)
+        for offset, event_id in enumerate(("evt-next", "evt-latest"), start=1):
+            occurred_at = NOW + timedelta(seconds=offset)
+            await events.record(
+                event_id=event_id,
+                ticket_id=4107,
+                occurred_at=occurred_at,
+                source="zendesk",
+                customer_origin="customer",
+            )
+            result = await jobs.enqueue(
+                ticket_id=4107,
+                event_id=event_id,
+                expected_event_id=f"messaging:{event_id}",
+                config=CONFIG,
+                job_id=f"job-{event_id}",
+                available_at=occurred_at,
+            )
+            assert result.accepted
+
+    async with postgres_sessions() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(CaseJobRow)
+                    .where(CaseJobRow.ticket_id == 4107)
+                    .order_by(CaseJobRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 2
+    queued = next(row for row in rows if row.status == "queued")
+    assert queued.event_id == "evt-next"
+    assert queued.expected_event_id == "messaging:evt-latest"
+    assert queued.attempts == 0
+
+
+@pytest.mark.asyncio
 async def test_postgres_config_compare_and_swap_allows_one_concurrent_writer(
     postgres_sessions: async_sessionmaker[AsyncSession],
 ) -> None:

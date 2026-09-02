@@ -36,6 +36,15 @@ class JobGateway(Protocol):
         self, *, job_id: str, worker_id: str, lease_seconds: int
     ) -> bool: ...
 
+    async def retry(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        delay_seconds: int,
+        reason: str,
+    ) -> bool: ...
+
     async def finish(
         self,
         *,
@@ -119,6 +128,21 @@ class PostgresJobQueue:
             )
         self._require_lease(updated, lease)
 
+    async def retry(
+        self, lease: JobLease, *, delay_seconds: int, reason: str
+    ) -> bool:
+        if lease.attempts >= self._max_attempts:
+            return False
+        async with self._gateway_scope() as jobs:
+            updated = await jobs.retry(
+                job_id=lease.job_id,
+                worker_id=self._worker_id,
+                delay_seconds=delay_seconds,
+                reason=reason,
+            )
+        self._require_lease(updated, lease)
+        return True
+
     async def finalize(
         self,
         lease: JobLease,
@@ -165,8 +189,11 @@ class PostgresJobQueue:
         return JobLease(
             job_id=row.job_id,
             session_id=row.session_id,
+            event_id=row.event_id,
+            expected_event_id=row.expected_event_id,
             ticket_id=row.ticket_id,
             generation=row.generation,
+            attempts=row.attempts,
             config_revision=row.config_revision,
             model_digest=row.model_digest,
             skill_digest=row.skill_digest,

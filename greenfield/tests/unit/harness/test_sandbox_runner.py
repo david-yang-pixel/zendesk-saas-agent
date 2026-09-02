@@ -23,7 +23,11 @@ BOOTSTRAP = RuntimeBootstrap(
 
 
 class _Controller:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
     async def run(self, request: dict[str, object]) -> SandboxRunResult:
+        self.requests.append(request)
         return SandboxRunResult(
             sandbox_id="sandbox-1",
             attempt=1,
@@ -53,14 +57,18 @@ class _Controller:
 
 
 async def test_controller_runner_validates_typed_sandbox_result() -> None:
-    runner = ControllerSandboxRunner(controller=_Controller())
+    controller = _Controller()
+    runner = ControllerSandboxRunner(controller=controller)
 
     outcome = await runner.run(
         SandboxRunRequest(
             job_id="job-1",
             session_id="session-1",
+            event_id="evt-1",
+            expected_event_id="messaging:evt-1",
             ticket_id=3726,
             generation=1,
+            attempts=1,
             config_revision="cfg-1",
             model_digest="sha256:model",
             skill_digest="sha256:skill",
@@ -73,3 +81,5 @@ async def test_controller_runner_validates_typed_sandbox_result() -> None:
     assert outcome.answer == "Resolved with evidence."
     assert outcome.telemetry is not None
     assert outcome.telemetry.sandbox_lifecycle[0].state == "destroyed"
+    assert controller.requests[0]["event_id"] == "evt-1"
+    assert controller.requests[0]["expected_event_id"] == "messaging:evt-1"

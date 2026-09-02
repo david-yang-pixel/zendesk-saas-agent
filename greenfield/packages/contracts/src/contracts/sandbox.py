@@ -90,6 +90,8 @@ class SandboxStartRequest(ContractModel):
     sandbox_id: str = Field(min_length=1)
     job_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
+    event_id: str = Field(min_length=1)
+    expected_event_id: str = Field(min_length=1)
     ticket_id: StrictInt = Field(gt=0)
     generation: StrictInt = Field(ge=1)
     resource_attempt: StrictInt = Field(ge=1, le=2)

@@ -8,12 +8,15 @@ import httpx
 import pytest
 from pydantic import JsonValue
 
+from casework_agent_core.domain import TicketSnapshotNotReadyError
 from casework_sandbox.zendesk import (
     ZendeskApiReader,
     ZendeskMessagingLoader,
     ZendeskSnapshotError,
+    canonical_messaging_event_id,
 )
 from casework_tool_sdk.registry import ToolExecutionContext
+from contracts.ticket import TicketMessage
 from contracts.tool import ToolResult, ToolResultStatus
 
 
@@ -45,6 +48,117 @@ class _FakeStructuredTool:
             evidence_id=f"evidence-{len(self.calls)}",
             observed_at=datetime.now(UTC),
         )
+
+
+class _SequenceMessagingLoader:
+    def __init__(self, snapshots: list[tuple[TicketMessage, ...]]) -> None:
+        self.snapshots = snapshots
+        self.calls = 0
+
+    async def fetch(self, ticket_id: int) -> tuple[TicketMessage, ...]:
+        assert ticket_id == 3726
+        self.calls += 1
+        return self.snapshots.pop(0)
+
+
+def _messaging_message(event_id: str, *, minute: int) -> TicketMessage:
+    return TicketMessage(
+        event_id=f"messaging:{event_id}",
+        author_origin="customer",
+        public=True,
+        body=f"message {event_id}",
+        created_at=datetime(2026, 9, 2, 8, minute, tzinfo=UTC),
+    )
+
+
+def _ticket_transport() -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/tickets/3726.json":
+            return _response(
+                {
+                    "ticket": {
+                        "id": 3726,
+                        "status": "open",
+                        "requester_id": 10,
+                        "assignee_id": 20,
+                        "tags": ["saas"],
+                        "custom_fields": [],
+                    }
+                }
+            )
+        if request.url.path == "/api/v2/tickets/3726/comments.json":
+            return _response({"comments": [], "next_page": None})
+        if request.url.path == "/api/v2/users/10.json":
+            return _response({"user": {"id": 10, "locale": "zh-CN"}})
+        return _response({"error": "not found"}, status_code=404)
+
+    return httpx.MockTransport(handler)
+
+
+def test_messaging_event_id_normalization_is_idempotent() -> None:
+    assert canonical_messaging_event_id("evt-1") == "messaging:evt-1"
+    assert canonical_messaging_event_id("messaging:evt-1") == "messaging:evt-1"
+    assert canonical_messaging_event_id("102") == "102"
+
+
+@pytest.mark.asyncio
+async def test_reader_waits_until_triggering_messaging_event_is_visible() -> None:
+    old = _messaging_message("evt-old", minute=1)
+    new = _messaging_message("evt-new", minute=2)
+    loader = _SequenceMessagingLoader([(old,), (old, new)])
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async with httpx.AsyncClient(
+        base_url="https://tenant.zendesk.com",
+        transport=_ticket_transport(),
+    ) as client:
+        snapshot = await ZendeskApiReader(
+            client=client,
+            base_url="https://tenant.zendesk.com",
+            email="support@example.invalid",
+            api_token="test-token",
+            messaging_loader=cast(ZendeskMessagingLoader, loader),
+            snapshot_retry_delays=(0.25, 0.75),
+            sleep=sleep,
+        ).fetch_ticket(3726, expected_event_id="evt-new")
+
+    assert snapshot.latest_customer_cursor == "messaging:evt-new"
+    assert loader.calls == 2
+    assert sleeps == [0.25]
+
+
+@pytest.mark.asyncio
+async def test_reader_raises_typed_retryable_error_when_trigger_never_appears() -> None:
+    old = _messaging_message("evt-old", minute=1)
+    loader = _SequenceMessagingLoader([(old,), (old,), (old,)])
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    async with httpx.AsyncClient(
+        base_url="https://tenant.zendesk.com",
+        transport=_ticket_transport(),
+    ) as client:
+        reader = ZendeskApiReader(
+            client=client,
+            base_url="https://tenant.zendesk.com",
+            email="support@example.invalid",
+            api_token="test-token",
+            messaging_loader=cast(ZendeskMessagingLoader, loader),
+            snapshot_retry_delays=(0.25, 0.75),
+            sleep=sleep,
+        )
+        with pytest.raises(TicketSnapshotNotReadyError) as captured:
+            await reader.fetch_ticket(3726, expected_event_id="evt-new")
+
+    assert captured.value.expected_event_id == "messaging:evt-new"
+    assert captured.value.observed_cursor == "messaging:evt-old"
+    assert loader.calls == 3
+    assert sleeps == [0.25, 0.75]
 
 
 @pytest.mark.asyncio

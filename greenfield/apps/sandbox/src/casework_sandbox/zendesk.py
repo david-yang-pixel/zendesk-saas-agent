@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
 import httpx
 from pydantic import JsonValue
 
+from casework_agent_core.domain import TicketSnapshotNotReadyError
 from casework_tool_sdk.registry import ToolExecutionContext
 from contracts.ticket import TicketAttachment, TicketMessage, TicketSnapshot
 from contracts.tool import ToolResult, ToolResultStatus
@@ -17,6 +20,17 @@ from contracts.tool import ToolResult, ToolResultStatus
 
 class ZendeskSnapshotError(RuntimeError):
     """The ticket could not be fetched completely and must not be answered."""
+
+
+def canonical_messaging_event_id(event_id: str) -> str:
+    """Normalize webhook and snapshot identifiers to one comparison format."""
+
+    value = event_id.strip()
+    if not value:
+        raise ValueError("expected_event_id must not be blank")
+    if value.startswith("messaging:") or value.isdecimal():
+        return value
+    return f"messaging:{value}"
 
 
 class StructuredZendeskTool(Protocol):
@@ -311,6 +325,8 @@ class ZendeskApiReader:
         messaging_loader: ZendeskMessagingLoader | None = None,
         timeout_seconds: float = 20.0,
         max_pages: int = 100,
+        snapshot_retry_delays: tuple[float, ...] = (0.25, 0.75, 1.5),
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         origin = httpx.URL(base_url)
         if origin.scheme != "https" or not origin.host:
@@ -321,14 +337,39 @@ class ZendeskApiReader:
             raise ValueError("Zendesk email and API token are required")
         if timeout_seconds <= 0 or max_pages < 1:
             raise ValueError("Zendesk timeout and max_pages must be positive")
+        if any(delay < 0 for delay in snapshot_retry_delays):
+            raise ValueError("snapshot retry delays must not be negative")
         self._client = client
         self._origin = origin.copy_with(path="/", query=None, fragment=None)
         self._auth = httpx.BasicAuth(f"{email.strip()}/token", api_token)
         self._messaging_loader = messaging_loader
         self._timeout = timeout_seconds
         self._max_pages = max_pages
+        self._snapshot_retry_delays = snapshot_retry_delays
+        self._sleep = sleep
 
-    async def fetch_ticket(self, ticket_id: int) -> TicketSnapshot:
+    async def fetch_ticket(
+        self, ticket_id: int, *, expected_event_id: str | None = None
+    ) -> TicketSnapshot:
+        expected = (
+            canonical_messaging_event_id(expected_event_id)
+            if expected_event_id is not None
+            else None
+        )
+        snapshot = await self._fetch_ticket_once(ticket_id)
+        if expected is None or self._contains_event(snapshot, expected):
+            return snapshot
+        for delay in self._snapshot_retry_delays:
+            await self._sleep(delay)
+            snapshot = await self._fetch_ticket_once(ticket_id)
+            if self._contains_event(snapshot, expected):
+                return snapshot
+        raise TicketSnapshotNotReadyError(
+            expected_event_id=expected,
+            observed_cursor=snapshot.latest_customer_cursor,
+        )
+
+    async def _fetch_ticket_once(self, ticket_id: int) -> TicketSnapshot:
         if ticket_id <= 0:
             raise ValueError("ticket_id must be positive")
         ticket_payload = await self._get_json(f"/api/v2/tickets/{ticket_id}.json")
@@ -370,6 +411,12 @@ class ZendeskApiReader:
             latest_customer_cursor=customer_messages[-1].event_id,
             complete=True,
             fetched_at=datetime.now(UTC),
+        )
+
+    @staticmethod
+    def _contains_event(snapshot: TicketSnapshot, expected_event_id: str) -> bool:
+        return any(
+            message.event_id == expected_event_id for message in snapshot.messages
         )
 
     @staticmethod

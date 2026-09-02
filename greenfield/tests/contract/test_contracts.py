@@ -54,6 +54,7 @@ def test_event_and_job_keep_business_input_minimal_and_json_stable() -> None:
     job = CaseJob(
         job_id="job-01",
         event_id=event.event_id,
+        expected_event_id="messaging:evt-01",
         ticket_id=event.ticket_id,
         config_revision=CONFIG["config_revision"],
         model_digest=CONFIG["model_digest"],
@@ -64,7 +65,8 @@ def test_event_and_job_keep_business_input_minimal_and_json_stable() -> None:
 
     assert job.business_input == {"ticket_id": 3726}
     assert job.model_dump_json(exclude_none=True) == (
-        '{"job_id":"job-01","event_id":"evt-01","ticket_id":3726,'
+        '{"job_id":"job-01","event_id":"evt-01",'
+        '"expected_event_id":"messaging:evt-01","ticket_id":3726,'
         '"config_revision":"cfg-01","model_digest":"model-sha256",'
         '"skill_digest":"skill-sha256","tool_digest":"tool-sha256",'
         '"status":"queued","attempts":0,'
@@ -76,6 +78,7 @@ def test_job_state_transitions_are_fail_closed() -> None:
     job = CaseJob(
         job_id="job-01",
         event_id="evt-01",
+        expected_event_id="messaging:evt-01",
         ticket_id=1,
         config_revision=CONFIG["config_revision"],
         model_digest=CONFIG["model_digest"],
@@ -213,6 +216,8 @@ def test_harness_sandbox_protocol_messages_are_typed() -> None:
         sandbox_id="sandbox-01",
         job_id="job-01",
         session_id="session-01",
+        event_id="evt-01",
+        expected_event_id="messaging:evt-01",
         ticket_id=1,
         generation=3,
         resource_attempt=1,
@@ -224,6 +229,8 @@ def test_harness_sandbox_protocol_messages_are_typed() -> None:
         tool_digest=CONFIG["tool_digest"],
         bootstrap=BOOTSTRAP,
     )
+    assert start.event_id == "evt-01"
+    assert start.expected_event_id == "messaging:evt-01"
     cancel = SandboxCancelRequest(
         sandbox_id=start.sandbox_id,
         session_id=start.session_id,

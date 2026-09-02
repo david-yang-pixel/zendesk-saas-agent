@@ -125,6 +125,9 @@ class RunSandboxLifecycle(_ReadModel):
 
 class RunRecord(RecentRun):
     session_id: str
+    event_id: str | None = None
+    expected_event_id: str | None = None
+    attempts: int = Field(default=0, ge=0)
     # The queue snapshot pins each run to an immutable config revision.  Local
     # fixtures may omit it, so absence remains explicitly unknown.
     config_revision: str | None = None
@@ -137,6 +140,9 @@ class RunRecord(RecentRun):
     checkpoint: str | None = None
     sandbox: Literal["destroyed", "running"]
     outcome: str
+    failure_reason: str | None = None
+    retry_classification: str | None = None
+    snapshot_cursor: str | None = None
     active_question: RunActiveQuestion | None = None
     todos: tuple[RunTodo, ...] = ()
     tool_call_records: tuple[RunToolCall, ...] = ()

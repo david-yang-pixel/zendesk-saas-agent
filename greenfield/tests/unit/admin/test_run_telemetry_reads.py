@@ -159,3 +159,67 @@ async def test_admin_reads_versioned_run_telemetry(tmp_path: Path) -> None:
     assert record.context_checkpoint.checkpoint_ref == "checkpoint-session-1"
     assert record.sandbox_lifecycle is not None
     assert record.sandbox_lifecycle.events[0].state == "destroyed"
+
+
+@pytest.mark.asyncio
+async def test_admin_exposes_snapshot_retry_diagnostics(tmp_path: Path) -> None:
+    sessions = _Sessions(tmp_path / "admin-snapshot-retry.sqlite")
+    async with sessions.transaction() as gateway:
+        await EventRepository(gateway).record(
+            event_id="evt-new",
+            ticket_id=3726,
+            occurred_at=datetime(2026, 9, 2, tzinfo=UTC),
+            source="zendesk",
+            customer_origin="customer",
+        )
+        await JobRepository(gateway).enqueue(
+            ticket_id=3726,
+            event_id="evt-new",
+            expected_event_id="messaging:evt-new",
+            config=ConfigSnapshot(
+                config_revision="cfg-1",
+                root_model_config_id="root",
+                child_model_config_ids=(),
+                model_digest="model",
+                skill_digest="skill",
+                tool_digest="tool",
+            ),
+            job_id="job-retry",
+            session_id="session-retry",
+        )
+        claimed = await JobRepository(gateway).claim_next(worker_id="worker")
+        assert claimed is not None
+        outcome = Outcome(
+            outcome_id="outcome-retry",
+            session_id="session-retry",
+            ticket_id=3726,
+            kind=OutcomeKind.FAILED,
+            reason=(
+                "trigger event messaging:evt-new is not visible; "
+                "latest customer cursor is messaging:evt-old"
+            ),
+            snapshot_cursor="messaging:evt-old",
+            retry_classification="snapshot_not_ready",
+        )
+        await RunTelemetryRepository(gateway).record_finalization(
+            job_id="job-retry",
+            session_id="session-retry",
+            ticket_id=3726,
+            generation=1,
+            outcome=outcome,
+            terminal_status="failed",
+        )
+        assert await JobRepository(gateway).finish(
+            job_id="job-retry", worker_id="worker", status="failed"
+        )
+
+    record = await PostgresAdminReadRepository(
+        transaction_scope=sessions.transaction
+    ).run(session_id="session-retry")
+    assert record is not None
+    assert record.event_id == "evt-new"
+    assert record.expected_event_id == "messaging:evt-new"
+    assert record.attempts == 1
+    assert record.retry_classification == "snapshot_not_ready"
+    assert record.snapshot_cursor == "messaging:evt-old"
+    assert record.failure_reason == outcome.reason

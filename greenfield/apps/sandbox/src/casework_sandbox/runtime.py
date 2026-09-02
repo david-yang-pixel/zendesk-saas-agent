@@ -11,6 +11,7 @@ from casework_agent_core.context import ContextCheckpoint, ContextGovernance
 from casework_agent_core.domain import (
     ActiveQuestion,
     TicketSnapshot,
+    TicketSnapshotNotReadyError,
     resolve_active_question,
 )
 from casework_agent_core.evidence import EvidenceGate
@@ -37,7 +38,9 @@ from contracts.tool import ToolResultStatus
 
 
 class ZendeskReader(Protocol):
-    async def fetch_ticket(self, ticket_id: int) -> TicketSnapshot: ...
+    async def fetch_ticket(
+        self, ticket_id: int, *, expected_event_id: str | None = None
+    ) -> TicketSnapshot: ...
 
 
 class CaseworkModel(Protocol):
@@ -114,7 +117,13 @@ class SandboxAgent:
         self._context_window_tokens = context_window_tokens
         self._max_tool_rounds = max_tool_rounds
 
-    async def run(self, *, ticket_id: int, session_id: str) -> RuntimeOutcome:
+    async def run(
+        self,
+        *,
+        ticket_id: int,
+        session_id: str,
+        expected_event_id: str | None = None,
+    ) -> RuntimeOutcome:
         bootstrap = self._runtime_bootstrap
         context_window_tokens = (
             bootstrap.context_window_tokens
@@ -139,7 +148,9 @@ class SandboxAgent:
         # never shared between sessions and is reclaimed with the sandbox.
         working_memory = WorkingMemory()
         try:
-            snapshot = await self._zendesk.fetch_ticket(ticket_id)
+            snapshot = await self._zendesk.fetch_ticket(
+                ticket_id, expected_event_id=expected_event_id
+            )
             if snapshot.ticket_id != ticket_id:
                 raise ValueError("Zendesk returned a different ticket snapshot")
             question = resolve_active_question(snapshot)
@@ -395,6 +406,17 @@ class SandboxAgent:
                 todo_summary=self._summary(plan),
                 checkpoint=checkpoint,
                 telemetry=telemetry,
+            )
+        except TicketSnapshotNotReadyError as error:
+            return RuntimeOutcome(
+                outcome_id=f"outcome-{ticket_id}",
+                session_id=session_id,
+                ticket_id=ticket_id,
+                kind=OutcomeKind.FAILED,
+                reason=str(error),
+                snapshot_cursor=error.observed_cursor,
+                retry_classification="snapshot_not_ready",
+                todo_summary=TodoSummary(completed=0, pending=0, failed=1),
             )
         except Exception as error:
             return RuntimeOutcome(

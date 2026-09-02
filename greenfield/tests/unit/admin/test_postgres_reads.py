@@ -155,6 +155,7 @@ async def test_postgres_admin_run_filters_use_ticket_session_and_status(
         await JobRepository(gateway).enqueue(
             ticket_id=3726,
             event_id="evt-1",
+            expected_event_id="messaging:evt-1",
             config=FROZEN,
             job_id="job-3726",
             session_id="session-3726",
@@ -165,4 +166,8 @@ async def test_postgres_admin_run_filters_use_ticket_session_and_status(
     assert (await reads.runs(query="3726")).total == 1
     assert (await reads.runs(query="missing")).total == 0
     assert (await reads.runs(status="running")).total == 1
-    assert await reads.run(session_id="session-3726") is not None
+    run = await reads.run(session_id="session-3726")
+    assert run is not None
+    assert run.event_id == "evt-1"
+    assert run.expected_event_id == "messaging:evt-1"
+    assert run.attempts == 0
