@@ -620,6 +620,271 @@ async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_response", "error"),
+    [
+        (
+            {
+                "action": "tool_call",
+                "tool_call": None,
+                "summary": None,
+                "evidence_ids": [],
+            },
+            "tool_call must be an object",
+        ),
+        (
+            {
+                "action": "tool_call",
+                "tool_call": {"name": "lookup", "arguments": "{}", "extra": True},
+                "summary": None,
+                "evidence_ids": [],
+            },
+            "unexpected fields",
+        ),
+        (
+            {
+                "action": "tool_call",
+                "tool_call": {"name": "", "arguments": "{}"},
+                "summary": None,
+                "evidence_ids": [],
+            },
+            "missing name",
+        ),
+        (
+            {
+                "action": "tool_call",
+                "tool_call": {"name": "lookup", "arguments": "{}"},
+                "summary": "not allowed",
+                "evidence_ids": [],
+            },
+            "must not include a summary",
+        ),
+        (
+            {
+                "action": "tool_call",
+                "tool_call": {"name": "lookup", "arguments": "{}"},
+                "summary": None,
+                "evidence_ids": ["made-up"],
+            },
+            "must not include evidence IDs",
+        ),
+        (
+            {
+                "action": "tool_call",
+                "tool_call": {"name": "lookup", "arguments": "not-json"},
+                "summary": None,
+                "evidence_ids": [],
+            },
+            "not valid JSON",
+        ),
+        (
+            {
+                "action": "tool_call",
+                "tool_call": {"name": "lookup", "arguments": "[]"},
+                "summary": None,
+                "evidence_ids": [],
+            },
+            "must be an object",
+        ),
+        (
+            {
+                "action": "unknown",
+                "tool_call": None,
+                "summary": None,
+                "evidence_ids": [],
+            },
+            "invalid action",
+        ),
+    ],
+)
+async def test_child_adapter_rejects_invalid_model_tool_actions(
+    model_response: dict[str, object],
+    error: str,
+) -> None:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200,
+                json=_response_text(model_response),
+            )
+        )
+    )
+    runner = HttpChildAgentRunner(
+        client=client,
+        base_url="https://model.example.com",
+        resolver=MappingSecretResolver({"secret/child": "child-secret"}),
+        endpoint_guard=_allow_public_endpoint,
+    )
+    session = ChildSession(
+        session_id="sub-1",
+        root_session_id="root-1",
+        parent_session_id="root-1",
+        slot_id="child",
+        provider="child-provider",
+        base_url="https://child-model.example.com",
+        model="child-model",
+        credential_ref="secret/child",
+        context_window=1_000,
+        max_tool_rounds=1,
+        workdir="/tmp/sub-1",
+        ticket_id=3726,
+    )
+
+    with pytest.raises(RuntimeError, match=error):
+        await runner.run(
+            session=session,
+            task=SubagentTask(task_id="t-1", objective="inspect evidence"),
+            tools=ToolRegistry(),
+            cancelled=asyncio.Event(),
+        )
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_child_tool_loop_returns_invalid_arguments_to_model_for_repair() -> None:
+    model_inputs: list[dict[str, object]] = []
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        request_payload = json.loads(request.content)
+        model_input = json.loads(
+            request_payload["input"][1]["content"][0]["text"]
+        )
+        model_inputs.append(model_input)
+        if requests == 1:
+            definitions = model_input["available_tool_definitions"]
+            assert definitions[0]["name"] == "db_gateway_query"
+            assert definitions[0]["input_schema"]["required"] == [
+                "database",
+                "query",
+            ]
+            return httpx.Response(
+                200,
+                json=_response_text(
+                    {
+                        "action": "tool_call",
+                        "tool_call": {
+                            "name": "db_gateway_query",
+                            "arguments": json.dumps({"query": "SELECT 1"}),
+                        },
+                        "summary": None,
+                        "evidence_ids": [],
+                    }
+                ),
+            )
+        if requests == 2:
+            assert model_input["observations"] == [
+                {
+                    "tool_name": "db_gateway_query",
+                    "status": "failure",
+                    "summary": (
+                        "tool db_gateway_query requires argument database"
+                    ),
+                    "evidence_id": None,
+                    "artifact_refs": [],
+                    "retryable": True,
+                }
+            ]
+            return httpx.Response(
+                200,
+                json=_response_text(
+                    {
+                        "action": "tool_call",
+                        "tool_call": {
+                            "name": "db_gateway_query",
+                            "arguments": json.dumps(
+                                {"database": "prod", "query": "SELECT 1"}
+                            ),
+                        },
+                        "summary": None,
+                        "evidence_ids": [],
+                    }
+                ),
+            )
+        return httpx.Response(
+            200,
+            json=_response_text(
+                {
+                    "action": "report",
+                    "tool_call": None,
+                    "summary": "The query succeeded.",
+                    "evidence_ids": ["ev-db"],
+                }
+            ),
+        )
+
+    class _DatabaseTool:
+        definition = ToolDefinition(
+            name="db_gateway_query",
+            description="Query a configured read-only database",
+            input_schema={
+                "type": "object",
+                "required": ["database", "query"],
+                "properties": {
+                    "database": {"type": "string"},
+                    "query": {"type": "string"},
+                },
+            },
+        )
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def __call__(
+            self,
+            arguments: dict[str, object],
+            context: ToolExecutionContext,
+        ) -> ToolResult:
+            del context
+            self.calls.append(arguments)
+            return ToolResult(
+                status=ToolResultStatus.SUCCESS,
+                summary="database query succeeded",
+                evidence_id="ev-db",
+                observed_at=datetime.now(UTC),
+            )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    runner = HttpChildAgentRunner(
+        client=client,
+        base_url="https://model.example.com",
+        resolver=MappingSecretResolver({"secret/child": "child-secret"}),
+        endpoint_guard=_allow_public_endpoint,
+    )
+    session = ChildSession(
+        session_id="sub-1",
+        root_session_id="root-1",
+        parent_session_id="root-1",
+        slot_id="database",
+        provider="child-provider",
+        base_url="https://child-model.example.com",
+        model="child-model",
+        credential_ref="secret/child",
+        context_window=272_000,
+        max_tool_rounds=3,
+        workdir="/tmp/sub-1",
+        ticket_id=3726,
+    )
+    registry = ToolRegistry()
+    tool = _DatabaseTool()
+    registry.register(tool.definition, tool)
+
+    report = await runner.run(
+        session=session,
+        task=SubagentTask(task_id="t-1", objective="inspect the database"),
+        tools=registry,
+        cancelled=asyncio.Event(),
+    )
+
+    assert report.evidence_ids == ("ev-db",)
+    assert tool.calls == [{"database": "prod", "query": "SELECT 1"}]
+    assert requests == 3
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_child_adapter_rejects_unbacked_model_evidence() -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(

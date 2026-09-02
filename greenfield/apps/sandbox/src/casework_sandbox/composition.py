@@ -40,13 +40,14 @@ from casework_agent_core.todo import TodoPlan
 from casework_sandbox.mcp import McpStreamableHttpTool
 from casework_sandbox.runtime import RuntimeOutcome, SandboxAgent
 from casework_sandbox.zendesk import ZendeskApiReader, ZendeskMessagingLoader
+from casework_tool_sdk.loop import ToolLoop
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
 from contracts._base import ContractModel
 from contracts.evidence import Evidence
 from contracts.outcome import Outcome, OutcomeKind
 from contracts.sandbox import SandboxCancelRequest, SandboxStartRequest
 from contracts.todo import Todo, TodoStatus
-from contracts.tool import ToolDefinition, ToolResult
+from contracts.tool import ToolDefinition, ToolResult, ToolResultStatus
 
 
 class SandboxConfigurationError(ValueError):
@@ -797,6 +798,7 @@ class HttpChildAgentRunner:
                 task=task,
                 api_key=resolved.api_key,
                 available_tools=tools.names(),
+                tool_definitions=tools.definitions(),
                 observations=observations,
                 round_number=round_number,
             )
@@ -835,15 +837,23 @@ class HttpChildAgentRunner:
                     arguments = arguments_value
                 if not isinstance(arguments, dict):
                     raise RuntimeError("child model tool arguments must be an object")
-                result = await tools.execute(
-                    tool_name,
-                    cast(dict[str, Any], arguments),
+                loop_result = await ToolLoop(
+                    registry=tools,
+                    max_rounds=1,
+                    # Invalid model arguments must be returned to the model for
+                    # correction, not retried unchanged inside the SDK.
+                    max_retries_per_call=0,
+                ).run(
+                    calls=[(tool_name, cast(dict[str, Any], arguments))],
                     context=ToolExecutionContext(
                         ticket_id=session.ticket_id,
                         session_id=session.session_id,
                         root_session_id=session.root_session_id,
                     ),
                 )
+                if not loop_result.results:
+                    raise RuntimeError("child tool loop exhausted without a result")
+                result = loop_result.results[-1]
                 if result.evidence_id:
                     admitted_evidence.add(result.evidence_id)
                 artifact_refs.extend(result.artifacts)
@@ -854,6 +864,10 @@ class HttpChildAgentRunner:
                         "summary": _safe_model_summary(result.summary),
                         "evidence_id": result.evidence_id,
                         "artifact_refs": list(result.artifacts),
+                        "retryable": (
+                            result.retryable
+                            or result.status is ToolResultStatus.FAILURE
+                        ),
                     }
                 )
                 continue
@@ -874,6 +888,7 @@ class HttpChildAgentRunner:
         task: SubagentTask,
         api_key: str,
         available_tools: tuple[str, ...],
+        tool_definitions: tuple[ToolDefinition, ...],
         observations: list[dict[str, object]],
         round_number: int,
     ) -> dict[str, Any]:
@@ -898,6 +913,11 @@ class HttpChildAgentRunner:
                     "required_evidence": task.required_evidence,
                 },
                 "available_tools": available_tools,
+                "available_tool_definitions": [
+                    definition.model_dump(mode="json")
+                    for definition in tool_definitions
+                    if definition.name in available_tools
+                ],
                 "observations": observations,
             },
             schema_name="casework_child_step",
