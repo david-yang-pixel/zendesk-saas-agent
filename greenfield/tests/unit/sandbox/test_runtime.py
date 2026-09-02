@@ -8,6 +8,7 @@ from casework_agent_core.todo import TodoPlan
 from casework_sandbox.fakes import FakeModel, FakeZendesk
 from casework_sandbox.runtime import SandboxAgent
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
+from contracts.evidence import Evidence
 from contracts.outcome import OutcomeKind
 from contracts.todo import Todo
 from contracts.tool import ToolDefinition, ToolResult, ToolResultStatus
@@ -86,9 +87,9 @@ class DependentModel:
         self,
         snapshot: TicketSnapshot,
         question: ActiveQuestion,
-        evidence_ids: tuple[str, ...],
+        evidence: tuple[Evidence, ...],
     ) -> str:
-        del snapshot, question, evidence_ids
+        del snapshot, question, evidence
         return "The workspace is Dify's workspace."
 
 

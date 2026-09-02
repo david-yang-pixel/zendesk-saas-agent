@@ -5,6 +5,7 @@ from __future__ import annotations
 from casework_agent_core.domain import ActiveQuestion, TicketSnapshot
 from casework_agent_core.skills import LoadedSkill
 from casework_agent_core.todo import TodoPlan, TodoPlanner
+from contracts.evidence import Evidence
 
 
 class FakeZendesk:
@@ -44,8 +45,8 @@ class FakeModel:
         self,
         snapshot: TicketSnapshot,
         question: ActiveQuestion,
-        evidence_ids: tuple[str, ...],
+        evidence: tuple[Evidence, ...],
     ) -> str:
-        del snapshot, question, evidence_ids
+        del snapshot, question, evidence
         self.answer_calls += 1
         return self._answer

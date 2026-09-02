@@ -42,6 +42,7 @@ from casework_sandbox.runtime import RuntimeOutcome, SandboxAgent
 from casework_sandbox.zendesk import ZendeskApiReader, ZendeskMessagingLoader
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
 from contracts._base import ContractModel
+from contracts.evidence import Evidence
 from contracts.outcome import Outcome, OutcomeKind
 from contracts.sandbox import SandboxCancelRequest, SandboxStartRequest
 from contracts.todo import Todo, TodoStatus
@@ -163,6 +164,28 @@ def _safe_model_summary(value: str) -> str:
     if _contains_sensitive_marker(value):
         return "Tool result admitted as evidence."
     return value[:2048]
+
+
+def _evidence_for_model(evidence: Evidence) -> dict[str, JsonValue]:
+    serialized = json.dumps(
+        evidence.payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    payload_excerpt = (
+        "Evidence payload was redacted."
+        if _contains_sensitive_marker(serialized)
+        else serialized[:8192]
+    )
+    return {
+        "evidence_id": evidence.evidence_id,
+        "source": evidence.source,
+        "status": evidence.status.value,
+        "observed_at": evidence.observed_at.isoformat(),
+        "targets": list(evidence.targets),
+        "payload_excerpt": payload_excerpt,
+    }
 
 
 ModelEndpointGuard = Callable[[str], Awaitable[None]]
@@ -610,7 +633,7 @@ class HttpCaseworkModel:
         self,
         snapshot: TicketSnapshot,
         question: ActiveQuestion,
-        evidence_ids: tuple[str, ...],
+        evidence: tuple[Evidence, ...],
     ) -> str:
         payload = await _post_responses(
             client=self._client,
@@ -619,13 +642,17 @@ class HttpCaseworkModel:
             model=self._model_name,
             api_key=self._api_key,
             instructions=(
-                "Answer the customer's question using only the supplied evidence "
-                "IDs. Return JSON only with a concise customer-facing answer."
+                "Answer the customer's latest unresolved question using only the "
+                "supplied evidence records. Use facts already resolved by tools; "
+                "never ask the customer to repeat a workspace, app, identifier, or "
+                "time range that the evidence already establishes. State only "
+                "supported conclusions and clearly distinguish unknowns. Return "
+                "JSON only with a concise customer-facing answer."
             ),
             payload={
                 "ticket": snapshot.model_dump(mode="json"),
                 "question": question.model_dump(mode="json"),
-                "evidence_ids": evidence_ids,
+                "evidence": [_evidence_for_model(item) for item in evidence],
             },
             schema_name="casework_answer",
             schema=_ANSWER_SCHEMA,

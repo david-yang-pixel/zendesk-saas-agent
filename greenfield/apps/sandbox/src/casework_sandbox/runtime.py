@@ -20,6 +20,7 @@ from casework_agent_core.subagents import SubagentReport, SubagentTask
 from casework_agent_core.todo import TodoPlan
 from casework_tool_sdk.loop import ToolLoop
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
+from contracts.evidence import Evidence
 from contracts.outcome import Outcome, OutcomeKind
 from contracts.runtime import RuntimeBootstrap
 from contracts.telemetry import (
@@ -50,7 +51,7 @@ class CaseworkModel(Protocol):
         self,
         snapshot: TicketSnapshot,
         question: ActiveQuestion,
-        evidence_ids: tuple[str, ...],
+        evidence: tuple[Evidence, ...],
     ) -> str: ...
 
 
@@ -277,7 +278,8 @@ class SandboxAgent:
                     tokens=max(1, len(evidence_id) // 2),
                 )
                 context.compact_if_needed(active_question=question)
-            evidence_ids = tuple(item.evidence_id for item in gate.records())
+            evidence = gate.records()
+            evidence_ids = tuple(item.evidence_id for item in evidence)
             checkpoint = self._checkpoint(context, question, working_memory)
             telemetry = self._telemetry(
                 question=question,
@@ -288,7 +290,7 @@ class SandboxAgent:
                 checkpoint=checkpoint,
                 working_memory=working_memory,
             )
-            answer = await self._model.compose_answer(snapshot, question, evidence_ids)
+            answer = await self._model.compose_answer(snapshot, question, evidence)
             if not gate.can_answer(answer=answer, evidence_ids=evidence_ids):
                 return self._outcome(
                     session_id=session_id,

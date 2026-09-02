@@ -19,6 +19,7 @@ from casework_sandbox.composition import (
     create_production_commands,
 )
 from casework_tool_sdk.registry import ToolExecutionContext, ToolRegistry
+from contracts.evidence import Evidence
 from contracts.ticket import TicketMessage
 from contracts.tool import ToolDefinition, ToolResult, ToolResultStatus
 
@@ -107,6 +108,11 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
                     }
                 ),
             )
+        model_input = json.loads(payload["input"][1]["content"][0]["text"])
+        assert model_input["evidence"][0]["evidence_id"] == "ev-1"
+        assert '"workspace":"Dify"' in model_input["evidence"][0][
+            "payload_excerpt"
+        ]
         return httpx.Response(
             200,
             json={
@@ -147,7 +153,19 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
     snapshot, question, skill = _model_inputs()
 
     plan = await model.plan(snapshot, question, skill, ("workspace_lookup",))
-    answer = await model.compose_answer(snapshot, question, ("ev-1",))
+    answer = await model.compose_answer(
+        snapshot,
+        question,
+        (
+            Evidence(
+                evidence_id="ev-1",
+                call_id="call-1",
+                source="workspace_lookup",
+                observed_at=datetime.now(UTC),
+                payload={"workspace": "Dify"},
+            ),
+        ),
+    )
 
     assert plan.items[0].suggested_tools == ("workspace_lookup",)
     assert plan.items[0].status.value == "pending"

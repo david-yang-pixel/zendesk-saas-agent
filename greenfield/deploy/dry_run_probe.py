@@ -39,6 +39,12 @@ def probe(*, ticket_id: int, timeout_seconds: int, internal_token: str) -> str:
         internal_token=internal_token,
     )
     existing_sessions = _ticket_session_ids(before, ticket_id=ticket_id)
+    snapshot_cursor = _latest_snapshot_cursor(before, ticket_id=ticket_id)
+    if snapshot_cursor is None:
+        raise RuntimeError(
+            "dry-run probe requires one prior ticket snapshot to establish the "
+            "latest customer cursor"
+        )
     event_id = f"greenfield-dry-run-{ticket_id}-{time.time_ns()}"
     admitted = _json_request(
         "http://127.0.0.1:18101/webhook/zendesk",
@@ -53,6 +59,7 @@ def probe(*, ticket_id: int, timeout_seconds: int, internal_token: str) -> str:
             "actor": "customer",
             "visibility": "public",
             "is_public": True,
+            "snapshot_cursor": snapshot_cursor,
         },
     )
     if admitted.get("action") != "enqueue":
@@ -99,6 +106,29 @@ def _ticket_session_ids(payload: dict[str, Any], *, ticket_id: int) -> set[str]:
         and raw.get("ticket_id") == ticket_id
         and isinstance((session_id := raw.get("session_id")), str)
     }
+
+
+def _latest_snapshot_cursor(
+    payload: dict[str, Any], *, ticket_id: int
+) -> str | None:
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return None
+    for raw in cast(list[object], items):
+        if not isinstance(raw, dict) or raw.get("ticket_id") != ticket_id:
+            continue
+        active_question = raw.get("active_question")
+        if not isinstance(active_question, dict):
+            continue
+        clarification_ids = active_question.get("clarification_event_ids")
+        if isinstance(clarification_ids, list):
+            for value in reversed(cast(list[object], clarification_ids)):
+                if isinstance(value, str) and value.strip():
+                    return value
+        original_event_id = active_question.get("original_event_id")
+        if isinstance(original_event_id, str) and original_event_id.strip():
+            return original_event_id
+    return None
 
 
 def main() -> None:

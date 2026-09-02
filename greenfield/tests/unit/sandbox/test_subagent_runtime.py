@@ -10,6 +10,7 @@ from casework_agent_core.todo import TodoPlan
 from casework_sandbox.fakes import FakeZendesk
 from casework_sandbox.runtime import SandboxAgent
 from casework_tool_sdk.registry import ToolRegistry
+from contracts.evidence import Evidence
 from contracts.runtime import ChildModelBinding, ModelBinding, RuntimeBootstrap
 from contracts.ticket import TicketMessage
 from contracts.todo import Todo
@@ -40,10 +41,10 @@ class ChildPlanModel:
         self,
         snapshot: TicketSnapshot,
         question: ActiveQuestion,
-        evidence_ids: tuple[str, ...],
+        evidence: tuple[Evidence, ...],
     ) -> str:
         del snapshot, question
-        assert evidence_ids == ("child-ev",)
+        assert tuple(item.evidence_id for item in evidence) == ("child-ev",)
         return "The child investigation found the issue."
 
 

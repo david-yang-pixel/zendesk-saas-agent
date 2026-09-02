@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from deploy import dry_run_probe
 
 
 def test_probe_ignores_historical_failed_run(monkeypatch: Any) -> None:
+    admitted_payload: dict[str, Any] = {}
     responses: list[dict[str, Any]] = [
         {
             "items": [
@@ -13,6 +14,10 @@ def test_probe_ignores_historical_failed_run(monkeypatch: Any) -> None:
                     "ticket_id": 3726,
                     "session_id": "old-session",
                     "status": "failed",
+                    "active_question": {
+                        "original_event_id": "event-original",
+                        "clarification_event_ids": ["event-latest"],
+                    },
                 }
             ]
         },
@@ -41,6 +46,8 @@ def test_probe_ignores_historical_failed_run(monkeypatch: Any) -> None:
     ) -> dict[str, Any]:
         if "/api/runs" in _url:
             assert internal_token == "internal-token"
+        elif isinstance(_payload, dict):
+            admitted_payload.update(cast(dict[str, Any], _payload))
         return responses.pop(0)
 
     monkeypatch.setattr(
@@ -57,6 +64,7 @@ def test_probe_ignores_historical_failed_run(monkeypatch: Any) -> None:
         )
         == "new-session"
     )
+    assert admitted_payload["snapshot_cursor"] == "event-latest"
 
 
 def test_ticket_session_ids_filters_other_tickets_and_invalid_sessions() -> None:
