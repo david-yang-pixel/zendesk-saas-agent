@@ -220,6 +220,47 @@ async def test_root_model_fails_closed_on_non_json_responses_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_root_model_rejects_more_than_eight_dynamic_subagent_tasks() -> None:
+    todos = [
+        {
+            "task_id": f"child-{index}",
+            "goal": f"Investigate lane {index}",
+            "status": "pending",
+            "assigned_to": "subagent",
+            "dependencies": [],
+            "skill": None,
+            "suggested_tools": [],
+            "tool_arguments_json": "{}",
+            "required_evidence": [f"evidence-{index}"],
+            "attempts": 0,
+            "completion_condition": "evidence found",
+        }
+        for index in range(9)
+    ]
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                200, json=_response_text({"todos": todos})
+            )
+        )
+    )
+    model = HttpCaseworkModel(
+        client=client,
+        base_url="https://api.openai.com",
+        provider="openai",
+        api_key="root-key",
+        model_name="root-model",
+        available_child_slots=("subagent",),
+        endpoint_guard=_allow_public_endpoint,
+    )
+    snapshot, question, skill = _model_inputs()
+
+    with pytest.raises(RuntimeError, match="invalid Todo"):
+        await model.plan(snapshot, question, skill, ())
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_root_model_reports_sanitized_http_status_and_error_code() -> None:
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(

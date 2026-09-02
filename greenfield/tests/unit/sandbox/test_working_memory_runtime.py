@@ -117,6 +117,11 @@ class _NoEvidenceChild:
         del slot_id
         return SubagentReport(task_id=task.task_id, summary="No evidence")
 
+    async def dispatch_many(
+        self, work: tuple[tuple[str, SubagentTask], ...]
+    ) -> tuple[SubagentReport, ...]:
+        return tuple([await self.dispatch(slot_id, task) for slot_id, task in work])
+
 
 class _ChildPlanModel(_RootModel):
     async def plan(

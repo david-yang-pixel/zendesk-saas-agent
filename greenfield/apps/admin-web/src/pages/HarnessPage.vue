@@ -121,11 +121,8 @@ function configForSave(current: AdminConfig): AdminConfig {
 }
 
 function addSubagent() {
-  let nextNumber = config.subagents.length + 1
-  while (config.subagents.some((slot) => slot.id === `subagent-${nextNumber}`)) {
-    nextNumber += 1
-  }
-  const slotId = `subagent-${nextNumber}`
+  if (config.subagents.length >= 1) return
+  const slotId = 'subagent'
   config.subagents.push({
     id: slotId,
     name: slotId,
@@ -134,9 +131,9 @@ function addSubagent() {
     provider: 'openai',
     baseUrl: 'https://api.openai.com',
     credentialRef: `secret/${slotId}`,
-    contextWindowTokens: 32_000,
+    contextWindowTokens: 272_000,
     maxToolRounds: 12,
-    maxParallel: 1,
+    maxParallel: 4,
     enabled: true,
   })
 }
@@ -202,9 +199,9 @@ onMounted(() => { void loadConfig() })
   <div class="page-view">
     <div class="page-heading">
       <div>
-        <p class="eyebrow">HARNESS / CONFIGURATION</p>
-        <h1>Harness 配置</h1>
-        <p class="page-description">管理 Root Agent、独立 Subagent 和每次运行的资源边界。</p>
+        <p class="eyebrow">运行配置</p>
+        <h1>Agent 配置</h1>
+        <p class="page-description">管理主 Agent、独立子 Agent 和每次运行的资源边界。</p>
       </div>
       <div class="heading-actions">
         <span v-if="saveState === 'saved'" class="save-confirm"><AppIcon name="check" :size="14" />已保存到修订 {{ revision }}</span>
@@ -214,7 +211,7 @@ onMounted(() => { void loadConfig() })
       </div>
     </div>
 
-    <div v-if="errorMessage" class="notice-banner notice-banner--danger" role="alert"><AppIcon name="alert" :size="18" /><div><strong>Harness 配置不可用</strong><span>{{ errorMessage }}</span></div></div>
+    <div v-if="errorMessage" class="notice-banner notice-banner--danger" role="alert"><AppIcon name="alert" :size="18" /><div><strong>Agent 配置不可用</strong><span>{{ errorMessage }}</span></div></div>
 
     <div class="notice-banner notice-banner--info">
       <AppIcon name="shield" :size="18" />
@@ -224,18 +221,18 @@ onMounted(() => { void loadConfig() })
 
     <section class="panel config-section">
       <div class="panel-heading panel-heading--with-description">
-        <div><p class="eyebrow">MODEL ROUTING</p><h2>模型配置</h2><p>Root Agent 和 Subagent 使用独立模型设置，凭据不会互相继承。</p></div>
-        <div class="heading-actions"><StatusBadge :label="`${config.subagents.length + 1} 个已配置`" tone="success" /><button type="button" class="button button--secondary" data-testid="add-subagent" :disabled="saveState === 'loading' || saveState === 'saving'" @click="addSubagent"><AppIcon name="spark" :size="15" />新增 Subagent</button></div>
+        <div><p class="eyebrow">模型路由</p><h2>模型配置</h2><p>主 Agent 使用一份子 Agent 模型模板，并按每张工单的待办动态创建独立子会话。</p></div>
+        <div class="heading-actions"><StatusBadge :label="config.subagents.length ? '主模型与子模型已配置' : '仅主模型'" tone="success" /><button v-if="config.subagents.length === 0" type="button" class="button button--secondary" data-testid="add-subagent" :disabled="saveState === 'loading' || saveState === 'saving'" @click="addSubagent"><AppIcon name="spark" :size="15" />配置子 Agent 模型</button><span v-else class="field-help">运行数量由主 Agent 决定</span></div>
       </div>
       <div class="model-grid">
         <article class="model-card model-card--root" data-testid="root-model">
-          <div class="model-card__heading"><span class="model-avatar model-avatar--root"><AppIcon name="spark" :size="18" /></span><div><span class="card-kicker">ROOT AGENT</span><h3>Root Agent</h3></div><StatusBadge label="默认" tone="info" /></div>
-          <p class="model-purpose">负责完整工单调查、Todo 编排与最终结构化结果。</p>
-          <label class="field-label" for="root-provider">Provider</label>
+          <div class="model-card__heading"><span class="model-avatar model-avatar--root"><AppIcon name="spark" :size="18" /></span><div><span class="card-kicker">主 AGENT</span><h3>主 Agent</h3></div><StatusBadge label="默认" tone="info" /></div>
+          <p class="model-purpose">负责完整工单调查、待办编排与最终结构化结果。</p>
+          <label class="field-label" for="root-provider">模型供应商</label>
           <input id="root-provider" v-model="config.rootProvider" class="field-control" type="text" autocomplete="off">
           <label class="field-label" for="root-base-url">Base URL</label>
           <input id="root-base-url" v-model="config.rootBaseUrl" class="field-control" data-testid="root-base-url" type="url" autocomplete="url" placeholder="https://api.openai.com">
-          <label class="field-label" for="root-credential-ref">Credential ref</label>
+          <label class="field-label" for="root-credential-ref">凭据引用</label>
           <input id="root-credential-ref" v-model="config.rootCredentialRef" class="field-control" type="text" autocomplete="off" placeholder="openai-primary">
           <label class="field-label" for="root-api-key">API Key（仅用于本次查询）</label>
           <div class="model-discovery-row">
@@ -247,15 +244,14 @@ onMounted(() => { void loadConfig() })
           <input id="root-model" v-model="config.rootModel" class="field-control" list="root-model-catalog" type="text" autocomplete="off">
           <datalist id="root-model-catalog"><option v-for="model in catalogByBinding.root" :key="model" :value="model" /></datalist>
           <small class="field-help">选择模型并保存配置后，在下方凭据面板验证并更换对应 API Key。</small>
-          <div class="model-meta"><span>Provider</span><strong>{{ displayProvider(config.rootProvider) }}</strong></div>
+          <div class="model-meta"><span>模型供应商</span><strong>{{ displayProvider(config.rootProvider) }}</strong></div>
           <div class="model-meta"><span>最大上下文</span><strong>{{ config.contextWindow }}</strong></div>
         </article>
-        <article v-for="(agent, index) in config.subagents" :key="index" class="model-card" :data-testid="`subagent-card-${index}`">
-          <div class="model-card__heading"><span class="model-avatar"><AppIcon name="box" :size="18" /></span><div><span class="card-kicker">SUBAGENT</span><h3>{{ agent.id || '未命名 Subagent' }}</h3></div><label class="switch switch--small"><input v-model="agent.enabled" type="checkbox" :aria-label="`启用 ${agent.id || 'Subagent'}`"><span /></label></div>
-          <div class="model-card__actions"><button type="button" class="text-button text-button--compact" :data-testid="`remove-slot-${index}`" @click="removeSubagent(index)">删除 slot</button></div>
-          <label class="field-label" :for="`slot-id-${index}`">Slot ID</label>
-          <input :id="`slot-id-${index}`" v-model="agent.id" class="field-control" :data-testid="`slot-id-${index}`" type="text" autocomplete="off">
-          <label class="field-label" :for="`slot-provider-${index}`">Provider</label>
+        <article v-for="(agent, index) in config.subagents" :key="agent.id" class="model-card" :data-testid="`subagent-card-${index}`">
+          <div class="model-card__heading"><span class="model-avatar"><AppIcon name="box" :size="18" /></span><div><span class="card-kicker">子 AGENT 模型模板</span><h3>子 Agent 模型</h3></div><label class="switch switch--small"><input v-model="agent.enabled" type="checkbox" aria-label="启用子 Agent"><span /></label></div>
+          <p class="model-purpose">主 Agent 可按调查计划创建 0–8 个独立子会话，并汇总每个子会话返回的证据。</p>
+          <div class="model-card__actions"><button type="button" class="text-button text-button--compact" :data-testid="`remove-slot-${index}`" @click="removeSubagent(index)">移除模型模板</button></div>
+          <label class="field-label" :for="`slot-provider-${index}`">模型供应商</label>
           <input :id="`slot-provider-${index}`" v-model="agent.provider" class="field-control" :data-testid="`slot-provider-${index}`" type="text" autocomplete="off">
           <label class="field-label" :for="`slot-base-url-${index}`">Base URL</label>
           <input :id="`slot-base-url-${index}`" v-model="agent.baseUrl" class="field-control" :data-testid="`slot-base-url-${index}`" type="url" autocomplete="url" placeholder="https://api.openai.com">
@@ -268,17 +264,16 @@ onMounted(() => { void loadConfig() })
           <label class="field-label" :for="`slot-model-${index}`">模型</label>
           <input :id="`slot-model-${index}`" v-model="agent.model" class="field-control" :data-testid="`slot-model-${index}`" :list="`slot-model-catalog-${index}`" type="text" autocomplete="off">
           <datalist :id="`slot-model-catalog-${index}`"><option v-for="model in catalogByBinding[agent.id]" :key="model" :value="model" /></datalist>
-          <label class="field-label" :for="`slot-credential-ref-${index}`">Credential ref</label>
+          <label class="field-label" :for="`slot-credential-ref-${index}`">凭据引用</label>
           <input :id="`slot-credential-ref-${index}`" v-model="agent.credentialRef" class="field-control" :data-testid="`slot-credential-ref-${index}`" type="text" autocomplete="off" placeholder="secret/subagent-id">
-          <small class="field-help">仅保存 secret reference，不填写或显示明文凭据。</small>
+          <small class="field-help">仅保存密钥引用，不填写或显示明文凭据。</small>
           <div class="subagent-limits">
-            <label class="field-label" :for="`slot-context-window-${index}`">Context window</label>
-            <input :id="`slot-context-window-${index}`" v-model.number="agent.contextWindowTokens" class="field-control field-control--number" :data-testid="`slot-context-window-${index}`" type="number" min="16000" max="1000000">
-            <label class="field-label" :for="`slot-max-tool-rounds-${index}`">Max Tool rounds</label>
-            <input :id="`slot-max-tool-rounds-${index}`" v-model.number="agent.maxToolRounds" class="field-control field-control--number" :data-testid="`slot-max-tool-rounds-${index}`" type="number" min="1" max="100">
-            <label class="field-label" :for="`slot-max-parallel-${index}`">Max parallel</label>
-            <input :id="`slot-max-parallel-${index}`" v-model.number="agent.maxParallel" class="field-control field-control--number" :data-testid="`slot-max-parallel-${index}`" type="number" min="1" max="8">
+            <label class="field-label" :for="`slot-context-window-${index}`">上下文窗口</label>
+            <input :id="`slot-context-window-${index}`" v-model.number="agent.contextWindowTokens" class="field-control field-control--number" :data-testid="`slot-context-window-${index}`" :list="`slot-context-options-${index}`" type="number" min="16000" max="1000000" step="1000">
+            <datalist :id="`slot-context-options-${index}`"><option :value="32000" /><option :value="64000" /><option :value="128000" /><option :value="272000" /></datalist>
+            <small class="field-help subagent-limit-help">每个子会话独立使用该上下文上限。模型支持时可直接配置 272k。</small>
           </div>
+          <div class="model-meta"><span>运行时编排</span><strong>最多 8 个任务 · {{ agent.maxParallel }} 个并行</strong></div>
           <div class="model-meta"><span>状态</span><StatusBadge :label="agent.enabled ? '已启用' : '已停用'" :tone="agent.enabled ? 'success' : 'neutral'" /></div>
         </article>
       </div>
@@ -288,27 +283,27 @@ onMounted(() => { void loadConfig() })
 
     <div class="content-grid content-grid--config">
       <section class="panel settings-panel">
-      <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">CONTEXT GOVERNANCE</p><h2>上下文治理</h2><p>控制模型上下文增长和检查点保留策略。</p></div><AppIcon name="sliders" class="heading-icon" :size="19" /></div>
+      <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">上下文治理</p><h2>上下文治理</h2><p>控制模型上下文增长和检查点保留策略。</p></div><AppIcon name="sliders" class="heading-icon" :size="19" /></div>
         <div class="settings-list">
-          <label class="setting-row"><span><strong>上下文窗口</strong><small>所有 Root Agent 运行的上限</small></span><select v-model="config.contextWindow" class="field-control field-control--compact"><option>128k tokens</option><option>64k tokens</option><option>256k tokens</option></select></label>
+          <label class="setting-row"><span><strong>上下文窗口</strong><small>所有主 Agent 运行的上限</small></span><select v-model="config.contextWindow" class="field-control field-control--compact"><option>64k tokens</option><option>128k tokens</option><option>256k tokens</option><option>272k tokens</option></select></label>
           <label class="setting-row"><span><strong>软压缩阈值</strong><small>达到后保留最近四轮 Tool 输出</small></span><div class="input-with-suffix"><input v-model.number="config.softCompaction" class="field-control field-control--number" type="number" min="20" max="90"><span>%</span></div></label>
           <label class="setting-row"><span><strong>硬检查点阈值</strong><small>达到后重建上下文并恢复活动 Todo</small></span><div class="input-with-suffix"><input v-model.number="config.hardCheckpoint" class="field-control field-control--number" type="number" min="40" max="95"><span>%</span></div></label>
         </div>
       </section>
       <section class="panel settings-panel">
-        <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">SANDBOX POLICY</p><h2>沙箱策略</h2><p>每次运行创建临时隔离环境，终态后自动销毁。</p></div><AppIcon name="box" class="heading-icon" :size="19" /></div>
+        <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">沙箱策略</p><h2>沙箱策略</h2><p>每次运行创建临时隔离环境，终态后自动销毁。</p></div><AppIcon name="box" class="heading-icon" :size="19" /></div>
         <div class="settings-list">
           <div class="setting-row"><span><strong>默认 CPU</strong><small>资源不足时允许一次重试</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.sandboxCpu }}</span></div>
           <div class="setting-row"><span><strong>内存上限</strong><small>单个处理运行的最大内存</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.sandboxMemory }}</span></div>
-          <div class="setting-row"><span><strong>超时时间</strong><small>超过后停止 Tool Loop</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.timeoutMinutes }} 分钟</span></div>
-          <div class="setting-row"><span><strong>资源重试次数</strong><small>仅用于 OOM / CPU exhaustion</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.maxRetries }} 次 · 固定上限</span></div>
+          <div class="setting-row"><span><strong>超时时间</strong><small>超过后停止工具循环</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.timeoutMinutes }} 分钟</span></div>
+          <div class="setting-row"><span><strong>资源重试次数</strong><small>仅用于内存或 CPU 资源不足</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.maxRetries }} 次 · 固定上限</span></div>
         </div>
       </section>
     </div>
 
     <section class="panel loop-panel">
-      <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">TODO / TOOL LOOP</p><h2>执行边界</h2><p>当仍有可执行 Todo 时，Harness 会继续 Tool Loop。</p></div><div class="loop-limit"><span>最大 Tool rounds</span><input v-model.number="config.maxToolRounds" class="field-control field-control--number" type="number" min="1" max="100"></div></div>
-      <div class="flow-steps"><div class="flow-step flow-step--active"><span>01</span><strong>Fetch ticket</strong><small>读取最新快照</small></div><div class="flow-line" /><div class="flow-step"><span>02</span><strong>Build Todo</strong><small>生成调查计划</small></div><div class="flow-line" /><div class="flow-step"><span>03</span><strong>Tool Loop</strong><small>执行并记录证据</small></div><div class="flow-line" /><div class="flow-step"><span>04</span><strong>Finalize</strong><small>刷新并交付</small></div></div>
+      <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">待办与工具循环</p><h2>执行边界</h2><p>当仍有可执行待办时，Agent 会继续调用工具。</p></div><div class="loop-limit"><span>最大工具轮次</span><input v-model.number="config.maxToolRounds" class="field-control field-control--number" type="number" min="1" max="100"></div></div>
+      <div class="flow-steps"><div class="flow-step flow-step--active"><span>01</span><strong>读取工单</strong><small>获取最新快照</small></div><div class="flow-line" /><div class="flow-step"><span>02</span><strong>生成待办</strong><small>建立调查计划</small></div><div class="flow-line" /><div class="flow-step"><span>03</span><strong>调用工具</strong><small>执行并记录证据</small></div><div class="flow-line" /><div class="flow-step"><span>04</span><strong>生成结果</strong><small>刷新并交付</small></div></div>
     </section>
   </div>
 </template>

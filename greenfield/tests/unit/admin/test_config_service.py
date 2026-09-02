@@ -132,15 +132,15 @@ def test_subagent_context_and_tool_loop_limits_are_bounded() -> None:
         )
 
 
-def test_subagent_slot_ids_must_be_unique_for_independent_editors() -> None:
-    with pytest.raises(ValueError, match="subagent slot ids"):
+def test_only_one_independently_configured_subagent_is_supported() -> None:
+    with pytest.raises(ValueError, match="only one subagent slot"):
         AdminConfig(
             root_model=ModelConfig(
                 provider="openai", model="gpt-root", credential_ref="secret/root"
             ),
             subagent_slots=(
                 SubagentSlotConfig(
-                    slot_id="investigator",
+                    slot_id="logs",
                     provider="openai",
                     model="gpt-child-a",
                     credential_ref="secret/child-a",

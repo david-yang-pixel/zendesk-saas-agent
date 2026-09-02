@@ -63,12 +63,12 @@ async function submitPasswordChange() {
   <main class="access-page">
     <section class="access-card" aria-labelledby="access-title">
       <div class="access-brand">
-        <div class="brand-mark" aria-hidden="true"><span>C</span></div>
-        <div><strong>Dify Casework</strong><small>Agent Harness</small></div>
+        <div class="brand-mark" aria-hidden="true"><span>Z</span></div>
+        <div><strong>Zendesk Agent</strong><small>管理后台</small></div>
       </div>
 
       <template v-if="changingPassword">
-        <p class="eyebrow">SECURITY / PASSWORD UPDATE</p>
+        <p class="eyebrow">账号安全</p>
         <h1 id="access-title">首次登录，请更新密码</h1>
         <p class="access-description">新密码至少 12 位。修改完成后需要重新登录。</p>
         <form class="access-form" @submit.prevent="submitPasswordChange">
@@ -90,9 +90,9 @@ async function submitPasswordChange() {
       </template>
 
       <template v-else>
-        <p class="eyebrow">SECURE ADMIN ACCESS</p>
+        <p class="eyebrow">管理员登录</p>
         <h1 id="access-title">登录管理后台</h1>
-      <p class="access-description">使用管理员账号进入 Casework 控制台。</p>
+        <p class="access-description">使用管理员账号进入 Zendesk Agent 管理后台。</p>
         <p v-if="notice" class="access-notice" role="status">{{ notice }}</p>
         <form class="access-form" @submit.prevent="submitLogin">
           <label>

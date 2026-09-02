@@ -114,6 +114,8 @@ _PLAN_SCHEMA: dict[str, Any] = {
     },
 }
 
+_MAX_SUBAGENT_TASKS_PER_PLAN = 8
+
 _ANSWER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -366,6 +368,11 @@ def _validate_todo_plan(
     task_id_set = set(task_ids)
     available_tool_set = set(available_tools)
     available_slot_set = set(available_child_slots)
+    child_task_count = sum(item.assigned_to != "root" for item in plan.items)
+    if child_task_count > _MAX_SUBAGENT_TASKS_PER_PLAN:
+        raise ValueError(
+            "model plan exceeds the maximum number of subagent tasks"
+        )
     for item in plan.items:
         if item.status is not TodoStatus.PENDING or item.attempts != 0:
             raise ValueError("model plan Todo must start pending with zero attempts")
@@ -581,7 +588,9 @@ class HttpCaseworkModel:
                 "must contain at most one name from available_tools. For that "
                 "tool, encode exact schema-valid arguments in "
                 "tool_arguments_json. Todo execution state is controller-owned; "
-                "return pending and zero attempts. Return JSON only."
+                "return pending and zero attempts. A child slot is a reusable "
+                "model template: create zero to eight independent child Todos "
+                "when parallel investigation is useful. Return JSON only."
             ),
             payload={
                 "ticket": snapshot.model_dump(mode="json"),

@@ -23,7 +23,7 @@ describe('Casework 管理后台壳', () => {
     expect(wrapper.get('nav[aria-label="主导航"]'))
       .toBeTruthy()
     expect(wrapper.get('[data-nav="overview"]').text()).toContain('运行总览')
-    expect(wrapper.get('[data-nav="harness"]').text()).toContain('Harness 配置')
+    expect(wrapper.get('[data-nav="harness"]').text()).toContain('Agent 配置')
     expect(wrapper.get('[data-nav="rules"]').text()).toContain('处理规则')
     expect(wrapper.get('[data-nav="skills"]').text()).toContain('Skill 与工具')
     expect(wrapper.get('[data-nav="runs"]').text()).toContain('工单运行')
@@ -45,8 +45,8 @@ describe('Casework 管理后台壳', () => {
     await nextTick()
 
     expect(router.currentRoute.value.path).toBe('/harness')
-    expect(wrapper.get('h1').text()).toBe('Harness 配置')
-    expect(wrapper.get('[data-testid="root-model"]').text()).toContain('Root Agent')
+    expect(wrapper.get('h1').text()).toBe('Agent 配置')
+    expect(wrapper.get('[data-testid="root-model"]').text()).toContain('主 Agent')
   })
 
   it.each([

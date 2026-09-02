@@ -18,9 +18,9 @@ const snapshot: AdminConfigSnapshot = {
       baseUrl: 'https://models.example.com',
       model: 'gpt-5.6-luna',
       credentialRef: 'secret/investigator',
-      contextWindowTokens: 32_000,
+      contextWindowTokens: 272_000,
       maxToolRounds: 12,
-      maxParallel: 1,
+      maxParallel: 4,
     }],
     rules: { saasTag: 'saas', assignee: 'saas-support', statuses: ['new', 'open'], humanAliases: ['human'], replyEnabled: false, footerLocale: 'en', footers: {} },
     enabledSkills: [],
@@ -83,41 +83,42 @@ describe('HarnessPage independent subagent configuration', () => {
     await flushPromises()
 
     expect((wrapper.get('[data-testid="slot-credential-ref-0"]').element as HTMLInputElement).value).toBe('secret/investigator')
-    await wrapper.get('[data-testid="slot-id-0"]').setValue('logs')
     await wrapper.get('[data-testid="slot-provider-0"]').setValue('anthropic')
     await wrapper.get('[data-testid="slot-model-0"]').setValue('claude-child')
     await wrapper.get('[data-testid="slot-credential-ref-0"]').setValue('secret/logs')
-    await wrapper.get('[data-testid="slot-context-window-0"]').setValue('24000')
-    await wrapper.get('[data-testid="slot-max-tool-rounds-0"]').setValue('8')
-    await wrapper.get('[data-testid="slot-max-parallel-0"]').setValue('2')
+    expect((wrapper.get('[data-testid="slot-context-window-0"]').element as HTMLInputElement).value).toBe('272000')
+    await wrapper.get('[data-testid="slot-context-window-0"]').setValue('128000')
     await wrapper.get('button[data-testid="save-config"]').trigger('click')
     await flushPromises()
 
     expect(saveCalls[0]?.expectedRevision).toBe('cfg-1')
     expect(saveCalls[0]?.config.rootModel.model).toBe('gpt-5.6-sol')
     expect(saveCalls[0]?.config.subagentSlots).toEqual([expect.objectContaining({
-      slotId: 'logs',
+      slotId: 'investigator',
       provider: 'anthropic',
       model: 'claude-child',
       credentialRef: 'secret/logs',
-      contextWindowTokens: 24_000,
-      maxToolRounds: 8,
-      maxParallel: 2,
+      contextWindowTokens: 128_000,
+      maxToolRounds: 12,
+      maxParallel: 4,
     })])
   })
 
-  it('can add and remove independent subagent slots with safe reference defaults', async () => {
+  it('allows at most one independently configured subagent slot', async () => {
     const saveCalls: Array<Parameters<AdminApiClient['saveConfig']>[0]> = []
     const wrapper = mount(HarnessPage, {
       global: { provide: { [ADMIN_API_KEY as symbol]: apiFixture(saveCalls) } },
     })
     await flushPromises()
 
-    await wrapper.get('[data-testid="add-subagent"]').trigger('click')
-    expect(wrapper.findAll('[data-testid^="subagent-card-"]')).toHaveLength(2)
-    expect((wrapper.get('[data-testid="slot-credential-ref-1"]').element as HTMLInputElement).value).toBe('secret/subagent-2')
-    await wrapper.get('[data-testid="remove-slot-1"]').trigger('click')
+    expect(wrapper.find('[data-testid="add-subagent"]').exists()).toBe(false)
     expect(wrapper.findAll('[data-testid^="subagent-card-"]')).toHaveLength(1)
+    await wrapper.get('[data-testid="remove-slot-0"]').trigger('click')
+    expect(wrapper.findAll('[data-testid^="subagent-card-"]')).toHaveLength(0)
+    await wrapper.get('[data-testid="add-subagent"]').trigger('click')
+    expect(wrapper.findAll('[data-testid^="subagent-card-"]')).toHaveLength(1)
+    expect((wrapper.get('[data-testid="slot-credential-ref-0"]').element as HTMLInputElement).value).toBe('secret/subagent')
+    expect(wrapper.find('[data-testid="add-subagent"]').exists()).toBe(false)
   })
 
   it('replaces a credential through the masked credential panel', async () => {

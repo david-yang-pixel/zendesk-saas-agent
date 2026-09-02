@@ -65,22 +65,22 @@ onMounted(async () => {
   <div v-else class="app-shell">
     <aside class="sidebar">
       <div class="brand-lockup">
-        <div class="brand-mark" aria-hidden="true"><span>C</span></div>
+        <div class="brand-mark" aria-hidden="true"><span>Z</span></div>
         <div>
-          <p class="brand-name">Dify Casework</p>
-          <p class="brand-caption">Agent Harness</p>
+          <p class="brand-name">Zendesk Agent</p>
+          <p class="brand-caption">管理后台</p>
         </div>
       </div>
 
       <div class="workspace-switcher" aria-label="当前工作区">
         <div class="workspace-avatar">D</div>
         <div class="workspace-copy">
-          <strong>Dify SaaS Support</strong>
-          <span class="workspace-label">Production workspace</span>
+          <strong>Dify SaaS 支持</strong>
+          <span class="workspace-label">生产环境</span>
         </div>
       </div>
 
-      <p class="nav-section-label">Workspace</p>
+      <p class="nav-section-label">功能导航</p>
       <nav class="primary-nav" aria-label="主导航">
         <RouterLink
           v-for="item in navItems"
@@ -113,7 +113,7 @@ onMounted(async () => {
           <strong>{{ currentLabel }}</strong>
         </div>
         <div class="topbar-actions">
-          <span class="environment-chip"><span class="pulse-dot" aria-hidden="true" />Production</span>
+          <span class="environment-chip"><span class="pulse-dot" aria-hidden="true" />生产环境</span>
           <span class="topbar-account">{{ session?.username }}</span>
         </div>
       </header>

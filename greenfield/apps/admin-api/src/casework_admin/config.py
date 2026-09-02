@@ -103,6 +103,8 @@ class AdminConfig(_ConfigModel):
 
     @model_validator(mode="after")
     def _independent_subagent_slots(self) -> AdminConfig:
+        if len(self.subagent_slots) > 1:
+            raise ValueError("only one subagent slot is supported")
         slot_ids = tuple(slot.slot_id for slot in self.subagent_slots)
         if len(slot_ids) != len(set(slot_ids)):
             raise ValueError("subagent slot ids must be unique")

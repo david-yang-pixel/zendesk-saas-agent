@@ -24,6 +24,25 @@ class TodoPlan:
                 return ready
         return None
 
+    def take_ready_for(self, *, assigned_to: str, limit: int) -> tuple[Todo, ...]:
+        """Transition a bounded wave of independent work for one assignee."""
+
+        if limit < 1:
+            return ()
+        completed = {
+            item.task_id for item in self.items if item.status is TodoStatus.COMPLETED
+        }
+        selected: list[Todo] = []
+        for index, item in enumerate(self.items):
+            if item.assigned_to != assigned_to or not item.is_ready(completed):
+                continue
+            ready = item.transition(TodoStatus.READY, completed_task_ids=completed)
+            self.items[index] = ready
+            selected.append(ready)
+            if len(selected) >= limit:
+                break
+        return tuple(selected)
+
     def mark_completed(self, task_id: str) -> None:
         for index, item in enumerate(self.items):
             if item.task_id == task_id:

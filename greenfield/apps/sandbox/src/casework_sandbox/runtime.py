@@ -70,6 +70,10 @@ class CaseworkModel(Protocol):
 class SubagentDispatcher(Protocol):
     async def dispatch(self, slot_id: str, task: SubagentTask) -> SubagentReport: ...
 
+    async def dispatch_many(
+        self, work: tuple[tuple[str, SubagentTask], ...]
+    ) -> tuple[SubagentReport, ...]: ...
+
 
 @dataclass(frozen=True, slots=True)
 class TodoSummary:
@@ -200,34 +204,50 @@ class SandboxAgent:
                                 working_memory=working_memory,
                             ),
                         )
-                    child_task = SubagentTask(
-                        task_id=task.task_id,
-                        objective=task.goal,
-                        required_evidence=task.required_evidence,
+                    batch = (
+                        task,
+                        *plan.take_ready_for(
+                            assigned_to=task.assigned_to,
+                            limit=7,
+                        ),
                     )
-                    report = await self._subagent_orchestrator.dispatch(
-                        task.assigned_to, child_task
+                    child_work = tuple(
+                        (
+                            item.assigned_to,
+                            SubagentTask(
+                                task_id=item.task_id,
+                                objective=item.goal,
+                                required_evidence=item.required_evidence,
+                            ),
+                        )
+                        for item in batch
                     )
-                    gate.admit_subagent_report(task_id=task.task_id, report=report)
-                    working_memory.record(
-                        key=self._memory_key("subagent", task.task_id),
-                        value=f"evidence:{report.evidence_ids[0]}",
-                        evidence_ids=report.evidence_ids,
+                    reports = await self._subagent_orchestrator.dispatch_many(
+                        child_work
                     )
-                    subagent_telemetry.append(
-                        SubagentTaskTelemetry(
-                            subagent_id=task.task_id,
-                            objective=task.goal[:2048],
-                            status="completed",
-                            slot_id=task.assigned_to,
+                    for item, report in zip(batch, reports, strict=True):
+                        gate.admit_subagent_report(
+                            task_id=item.task_id, report=report
+                        )
+                        working_memory.record(
+                            key=self._memory_key("subagent", item.task_id),
+                            value=f"evidence:{report.evidence_ids[0]}",
                             evidence_ids=report.evidence_ids,
                         )
-                    )
-                    plan.mark_completed(task.task_id)
-                    context.add(
-                        "subagent evidence " + ",".join(report.evidence_ids),
-                        tokens=max(1, len(report.evidence_ids) * 2),
-                    )
+                        subagent_telemetry.append(
+                            SubagentTaskTelemetry(
+                                subagent_id=report.task_id,
+                                objective=item.goal[:2048],
+                                status="completed",
+                                slot_id=item.assigned_to,
+                                evidence_ids=report.evidence_ids,
+                            )
+                        )
+                        plan.mark_completed(item.task_id)
+                        context.add(
+                            "subagent evidence " + ",".join(report.evidence_ids),
+                            tokens=max(1, len(report.evidence_ids) * 2),
+                        )
                     context.compact_if_needed(active_question=question)
                     continue
                 if not task.suggested_tools:
