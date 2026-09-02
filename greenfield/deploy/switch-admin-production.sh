@@ -53,11 +53,14 @@ changed=1
 nginx -t
 systemctl reload nginx
 
-curl -fsS --resolve zendesk.smlershou.top:443:127.0.0.1 --max-time 10 \
-  https://zendesk.smlershou.top/admin/ >/dev/null
-local_status="$(curl -sS -o /dev/null -w '%{http_code}' \
-  --resolve zendesk.smlershou.top:443:127.0.0.1 --max-time 10 \
-  https://zendesk.smlershou.top/admin/api/config)"
+local_status=""
+for _attempt in {1..20}; do
+  local_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+    --resolve zendesk.smlershou.top:443:127.0.0.1 --max-time 10 \
+    https://zendesk.smlershou.top/admin/api/config || true)"
+  [[ "$local_status" == "401" ]] && break
+  sleep 0.5
+done
 test "$local_status" = "401"
 
 # Nginx reload and public edge propagation can briefly serve the previous
