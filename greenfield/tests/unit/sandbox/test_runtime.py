@@ -56,6 +56,42 @@ class RetryWorkspaceTool(WorkspaceTool):
         return await super().__call__(arguments, context)
 
 
+class RepairableWorkspaceTool(WorkspaceTool):
+    async def __call__(
+        self,
+        arguments: dict[str, object],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        if arguments.get("ticket_id") != context.ticket_id:
+            return ToolResult(
+                status=ToolResultStatus.FAILURE,
+                summary="ticket_id must match the active ticket",
+                observed_at=datetime.now(UTC),
+            )
+        return await super().__call__(arguments, context)
+
+
+class RepairingModel(FakeModel):
+    def __init__(self, *, answer: str) -> None:
+        super().__init__(answer=answer)
+        self.repair_calls = 0
+
+    async def repair_tool_call(
+        self,
+        snapshot: TicketSnapshot,
+        question: ActiveQuestion,
+        todo: Todo,
+        failed_tool_name: str,
+        failure_summary: str,
+        available_tools: tuple[str, ...],
+    ) -> tuple[str, dict[str, object]] | None:
+        del question, todo
+        self.repair_calls += 1
+        assert failed_tool_name in available_tools
+        assert "ticket_id" in failure_summary
+        return failed_tool_name, {"ticket_id": snapshot.ticket_id}
+
+
 class DependentModel:
     async def plan(
         self,
@@ -91,6 +127,18 @@ class DependentModel:
     ) -> str:
         del snapshot, question, evidence
         return "The workspace is Dify's workspace."
+
+    async def repair_tool_call(
+        self,
+        snapshot: TicketSnapshot,
+        question: ActiveQuestion,
+        todo: Todo,
+        failed_tool_name: str,
+        failure_summary: str,
+        available_tools: tuple[str, ...],
+    ) -> tuple[str, dict[str, object]] | None:
+        del snapshot, question, todo, failed_tool_name, failure_summary, available_tools
+        return None
 
 
 @pytest.mark.asyncio
@@ -220,3 +268,45 @@ async def test_runtime_uses_successful_final_attempt_after_bounded_tool_retry() 
     assert tool.calls == 2
     assert outcome.kind is OutcomeKind.ANSWER
     assert outcome.evidence_ids == ("ev-ws-dify",)
+
+
+@pytest.mark.asyncio
+async def test_runtime_repairs_non_retryable_model_tool_arguments() -> None:
+    snapshot = TicketSnapshot(
+        ticket_id=3726,
+        status="open",
+        requester_id=1,
+        assignee_id=2,
+        messages=(
+            TicketComment(
+                event_id="evt-3726",
+                author_origin="customer",
+                public=True,
+                body="Which workspace is affected?",
+                created_at=datetime.now(UTC),
+            ),
+        ),
+        locale="en-US",
+        latest_customer_cursor="evt-3726",
+        complete=True,
+        fetched_at=datetime.now(UTC),
+    )
+    tool = RepairableWorkspaceTool()
+    tools = ToolRegistry()
+    tools.register(tool.definition, tool)
+    model = RepairingModel(answer="The workspace is Dify's workspace.")
+
+    outcome = await SandboxAgent(
+        zendesk=FakeZendesk(snapshot),
+        model=model,
+        tools=tools,
+    ).run(ticket_id=3726, session_id="session-3726")
+
+    assert model.repair_calls == 1
+    assert outcome.kind is OutcomeKind.ANSWER
+    assert outcome.evidence_ids == ("ev-ws-dify",)
+    assert outcome.telemetry is not None
+    assert [call.status for call in outcome.telemetry.tool_calls] == [
+        "failed",
+        "succeeded",
+    ]

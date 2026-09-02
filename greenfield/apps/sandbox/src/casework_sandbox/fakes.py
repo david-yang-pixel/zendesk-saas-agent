@@ -6,6 +6,7 @@ from casework_agent_core.domain import ActiveQuestion, TicketSnapshot
 from casework_agent_core.skills import LoadedSkill
 from casework_agent_core.todo import TodoPlan, TodoPlanner
 from contracts.evidence import Evidence
+from contracts.todo import Todo
 
 
 class FakeZendesk:
@@ -50,3 +51,15 @@ class FakeModel:
         del snapshot, question, evidence
         self.answer_calls += 1
         return self._answer
+
+    async def repair_tool_call(
+        self,
+        snapshot: TicketSnapshot,
+        question: ActiveQuestion,
+        todo: Todo,
+        failed_tool_name: str,
+        failure_summary: str,
+        available_tools: tuple[str, ...],
+    ) -> tuple[str, dict[str, object]] | None:
+        del snapshot, question, todo, failed_tool_name, failure_summary, available_tools
+        return None

@@ -75,6 +75,18 @@ class _RootModel:
         del snapshot, question, evidence
         return "The evidence was reviewed."
 
+    async def repair_tool_call(
+        self,
+        snapshot: TicketSnapshot,
+        question: ActiveQuestion,
+        todo: Todo,
+        failed_tool_name: str,
+        failure_summary: str,
+        available_tools: tuple[str, ...],
+    ) -> tuple[str, dict[str, object]] | None:
+        del snapshot, question, todo, failed_tool_name, failure_summary, available_tools
+        return None
+
 
 class _Tool:
     definition = ToolDefinition(

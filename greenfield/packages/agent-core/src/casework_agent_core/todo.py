@@ -42,6 +42,24 @@ class TodoPlan:
                 return
         raise KeyError(task_id)
 
+    def mark_failed(self, task_id: str) -> None:
+        for index, item in enumerate(self.items):
+            if item.task_id == task_id:
+                if item.status is TodoStatus.PENDING:
+                    item = item.transition(
+                        TodoStatus.READY,
+                        completed_task_ids={
+                            other.task_id
+                            for other in self.items
+                            if other.status is TodoStatus.COMPLETED
+                        },
+                    )
+                if item.status is TodoStatus.READY:
+                    item = item.transition(TodoStatus.RUNNING)
+                self.items[index] = item.transition(TodoStatus.FAILED)
+                return
+        raise KeyError(task_id)
+
     @property
     def completed_count(self) -> int:
         return sum(item.status is TodoStatus.COMPLETED for item in self.items)

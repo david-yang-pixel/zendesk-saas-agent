@@ -47,6 +47,18 @@ class ChildPlanModel:
         assert tuple(item.evidence_id for item in evidence) == ("child-ev",)
         return "The child investigation found the issue."
 
+    async def repair_tool_call(
+        self,
+        snapshot: TicketSnapshot,
+        question: ActiveQuestion,
+        todo: Todo,
+        failed_tool_name: str,
+        failure_summary: str,
+        available_tools: tuple[str, ...],
+    ) -> tuple[str, dict[str, object]] | None:
+        del snapshot, question, todo, failed_tool_name, failure_summary, available_tools
+        return None
+
 
 class FakeOrchestrator:
     def __init__(self) -> None:

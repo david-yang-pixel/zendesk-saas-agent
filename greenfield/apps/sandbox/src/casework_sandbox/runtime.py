@@ -32,6 +32,8 @@ from contracts.telemetry import (
     TodoTelemetry,
     ToolCallTelemetry,
 )
+from contracts.todo import Todo
+from contracts.tool import ToolResultStatus
 
 
 class ZendeskReader(Protocol):
@@ -53,6 +55,16 @@ class CaseworkModel(Protocol):
         question: ActiveQuestion,
         evidence: tuple[Evidence, ...],
     ) -> str: ...
+
+    async def repair_tool_call(
+        self,
+        snapshot: TicketSnapshot,
+        question: ActiveQuestion,
+        todo: Todo,
+        failed_tool_name: str,
+        failure_summary: str,
+        available_tools: tuple[str, ...],
+    ) -> tuple[str, dict[str, object]] | None: ...
 
 
 class SubagentDispatcher(Protocol):
@@ -220,57 +232,106 @@ class SandboxAgent:
                     continue
                 if not task.suggested_tools:
                     break
-                loop = ToolLoop(
-                    registry=runtime_tools,
-                    max_rounds=max_tool_rounds - tool_rounds,
-                )
-                loop_result = await loop.run(
-                    calls=[
-                        (
-                            task.suggested_tools[0],
-                            task.tool_arguments,
+                tool_name = task.suggested_tools[0]
+                tool_arguments: dict[str, object] = dict(task.tool_arguments)
+                repaired = False
+                result = None
+                while True:
+                    loop = ToolLoop(
+                        registry=runtime_tools,
+                        max_rounds=max_tool_rounds - tool_rounds,
+                    )
+                    loop_result = await loop.run(
+                        calls=[(tool_name, tool_arguments)],
+                        context=ToolExecutionContext(
+                            ticket_id=ticket_id,
+                            session_id=session_id,
+                            root_session_id=session_id,
+                        ),
+                    )
+                    tool_rounds += loop_result.rounds
+                    if not loop_result.results:
+                        break
+                    # A bounded retry returns every attempt for telemetry/budgeting;
+                    # only the final attempt determines this Todo's evidence.
+                    result = loop_result.results[-1]
+                    call_id = f"call-{ticket_id}-{tool_rounds:02d}"
+                    safe_summary = self._safe_summary(result.summary)
+                    if (
+                        result.status is ToolResultStatus.FAILURE
+                        or result.evidence_id is None
+                    ):
+                        tool_telemetry.append(
+                            ToolCallTelemetry(
+                                call_id=call_id,
+                                tool_name=tool_name,
+                                status="failed",
+                                summary=safe_summary,
+                            )
                         )
-                    ],
-                    context=ToolExecutionContext(
-                        ticket_id=ticket_id,
-                        session_id=session_id,
-                        root_session_id=session_id,
-                    ),
-                )
-                tool_rounds += loop_result.rounds
-                if not loop_result.results:
+                        context.add(
+                            f"tool failure {tool_name}: {safe_summary}",
+                            tokens=max(1, len(safe_summary) // 4),
+                        )
+                        context.compact_if_needed(active_question=question)
+                        repair = None
+                        if not repaired and tool_rounds < max_tool_rounds:
+                            repair = await self._model.repair_tool_call(
+                                snapshot,
+                                question,
+                                task,
+                                tool_name,
+                                safe_summary,
+                                runtime_tools.names(),
+                            )
+                        if repair is not None:
+                            tool_name, tool_arguments = repair
+                            repaired = True
+                            continue
+                        plan.mark_failed(task.task_id)
+                        checkpoint = self._checkpoint(
+                            context, question, working_memory
+                        )
+                        return self._outcome(
+                            session_id=session_id,
+                            ticket_id=ticket_id,
+                            kind=OutcomeKind.FAILED,
+                            reason=f"tool {tool_name} failed: {safe_summary}",
+                            plan=plan,
+                            checkpoint=checkpoint,
+                            telemetry=self._telemetry(
+                                question=question,
+                                plan=plan,
+                                tool_calls=tool_telemetry,
+                                subagent_tasks=subagent_telemetry,
+                                evidence_ids=tuple(
+                                    item.evidence_id for item in gate.records()
+                                ),
+                                checkpoint=checkpoint,
+                                working_memory=working_memory,
+                            ),
+                        )
+                    gate.admit(call_id=call_id, tool_name=tool_name, result=result)
+                    evidence_id = result.evidence_id
+                    assert evidence_id is not None
+                    tool_telemetry.append(
+                        ToolCallTelemetry(
+                            call_id=call_id,
+                            tool_name=tool_name,
+                            status="succeeded",
+                            summary=safe_summary,
+                            evidence_ids=(evidence_id,),
+                            artifact_refs=self._artifact_refs(result.artifacts),
+                        )
+                    )
                     break
-                # A bounded retry returns every attempt for telemetry/budgeting;
-                # only the final attempt determines this Todo's evidence.
-                result = loop_result.results[-1]
-                call_id = f"call-{ticket_id}-{tool_rounds:02d}"
-                gate.admit(
-                    call_id=call_id,
-                    tool_name=task.suggested_tools[0],
-                    result=result,
-                )
+                if result is None or result.evidence_id is None:
+                    break
                 evidence_id = result.evidence_id
-                assert evidence_id is not None
                 working_memory.record(
                     key=self._memory_key("tool", task.task_id),
                     value=f"evidence:{evidence_id}",
                     evidence_ids=(evidence_id,),
-                )
-                tool_telemetry.append(
-                    ToolCallTelemetry(
-                        call_id=call_id,
-                        tool_name=task.suggested_tools[0],
-                        status=(
-                            "failed"
-                            if result.status.value == "failure"
-                            else "succeeded"
-                        ),
-                        summary=self._safe_summary(result.summary),
-                        evidence_ids=(
-                            (evidence_id,)
-                        ),
-                        artifact_refs=self._artifact_refs(result.artifacts),
-                    )
                 )
                 plan.mark_completed(task.task_id)
                 context.add(

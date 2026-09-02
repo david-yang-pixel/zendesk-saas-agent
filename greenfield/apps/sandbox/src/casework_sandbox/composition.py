@@ -121,6 +121,17 @@ _ANSWER_SCHEMA: dict[str, Any] = {
     "properties": {"answer": {"type": "string"}},
 }
 
+_TOOL_REPAIR_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["action", "tool_name", "tool_arguments_json"],
+    "properties": {
+        "action": {"type": "string", "enum": ["retry", "abort"]},
+        "tool_name": {"type": "string"},
+        "tool_arguments_json": {"type": "string"},
+    },
+}
+
 _CHILD_STEP_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -666,6 +677,56 @@ class HttpCaseworkModel:
         if _contains_sensitive_marker(answer):
             raise RuntimeError("model answer response contains sensitive text")
         return answer.strip()
+
+    async def repair_tool_call(
+        self,
+        snapshot: TicketSnapshot,
+        question: ActiveQuestion,
+        todo: Todo,
+        failed_tool_name: str,
+        failure_summary: str,
+        available_tools: tuple[str, ...],
+    ) -> tuple[str, dict[str, object]] | None:
+        payload = await _post_responses(
+            client=self._client,
+            base_url=self._base_url,
+            provider=self._provider,
+            model=self._model_name,
+            api_key=self._api_key,
+            instructions=(
+                "Repair one failed tool call. Select retry only when a different "
+                "schema-valid call can advance the same Todo; otherwise select "
+                "abort. Use only an available tool and encode its exact arguments "
+                "as JSON text. Return JSON only."
+            ),
+            payload={
+                "ticket_id": snapshot.ticket_id,
+                "question": question.model_dump(mode="json"),
+                "todo": todo.model_dump(mode="json"),
+                "failed_tool_name": failed_tool_name,
+                "failure_summary": _safe_model_summary(failure_summary),
+                "available_tool_definitions": [
+                    definition.model_dump(mode="json")
+                    for definition in self._tool_definitions
+                    if definition.name in available_tools
+                ],
+            },
+            schema_name="casework_tool_repair",
+            schema=_TOOL_REPAIR_SCHEMA,
+            endpoint_guard=self._endpoint_guard,
+        )
+        if payload.get("action") == "abort":
+            return None
+        tool_name = payload.get("tool_name")
+        raw_arguments = payload.get("tool_arguments_json")
+        if not isinstance(tool_name, str) or tool_name not in available_tools:
+            raise RuntimeError("model tool repair selected an unavailable tool")
+        if not isinstance(raw_arguments, str):
+            raise RuntimeError("model tool repair arguments must be JSON text")
+        arguments: object = json.loads(raw_arguments)
+        if not isinstance(arguments, dict):
+            raise RuntimeError("model tool repair arguments must be an object")
+        return tool_name, cast(dict[str, object], arguments)
 
     async def ready(self) -> bool:
         try:

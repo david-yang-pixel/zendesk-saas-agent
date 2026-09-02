@@ -109,10 +109,22 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
                 ),
             )
         model_input = json.loads(payload["input"][1]["content"][0]["text"])
-        assert model_input["evidence"][0]["evidence_id"] == "ev-1"
-        assert '"workspace":"Dify"' in model_input["evidence"][0][
-            "payload_excerpt"
-        ]
+        if calls == 2:
+            assert model_input["evidence"][0]["evidence_id"] == "ev-1"
+            assert '"workspace":"Dify"' in model_input["evidence"][0][
+                "payload_excerpt"
+            ]
+        if calls == 3:
+            return httpx.Response(
+                200,
+                json=_response_text(
+                    {
+                        "action": "retry",
+                        "tool_name": "workspace_lookup",
+                        "tool_arguments_json": '{"ticket_id":3726}',
+                    }
+                ),
+            )
         return httpx.Response(
             200,
             json={
@@ -166,13 +178,22 @@ async def test_root_model_uses_openai_responses_and_typed_plan_and_answer() -> N
             ),
         ),
     )
+    repair = await model.repair_tool_call(
+        snapshot,
+        question,
+        plan.items[0],
+        "workspace_lookup",
+        "ticket_id is required",
+        ("workspace_lookup",),
+    )
 
     assert plan.items[0].suggested_tools == ("workspace_lookup",)
     assert plan.items[0].status.value == "pending"
     assert plan.items[0].attempts == 0
     assert plan.items[0].tool_arguments == {"ticket_id": 3726}
     assert answer == "Dify"
-    assert calls == 2
+    assert repair == ("workspace_lookup", {"ticket_id": 3726})
+    assert calls == 3
     await client.aclose()
 
 
