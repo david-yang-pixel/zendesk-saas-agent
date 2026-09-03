@@ -43,20 +43,25 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<string> {
   const modelName = options.modelName || process.env.CASEWORK_MODEL_NAME || 'gpt-5.6-terra';
-  const baseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.openai.com/v1';
+  const rawBaseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.openai.com/v1';
+  let baseUrl = rawBaseUrl.replace(/\/+$/, '');
+  if (!baseUrl.endsWith('/v1')) {
+    baseUrl += '/v1';
+  }
   const apiKey = options.apiKey || process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY || process.env.OPENAI_API_KEY || '';
 
   console.log(`[Agent] Initializing ModelRuntime with baseUrl=${baseUrl}, model=${modelName}, apiKeyLen=${apiKey.length}`);
 
   const runtime = await ModelRuntime.create();
   runtime.registerProvider('openai', {
-    baseUrl: baseUrl.replace(/\/+$/, ''),
+    baseUrl: baseUrl,
     apiKey: apiKey,
     models: [
       {
         id: modelName,
         name: modelName,
-        reasoning: true,
+        api: 'openai-completions',
+        reasoning: false,
         input: ['text'],
         cost: { input: 0, output: 0 },
         contextWindow: 128000,
@@ -112,7 +117,7 @@ Please investigate using your available tools and formulate a complete, helpful,
   console.log(`[Agent] Sending prompt to session for ticket #${options.ticketId}...`);
   await session.prompt(prompt);
 
-  console.log(`[Agent] Prompt finished. Total messages in session: ${session.messages.length}`);
+  console.log(`\n[Agent] Prompt finished. Total messages in session: ${session.messages.length}`);
   for (const m of session.messages as any[]) {
     console.log(`[Agent Msg] role=${m.role}:`, typeof m.content === 'string' ? m.content.slice(0, 100) : JSON.stringify(m.content).slice(0, 100));
   }
