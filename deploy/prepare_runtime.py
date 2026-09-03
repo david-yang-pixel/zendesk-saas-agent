@@ -350,6 +350,16 @@ def prepare(
         "CASEWORK_ADMIN_PUBLIC_ORIGIN": "https://zendesk.smlershou.top",
         "CASEWORK_DELIVERY_MODE": delivery_mode,
         "CASEWORK_CANARY_TICKET_IDS": canary_ids,
+        "CASEWORK_BROWSER_RELAY_URL": (
+            existing.get("CASEWORK_BROWSER_RELAY_URL")
+            or "https://zendesk.smlershou.top/zendesk-browser-relay"
+        ),
+        "CASEWORK_BROWSER_RELAY_API_KEY": (
+            existing.get("CASEWORK_BROWSER_RELAY_API_KEY")
+            or legacy.get("ZENDESK_BROWSER_RELAY_API_KEY")
+            or legacy.get("RELAY_API_KEY")
+            or ""
+        ),
         "DOCKER_GID": str(docker_socket.stat().st_gid),
         "CASEWORK_INGRESS_PORT": "18101",
         "CASEWORK_HARNESS_PORT": "18102",

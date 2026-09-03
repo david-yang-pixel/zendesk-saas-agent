@@ -291,11 +291,16 @@ class BrowserRelayConfig:
         relay_url = (
             values.get("CASEWORK_BROWSER_RELAY_URL")
             or values.get("BROWSER_RELAY_URL")
+            or values.get("ZENDESK_BROWSER_RELAY_URL")
             or ""
         ).strip().strip('"')
+        if relay_url.endswith("/zendesk-reply-mcp"):
+            suffix_len = len("/zendesk-reply-mcp")
+            relay_url = relay_url[:-suffix_len] + "/zendesk-browser-relay"
         api_key = (
             values.get("CASEWORK_BROWSER_RELAY_API_KEY")
             or values.get("BROWSER_RELAY_API_KEY")
+            or values.get("ZENDESK_BROWSER_RELAY_API_KEY")
             or values.get("RELAY_API_KEY")
             or ""
         ).strip().strip('"')

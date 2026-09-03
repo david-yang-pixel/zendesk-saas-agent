@@ -58,6 +58,8 @@ services:
       CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
       CASEWORK_DELIVERY_MODE: ${CASEWORK_DELIVERY_MODE:-dry_run}
       CASEWORK_CANARY_TICKET_IDS: ${CASEWORK_CANARY_TICKET_IDS:-}
+      CASEWORK_BROWSER_RELAY_URL: ${CASEWORK_BROWSER_RELAY_URL:-}
+      CASEWORK_BROWSER_RELAY_API_KEY: ${CASEWORK_BROWSER_RELAY_API_KEY:-}
     ports: ["127.0.0.1:${CASEWORK_HARNESS_PORT:-18102}:8102"]
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
