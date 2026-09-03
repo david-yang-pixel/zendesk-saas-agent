@@ -81,3 +81,19 @@ COPY --chown=casework:casework apps/admin-api ./apps/admin-api
 COPY --from=admin-web-build --chown=casework:casework /src/apps/admin-web/dist /app/apps/admin-web/dist
 EXPOSE 8104
 CMD ["/app/.venv/bin/uvicorn", "casework_admin.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]
+
+FROM node:22-alpine AS pi-agent
+
+ENV NODE_ENV=production \
+    SERVICE_PORT=8102
+
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY apps/pi-agent/package.json ./apps/pi-agent/
+RUN pnpm --dir apps/pi-agent install --frozen-lockfile
+COPY apps/pi-agent ./apps/pi-agent
+RUN pnpm --dir apps/pi-agent build
+
+EXPOSE 8102
+CMD ["node", "apps/pi-agent/dist/worker.js"]
