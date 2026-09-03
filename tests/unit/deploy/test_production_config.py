@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from deploy import configure_runtime, migrate_legacy_model_config, prepare_runtime
 
 from casework_sandbox.composition import SandboxRuntimeConfig
+from deploy import configure_runtime, migrate_legacy_model_config, prepare_runtime
 
 
 def _source_environment(path: Path) -> None:

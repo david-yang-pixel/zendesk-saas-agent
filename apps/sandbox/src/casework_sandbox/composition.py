@@ -619,16 +619,27 @@ class HttpCaseworkModel:
                     raise ValueError("model plan contains a non-object Todo")
                 todo = dict(cast(dict[str, Any], raw_todo))
                 raw_arguments = todo.pop("tool_arguments_json", "{}")
-                if not isinstance(raw_arguments, str):
-                    raise ValueError("model plan tool arguments must be JSON text")
-                arguments: object = json.loads(raw_arguments)
+                if not isinstance(raw_arguments, str) or not raw_arguments.strip():
+                    raw_arguments = "{}"
+                try:
+                    arguments: object = json.loads(raw_arguments)
+                except Exception:
+                    arguments = {}
                 if not isinstance(arguments, dict):
-                    raise ValueError("model plan tool arguments must be an object")
+                    arguments = {}
+                if not todo.get("skill"):
+                    todo["skill"] = None
+                if todo.get("assigned_to") not in self._available_child_slots:
+                    todo["assigned_to"] = "root"
                 suggested = todo.get("suggested_tools")
                 if isinstance(suggested, list):
-                    suggested_values = cast(list[object], suggested)
-                    if len(suggested_values) > 1:
-                        todo["suggested_tools"] = suggested_values[:1]
+                    suggested_list = cast(list[object], suggested)
+                    suggested_values = [
+                        str(s) for s in suggested_list if str(s) in available_tools
+                    ]
+                    todo["suggested_tools"] = suggested_values[:1]
+                else:
+                    todo["suggested_tools"] = []
                 # The model describes work; the Harness owns lifecycle state.
                 todo["status"] = "pending"
                 todo["attempts"] = 0
@@ -648,7 +659,9 @@ class HttpCaseworkModel:
                 raise ValueError("model plan contains sensitive text")
             return plan
         except Exception as error:
-            raise RuntimeError("model plan response contains invalid Todo") from error
+            raise RuntimeError(
+                f"model plan response contains invalid Todo: {error}"
+            ) from error
 
     async def compose_answer(
         self,
