@@ -21,6 +21,12 @@ example/
 # log-viewer 独立子项目的 uv 锁文件，不纳入主仓
 log-viewer/uv.lock
 
+node_modules/
+apps/admin-web/dist/
+playwright-report/
+test-results/
+*.local
+
 # local preview launch config
 .claude/
 .superpowers/

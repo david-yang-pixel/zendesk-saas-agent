@@ -1,4 +1,4 @@
-name: Build and release Casework Greenfield
+name: Build and release ZD Agent
 
 on:
   push:
@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: casework-greenfield-${{ github.ref }}
+  group: zd-agent-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -26,9 +26,6 @@ env:
 jobs:
   quality:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: greenfield
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,7 +35,7 @@ jobs:
         with:
           version: "0.10.7"
           enable-cache: true
-          cache-dependency-glob: greenfield/uv.lock
+          cache-dependency-glob: uv.lock
       - name: Install Python dependencies
         run: uv sync --frozen --dev
       - name: Lint
@@ -80,8 +77,8 @@ jobs:
         id: ingress
         uses: docker/build-push-action@v6
         with:
-          context: greenfield
-          file: greenfield/deploy/Dockerfile
+          context: .
+          file: deploy/Dockerfile
           target: ingress
           push: true
           tags: |
@@ -94,8 +91,8 @@ jobs:
         id: harness
         uses: docker/build-push-action@v6
         with:
-          context: greenfield
-          file: greenfield/deploy/Dockerfile
+          context: .
+          file: deploy/Dockerfile
           target: harness
           push: true
           tags: |
@@ -108,8 +105,8 @@ jobs:
         id: sandbox
         uses: docker/build-push-action@v6
         with:
-          context: greenfield
-          file: greenfield/deploy/Dockerfile
+          context: .
+          file: deploy/Dockerfile
           target: sandbox
           push: true
           tags: |
@@ -122,8 +119,8 @@ jobs:
         id: admin
         uses: docker/build-push-action@v6
         with:
-          context: greenfield
-          file: greenfield/deploy/Dockerfile
+          context: .
+          file: deploy/Dockerfile
           target: admin
           push: true
           tags: |
@@ -192,7 +189,7 @@ jobs:
           git merge --ff-only "$CASEWORK_RELEASE_REVISION"
           test "$(git rev-parse HEAD)" = "$CASEWORK_RELEASE_REVISION"
           export CASEWORK_DEPLOY_LOCK_HELD=1
-          ./greenfield/deploy/deploy-production.sh
+          ./deploy/deploy-production.sh
           REMOTE
           } | ssh -i "$key_file" -p "$DEPLOY_PORT" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \

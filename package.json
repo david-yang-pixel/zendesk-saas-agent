@@ -1,0 +1,5 @@
+{
+  "name": "zd-agent",
+  "private": true,
+  "packageManager": "pnpm@10.32.1"
+}

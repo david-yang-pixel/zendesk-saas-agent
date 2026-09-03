@@ -1,59 +1,83 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS python-deps
 
-# 国内镜像源：python:3.12-slim (Debian bookworm) 用 deb822 格式
-# 替换为阿里云，避免默认 deb.debian.org 在某些国内机房不稳
-RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
-        sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources; \
-    elif [ -f /etc/apt/sources.list ]; then \
-        sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list; \
-    fi
-
-# System deps: git (read-only local source fallback), curl+ca (health/network clients)
-# gcc + python3-dev 有些平台 pexpect 装需要 — slim 镜像已含构建基础，不额外装
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    curl \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-# pip 换国内源（uv install 会用到 pip）
-RUN pip config --global set global.index-url https://mirrors.aliyun.com/pypi/simple/ \
-    && pip config --global set global.trusted-host mirrors.aliyun.com
-
-# 容器以 root（uid 0）运行；bind-mount 进来的仓库归宿主 zd-agent (uid 998)。
-# git 2.35.2+ 的 safe.directory 检查在 uid 不匹配时拒绝操作，导致 git_grep /
-# git_show 等源码 subagent 全部失败。允许所有目录通过此检查（容器内已是 root，
-# 风险面就在这里，全 wildcard 是最简办法）。
-RUN git config --system --add safe.directory '*'
-
-# Install uv for fast dependency resolution
-RUN pip install --no-cache-dir uv
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
-# uv 也走阿里云 mirror
-ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
-    UV_INDEX_STRATEGY=unsafe-best-match
-
-# Copy dependency manifests first for better Docker layer caching
-# --no-install-project: 只装依赖，不构建本项目（src 还没 COPY）
-# 不使用 --frozen：uv.lock 里 zendesk-cli 源可能是旧 SSH URL
+RUN pip install --no-cache-dir uv
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy source + scripts + config + README（hatchling 需要）
-COPY src ./src
-COPY scripts ./scripts
-COPY config.yaml ./config.yaml
-COPY README.md ./README.md
 
-# 再装本项目（依赖已 cache，只加项目本身）
-RUN uv sync --no-dev
+FROM node:22-alpine AS admin-web-build
 
-ENV PYTHONUNBUFFERED=1
-EXPOSE 8080
+WORKDIR /src
+RUN corepack enable
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY apps/admin-web/package.json apps/admin-web/index.html apps/admin-web/tsconfig.json apps/admin-web/vite.config.ts ./apps/admin-web/
+RUN pnpm install --frozen-lockfile
+COPY apps/admin-web/src ./apps/admin-web/src
+RUN pnpm --dir apps/admin-web build
 
-# The default command is the always-on control plane. It owns an HTTP-free
-# child Worker process and may keep that Worker completely absent.
-# Note: real deployment mounts /resources volume and /app/.env (read-only)
-CMD ["/app/.venv/bin/zd-agent", "serve"]
+
+FROM python-deps AS app-base
+
+ENV PYTHONPATH=/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/apps/admin-api/src
+
+RUN addgroup --system --gid 10001 casework \
+    && adduser --system --uid 10001 --ingroup casework casework \
+    && chown -R casework:casework /app
+USER casework
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
+    CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('SERVICE_PORT','8100') + '/readyz', timeout=2)"
+
+
+FROM app-base AS ingress
+
+ENV SERVICE_PORT=8101
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/persistence ./packages/persistence
+COPY --chown=casework:casework apps/ingress ./apps/ingress
+EXPOSE 8101
+CMD ["/app/.venv/bin/uvicorn", "casework_ingress.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8101"]
+
+
+FROM app-base AS harness
+
+ENV SERVICE_PORT=8102
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/persistence ./packages/persistence
+COPY --chown=casework:casework apps/harness ./apps/harness
+COPY --chown=casework:casework migrations ./migrations
+COPY --chown=casework:casework alembic.ini ./alembic.ini
+COPY --chown=casework:casework deploy/migrate.py ./deploy/migrate.py
+EXPOSE 8102
+CMD ["/app/.venv/bin/uvicorn", "casework_harness.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8102"]
+
+
+FROM app-base AS sandbox
+
+ENV SERVICE_PORT=8103
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/agent-core ./packages/agent-core
+COPY --chown=casework:casework packages/tool-sdk ./packages/tool-sdk
+COPY --chown=casework:casework apps/sandbox ./apps/sandbox
+COPY --chown=casework:casework skills ./skills
+EXPOSE 8103
+CMD ["/app/.venv/bin/uvicorn", "casework_sandbox.service:create_app", "--factory", "--host", "0.0.0.0", "--port", "8103"]
+
+
+FROM app-base AS admin
+
+ENV SERVICE_PORT=8104 \
+    ADMIN_WEB_DIST=/app/apps/admin-web/dist
+COPY --chown=casework:casework packages/contracts ./packages/contracts
+COPY --chown=casework:casework packages/persistence ./packages/persistence
+COPY --chown=casework:casework apps/admin-api ./apps/admin-api
+COPY --from=admin-web-build --chown=casework:casework /src/apps/admin-web/dist /app/apps/admin-web/dist
+EXPOSE 8104
+CMD ["/app/.venv/bin/uvicorn", "casework_admin.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]

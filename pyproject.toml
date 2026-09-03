@@ -1,64 +1,82 @@
 [project]
 name = "zd-agent"
 version = "0.1.0"
-description = "Zendesk 工单自动处理 Agent"
-readme = "README.md"
-requires-python = ">=3.12"
+description = "ZD Agent: Zendesk AI Casework & Support Automation"
+requires-python = ">=3.12,<3.14"
 dependencies = [
-    "openai",
-    "httpcore>=1.0.9,<1.1",
-    "httpx[socks]",
-    "typer",
-    "pydantic>=2.0",
-    "pydantic-settings",
-    "structlog",
-    "apscheduler>=4.0.0a1",
-    "pyyaml",
-    "rich",
-    "tiktoken",
-    "python-dotenv",
-    "aiohttp",
-    "zendesk-cli",
-    "anthropic>=0.87.0",
-    "lingua-language-detector>=2.2.0,<3",
-    "mistune>=3.2.0",
-    "pypdf>=6.0,<7",
-    "wordfreq>=3.1.1,<4",
-    "sqlglot>=27,<28",
+  "alembic>=1.16,<2",
+  "asyncpg>=0.30,<1",
+  "docker>=7.1,<8",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "pyyaml>=6.0,<7",
+  "sqlalchemy[asyncio]>=2.0,<3",
+  "structlog>=25.4,<26",
+  "uvicorn[standard]>=0.35,<1",
 ]
-
-[tool.uv.sources]
-# 用 HTTPS（公开仓库，容器内无需 SSH key）
-zendesk-cli = { git = "https://github.com/ZhouhaoJiang/zendesk-cli.git" }
-
-[project.scripts]
-zd-agent = "zd_agent.entry.cli:app"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1,<2",
-    "pytest",
-    "pytest-asyncio",
-    "ruff>=0.14,<0.15",
+  "pyright>=1.1.404,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<1",
+  "testcontainers[postgres]>=4.10,<5",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers --import-mode=importlib"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = [
+  "packages/contracts/src",
+  "packages/persistence/src",
+  "packages/agent-core/src",
+  "packages/tool-sdk/src",
+  "apps/ingress/src",
+  "apps/harness/src",
+  "apps/sandbox/src",
+  "apps/admin-api/src",
+  ".",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+src = [
+  "packages/contracts/src",
+  "packages/persistence/src",
+  "packages/agent-core/src",
+  "packages/tool-sdk/src",
+  "apps/ingress/src",
+  "apps/harness/src",
+  "apps/sandbox/src",
+  "apps/admin-api/src",
+  "deploy",
+  "tests",
 ]
 
 [tool.ruff.lint]
-external = ["ANY", "SIZ"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-pythonpath = ["src"]
-testpaths = ["tests"]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
 
 [tool.pyright]
-include = ["src/zd_agent/casework", "tests/casework"]
-strict = ["src/zd_agent/casework"]
 pythonVersion = "3.12"
-reportMissingTypeStubs = false
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/zd_agent"]
+typeCheckingMode = "strict"
+include = ["apps", "deploy/release.py", "packages", "tests"]
+exclude = ["apps/admin-web", "**/__pycache__"]
+extraPaths = [
+  "packages/contracts/src",
+  "packages/persistence/src",
+  "packages/agent-core/src",
+  "packages/tool-sdk/src",
+  "apps/ingress/src",
+  "apps/harness/src",
+  "apps/sandbox/src",
+  "apps/admin-api/src",
+]
