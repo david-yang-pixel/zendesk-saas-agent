@@ -80,6 +80,7 @@ COPY --from=builder --chown=casework:casework /src/.venv /app/.venv
 COPY --chown=casework:casework pyproject.toml uv.lock ./
 COPY --chown=casework:casework packages ./packages
 COPY --chown=casework:casework deploy ./deploy
+COPY --chown=casework:casework skills ./skills
 COPY --chown=casework:casework apps/admin-api ./apps/admin-api
 COPY --from=admin-web-build --chown=casework:casework /src/apps/admin-web/dist /app/apps/admin-web/dist
 EXPOSE 8104
