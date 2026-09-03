@@ -195,7 +195,7 @@ onMounted(() => {
             <span class="duration-badge">{{ item.duration }}</span>
           </div>
           <div class="ticket-email" v-if="item.requester_email">{{ item.requester_email }}</div>
-          <div class="ticket-preview">{{ item.customer_message || '无消息文本' }}</div>
+          <div class="ticket-preview">{{ item.customer_message || item.reply_preview || ('工单 #' + item.ticket_id) }}</div>
           <div class="ticket-meta">
             <span class="meta-tag" v-if="item.tool_calls_count > 0">🛠️ {{ item.tool_calls_count }} 工具</span>
             <span class="meta-tag" v-if="item.delivery_status">🚀 {{ item.delivery_status }}</span>
@@ -266,6 +266,20 @@ onMounted(() => {
             </div>
           </div>
 
+          <!-- Step Notice (if error or cancelled protection) -->
+          <div class="stream-node" v-if="selectedDetail.error">
+            <div class="node-marker marker-notice">{{ selectedDetail.status === 'cancelled' ? '🛡️' : '⚠️' }}</div>
+            <div :class="['node-body', 'card', 'card-notice', selectedDetail.status]">
+              <div class="card-header">
+                <span class="step-title">{{ selectedDetail.status === 'cancelled' ? '模式 B：人工优先保护拦截' : '系统排障/执行状态提示' }}</span>
+                <span :class="['status-pill', selectedDetail.status]">{{ selectedDetail.status }}</span>
+              </div>
+              <div class="notice-box">
+                {{ selectedDetail.error }}
+              </div>
+            </div>
+          </div>
+
           <!-- Step 2: Reasoning / Thinking -->
           <div class="stream-node" v-for="(step, idx) in selectedDetail.steps.filter(s => s.type === 'thinking')" :key="'th-' + idx">
             <div class="node-marker marker-thinking">🧠</div>
@@ -284,7 +298,7 @@ onMounted(() => {
           </div>
 
           <!-- Step 3: Tool Calls -->
-          <div class="stream-node" v-for="(step, idx) in selectedDetail.steps.filter(s => s.type === 'tool_call')" :key="'tc-' + idx">
+          <div class="stream-node" v-for="(step, idx) in selectedDetail.steps.filter(s => s.type === 'tool_call' || s.toolName)" :key="'tc-' + idx">
             <div class="node-marker marker-tool">🛠️</div>
             <div class="node-body card card-tool">
               <div class="card-header">
@@ -296,7 +310,7 @@ onMounted(() => {
               </div>
 
               <!-- Tool Arguments -->
-              <div class="code-block input-block" v-if="step.arguments">
+              <div class="code-block input-block" v-if="step.arguments && (typeof step.arguments === 'string' || Object.keys(step.arguments).length > 0)">
                 <div class="code-label">输入参数 (Arguments):</div>
                 <pre v-if="typeof step.arguments?.query === 'string'">{{ step.arguments.query }}</pre>
                 <pre v-else>{{ JSON.stringify(step.arguments, null, 2) }}</pre>
@@ -867,6 +881,29 @@ onMounted(() => {
   padding: 6px 12px;
   font-size: 11px;
   color: #86868b;
+}
+
+/* Notice & Protection */
+.card-notice {
+  background: #fbfbfd;
+  border-color: rgba(0, 0, 0, 0.08);
+}
+.card-notice.cancelled {
+  background: #f0f7ff;
+  border-color: rgba(0, 113, 227, 0.25);
+}
+.card-notice.failed {
+  background: #fff5f5;
+  border-color: rgba(255, 59, 48, 0.25);
+}
+.notice-box {
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1d1d1f;
+  background: #ffffff;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 /* Reply */
