@@ -17,16 +17,16 @@ describe('Casework 管理后台壳', () => {
     window.scrollTo = () => undefined
   })
 
-  it('展示五个一级页面的可访问导航', async () => {
+  it('展示导航菜单', async () => {
     const { wrapper } = await mountConsole()
 
-    expect(wrapper.get('nav[aria-label="主导航"]'))
-      .toBeTruthy()
+    expect(wrapper.get('nav[aria-label="主导航"]')).toBeTruthy()
     expect(wrapper.get('[data-nav="overview"]').text()).toContain('运行总览')
-    expect(wrapper.get('[data-nav="harness"]').text()).toContain('Agent 配置')
-    expect(wrapper.get('[data-nav="rules"]').text()).toContain('处理规则')
-    expect(wrapper.get('[data-nav="skills"]').text()).toContain('Skill 与工具')
-    expect(wrapper.get('[data-nav="runs"]').text()).toContain('工单运行')
+    expect(wrapper.get('[data-nav="harness"]').text()).toContain('模型配置')
+    expect(wrapper.get('[data-nav="mcp"]').text()).toContain('MCP 总线')
+    expect(wrapper.get('[data-nav="skills"]').text()).toContain('技能中心')
+    expect(wrapper.get('[data-nav="rules"]').text()).toContain('准入规则')
+    expect(wrapper.get('[data-nav="runs"]').text()).toContain('工单推演')
   })
 
   it('默认进入运行总览并展示运行指标', async () => {
@@ -45,18 +45,19 @@ describe('Casework 管理后台壳', () => {
     await nextTick()
 
     expect(router.currentRoute.value.path).toBe('/harness')
-    expect(wrapper.get('h1').text()).toBe('Agent 配置')
-    expect(wrapper.get('[data-testid="root-model"]').text()).toContain('主 Agent')
+    expect(wrapper.text()).toContain('模型配置与实时测速中心')
   })
 
   it.each([
-    ['/rules', '处理规则', 'Webhook 标签'],
-    ['/skills', 'Skill 与工具', '技能注册表'],
-    ['/runs', '工单运行', '运行记录'],
+    ['/rules', '准入规则', 'Webhook 标签'],
+    ['/skills', '技能与 SOP 知识库中心', '核心技能卡片'],
+    ['/runs', '工单推演流水', '选择左侧工单以回放推演'],
+    ['/mcp', '全能力 MCP 工具总线', 'MCP Mesh'],
   ])('路由 %s 渲染对应页面内容', async (path, title, marker) => {
     const { wrapper } = await mountConsole(path)
+    await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe(title)
+    expect(wrapper.text()).toContain(title)
     expect(wrapper.text()).toContain(marker)
   })
 

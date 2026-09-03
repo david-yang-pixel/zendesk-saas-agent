@@ -69,6 +69,100 @@ async function claimNextJob(workerId: string): Promise<any | null> {
   }
 }
 
+async function getActiveModelConfig(): Promise<{
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+}> {
+  try {
+    const res = await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'");
+    if (res.rows.length > 0) {
+      const cfg = res.rows[0].value;
+      if (cfg?.model && cfg?.base_url) {
+        return {
+          baseUrl: cfg.base_url,
+          model: cfg.model,
+          apiKey: cfg.api_key || cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY),
+        };
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Worker] Could not read model_config from system_settings, using env:', err.message);
+  }
+  return {
+    baseUrl: cleanEnv(process.env.CASEWORK_MODEL_BASE_URL) || 'https://api.tokener.dev/v1',
+    model: cleanEnv(process.env.CASEWORK_MODEL_NAME) || 'gpt-5.6-terra',
+    apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY),
+  };
+}
+
+async function recordJobOutcome(opts: {
+  jobId: string;
+  ticketId: number;
+  generation?: number;
+  status: string;
+  startedAt: Date;
+  finishedAt: Date;
+  trace: any | null;
+  delivery: any | null;
+  errorReason?: string;
+}) {
+  const sessionId = `pi-session-${opts.jobId}`;
+  const toolCallsCount = opts.trace?.toolCalls?.length ?? 0;
+  const toolCallRecords = opts.trace?.steps ?? [];
+  const activeQuestion = {
+    ticket_id: opts.ticketId,
+    customer_message: opts.trace?.customerMessage ?? '',
+    requester_email: opts.trace?.requesterEmail ?? '',
+    model: opts.trace?.model ?? '',
+  };
+  const outcome = {
+    status: opts.status,
+    final_reply: opts.trace?.finalReply ?? '',
+    delivery: opts.delivery ?? null,
+    error: opts.errorReason ?? null,
+    total_duration_ms: opts.trace?.totalDurationMs ?? (opts.finishedAt.getTime() - opts.startedAt.getTime()),
+  };
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO run_records (
+        session_id, job_id, ticket_id, generation, status,
+        tool_calls, tool_call_records, active_question, outcome,
+        created_at, started_at, finished_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+      ON CONFLICT (job_id) DO UPDATE SET
+        status = EXCLUDED.status,
+        tool_calls = EXCLUDED.tool_calls,
+        tool_call_records = EXCLUDED.tool_call_records,
+        active_question = EXCLUDED.active_question,
+        outcome = EXCLUDED.outcome,
+        finished_at = EXCLUDED.finished_at,
+        updated_at = NOW()
+    `,
+      [
+        sessionId,
+        opts.jobId,
+        opts.ticketId,
+        opts.generation || 1,
+        opts.status,
+        toolCallsCount,
+        JSON.stringify(toolCallRecords),
+        JSON.stringify(activeQuestion),
+        JSON.stringify(outcome),
+        opts.startedAt,
+        opts.startedAt,
+        opts.finishedAt,
+      ]
+    );
+    console.log(`[Worker] Persisted trace and outcome to run_records for job ${opts.jobId} (status=${opts.status})`);
+  } catch (err: any) {
+    console.error(`[Worker] Error recording outcome in run_records:`, err.message);
+  }
+}
+
 async function markJobSucceeded(jobId: string) {
   await pool.query(`
     UPDATE case_jobs
@@ -239,32 +333,64 @@ async function main() {
       console.log(`[Worker] Claimed job ${job.job_id} for ticket #${job.ticket_id}`);
       const startTime = Date.now();
 
+      let activeTrace: any = null;
       try {
         const { message, email } = await getTicketDetails(job.ticket_id, zendeskService);
-        console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${email || 'unknown'}): "${message.slice(0, 80)}..."`);
+        const modelConfig = await getActiveModelConfig();
+        console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${email || 'unknown'}, Model: ${modelConfig.model}): "${message.slice(0, 80)}..."`);
 
-        const answer = await runPiSupportAgent({
+        const agentResult = await runPiSupportAgent({
           ticketId: job.ticket_id,
           customerMessage: message,
           requesterEmail: email,
           tools: allTools,
-          apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY),
-          modelBaseUrl: cleanEnv(process.env.CASEWORK_MODEL_BASE_URL),
+          apiKey: modelConfig.apiKey,
+          modelBaseUrl: modelConfig.baseUrl,
+          modelName: modelConfig.model,
         });
 
-        console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms. Delivering via Browser Relay...`);
+        activeTrace = agentResult.trace;
+        console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms (${agentResult.trace.toolCalls.length} tool calls). Delivering via Browser Relay...`);
 
         const relayResult = await sendBrowserRelay(
           BROWSER_RELAY_URL,
           BROWSER_RELAY_KEY,
           job.ticket_id,
-          answer
+          agentResult.reply
         );
 
-        console.log(`[Worker] Browser Relay delivered successfully for ticket #${job.ticket_id}: status=${relayResult.status}`);
+        console.log(`[Worker] Browser Relay delivered successfully for ticket #${job.ticket_id}: status=${relayResult.status} (relayMs=${relayResult.total_duration_ms ?? 0})`);
+
+        await recordJobOutcome({
+          jobId: job.job_id,
+          ticketId: job.ticket_id,
+          generation: job.generation,
+          status: 'completed',
+          startedAt: new Date(startTime),
+          finishedAt: new Date(),
+          trace: agentResult.trace,
+          delivery: {
+            channel: 'browser-relay',
+            status: relayResult.status,
+            total_duration_ms: relayResult.total_duration_ms,
+            timings: relayResult.timings || { total_ms: relayResult.total_duration_ms },
+          },
+        });
+
         await markJobSucceeded(job.job_id);
       } catch (runErr: any) {
         console.error(`[Worker] Job ${job.job_id} failed:`, runErr.message);
+        await recordJobOutcome({
+          jobId: job.job_id,
+          ticketId: job.ticket_id,
+          generation: job.generation,
+          status: 'failed',
+          startedAt: new Date(startTime),
+          finishedAt: new Date(),
+          trace: activeTrace,
+          delivery: null,
+          errorReason: runErr.message,
+        });
         await markJobFailed(job.job_id, runErr.message);
       }
     } catch (loopErr: any) {

@@ -1,309 +1,584 @@
 <script setup lang="ts">
-import { inject, onMounted, reactive, ref } from 'vue'
+import { inject, onMounted, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
-import StatusBadge from '../components/StatusBadge.vue'
-import ModelCredentialPanel from '../components/ModelCredentialPanel.vue'
 import { ADMIN_API_KEY } from '../api/client'
 import type { AdminApiClient } from '../api/client'
-import type { AdminConfig, HarnessConfig, SandboxPolicy } from '../types'
 
 const injectedApi = inject(ADMIN_API_KEY)
 if (!injectedApi) throw new Error('Admin API client is not provided')
 const api: AdminApiClient = injectedApi
 
-const config = reactive<HarnessConfig>({
-  rootModel: 'unconfigured',
-  rootProvider: 'unconfigured',
-  rootBaseUrl: 'https://api.openai.com',
-  rootCredentialRef: 'unconfigured',
-  subagents: [],
-  contextWindow: '128k tokens',
-  softCompaction: 60,
-  hardCheckpoint: 80,
-  sandboxCpu: '0.5 CPU',
-  sandboxMemory: '1 GiB',
-  timeoutMinutes: 30,
-  maxRetries: 1,
-  maxToolRounds: 24,
-})
-const policy = ref<SandboxPolicy | null>(null)
-const revision = ref('—')
-const snapshot = ref<Awaited<ReturnType<typeof api.getConfig>> | null>(null)
-const saveState = ref<'idle' | 'loading' | 'saving' | 'saved' | 'error'>('loading')
+const provider = ref('openai')
+const baseUrl = ref('https://api.tokener.dev/v1')
+const model = ref('gpt-5.6-terra')
+const apiKey = ref('')
+const apiKeyMasked = ref('********')
+const hasKey = ref(false)
+const showKey = ref(false)
+const reasoning = ref(true)
+const timeoutSeconds = ref(120)
+
+const loading = ref(false)
+const testing = ref(false)
+const testResult = ref<{
+  ok: boolean
+  status_code: number
+  latency_ms: number
+  message: string
+  sample_text: string
+} | null>(null)
+const saveMessage = ref('')
 const errorMessage = ref('')
-const catalogByBinding = reactive<Record<string, string[]>>({})
-const candidateSecret = reactive<Record<string, string>>({})
-const discoveryState = reactive<Record<string, 'idle' | 'loading' | 'ready' | 'error'>>({})
-const discoveryMessage = reactive<Record<string, string>>({})
 
-function displayProvider(provider: string): string {
-  return provider === 'openai' ? 'OpenAI' : provider
-}
-
-function applySnapshot(next: Awaited<ReturnType<typeof api.getConfig>>, nextPolicy: SandboxPolicy) {
-  snapshot.value = next
-  revision.value = next.revision
-  config.rootModel = next.config.rootModel.model
-  config.rootProvider = next.config.rootModel.provider
-  config.rootBaseUrl = next.config.rootModel.baseUrl
-  config.rootCredentialRef = next.config.rootModel.credentialRef
-  config.subagents = next.config.subagentSlots.map((slot) => ({
-    id: slot.slotId,
-    name: slot.slotId,
-    purpose: '独立调查任务',
-    model: slot.model,
-    provider: slot.provider,
-    baseUrl: slot.baseUrl,
-    credentialRef: slot.credentialRef,
-    contextWindowTokens: slot.contextWindowTokens,
-    maxToolRounds: slot.maxToolRounds,
-    maxParallel: slot.maxParallel,
-    enabled: slot.enabled,
-  }))
-  config.contextWindow = `${Math.round(next.config.contextWindowTokens / 1000)}k tokens`
-  config.softCompaction = next.config.softCompactionPercent
-  config.hardCheckpoint = next.config.hardCheckpointPercent
-  config.sandboxCpu = `${nextPolicy.attempt1.cpu} CPU`
-  config.sandboxMemory = `${nextPolicy.attempt1.memoryMib / 1024} GiB`
-  config.timeoutMinutes = Math.round(nextPolicy.attempt1.timeoutSeconds / 60)
-  config.maxRetries = nextPolicy.attempt2.cpu > nextPolicy.attempt1.cpu ? 1 : 0
-  config.maxToolRounds = next.config.maxToolRounds
-}
-
-async function loadConfig(preserveError = false) {
-  saveState.value = 'loading'
-  if (!preserveError) errorMessage.value = ''
-  try {
-    const [next, nextPolicy] = await Promise.all([api.getConfig(), api.getSandboxPolicy()])
-    policy.value = nextPolicy
-    applySnapshot(next, nextPolicy)
-    saveState.value = 'idle'
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '读取 Harness 配置失败'
-    saveState.value = 'error'
-  }
-}
-
-function isConflict(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'status' in error && (error as { status?: unknown }).status === 409
-}
-
-function contextTokens(value: string): number {
-  const parsed = Number.parseInt(value, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : 128_000
-}
-
-function configForSave(current: AdminConfig): AdminConfig {
-  return {
-    ...current,
-    rootModel: {
-      provider: config.rootProvider,
-      baseUrl: config.rootBaseUrl,
-      model: config.rootModel,
-      credentialRef: config.rootCredentialRef,
-    },
-    subagentSlots: config.subagents.map((slot) => ({
-      slotId: slot.id,
-      enabled: slot.enabled,
-      provider: slot.provider,
-      baseUrl: slot.baseUrl,
-      model: slot.model,
-      credentialRef: slot.credentialRef,
-      contextWindowTokens: slot.contextWindowTokens,
-      maxToolRounds: slot.maxToolRounds,
-      maxParallel: slot.maxParallel,
-    })),
-    contextWindowTokens: contextTokens(config.contextWindow),
-    softCompactionPercent: config.softCompaction,
-    hardCheckpointPercent: config.hardCheckpoint,
-    maxToolRounds: config.maxToolRounds,
-  }
-}
-
-function addSubagent() {
-  if (config.subagents.length >= 1) return
-  const slotId = 'subagent'
-  config.subagents.push({
-    id: slotId,
-    name: slotId,
-    purpose: '独立调查任务',
-    model: 'gpt-5.6-luna',
-    provider: 'openai',
-    baseUrl: 'https://api.openai.com',
-    credentialRef: `secret/${slotId}`,
-    contextWindowTokens: 272_000,
-    maxToolRounds: 12,
-    maxParallel: 4,
-    enabled: true,
-  })
-}
-
-function removeSubagent(index: number) {
-  config.subagents.splice(index, 1)
-}
-
-async function discoverModels(key: string, provider: string, baseUrl: string) {
-  const secret = candidateSecret[key] ?? ''
-  if (!secret) {
-    discoveryState[key] = 'error'
-    discoveryMessage[key] = '请先输入 API Key。'
-    return
-  }
-  discoveryState[key] = 'loading'
-  discoveryMessage[key] = ''
-  try {
-    const catalog = await api.discoverModels({ provider, baseUrl, secret })
-    catalogByBinding[key] = catalog.models
-    if (key === 'root') config.rootBaseUrl = catalog.baseUrl
-    else {
-      const slot = config.subagents.find((item) => item.id === key)
-      if (slot) slot.baseUrl = catalog.baseUrl
-    }
-    discoveryState[key] = 'ready'
-    discoveryMessage[key] = `已获取 ${catalog.models.length} 个模型 · ${catalog.latencyMs}ms`
-  } catch (error) {
-    discoveryState[key] = 'error'
-    discoveryMessage[key] = error instanceof Error ? error.message : '模型列表获取失败'
-  } finally {
-    candidateSecret[key] = ''
-  }
-}
-
-async function saveConfig() {
-  if (!snapshot.value) {
-    await loadConfig()
-    return
-  }
-  saveState.value = 'saving'
+async function loadSettings() {
+  loading.value = true
   errorMessage.value = ''
   try {
-    const saved = await api.saveConfig({ expectedRevision: snapshot.value.revision, config: configForSave(snapshot.value.config) })
-    snapshot.value = saved
-    revision.value = saved.revision
-    saveState.value = 'saved'
-  } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '保存 Harness 配置失败'
-    saveState.value = 'error'
-    if (isConflict(error)) {
-      await loadConfig(true)
-      errorMessage.value = '配置版本已过期，已重新加载最新配置；请确认后再次保存。'
-      saveState.value = 'error'
-    }
+    const data = await api.getModelSettings()
+    provider.value = data.provider || 'openai'
+    baseUrl.value = data.base_url || 'https://api.tokener.dev/v1'
+    model.value = data.model || 'gpt-5.6-terra'
+    apiKeyMasked.value = data.api_key_masked || '********'
+    hasKey.value = data.has_key || false
+    reasoning.value = data.reasoning ?? true
+    timeoutSeconds.value = data.timeout_seconds || 120
+  } catch (err: any) {
+    errorMessage.value = err.message || '获取模型配置失败'
+  } finally {
+    loading.value = false
   }
 }
 
-onMounted(() => { void loadConfig() })
+async function testConnection() {
+  testing.value = true
+  testResult.value = null
+  try {
+    const res = await api.testModelConnection({
+      base_url: baseUrl.value,
+      model: model.value,
+      api_key: apiKey.value || undefined,
+    })
+    testResult.value = res
+  } catch (err: any) {
+    testResult.value = {
+      ok: false,
+      status_code: 500,
+      latency_ms: 0,
+      message: err.message || '连接测试异常',
+      sample_text: '',
+    }
+  } finally {
+    testing.value = false
+  }
+}
+
+async function saveSettings() {
+  loading.value = true
+  saveMessage.value = ''
+  errorMessage.value = ''
+  try {
+    const payload: any = {
+      provider: provider.value,
+      base_url: baseUrl.value,
+      model: model.value,
+      reasoning: reasoning.value,
+      timeout_seconds: timeoutSeconds.value,
+    }
+    if (apiKey.value.trim()) {
+      payload.api_key = apiKey.value.trim()
+    }
+    await api.saveModelSettings(payload)
+    saveMessage.value = '模型配置已保存并立即生效！Pi Agent 无需重启即可应用新模型。'
+    apiKey.value = ''
+    await loadSettings()
+    setTimeout(() => { saveMessage.value = ''; }, 5000)
+  } catch (err: any) {
+    errorMessage.value = err.message || '保存配置失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(() => {
+  loadSettings()
+})
 </script>
 
 <template>
-  <div class="page-view">
-    <div class="page-heading">
-      <div>
-        <p class="eyebrow">运行配置</p>
-        <h1>Agent 配置</h1>
-        <p class="page-description">管理主 Agent、独立子 Agent 和每次运行的资源边界。</p>
-      </div>
-      <div class="heading-actions">
-        <span v-if="saveState === 'saved'" class="save-confirm"><AppIcon name="check" :size="14" />已保存到修订 {{ revision }}</span>
-        <button type="button" class="button button--primary" data-testid="save-config" :disabled="saveState === 'saving' || saveState === 'loading'" @click="saveConfig">
-          <AppIcon name="check" :size="15" />{{ saveState === 'saving' ? '保存中…' : '保存配置' }}
-        </button>
-      </div>
-    </div>
-
-    <div v-if="errorMessage" class="notice-banner notice-banner--danger" role="alert"><AppIcon name="alert" :size="18" /><div><strong>Agent 配置不可用</strong><span>{{ errorMessage }}</span></div></div>
-
-    <div class="notice-banner notice-banner--info">
-      <AppIcon name="shield" :size="18" />
-      <div><strong>配置修订 {{ revision }} 正在使用</strong><span>每个新运行都会固定到创建时的不可变配置。修改只会影响后续工单。</span></div>
-      <span class="notice-time">{{ snapshot ? `最后更新 · ${new Date(snapshot.createdAt).toLocaleString()}` : '正在读取…' }}</span>
-    </div>
-
-    <section class="panel config-section">
-      <div class="panel-heading panel-heading--with-description">
-        <div><p class="eyebrow">模型路由</p><h2>模型配置</h2><p>主 Agent 使用一份子 Agent 模型模板，并按每张工单的待办动态创建独立子会话。</p></div>
-        <div class="heading-actions"><StatusBadge :label="config.subagents.length ? '主模型与子模型已配置' : '仅主模型'" tone="success" /><button v-if="config.subagents.length === 0" type="button" class="button button--secondary" data-testid="add-subagent" :disabled="saveState === 'loading' || saveState === 'saving'" @click="addSubagent"><AppIcon name="spark" :size="15" />配置子 Agent 模型</button><span v-else class="field-help">运行数量由主 Agent 决定</span></div>
-      </div>
-      <div class="model-grid">
-        <article class="model-card model-card--root" data-testid="root-model">
-          <div class="model-card__heading"><span class="model-avatar model-avatar--root"><AppIcon name="spark" :size="18" /></span><div><span class="card-kicker">主 AGENT</span><h3>主 Agent</h3></div><StatusBadge label="默认" tone="info" /></div>
-          <p class="model-purpose">负责完整工单调查、待办编排与最终结构化结果。</p>
-          <label class="field-label" for="root-provider">模型供应商</label>
-          <input id="root-provider" v-model="config.rootProvider" class="field-control" type="text" autocomplete="off">
-          <label class="field-label" for="root-base-url">Base URL</label>
-          <input id="root-base-url" v-model="config.rootBaseUrl" class="field-control" data-testid="root-base-url" type="url" autocomplete="url" placeholder="https://api.openai.com">
-          <label class="field-label" for="root-credential-ref">凭据引用</label>
-          <input id="root-credential-ref" v-model="config.rootCredentialRef" class="field-control" type="text" autocomplete="off" placeholder="openai-primary">
-          <label class="field-label" for="root-api-key">API Key（仅用于本次查询）</label>
-          <div class="model-discovery-row">
-            <input id="root-api-key" v-model="candidateSecret.root" class="field-control" type="password" autocomplete="new-password" placeholder="输入后获取模型列表">
-            <button type="button" class="button button--secondary" :disabled="discoveryState.root === 'loading'" @click="discoverModels('root', config.rootProvider, config.rootBaseUrl)">{{ discoveryState.root === 'loading' ? '查询中…' : '获取模型' }}</button>
-          </div>
-          <small v-if="discoveryMessage.root" class="field-help" :class="{ 'field-help--error': discoveryState.root === 'error' }">{{ discoveryMessage.root }}</small>
-          <label class="field-label" for="root-model">模型</label>
-          <input id="root-model" v-model="config.rootModel" class="field-control" list="root-model-catalog" type="text" autocomplete="off">
-          <datalist id="root-model-catalog"><option v-for="model in catalogByBinding.root" :key="model" :value="model" /></datalist>
-          <small class="field-help">选择模型并保存配置后，在下方凭据面板验证并更换对应 API Key。</small>
-          <div class="model-meta"><span>模型供应商</span><strong>{{ displayProvider(config.rootProvider) }}</strong></div>
-          <div class="model-meta"><span>最大上下文</span><strong>{{ config.contextWindow }}</strong></div>
-        </article>
-        <article v-for="(agent, index) in config.subagents" :key="agent.id" class="model-card" :data-testid="`subagent-card-${index}`">
-          <div class="model-card__heading"><span class="model-avatar"><AppIcon name="box" :size="18" /></span><div><span class="card-kicker">子 AGENT 模型模板</span><h3>子 Agent 模型</h3></div><label class="switch switch--small"><input v-model="agent.enabled" type="checkbox" aria-label="启用子 Agent"><span /></label></div>
-          <p class="model-purpose">主 Agent 可按调查计划创建 0–8 个独立子会话，并汇总每个子会话返回的证据。</p>
-          <div class="model-card__actions"><button type="button" class="text-button text-button--compact" :data-testid="`remove-slot-${index}`" @click="removeSubagent(index)">移除模型模板</button></div>
-          <label class="field-label" :for="`slot-provider-${index}`">模型供应商</label>
-          <input :id="`slot-provider-${index}`" v-model="agent.provider" class="field-control" :data-testid="`slot-provider-${index}`" type="text" autocomplete="off">
-          <label class="field-label" :for="`slot-base-url-${index}`">Base URL</label>
-          <input :id="`slot-base-url-${index}`" v-model="agent.baseUrl" class="field-control" :data-testid="`slot-base-url-${index}`" type="url" autocomplete="url" placeholder="https://api.openai.com">
-          <label class="field-label" :for="`slot-api-key-${index}`">API Key（仅用于本次查询）</label>
-          <div class="model-discovery-row">
-            <input :id="`slot-api-key-${index}`" v-model="candidateSecret[agent.id]" class="field-control" type="password" autocomplete="new-password" placeholder="输入后获取模型列表">
-            <button type="button" class="button button--secondary" :disabled="discoveryState[agent.id] === 'loading'" @click="discoverModels(agent.id, agent.provider, agent.baseUrl)">{{ discoveryState[agent.id] === 'loading' ? '查询中…' : '获取模型' }}</button>
-          </div>
-          <small v-if="discoveryMessage[agent.id]" class="field-help" :class="{ 'field-help--error': discoveryState[agent.id] === 'error' }">{{ discoveryMessage[agent.id] }}</small>
-          <label class="field-label" :for="`slot-model-${index}`">模型</label>
-          <input :id="`slot-model-${index}`" v-model="agent.model" class="field-control" :data-testid="`slot-model-${index}`" :list="`slot-model-catalog-${index}`" type="text" autocomplete="off">
-          <datalist :id="`slot-model-catalog-${index}`"><option v-for="model in catalogByBinding[agent.id]" :key="model" :value="model" /></datalist>
-          <label class="field-label" :for="`slot-credential-ref-${index}`">凭据引用</label>
-          <input :id="`slot-credential-ref-${index}`" v-model="agent.credentialRef" class="field-control" :data-testid="`slot-credential-ref-${index}`" type="text" autocomplete="off" placeholder="secret/subagent-id">
-          <small class="field-help">仅保存密钥引用，不填写或显示明文凭据。</small>
-          <div class="subagent-limits">
-            <label class="field-label" :for="`slot-context-window-${index}`">上下文窗口</label>
-            <input :id="`slot-context-window-${index}`" v-model.number="agent.contextWindowTokens" class="field-control field-control--number" :data-testid="`slot-context-window-${index}`" :list="`slot-context-options-${index}`" type="number" min="16000" max="1000000" step="1000">
-            <datalist :id="`slot-context-options-${index}`"><option :value="32000" /><option :value="64000" /><option :value="128000" /><option :value="272000" /></datalist>
-            <small class="field-help subagent-limit-help">每个子会话独立使用该上下文上限。模型支持时可直接配置 272k。</small>
-          </div>
-          <div class="model-meta"><span>运行时编排</span><strong>最多 8 个任务 · {{ agent.maxParallel }} 个并行</strong></div>
-          <div class="model-meta"><span>状态</span><StatusBadge :label="agent.enabled ? '已启用' : '已停用'" :tone="agent.enabled ? 'success' : 'neutral'" /></div>
-        </article>
-      </div>
-    </section>
-
-    <ModelCredentialPanel :key="revision" />
-
-    <div class="content-grid content-grid--config">
-      <section class="panel settings-panel">
-      <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">上下文治理</p><h2>上下文治理</h2><p>控制模型上下文增长和检查点保留策略。</p></div><AppIcon name="sliders" class="heading-icon" :size="19" /></div>
-        <div class="settings-list">
-          <label class="setting-row"><span><strong>上下文窗口</strong><small>所有主 Agent 运行的上限</small></span><select v-model="config.contextWindow" class="field-control field-control--compact"><option>64k tokens</option><option>128k tokens</option><option>256k tokens</option><option>272k tokens</option></select></label>
-          <label class="setting-row"><span><strong>软压缩阈值</strong><small>达到后保留最近四轮 Tool 输出</small></span><div class="input-with-suffix"><input v-model.number="config.softCompaction" class="field-control field-control--number" type="number" min="20" max="90"><span>%</span></div></label>
-          <label class="setting-row"><span><strong>硬检查点阈值</strong><small>达到后重建上下文并恢复活动 Todo</small></span><div class="input-with-suffix"><input v-model.number="config.hardCheckpoint" class="field-control field-control--number" type="number" min="40" max="95"><span>%</span></div></label>
+  <div class="model-studio">
+    <div class="studio-container">
+      <header class="studio-header">
+        <div class="header-left">
+          <div class="badge-tag">Model Studio</div>
+          <h2>模型配置与实时测速中心</h2>
+          <p>动态调整 Pi Agent 的上游大模型端点、推理深度与凭据，支持热更新与现场延迟诊断。</p>
         </div>
-      </section>
-      <section class="panel settings-panel">
-        <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">沙箱策略</p><h2>沙箱策略</h2><p>每次运行创建临时隔离环境，终态后自动销毁。</p></div><AppIcon name="box" class="heading-icon" :size="19" /></div>
-        <div class="settings-list">
-          <div class="setting-row"><span><strong>默认 CPU</strong><small>资源不足时允许一次重试</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.sandboxCpu }}</span></div>
-          <div class="setting-row"><span><strong>内存上限</strong><small>单个处理运行的最大内存</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.sandboxMemory }}</span></div>
-          <div class="setting-row"><span><strong>超时时间</strong><small>超过后停止工具循环</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.timeoutMinutes }} 分钟</span></div>
-          <div class="setting-row"><span><strong>资源重试次数</strong><small>仅用于内存或 CPU 资源不足</small></span><span class="read-only-value"><AppIcon name="shield" :size="12" />{{ config.maxRetries }} 次 · 固定上限</span></div>
+        <div class="header-actions">
+          <button class="btn-test" :disabled="testing" @click="testConnection">
+            <AppIcon name="activity" :size="15" />
+            <span>{{ testing ? '测速中...' : '测试连通性 (Ping Test)' }}</span>
+          </button>
+          <button class="btn-save" :disabled="loading" @click="saveSettings">
+            <AppIcon name="check" :size="15" />
+            <span>{{ loading ? '保存中...' : '保存并热生效' }}</span>
+          </button>
         </div>
-      </section>
-    </div>
+      </header>
 
-    <section class="panel loop-panel">
-      <div class="panel-heading panel-heading--with-description"><div><p class="eyebrow">待办与工具循环</p><h2>执行边界</h2><p>当仍有可执行待办时，Agent 会继续调用工具。</p></div><div class="loop-limit"><span>最大工具轮次</span><input v-model.number="config.maxToolRounds" class="field-control field-control--number" type="number" min="1" max="100"></div></div>
-      <div class="flow-steps"><div class="flow-step flow-step--active"><span>01</span><strong>读取工单</strong><small>获取最新快照</small></div><div class="flow-line" /><div class="flow-step"><span>02</span><strong>生成待办</strong><small>建立调查计划</small></div><div class="flow-line" /><div class="flow-step"><span>03</span><strong>调用工具</strong><small>执行并记录证据</small></div><div class="flow-line" /><div class="flow-step"><span>04</span><strong>生成结果</strong><small>刷新并交付</small></div></div>
-    </section>
+      <!-- Alert Notices -->
+      <div v-if="saveMessage" class="notice-banner success">{{ saveMessage }}</div>
+      <div v-if="errorMessage" class="notice-banner error">{{ errorMessage }}</div>
+
+      <!-- Ping Test Result Card (Apple-style pill alert) -->
+      <div v-if="testResult" :class="['test-card', { success: testResult.ok, failed: !testResult.ok }]">
+        <div class="test-header">
+          <div class="test-status">
+            <span class="status-indicator"></span>
+            <strong>{{ testResult.ok ? '模型连通测试通过' : '模型连通失败' }}</strong>
+            <span class="status-code">HTTP {{ testResult.status_code }}</span>
+          </div>
+          <div class="test-latency">
+            <span>首字延迟:</span>
+            <strong>{{ testResult.latency_ms }} ms</strong>
+          </div>
+        </div>
+        <div class="test-detail">
+          <span>{{ testResult.message }}</span>
+          <div v-if="testResult.sample_text" class="sample-box">
+            <small>回复样本:</small>
+            <code>{{ testResult.sample_text }}</code>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Form Grid -->
+      <div class="studio-grid">
+        <!-- Configuration Card -->
+        <section class="studio-card">
+          <div class="card-title">
+            <AppIcon name="spark" :size="18" />
+            <h3>模型网关参数</h3>
+          </div>
+
+          <div class="form-group">
+            <label>Provider 服务商类型</label>
+            <select v-model="provider" class="studio-select">
+              <option value="openai">OpenAI 兼容接口 (Tokener / OpenAI / 代理网关)</option>
+              <option value="azure">Azure OpenAI</option>
+              <option value="anthropic">Anthropic Claude</option>
+              <option value="custom">自定义私有网关</option>
+            </select>
+            <small>选择底层模型协议，默认采用标准 OpenAI Responses 协议。</small>
+          </div>
+
+          <div class="form-group">
+            <label>API Base URL (网关地址)</label>
+            <input
+              v-model="baseUrl"
+              type="text"
+              class="studio-input"
+              placeholder="https://api.tokener.dev/v1"
+            />
+            <small>例如 <code>https://api.tokener.dev/v1</code> 或 <code>https://api.openai.com/v1</code></small>
+          </div>
+
+          <div class="form-group">
+            <label>Model Identifier (模型名称)</label>
+            <input
+              v-model="model"
+              type="text"
+              class="studio-input"
+              placeholder="gpt-5.6-terra"
+            />
+            <small>Pi Agent 当前推荐模型：<code>gpt-5.6-terra</code>、<code>gpt-5.5</code>、<code>gpt-4o</code></small>
+          </div>
+
+          <div class="form-group">
+            <label>API Key (访问密钥)</label>
+            <div class="key-input-row">
+              <input
+                v-if="!showKey"
+                type="password"
+                v-model="apiKey"
+                class="studio-input key-input"
+                :placeholder="hasKey ? '已配置: ' + apiKeyMasked + ' (输入新 Key 以覆盖)' : 'sk-...'"
+              />
+              <input
+                v-else
+                type="text"
+                v-model="apiKey"
+                class="studio-input key-input"
+                placeholder="sk-..."
+              />
+              <button class="btn-secondary" @click="showKey = !showKey">
+                {{ showKey ? '隐藏' : '明文' }}
+              </button>
+            </div>
+            <small>密钥安全加密保存在生产数据库，绝不在前端明文暴露。</small>
+          </div>
+        </section>
+
+        <!-- Advanced Runtime Card -->
+        <section class="studio-card">
+          <div class="card-title">
+            <AppIcon name="sliders" :size="18" />
+            <h3>推理与超时策略</h3>
+          </div>
+
+          <div class="form-group">
+            <label>深度思维链 (Reasoning Mode)</label>
+            <div class="toggle-row">
+              <input type="checkbox" id="reasoningToggle" v-model="reasoning" class="studio-checkbox" />
+              <label for="reasoningToggle" class="checkbox-label">
+                允许模型产生 <code>thinking</code> 思考块，并在管理后台提供可折叠回放
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>单步推理超时阈值: {{ timeoutSeconds }} 秒</label>
+            <input
+              v-model.number="timeoutSeconds"
+              type="range"
+              min="30"
+              max="300"
+              step="10"
+              class="studio-range"
+            />
+            <small>针对复杂 SQL 排查与 SigNoz 日志聚合，建议保留 120 秒以上。</small>
+          </div>
+
+          <div class="runtime-status-box">
+            <h4>当前生效环境</h4>
+            <div class="status-row">
+              <span>架构内核</span>
+              <strong>Pi Agent Framework</strong>
+            </div>
+            <div class="status-row">
+              <span>执行模式</span>
+              <strong>单工作流自主推理 (Single Session Worker)</strong>
+            </div>
+            <div class="status-row">
+              <span>动态存储</span>
+              <strong>PostgreSQL system_settings (热更秒级生效)</strong>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+.model-studio {
+  min-height: calc(100vh - 68px);
+  background: #0d0d0e;
+  color: #f5f5f7;
+  padding: 32px 48px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+.studio-container {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.studio-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding-bottom: 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  margin-bottom: 28px;
+}
+
+.badge-tag {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #a855f7;
+  background: rgba(168, 85, 247, 0.15);
+  padding: 3px 8px;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+
+.studio-header h2 {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.studio-header p {
+  margin: 0;
+  color: #a1a1a6;
+  font-size: 13px;
+  max-width: 600px;
+  line-height: 1.5;
+}
+
+.header-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.btn-test {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: #18181b;
+  color: #f4f4f5;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-test:hover {
+  background: #27272a;
+}
+
+.btn-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: none;
+  background: #fff;
+  color: #000;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-save:hover {
+  background: #e4e4e7;
+}
+
+.notice-banner {
+  padding: 12px 18px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 24px;
+}
+.notice-banner.success {
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #34d399;
+}
+.notice-banner.error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: #f87171;
+}
+
+/* Test Card */
+.test-card {
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 28px;
+  border: 1px solid transparent;
+}
+.test-card.success {
+  background: #064e3b22;
+  border-color: rgba(16, 185, 129, 0.4);
+}
+.test-card.failed {
+  background: #7f1d1d22;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.test-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.test-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.test-card.success .status-indicator { background: #10b981; box-shadow: 0 0 8px #10b981; }
+.test-card.failed .status-indicator { background: #ef4444; box-shadow: 0 0 8px #ef4444; }
+
+.status-code {
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.test-latency {
+  font-size: 12px;
+  color: #a1a1a6;
+}
+.test-latency strong {
+  color: #fff;
+  font-family: ui-monospace, monospace;
+  font-size: 14px;
+  margin-left: 4px;
+}
+
+.test-detail {
+  font-size: 12px;
+  color: #d4d4d8;
+}
+.sample-box {
+  margin-top: 8px;
+  background: #09090b;
+  padding: 8px 12px;
+  border-radius: 6px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sample-box small { color: #71717a; }
+.sample-box code { color: #34d399; font-family: ui-monospace, monospace; }
+
+/* Grid */
+.studio-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+.studio-card {
+  background: #141416;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.card-title h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+.form-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #d4d4d8;
+  margin-bottom: 8px;
+}
+.form-group small {
+  display: block;
+  font-size: 11px;
+  color: #71717a;
+  margin-top: 6px;
+}
+.form-group code {
+  color: #a855f7;
+}
+
+.studio-input, .studio-select {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #09090b;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+  transition: border-color 0.15s;
+}
+.studio-input:focus, .studio-select:focus {
+  border-color: #3b82f6;
+}
+
+.key-input-row {
+  display: flex;
+  gap: 8px;
+}
+.key-input {
+  flex: 1;
+}
+
+.btn-secondary {
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #18181b;
+  color: #d4d4d8;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.studio-checkbox {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+.checkbox-label {
+  font-size: 12px !important;
+  font-weight: 400 !important;
+  color: #a1a1a6 !important;
+  margin-bottom: 0 !important;
+  cursor: pointer;
+}
+
+.studio-range {
+  width: 100%;
+  accent-color: #3b82f6;
+}
+
+.runtime-status-box {
+  margin-top: 28px;
+  background: #09090b;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 16px;
+}
+.runtime-status-box h4 {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.status-row:last-child {
+  border-bottom: none;
+}
+.status-row span { color: #a1a1a6; }
+.status-row strong { color: #f4f4f5; }
+</style>

@@ -428,6 +428,15 @@ export interface AdminApiClient {
   getModelCredentials(): Promise<ModelCredentialStatus[]>
   replaceModelCredential(input: { credentialRef: string; secret: string }): Promise<ModelCredentialReplaceResult>
   discoverModels(input: { provider: string; baseUrl: string; secret: string }): Promise<ModelCatalog>
+  getTraces(input?: { query?: string; status?: string }): Promise<{ items: any[]; total: number }>
+  getTrace(ticketId: number): Promise<any>
+  retryJob(jobId: string): Promise<{ ok: boolean; message: string }>
+  getModelSettings(): Promise<any>
+  saveModelSettings(data: any): Promise<{ ok: boolean; message: string }>
+  testModelConnection(data: any): Promise<{ ok: boolean; status_code: number; latency_ms: number; message: string; sample_text: string }>
+  getMcpMesh(): Promise<{ services: any[]; total_tools: number }>
+  getSkills(): Promise<any[]>
+  saveSkill(skillName: string, content: string): Promise<{ ok: boolean; message: string }>
 }
 
 export function createAdminApiClient(transport: AdminApiTransport = new FetchAdminApiTransport()): AdminApiClient {
@@ -554,6 +563,49 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
         models: value.models,
         latencyMs: value.latency_ms,
       }
+    },
+    async getTraces(input = {}) {
+      const params = new URLSearchParams()
+      if (input.query?.trim()) params.set('query', input.query.trim())
+      if (input.status && input.status !== 'all') params.set('status', input.status)
+      const suffix = params.toString() ? `?${params.toString()}` : ''
+      return transport.request(`/api/traces${suffix}`)
+    },
+    async getTrace(ticketId) {
+      return transport.request(`/api/traces/${ticketId}`)
+    },
+    async retryJob(jobId) {
+      return transport.request(`/api/traces/${jobId}/retry`, { method: 'POST' })
+    },
+    async getModelSettings() {
+      return transport.request('/api/settings/model')
+    },
+    async saveModelSettings(data) {
+      return transport.request('/api/settings/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+    },
+    async testModelConnection(data) {
+      return transport.request('/api/settings/model/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+    },
+    async getMcpMesh() {
+      return transport.request('/api/mcp/mesh')
+    },
+    async getSkills() {
+      return transport.request('/api/skills')
+    },
+    async saveSkill(skillName, content) {
+      return transport.request(`/api/skills/${encodeURIComponent(skillName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      })
     },
   }
 }

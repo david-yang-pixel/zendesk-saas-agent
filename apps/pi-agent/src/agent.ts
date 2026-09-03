@@ -21,6 +21,53 @@ export interface AgentRunOptions {
   apiKey?: string;
 }
 
+export interface AgentTraceStep {
+  type: 'thinking' | 'tool_call' | 'answer';
+  thinking?: string;
+  toolCallId?: string;
+  toolName?: string;
+  service?: string;
+  arguments?: any;
+  result?: any;
+  text?: string;
+}
+
+export interface AgentTracePayload {
+  ticketId: number;
+  requesterEmail?: string;
+  customerMessage: string;
+  model: string;
+  startedAt: string;
+  finishedAt: string;
+  totalDurationMs: number;
+  thinking: string[];
+  toolCalls: Array<{
+    toolCallId: string;
+    toolName: string;
+    service?: string;
+    arguments: any;
+    result: any;
+  }>;
+  steps: AgentTraceStep[];
+  finalReply: string;
+}
+
+export interface AgentRunResult {
+  reply: string;
+  trace: AgentTracePayload;
+}
+
+export function inferToolService(toolName: string): string {
+  if (toolName === 'db_gateway_query') return 'db-gateway';
+  if (toolName.startsWith('signoz_') || toolName === 'sz_run') return 'signoz';
+  if (toolName.startsWith('official_docs_')) return 'docs';
+  if (toolName.startsWith('github_')) return 'github';
+  if (toolName.startsWith('source_') || toolName.startsWith('repo_') || toolName === 'list_repo_tags' || toolName === 'refresh_repos') return 'source';
+  if (toolName.startsWith('get_') || toolName.startsWith('list_') || toolName.startsWith('search_') || toolName.startsWith('download_') || toolName.startsWith('add_') || toolName.startsWith('update_')) return 'zendesk';
+  if (toolName.includes('browser') || toolName.includes('relay') || toolName === 'send_zendesk_native_message') return 'zendesk-browser-relay';
+  return 'other';
+}
+
 function getProjectSkills(): Skill[] {
   const possiblePaths = [
     path.resolve(process.cwd(), 'skills'),
@@ -85,7 +132,7 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
    - Use clear markdown lists and bold keys for readability.
 `.trim();
 
-export async function runPiSupportAgent(options: AgentRunOptions): Promise<string> {
+export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {
   const modelName = options.modelName || process.env.CASEWORK_MODEL_NAME || 'gpt-5.6-terra';
   const rawBaseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.tokener.dev';
   let baseUrl = rawBaseUrl.replace(/\/+$/, '');
@@ -172,31 +219,99 @@ ${DIFY_SUPPORT_SYSTEM_PROMPT}
 Please investigate using your available tools and skills, and formulate a complete, helpful, accurate answer to the customer in English.
 `.trim();
 
+  const startTime = Date.now();
+  const startedAt = new Date().toISOString();
+
   console.log(`[Agent] Sending prompt to session for ticket #${options.ticketId}...`);
   await session.prompt(prompt);
 
-  console.log(`\n[Agent] Prompt finished. Total messages in session: ${session.messages.length}`);
-  for (const m of session.messages as any[]) {
-    const preview = typeof m?.content === 'string' ? m.content : JSON.stringify(m?.content ?? '');
-    console.log(`[Agent Msg] role=${m?.role}:`, (preview || '').slice(0, 100));
+  const finishedAt = new Date().toISOString();
+  const totalDurationMs = Date.now() - startTime;
+
+  console.log(`\n[Agent] Prompt finished in ${totalDurationMs}ms. Total messages in session: ${session.messages.length}`);
+  
+  const messages = session.messages as any[];
+  const toolResultsMap = new Map<string, any>();
+  for (const m of messages) {
+    if (m.role === 'toolResult' || m.role === 'tool_result') {
+      const callId = m.toolCallId || m.id;
+      if (callId) {
+        let contentVal = m.content;
+        if (Array.isArray(contentVal)) {
+          const textPart = contentVal.find((p: any) => p.type === 'text');
+          if (textPart) {
+            try {
+              contentVal = JSON.parse(textPart.text);
+            } catch {
+              contentVal = textPart.text;
+            }
+          }
+        }
+        toolResultsMap.set(callId, contentVal);
+      }
+    }
   }
 
-  // Extract final assistant message from session.messages
-  const messages = session.messages as any[];
+  const steps: AgentTraceStep[] = [];
+  const thinkingList: string[] = [];
+  const toolCallsList: any[] = [];
   let finalAnswer = '';
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role === 'assistant' && msg.content) {
-      if (typeof msg.content === 'string') {
-        finalAnswer = msg.content;
-        break;
-      } else if (Array.isArray(msg.content)) {
-        const textParts = msg.content
-          .filter((part: any) => part.type === 'text' && part.text)
-          .map((part: any) => part.text);
-        if (textParts.length > 0) {
-          finalAnswer = textParts.join('\n');
+
+  for (const m of messages) {
+    if (m.role === 'assistant' && Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part.type === 'thinking' && part.thinking) {
+          thinkingList.push(part.thinking);
+          steps.push({
+            type: 'thinking',
+            thinking: part.thinking,
+          });
+        } else if (part.type === 'tool_call') {
+          const res = toolResultsMap.get(part.id);
+          const toolItem = {
+            toolCallId: part.id,
+            toolName: part.name,
+            service: inferToolService(part.name),
+            arguments: part.arguments,
+            result: res ?? null,
+          };
+          toolCallsList.push(toolItem);
+          steps.push({
+            type: 'tool_call',
+            ...toolItem,
+          });
+        } else if (part.type === 'text' && part.text) {
+          finalAnswer = part.text;
+          steps.push({
+            type: 'answer',
+            text: part.text,
+          });
+        }
+      }
+    } else if (m.role === 'assistant' && typeof m.content === 'string') {
+      finalAnswer = m.content;
+      steps.push({
+        type: 'answer',
+        text: m.content,
+      });
+    }
+  }
+
+  if (!finalAnswer.trim()) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role === 'assistant' && msg.content) {
+        if (typeof msg.content === 'string') {
+          finalAnswer = msg.content;
           break;
+        } else if (Array.isArray(msg.content)) {
+          const textParts = msg.content
+            .filter((part: any) => part.type === 'text' && part.text)
+            .map((part: any) => part.text);
+          if (textParts.length > 0) {
+            finalAnswer = textParts.join('\n');
+            break;
+          }
         }
       }
     }
@@ -208,6 +323,24 @@ Please investigate using your available tools and skills, and formulate a comple
 
   // Unified English footer
   const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours, 9:00 AM–6:00 PM Beijing Time (UTC+8).';
+  const fullReply = finalAnswer.trim() + footer;
 
-  return finalAnswer.trim() + footer;
+  const trace: AgentTracePayload = {
+    ticketId: options.ticketId,
+    requesterEmail: options.requesterEmail,
+    customerMessage: options.customerMessage,
+    model: modelName,
+    startedAt,
+    finishedAt,
+    totalDurationMs,
+    thinking: thinkingList,
+    toolCalls: toolCallsList,
+    steps,
+    finalReply: fullReply,
+  };
+
+  return {
+    reply: fullReply,
+    trace,
+  };
 }

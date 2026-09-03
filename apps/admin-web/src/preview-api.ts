@@ -173,4 +173,127 @@ export const previewAdminApi: AdminApiClient = {
   async discoverModels({ provider, baseUrl }) {
     return { provider, baseUrl, models: ['gpt-5.6-terra', 'gpt-5.6-luna'], latencyMs: 41 }
   },
+  async getTraces() {
+    return {
+      items: [
+        {
+          ticket_id: 3726,
+          job_id: 'job-preview-1',
+          session_id: 'sess-preview-1',
+          status: 'completed',
+          created_at: '2026-09-02T10:00:00Z',
+          finished_at: '2026-09-02T10:00:25Z',
+          duration: '25s',
+          customer_message: 'Why is my workflow returning 500 internal server error?',
+          requester_email: 'customer@acme.com',
+          model: 'gpt-5.6-terra',
+          tool_calls_count: 2,
+          reply_preview: 'Hello! After investigating your app workflow logs in SigNoz...',
+          delivery_status: 'sent',
+          has_trace: true,
+        },
+      ],
+      total: 1,
+    }
+  },
+  async getTrace(ticketId) {
+    return {
+      ticket_id: ticketId,
+      job_id: 'job-preview-1',
+      status: 'completed',
+      created_at: '2026-09-02T10:00:00Z',
+      finished_at: '2026-09-02T10:00:25Z',
+      duration: '25s',
+      customer_message: 'Why is my workflow returning 500 internal server error?',
+      requester_email: 'customer@acme.com',
+      model: 'gpt-5.6-terra',
+      steps: [
+        {
+          type: 'thinking',
+          thinking: 'The customer is reporting a 500 error on workflow execution. I will query SigNoz for logs.',
+        },
+        {
+          type: 'tool_call',
+          toolName: 'signoz_search_logs',
+          service: 'signoz',
+          arguments: { query: 'service_name = "dify-api" AND status >= 500' },
+          result: [{ timestamp: '2026-09-02T09:59:58Z', message: 'Connection timeout to external tool' }],
+        },
+      ],
+      final_reply: 'Hello!\n\nWe checked the server telemetry for your workflow run. The 500 error was caused by an upstream timeout from the third-party HTTP node.\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”.',
+      delivery: {
+        channel: 'browser-relay',
+        status: 'sent',
+        total_duration_ms: 1250,
+      },
+    }
+  },
+  async retryJob(jobId) {
+    return { ok: true, message: `Job ${jobId} requeued` }
+  },
+  async getModelSettings() {
+    return {
+      provider: 'openai',
+      base_url: 'https://api.tokener.dev/v1',
+      model: 'gpt-5.6-terra',
+      api_key_masked: 'sk-hIey...GlqfZ',
+      has_key: true,
+      reasoning: true,
+      timeout_seconds: 120,
+    }
+  },
+  async saveModelSettings(data) {
+    return { ok: true, message: 'Settings saved' }
+  },
+  async testModelConnection(data) {
+    return {
+      ok: true,
+      status_code: 200,
+      latency_ms: 142,
+      message: 'Connection successful',
+      sample_text: 'pong',
+    }
+  },
+  async getMcpMesh() {
+    return {
+      services: [
+        {
+          id: 'db-gateway',
+          name: 'db-gateway',
+          label: 'Dify Database Gateway',
+          service_type: 'query',
+          endpoint: 'https://zendesk.smlershou.top/db-gateway/mcp',
+          online: true,
+          latency_ms: 45,
+          tool_count: 1,
+          tools: [{ name: 'db_gateway_query', description: 'Query read-only replica' }],
+        },
+        {
+          id: 'zendesk-browser-relay',
+          name: 'zendesk-browser-relay',
+          label: 'Zendesk Browser Relay (Delivery)',
+          service_type: 'action',
+          endpoint: 'https://zendesk.smlershou.top/zendesk-browser-relay',
+          online: true,
+          latency_ms: 68,
+          tool_count: 1,
+          tools: [{ name: 'send_zendesk_native_message', description: 'Send browser native messaging reply' }],
+        },
+      ],
+      total_tools: 2,
+    }
+  },
+  async getSkills() {
+    return [
+      {
+        name: 'core-casework',
+        description: 'Core casework standards',
+        path: '/app/skills/core-casework/SKILL.md',
+        content: '# Core Casework\n\nStandards...',
+      },
+    ]
+  },
+  async saveSkill(skillName, content) {
+    return { ok: true, message: `Saved skill ${skillName}` }
+  },
 }

@@ -4,6 +4,8 @@ export interface RelaySendResult {
   ticket_id: number;
   current_url?: string;
   error?: string;
+  timings?: Record<string, number>;
+  total_duration_ms?: number;
 }
 
 export async function sendBrowserRelay(
@@ -13,6 +15,7 @@ export async function sendBrowserRelay(
   body: string
 ): Promise<RelaySendResult> {
   const normalizedUrl = relayUrl.replace(/\/+$/, '') + '/send';
+  const start = Date.now();
   const res = await fetch(normalizedUrl, {
     method: 'POST',
     headers: {
@@ -25,6 +28,8 @@ export async function sendBrowserRelay(
     }),
   });
 
+  const duration = Date.now() - start;
+
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Browser relay failed with HTTP ${res.status}: ${text}`);
@@ -35,5 +40,6 @@ export async function sendBrowserRelay(
     throw new Error(`Browser relay rejected message: ${JSON.stringify(data)}`);
   }
 
+  data.total_duration_ms = duration;
   return data as RelaySendResult;
 }

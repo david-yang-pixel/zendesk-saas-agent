@@ -456,6 +456,15 @@ def create_app(
         methods=["POST"],
         response_model=ModelCatalogResponse,
     )
+    tx_scope = getattr(reads, "_transaction_scope", None)
+    if tx_scope is not None:
+        try:
+            from .api_v2 import register_modern_routes
+            register_modern_routes(app, transaction_scope=tx_scope)
+        except Exception as exc:
+            import logging
+            logging.getLogger("uvicorn.error").warning("Could not register modern routes: %s", exc)
+
     web_dist_value = os.environ.get("ADMIN_WEB_DIST")
     web_dist = Path(web_dist_value) if web_dist_value else None
     if web_dist is not None and web_dist.is_dir():
