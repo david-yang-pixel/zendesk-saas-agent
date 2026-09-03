@@ -119,7 +119,8 @@ Please investigate using your available tools and formulate a complete, helpful,
 
   console.log(`\n[Agent] Prompt finished. Total messages in session: ${session.messages.length}`);
   for (const m of session.messages as any[]) {
-    console.log(`[Agent Msg] role=${m.role}:`, typeof m.content === 'string' ? m.content.slice(0, 100) : JSON.stringify(m.content).slice(0, 100));
+    const preview = typeof m?.content === 'string' ? m.content : JSON.stringify(m?.content ?? '');
+    console.log(`[Agent Msg] role=${m?.role}:`, (preview || '').slice(0, 100));
   }
 
   // Extract final assistant message from session.messages
