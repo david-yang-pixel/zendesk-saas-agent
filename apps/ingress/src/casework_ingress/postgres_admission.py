@@ -28,6 +28,7 @@ from casework_persistence.repositories import (
     HumanCancelRepository,
     JobRepository,
     SessionPort,
+    TicketRepository,
 )
 from contracts.runtime import (
     ChildModelBinding,
@@ -124,6 +125,15 @@ class PostgresAdmission:
                 return AdmissionResult(
                     action="cancel",
                     reason="human",
+                    ticket_id=event.normalized.ticket_id,
+                )
+
+            # Check if ticket was previously handed over to human
+            state = await TicketRepository(session).ensure_state(event.normalized.ticket_id)
+            if state.human_cancelled_at is not None:
+                return AdmissionResult(
+                    action="ignore",
+                    reason="human_takeover_active",
                     ticket_id=event.normalized.ticket_id,
                 )
 

@@ -201,12 +201,45 @@ async function markJobCancelled(jobId: string, reason: string) {
   `, [jobId, reason.slice(0, 1024)]);
 }
 
+async function isTicketHumanCancelled(ticketId: number): Promise<boolean> {
+  try {
+    const res = await pool.query(
+      'SELECT human_cancelled_at FROM ticket_states WHERE ticket_id = $1',
+      [ticketId]
+    );
+    return Boolean(res.rows[0]?.human_cancelled_at);
+  } catch (err: any) {
+    console.warn(`[Worker] Failed to query ticket_states for ticket #${ticketId}:`, err.message);
+    return false;
+  }
+}
+
+function extractEventText(ev: any): string {
+  if (!ev) return '';
+  if (typeof ev.content === 'string' && ev.content.trim()) return ev.content.trim();
+  if (ev.content && typeof ev.content === 'object') {
+    if (typeof ev.content.text === 'string' && ev.content.text.trim()) return ev.content.text.trim();
+    if (typeof ev.content.body === 'string' && ev.content.body.trim()) return ev.content.body.trim();
+    if (typeof ev.content.text_fallback === 'string' && ev.content.text_fallback.trim()) return ev.content.text_fallback.trim();
+  }
+  if (typeof ev.body === 'string' && ev.body.trim()) return ev.body.trim();
+  if (typeof ev.message === 'string' && ev.message.trim()) return ev.message.trim();
+  if (ev.body && typeof ev.body === 'object' && typeof ev.body.text === 'string' && ev.body.text.trim()) {
+    return ev.body.text.trim();
+  }
+  if (ev.message && typeof ev.message === 'object' && typeof ev.message.text === 'string' && ev.message.text.trim()) {
+    return ev.message.text.trim();
+  }
+  return '';
+}
+
 interface TicketDetails {
   message: string;
   email?: string;
   lastEventId?: string;
   lastEventTime?: string;
   customerEventsCount: number;
+  hasRequestedHuman: boolean;
 }
 
 async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfig): Promise<TicketDetails> {
@@ -230,45 +263,78 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
       console.warn(`[Worker] Could not fetch ticket metadata:`, e.message);
     }
 
-    let customerMessage = '';
-    let lastEventId = '';
-    let lastEventTime = '';
-    let customerEventsCount = 0;
-
+    const allEvents: any[] = [];
     try {
-      const convLog = await callMcpTool(
-        zendeskConfig.endpoint,
-        zendeskConfig.apiKey,
-        'get_ticket_conversation_log',
-        { ticket_id: ticketId }
-      );
+      let afterCursor: string | undefined = undefined;
+      let hasMore = true;
+      let pageCount = 0;
 
-      if (convLog?.content?.[0]?.text) {
-        const parsed = JSON.parse(convLog.content[0].text);
-        const events = parsed?.data?.events || [];
-        for (let i = events.length - 1; i >= 0; i--) {
-          const ev = events[i];
-          const authorName = ev.author?.display_name || '';
-          if (authorName.includes('David Yang') || authorName.includes('AI Agent') || ev.author?.type === 'agent') {
-            continue;
-          }
-          customerEventsCount++;
-          if (!lastEventId) {
-            lastEventId = String(ev.id || ev.message_id || '');
-            lastEventTime = String(ev.created_at || '');
-          }
-          const bodyObj = ev.body || ev.message;
-          if (!customerMessage) {
-            if (typeof bodyObj === 'string' && bodyObj.trim()) {
-              customerMessage = bodyObj.trim();
-            } else if (bodyObj?.text && bodyObj.text.trim()) {
-              customerMessage = bodyObj.text.trim();
-            }
-          }
+      while (hasMore && pageCount < 10) {
+        pageCount++;
+        const args: any = { ticket_id: ticketId, force_refresh: true };
+        if (afterCursor) {
+          args.conversation_after = afterCursor;
+        }
+
+        const convLog = await callMcpTool(
+          zendeskConfig.endpoint,
+          zendeskConfig.apiKey,
+          'get_ticket_conversation_log',
+          args
+        );
+
+        if (convLog?.content?.[0]?.text) {
+          const parsed = JSON.parse(convLog.content[0].text);
+          const pageEvents = parsed?.data?.events || [];
+          allEvents.push(...pageEvents);
+          hasMore = Boolean(parsed?.data?.meta?.has_more);
+          afterCursor = parsed?.data?.meta?.after_cursor;
+          if (!hasMore || !afterCursor) break;
+        } else {
+          break;
         }
       }
     } catch (e: any) {
       console.warn(`[Worker] Could not fetch conversation log:`, e.message);
+    }
+
+    let customerMessage = '';
+    let lastEventId = '';
+    let lastEventTime = '';
+    let customerEventsCount = 0;
+    let hasRequestedHuman = false;
+
+    // 1. Check if the customer EVER asked for human support in the thread
+    for (const ev of allEvents) {
+      const authorName = ev.author?.display_name || '';
+      const authorType = ev.author?.type || '';
+      if (authorName.includes('David Yang') || authorName.includes('AI Agent') || authorType === 'agent') {
+        continue;
+      }
+      const text = extractEventText(ev).toLowerCase();
+      if (['human', '人工', '真人', '客服'].some(kw => text === kw || text.includes(kw))) {
+        hasRequestedHuman = true;
+        break;
+      }
+    }
+
+    // 2. Scan backwards to extract the LATEST customer message
+    for (let i = allEvents.length - 1; i >= 0; i--) {
+      const ev = allEvents[i];
+      const authorName = ev.author?.display_name || '';
+      const authorType = ev.author?.type || '';
+      if (authorName.includes('David Yang') || authorName.includes('AI Agent') || authorType === 'agent') {
+        continue;
+      }
+      customerEventsCount++;
+      if (!lastEventId) {
+        lastEventId = String(ev.id || ev.reference || '');
+        lastEventTime = String(ev.created_at || '');
+      }
+      const text = extractEventText(ev);
+      if (!customerMessage && text) {
+        customerMessage = text;
+      }
     }
 
     if (!customerMessage) {
@@ -281,10 +347,11 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
       lastEventId,
       lastEventTime,
       customerEventsCount,
+      hasRequestedHuman,
     };
   } catch (err: any) {
     console.warn(`[Worker] Error getting ticket details:`, err.message);
-    return { message: `Ticket #${ticketId}`, email: '', customerEventsCount: 0 };
+    return { message: `Ticket #${ticketId}`, email: '', customerEventsCount: 0, hasRequestedHuman: false };
   }
 }
 
@@ -369,9 +436,27 @@ async function main() {
       console.log(`[Worker] Claimed job ${job.job_id} for ticket #${job.ticket_id}`);
       const startTime = Date.now();
 
+      // Guard 1: Has this ticket already been transferred to human in database?
+      const isHumanInDb = await isTicketHumanCancelled(job.ticket_id);
+      if (isHumanInDb) {
+        const humanReason = `模式 B 人工优先保护：该工单此前已转人工客服，AI 坚决不介入。`;
+        console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+        await markJobCancelled(job.job_id, humanReason);
+        continue;
+      }
+
       let activeTrace: any = null;
       try {
         const initialDetails = await getTicketDetails(job.ticket_id, zendeskService);
+
+        // Guard 2: Did the customer EVER ask for human in this conversation thread?
+        if (initialDetails.hasRequestedHuman) {
+          const humanReason = `模式 B 人工优先保护：对话历史中检测到客户曾请求人工客服，AI 保持静默。`;
+          console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+          await markJobCancelled(job.job_id, humanReason);
+          continue;
+        }
+
         const modelConfig = await getActiveModelConfig();
         console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${initialDetails.email || 'unknown'}, Model: ${modelConfig.model}): "${initialDetails.message.slice(0, 80)}..."`);
 
@@ -394,6 +479,26 @@ async function main() {
         console.log(`[Worker] Pre-delivery check: Fetching latest conversation for ticket #${job.ticket_id} to verify no new customer messages...`);
         const freshDetails = await getTicketDetails(job.ticket_id, zendeskService);
 
+        // Guard 3: Did customer request human during reasoning?
+        if (freshDetails.hasRequestedHuman) {
+          const humanReason = `模式 B 人工优先保护：最新会话中检测到转人工诉求，旧答复已拦截并移交人工。`;
+          console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+          await recordJobOutcome({
+            jobId: job.job_id,
+            ticketId: job.ticket_id,
+            generation: job.generation,
+            status: 'cancelled',
+            startedAt: new Date(startTime),
+            finishedAt: new Date(),
+            trace: agentResult.trace,
+            delivery: null,
+            errorReason: humanReason,
+          });
+          await markJobCancelled(job.job_id, humanReason);
+          continue;
+        }
+
+        // Guard 4: Did customer send a new message during reasoning?
         const hasNewMessage =
           (freshDetails.lastEventId && initialDetails.lastEventId && freshDetails.lastEventId !== initialDetails.lastEventId) ||
           (freshDetails.customerEventsCount > initialDetails.customerEventsCount) ||
@@ -442,26 +547,6 @@ async function main() {
           ]);
 
           await markJobCancelled(job.job_id, interceptReason);
-          continue;
-        }
-
-        // Check if customer requested human or human agent took over
-        const isHumanTrigger = ['human', '人工', '真人', '客服'].some(kw => freshDetails.message.toLowerCase().includes(kw));
-        if (isHumanTrigger) {
-          const humanReason = `模式 B 人工优先保护：客户请求人工介入（“${freshDetails.message}”），AI 自动终止。`;
-          console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
-          await recordJobOutcome({
-            jobId: job.job_id,
-            ticketId: job.ticket_id,
-            generation: job.generation,
-            status: 'cancelled',
-            startedAt: new Date(startTime),
-            finishedAt: new Date(),
-            trace: agentResult.trace,
-            delivery: null,
-            errorReason: humanReason,
-          });
-          await markJobCancelled(job.job_id, humanReason);
           continue;
         }
 

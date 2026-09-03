@@ -151,5 +151,10 @@ async def test_postgres_admission_human_command_fences_active_job(
     async with sessions.transaction() as session:
         job = (await session.execute(select(CaseJobRow))).scalar_one()
         state = (await session.execute(select(TicketState))).scalar_one()
-    assert job.status == "cancelled"
-    assert state.generation == 2
+        assert job.status == "cancelled"
+        assert state.generation == 2
+        assert state.human_cancelled_at is not None
+
+    subsequent = await admission.admit(_event(event_id="evt-after-human", message="Why 401?"))
+    assert subsequent.action == "ignore"
+    assert subsequent.reason == "human_takeover_active"
