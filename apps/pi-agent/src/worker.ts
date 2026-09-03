@@ -9,7 +9,8 @@ dotenv.config();
 
 const WORKER_ID = `pi-agent-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const PORT = parseInt(process.env.SERVICE_PORT || '8102', 10);
-const DATABASE_URL = process.env.DATABASE_URL || '';
+const rawDbUrl = process.env.DATABASE_URL || '';
+const DATABASE_URL = rawDbUrl.replace(/^postgresql\+[a-zA-Z0-9_]+:\/\//, 'postgresql://');
 const BROWSER_RELAY_URL = process.env.CASEWORK_BROWSER_RELAY_URL || 'https://zendesk.smlershou.top/zendesk-browser-relay';
 const BROWSER_RELAY_KEY = process.env.CASEWORK_BROWSER_RELAY_API_KEY || '';
 
