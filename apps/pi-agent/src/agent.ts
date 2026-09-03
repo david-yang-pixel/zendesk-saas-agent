@@ -77,8 +77,8 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
    - When checking billing/subscriptions:
      Query the 'billing' database.
 
-3. **Language Matching**:
-   - Always respond in the exact same language used by the customer in their message (e.g., Simplified Chinese, Traditional Chinese, English, Japanese, etc.).
+3. **Language**:
+   - Always write your final customer reply strictly in English, regardless of the language the customer used in their message.
 
 4. **Tone & Formatting**:
    - Professional, courteous, concise, and direct.
@@ -169,7 +169,7 @@ ${options.customerMessage}
 System Instructions:
 ${DIFY_SUPPORT_SYSTEM_PROMPT}
 
-Please investigate using your available tools and skills, and formulate a complete, helpful, accurate answer to the customer.
+Please investigate using your available tools and skills, and formulate a complete, helpful, accurate answer to the customer in English.
 `.trim();
 
   console.log(`[Agent] Sending prompt to session for ticket #${options.ticketId}...`);
@@ -206,11 +206,8 @@ Please investigate using your available tools and skills, and formulate a comple
     throw new Error(`Pi Agent finished but produced no text response for ticket #${options.ticketId}`);
   }
 
-  // Append localized footer
-  const isChinese = /[\u4e00-\u9fa5]/.test(options.customerMessage) || /[\u4e00-\u9fa5]/.test(finalAnswer);
-  const footer = isChinese
-    ? '\n\n---\n此回复由 Dify AI Agent 发送。如果问题仍未解决，请回复“human”。人工支持工程师将在北京时间(UTC+8)9:00-18:00 的服务时间内尽快回复。'
-    : '\n\n---\nThis reply was sent by Dify AI Agent. If the issue persists, reply "human". Human support engineers will respond as soon as possible during business hours (UTC+8 9:00-18:00).';
+  // Unified English footer
+  const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours, 9:00 AM–6:00 PM Beijing Time (UTC+8).';
 
   return finalAnswer.trim() + footer;
 }
