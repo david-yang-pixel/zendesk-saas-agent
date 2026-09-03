@@ -68,239 +68,258 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="skills-hub-page">
-    <div class="skills-container">
-      <header class="skills-header">
-        <div class="header-left">
-          <div class="badge-tag">Skills Hub</div>
-          <h2>技能与 SOP 知识库中心</h2>
-          <p>维护与热更新 Pi Agent 的领域能力规则、排查手册与 SOP 标准，编辑后即时生效。</p>
+  <div class="skills-studio">
+    <!-- Top Action Bar -->
+    <header class="studio-header">
+      <div class="studio-title-group">
+        <div class="header-badge">Skills Hub</div>
+        <div class="header-text">
+          <h1>技能与 SOP 知识库中心</h1>
+          <p>热维护 Pi Agent 排查规范、领域规则与排障 SOP，修改后秒级热生效。</p>
         </div>
-        <div class="header-actions">
-          <button class="btn-save" :disabled="saving || !selectedSkill" @click="saveCurrentSkill">
-            <AppIcon name="check" :size="15" />
-            <span>{{ saving ? '保存中...' : '保存并热生效' }}</span>
-          </button>
+      </div>
+      <div class="studio-actions">
+        <span v-if="noticeMessage" class="toast toast--success">{{ noticeMessage }}</span>
+        <span v-if="errorMessage" class="toast toast--error">{{ errorMessage }}</span>
+        <button class="action-btn btn-save" :disabled="saving || !selectedSkill" @click="saveCurrentSkill">
+          <AppIcon name="check" :size="14" />
+          <span>{{ saving ? '保存中...' : '保存并热生效' }}</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Edge-to-Edge Workspace -->
+    <div class="studio-workspace">
+      <!-- Left: Skills List -->
+      <aside class="skills-sidebar">
+        <div class="sidebar-meta">
+          <span>核心技能卡片 ({{ skills.length }})</span>
         </div>
-      </header>
-
-      <div v-if="noticeMessage" class="notice-banner success">{{ noticeMessage }}</div>
-      <div v-if="errorMessage" class="notice-banner error">{{ errorMessage }}</div>
-
-      <!-- Main Layout: Cards on top or left, Editor on right -->
-      <div class="skills-split">
-        <!-- Skills List Sidebar -->
-        <div class="skills-list-col">
-          <div class="col-title">
-            <span>核心技能卡片 ({{ skills.length }})</span>
-          </div>
-          <div class="skills-cards">
-            <div
-              v-for="s in skills"
-              :key="s.name"
-              :class="['skill-card', { active: selectedSkill?.name === s.name }]"
-              @click="selectSkill(s)"
-            >
-              <div class="card-icon">
-                <AppIcon name="skills" :size="16" />
-              </div>
-              <div class="card-info">
-                <strong class="skill-title">{{ s.name }}</strong>
-                <p class="skill-desc">{{ s.description || '暂无描述' }}</p>
-              </div>
+        <div class="skills-nav">
+          <div
+            v-for="s in skills"
+            :key="s.name"
+            class="skill-item"
+            :class="{ active: selectedSkill?.name === s.name }"
+            @click="selectSkill(s)"
+          >
+            <div class="item-icon">
+              <AppIcon name="terminal" :size="15" />
+            </div>
+            <div class="item-content">
+              <div class="item-title">{{ s.name }}</div>
+              <div class="item-desc">{{ s.description }}</div>
             </div>
           </div>
         </div>
+      </aside>
 
-        <!-- Markdown Editor -->
-        <div class="editor-col" v-if="selectedSkill">
-          <div class="editor-header">
-            <div class="editor-info">
-              <h3>{{ selectedSkill.name }} / SKILL.md</h3>
-              <small class="file-path">{{ selectedSkill.path }}</small>
+      <!-- Right: Full-Height Code Editor -->
+      <main class="editor-pane">
+        <div v-if="selectedSkill" class="editor-shell">
+          <div class="editor-toolbar">
+            <div class="editor-file">
+              <span class="file-tag">MARKDOWN</span>
+              <code class="file-name">{{ selectedSkill.path || `${selectedSkill.name}/SKILL.md` }}</code>
+            </div>
+            <div class="editor-hints">
+              <span>UTF-8</span>
+              <span>•</span>
+              <span>实时生效</span>
             </div>
           </div>
           <div class="editor-body">
             <textarea
               v-model="editingContent"
-              class="markdown-editor"
-              placeholder="编写 SKILL.md Markdown 指令与 SOP..."
+              class="code-textarea markdown-editor"
               spellcheck="false"
-            ></textarea>
+              placeholder="编写此技能的 Markdown SOP 指引..."
+            />
           </div>
         </div>
-
-        <div class="empty-editor" v-else>
-          <p>请选择一个技能以编辑其 SOP 内容</p>
+        <div v-else class="editor-empty">
+          <AppIcon name="terminal" :size="32" />
+          <p>请选择左侧技能以查看和编辑文档</p>
         </div>
-      </div>
+      </main>
     </div>
   </div>
 </template>
 
 <style scoped>
-.skills-hub-page {
-  min-height: calc(100vh - 68px);
-  background: #0d0d0e;
-  color: #f5f5f7;
-  padding: 32px 48px;
-  overflow-y: auto;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
-}
-
-.skills-container {
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.skills-header {
+.skills-studio {
   display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  padding-bottom: 24px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  margin-bottom: 24px;
+  flex-direction: column;
+  height: 100%;
+  background: #09090b;
+  color: #ededed;
+  overflow: hidden;
 }
 
-.badge-tag {
-  display: inline-block;
-  font-size: 11px;
+/* Studio Header */
+.studio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0c0c0e;
+}
+.studio-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.header-badge {
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: #10b981;
-  background: rgba(16, 185, 129, 0.15);
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.25);
   padding: 3px 8px;
   border-radius: 6px;
-  margin-bottom: 8px;
 }
-
-.skills-header h2 {
-  margin: 0 0 6px;
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.skills-header p {
+.header-text h1 {
   margin: 0;
-  color: #a1a1a6;
-  font-size: 13px;
-  max-width: 650px;
-  line-height: 1.5;
-}
-
-.btn-save {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 18px;
-  border-radius: 8px;
-  border: none;
-  background: #fff;
-  color: #000;
-  font-size: 13px;
+  font-size: 16px;
   font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
+  color: #fff;
+  letter-spacing: -0.01em;
 }
-.btn-save:hover { background: #e4e4e7; }
-.btn-save:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.notice-banner {
-  padding: 12px 18px;
-  border-radius: 8px;
-  font-size: 13px;
-  margin-bottom: 24px;
+.header-text p {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: #71717a;
 }
-.notice-banner.success {
-  background: rgba(16, 185, 129, 0.15);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-  color: #34d399;
-}
-.notice-banner.error {
-  background: rgba(239, 68, 68, 0.15);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: #f87171;
-}
-
-/* Split Layout */
-.skills-split {
-  display: grid;
-  grid-template-columns: 360px 1fr;
-  gap: 24px;
-  min-height: 600px;
-}
-
-.skills-list-col {
+.studio-actions {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 12px;
 }
-
-.col-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #71717a;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding-bottom: 4px;
+.toast {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 6px;
 }
-
-.skills-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.skill-card {
-  display: flex;
-  gap: 14px;
-  background: #141416;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  padding: 16px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.skill-card:hover {
-  background: #18181b;
-  border-color: rgba(255, 255, 255, 0.18);
-}
-.skill-card.active {
-  background: #1c1c1f;
-  border-color: #10b981;
-  box-shadow: 0 0 0 1px #10b981;
-}
-
-.card-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+.toast--success {
   background: rgba(16, 185, 129, 0.15);
   color: #34d399;
-  display: grid;
-  place-items: center;
-  flex: 0 0 32px;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+.toast--error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 7px;
+  border: none;
+  background: #ffffff;
+  color: #000000;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.action-btn:hover {
+  background: #e4e4e7;
+}
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-.card-info {
+/* Workspace */
+.studio-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Left Sidebar */
+.skills-sidebar {
+  width: 320px;
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  background: #09090b;
+}
+.sidebar-meta {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #52525b;
+}
+.skills-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.skill-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.skill-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.skill-item.active {
+  background: #141416;
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.item-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #71717a;
+  display: grid;
+  place-items: center;
+  flex: 0 0 28px;
+  margin-top: 2px;
+}
+.skill-item.active .item-icon {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+.item-content {
   flex: 1;
   min-width: 0;
 }
-.skill-title {
-  display: block;
-  font-size: 14px;
+.item-title {
+  font-size: 13px;
   font-weight: 600;
-  color: #fff;
-  margin-bottom: 4px;
-  font-family: ui-monospace, monospace;
+  color: #f4f4f5;
+  font-family: ui-monospace, "SF Mono", monospace;
+  margin-bottom: 3px;
 }
-.skill-desc {
-  margin: 0;
+.skill-item.active .item-title {
+  color: #ffffff;
+}
+.item-desc {
   font-size: 11px;
-  color: #a1a1a6;
+  color: #71717a;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -308,62 +327,79 @@ onMounted(() => {
   overflow: hidden;
 }
 
-/* Editor Col */
-.editor-col {
-  background: #141416;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
+/* Editor Pane */
+.editor-pane {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  min-width: 0;
+  background: #09090b;
 }
-
-.editor-header {
-  padding: 16px 20px;
+.editor-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: #0e0e11;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: #111113;
 }
-.editor-info h3 {
-  margin: 0 0 4px;
-  font-size: 16px;
-  font-family: "JetBrains Mono", monospace;
-  color: #fff;
+.editor-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.file-path {
+.file-tag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+.file-name {
+  font-size: 12px;
+  color: #d4d4d8;
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+.editor-hints {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 11px;
-  color: #71717a;
-  font-family: ui-monospace, monospace;
+  color: #52525b;
 }
-
 .editor-body {
   flex: 1;
   display: flex;
+  min-height: 0;
 }
-
-.markdown-editor {
+.code-textarea {
   flex: 1;
   width: 100%;
-  min-height: 520px;
-  background: #0d0d0e;
+  height: 100%;
   border: none;
-  color: #f4f4f5;
-  font-family: "JetBrains Mono", SFMono-Regular, Menlo, monospace;
+  outline: none;
+  background: #09090b;
+  color: #ededed;
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
   font-size: 13px;
   line-height: 1.6;
-  padding: 20px;
-  resize: vertical;
-  outline: none;
+  padding: 20px 24px;
+  resize: none;
+  tab-size: 2;
 }
-.markdown-editor:focus {
-  background: #09090b;
-}
-
-.empty-editor {
+.editor-empty {
   display: grid;
-  place-items: center;
-  background: #141416;
-  border: 1px dashed rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  color: #71717a;
+  place-content: center;
+  height: 100%;
+  color: #52525b;
+  gap: 12px;
+  text-align: center;
 }
 </style>

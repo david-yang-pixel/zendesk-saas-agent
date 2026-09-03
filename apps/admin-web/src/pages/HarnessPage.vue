@@ -271,8 +271,8 @@ onMounted(() => {
 
 <style scoped>
 .model-studio {
-  min-height: calc(100vh - 68px);
-  background: #0d0d0e;
+  min-height: 100%;
+  background: #09090b;
   color: #f5f5f7;
   padding: 32px 48px;
   overflow-y: auto;

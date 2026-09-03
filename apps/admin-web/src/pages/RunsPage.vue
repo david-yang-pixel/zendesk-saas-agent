@@ -388,9 +388,9 @@ onMounted(() => {
 <style scoped>
 .trace-workspace {
   display: flex;
-  height: calc(100vh - 68px);
+  height: 100%;
   overflow: hidden;
-  background: #0d0d0e;
+  background: #09090b;
   color: #f5f5f7;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
 }
