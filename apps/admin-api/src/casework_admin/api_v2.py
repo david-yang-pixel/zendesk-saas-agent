@@ -426,7 +426,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         results: list[McpServiceStatus] = []
         total_tools = 0
 
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=8.0) as client:
             for spec in MCP_SERVICES_SPEC:
                 key = os.environ.get(spec["key_env"], "")
                 start = time.perf_counter()
@@ -442,7 +442,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                             headers={"Authorization": f"Bearer {key}"},
                         )
                         latency = int((time.perf_counter() - start) * 1000)
-                        online = res.status_code == 200
+                        online = res.status_code in (200, 429)
                         tools = [
                             {
                                 "name": "send_zendesk_native_message",
