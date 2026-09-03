@@ -46,6 +46,8 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<strin
   const baseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.openai.com/v1';
   const apiKey = options.apiKey || process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY || process.env.OPENAI_API_KEY || '';
 
+  console.log(`[Agent] Initializing ModelRuntime with baseUrl=${baseUrl}, model=${modelName}, apiKeyLen=${apiKey.length}`);
+
   const runtime = await ModelRuntime.create();
   runtime.registerProvider('openai', {
     baseUrl: baseUrl.replace(/\/+$/, ''),
@@ -76,6 +78,23 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<strin
     tools: options.tools.map(t => t.name),
   });
 
+  session.subscribe((event: any) => {
+    if (event.type === 'message_update') {
+      const sub = event.assistantMessageEvent;
+      if (sub?.type === 'text_delta') {
+        process.stdout.write(sub.delta);
+      } else if (sub?.type === 'tool_call') {
+        console.log(`\n[Agent Tool Call] ${sub.name}:`, JSON.stringify(sub.arguments).slice(0, 150));
+      }
+    } else if (event.type === 'tool_result') {
+      console.log(`\n[Agent Tool Result] ${event.toolName}:`, JSON.stringify(event.result).slice(0, 150));
+    } else if (event.type === 'error') {
+      console.error('\n[Agent Error Event]', event.error);
+    } else {
+      console.log(`\n[Agent Event] ${event.type}`);
+    }
+  });
+
   const prompt = `
 Customer Ticket #${options.ticketId}
 Requester Email: ${options.requesterEmail || 'Unknown'}
@@ -90,7 +109,13 @@ ${DIFY_SUPPORT_SYSTEM_PROMPT}
 Please investigate using your available tools and formulate a complete, helpful, accurate answer to the customer.
 `.trim();
 
+  console.log(`[Agent] Sending prompt to session for ticket #${options.ticketId}...`);
   await session.prompt(prompt);
+
+  console.log(`[Agent] Prompt finished. Total messages in session: ${session.messages.length}`);
+  for (const m of session.messages as any[]) {
+    console.log(`[Agent Msg] role=${m.role}:`, typeof m.content === 'string' ? m.content.slice(0, 100) : JSON.stringify(m.content).slice(0, 100));
+  }
 
   // Extract final assistant message from session.messages
   const messages = session.messages as any[];
