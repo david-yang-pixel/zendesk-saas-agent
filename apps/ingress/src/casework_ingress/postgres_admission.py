@@ -173,7 +173,7 @@ class PostgresAdmission:
                 expected_event_id=self._expected_event_id(event),
                 config=self.frozen_config(revision.revision, runtime),
                 job_id=str(uuid4()),
-                available_at=event.received_at + timedelta(seconds=10),
+                available_at=event.received_at + timedelta(seconds=20),
             )
             if not queued.accepted:
                 return AdmissionResult(

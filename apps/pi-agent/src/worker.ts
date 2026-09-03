@@ -240,6 +240,8 @@ interface TicketDetails {
   lastEventTime?: string;
   customerEventsCount: number;
   hasRequestedHuman: boolean;
+  isAlreadyAnswered: boolean;
+  unrepliedCount: number;
 }
 
 async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfig): Promise<TicketDetails> {
@@ -298,60 +300,99 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
       console.warn(`[Worker] Could not fetch conversation log:`, e.message);
     }
 
-    let customerMessage = '';
-    let lastEventId = '';
-    let lastEventTime = '';
-    let customerEventsCount = 0;
+    // Collect unreplied customer messages since the last agent message
+    const unrepliedCustomerMessages: Array<{ id: string; text: string; time: string }> = [];
     let hasRequestedHuman = false;
+    let isAlreadyAnswered = false;
 
-    // 1. Check if the customer EVER asked for human support in the thread
+    // 1. Check if the customer EVER asked for human support in any message
     for (const ev of allEvents) {
       const authorName = ev.author?.display_name || '';
       const authorType = ev.author?.type || '';
-      if (authorName.includes('David Yang') || authorName.includes('AI Agent') || authorType === 'agent') {
-        continue;
-      }
-      const text = extractEventText(ev).toLowerCase();
-      if (['human', '人工', '真人', '客服'].some(kw => text === kw || text.includes(kw))) {
-        hasRequestedHuman = true;
-        break;
+      const isAgent = authorType === 'agent' || authorName.includes('David Yang') || authorName.includes('AI Agent');
+      if (!isAgent) {
+        const text = extractEventText(ev).toLowerCase();
+        if (['human', '人工', '真人', '客服'].some(kw => text === kw || text.includes(kw))) {
+          hasRequestedHuman = true;
+          break;
+        }
       }
     }
 
-    // 2. Scan backwards to extract the LATEST customer message
+    // 2. Scan backwards from newest to oldest:
+    // If the latest event in the conversation is an agent reply, older customer messages have already been replied!
+    let foundAgentReply = false;
+    let latestEventId = '';
+    let latestEventTime = '';
+
     for (let i = allEvents.length - 1; i >= 0; i--) {
       const ev = allEvents[i];
       const authorName = ev.author?.display_name || '';
       const authorType = ev.author?.type || '';
-      if (authorName.includes('David Yang') || authorName.includes('AI Agent') || authorType === 'agent') {
-        continue;
-      }
-      customerEventsCount++;
-      if (!lastEventId) {
-        lastEventId = String(ev.id || ev.reference || '');
-        lastEventTime = String(ev.created_at || '');
-      }
+      const isAgent = authorType === 'agent' || authorName.includes('David Yang') || authorName.includes('AI Agent');
       const text = extractEventText(ev);
-      if (!customerMessage && text) {
-        customerMessage = text;
+
+      if (!latestEventId) {
+        latestEventId = String(ev.id || ev.reference || '');
+        latestEventTime = String(ev.created_at || '');
+      }
+
+      if (isAgent) {
+        // Encountered the most recent agent reply! Stop collecting customer messages before this reply.
+        foundAgentReply = true;
+        break;
+      } else {
+        // Customer message sent after the latest agent reply
+        if (text) {
+          unrepliedCustomerMessages.unshift({
+            id: String(ev.id || ev.reference || ''),
+            text: text,
+            time: String(ev.created_at || ''),
+          });
+        }
       }
     }
 
-    if (!customerMessage) {
+    // If there are no customer messages after the latest agent reply:
+    if (unrepliedCustomerMessages.length === 0 && foundAgentReply) {
+      isAlreadyAnswered = true;
+    }
+
+    // Combine all unreplied consecutive customer messages (separated by double newline)
+    let customerMessage = '';
+    if (unrepliedCustomerMessages.length > 0) {
+      customerMessage = unrepliedCustomerMessages.map(m => m.text).join('\n\n');
+    } else {
       customerMessage = subject || `Ticket #${ticketId}`;
     }
+
+    const lastEventId = unrepliedCustomerMessages.length > 0
+      ? unrepliedCustomerMessages[unrepliedCustomerMessages.length - 1].id
+      : latestEventId;
+    const lastEventTime = unrepliedCustomerMessages.length > 0
+      ? unrepliedCustomerMessages[unrepliedCustomerMessages.length - 1].time
+      : latestEventTime;
 
     return {
       message: customerMessage,
       email,
       lastEventId,
       lastEventTime,
-      customerEventsCount,
+      customerEventsCount: unrepliedCustomerMessages.length,
       hasRequestedHuman,
+      isAlreadyAnswered,
+      unrepliedCount: unrepliedCustomerMessages.length,
     };
   } catch (err: any) {
     console.warn(`[Worker] Error getting ticket details:`, err.message);
-    return { message: `Ticket #${ticketId}`, email: '', customerEventsCount: 0, hasRequestedHuman: false };
+    return {
+      message: `Ticket #${ticketId}`,
+      email: '',
+      customerEventsCount: 0,
+      hasRequestedHuman: false,
+      isAlreadyAnswered: false,
+      unrepliedCount: 0,
+    };
   }
 }
 
@@ -607,6 +648,15 @@ async function main() {
       try {
         const initialDetails = await getTicketDetails(job.ticket_id, zendeskService);
 
+        // Guard 0: Has this ticket already been answered by an agent reply?
+        // (Prevent duplicate reply when customer sends consecutive messages and agent already replied!)
+        if (initialDetails.isAlreadyAnswered && !isMentionJob) {
+          const skipReason = `防重复回复保护：该工单最新消息已由座席/AI完成回复（无待回复客户新消息），自动跳过防止二次抢答。`;
+          console.log(`[Worker] ⏭️ SKIP: ${skipReason}`);
+          await markJobCancelled(job.job_id, skipReason);
+          continue;
+        }
+
         // Guard 2: Did the customer EVER ask for human in this conversation thread?
         // NOTE: Mention jobs BYPASS this guard as well!
         if (initialDetails.hasRequestedHuman && !isMentionJob) {
@@ -756,6 +806,25 @@ async function main() {
         });
 
         await markJobSucceeded(job.job_id);
+
+        // Automatically drain/cancel any redundant queued jobs for this ticket to prevent duplicate replies!
+        try {
+          const drainRes = await pool.query(`
+            UPDATE case_jobs
+            SET status = 'cancelled',
+                dead_letter_reason = 'coalesced_into_previous_delivery',
+                finished_at = NOW(),
+                updated_at = NOW()
+            WHERE ticket_id = $1
+              AND status = 'queued'
+              AND job_id != $2
+          `, [job.ticket_id, job.job_id]);
+          if ((drainRes.rowCount ?? 0) > 0) {
+            console.log(`[Worker] 🧹 Cancelled ${drainRes.rowCount} redundant queued jobs for ticket #${job.ticket_id} to prevent duplicate reply.`);
+          }
+        } catch (e: any) {
+          console.warn(`[Worker] Failed to drain redundant queued jobs:`, e.message);
+        }
       } catch (runErr: any) {
         console.error(`[Worker] Job ${job.job_id} failed:`, runErr.message);
         await recordJobOutcome({
