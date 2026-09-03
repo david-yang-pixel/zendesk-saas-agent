@@ -355,6 +355,145 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
   }
 }
 
+// =========================================================================
+// Mention Poller: Scan for @David Yang internal notes
+// =========================================================================
+const processedMentions = new Set<string>();
+const ticketUpdateCache = new Map<number, string>();
+
+async function initMentionTracker() {
+  try {
+    const res = await pool.query("SELECT event_id FROM events WHERE source = 'zendesk_internal_mention'");
+    for (const row of res.rows) {
+      const cid = String(row.event_id).replace('mention:', '');
+      processedMentions.add(cid);
+    }
+    console.log(`[Mention Poller] Initialized tracker with ${processedMentions.size} existing processed mentions.`);
+  } catch (err: any) {
+    console.warn(`[Mention Poller] Could not initialize tracker from DB:`, err.message);
+  }
+}
+
+async function scanInternalMentions(zendeskService: McpServiceConfig) {
+  try {
+    const searchRes = await callMcpTool(
+      zendeskService.endpoint,
+      zendeskService.apiKey,
+      'search_tickets',
+      { query: 'type:ticket status<solved order_by:updated_at sort:desc' }
+    );
+    if (!searchRes?.content?.[0]?.text) return;
+    const parsed = JSON.parse(searchRes.content[0].text);
+    const tickets = parsed?.data?.results || [];
+
+    for (const t of tickets.slice(0, 15)) {
+      const tid = Number(t.id);
+      const updatedAt = String(t.updated_at || '');
+      if (ticketUpdateCache.get(tid) === updatedAt) {
+        continue;
+      }
+      ticketUpdateCache.set(tid, updatedAt);
+
+      // Fetch recent comments
+      const commRes = await callMcpTool(
+        zendeskService.endpoint,
+        zendeskService.apiKey,
+        'get_ticket_comments',
+        { ticket_id: tid }
+      );
+      if (!commRes?.content?.[0]?.text) continue;
+      const commParsed = JSON.parse(commRes.content[0].text);
+      const comments = commParsed?.data?.comments || [];
+
+      for (const c of comments.slice(-5)) {
+        const cid = String(c.id);
+        if (processedMentions.has(cid)) continue;
+
+        // Must be internal note (public: false)
+        if (c.public !== false) continue;
+
+        const body = String(c.body || '').trim();
+        if (!body) continue;
+
+        // Skip AI bot signatures
+        if (body.includes('Dify AI Agent') || body.includes('AI Agent is now processing')) {
+          continue;
+        }
+
+        const lower = body.toLowerCase();
+        const mentionTriggers = [
+          '@david yang',
+          '@davidyang',
+          '**david yang**',
+          '@agent',
+          '@ai agent',
+          '@ai',
+          '@dify-agent',
+          '@saas-agent',
+        ];
+        const matchedTrigger = mentionTriggers.find(tr => lower.includes(tr));
+        if (!matchedTrigger) continue;
+
+        console.log(`[Mention Poller] 🔔 Detected internal note @David Yang mention on ticket #${tid} (comment ${cid}): "${body.slice(0, 100)}"`);
+        processedMentions.add(cid);
+
+        // 1. Clear human takeover lock ("不受人工限制")
+        await pool.query(`
+          UPDATE ticket_states
+          SET human_cancelled_at = NULL,
+              updated_at = NOW()
+          WHERE ticket_id = $1
+        `, [tid]);
+
+        // 2. Persist in events table for deduplication
+        await pool.query(`
+          INSERT INTO events (
+            event_id, ticket_id, occurred_at, source, customer_origin, event_type, message_id, payload, received_at
+          ) VALUES (
+            $1, $2, NOW(), 'zendesk_internal_mention', 'operator', 'ticket.mention', $3, $4, NOW()
+          ) ON CONFLICT (event_id) DO NOTHING
+        `, [
+          `mention:${cid}`,
+          tid,
+          cid,
+          JSON.stringify({ comment_id: cid, body, trigger: matchedTrigger })
+        ]);
+
+        // 3. Enqueue job in case_jobs
+        const jobId = `job-mention-${cid}`;
+        const sessionId = `session-mention-${cid}`;
+        const eventId = `mention:${cid}`;
+
+        await pool.query(`
+          INSERT INTO case_jobs (
+            job_id, session_id, event_id, expected_event_id, ticket_id, generation,
+            status, attempts, available_at, created_at, updated_at,
+            config_revision, root_model_config_id, child_model_config_ids,
+            model_digest, skill_digest, tool_digest
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, 1,
+            'queued', 0, NOW(), NOW(), NOW(),
+            'rev-1', 'gpt-5.6-terra', '[]', 'digest-model', 'digest-skill', 'digest-tool'
+          )
+          ON CONFLICT (ticket_id) WHERE status = 'queued'
+          DO UPDATE SET
+            job_id = $1,
+            session_id = $2,
+            event_id = $3,
+            expected_event_id = $4,
+            available_at = NOW(),
+            updated_at = NOW()
+        `, [jobId, sessionId, eventId, eventId, tid]);
+
+        console.log(`[Mention Poller] 🚀 Enqueued active mention job ${jobId} for ticket #${tid}. Human restriction unlocked!`);
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[Mention Poller] Scan error:`, err.message);
+  }
+}
+
 async function main() {
   console.log(`[Worker] Starting Pi Agent Worker (${WORKER_ID}) on port ${PORT}...`);
 
@@ -425,6 +564,19 @@ async function main() {
   process.on('SIGINT', () => { running = false; });
   process.on('SIGTERM', () => { running = false; });
 
+  // Start background mention poller (checks every 5 seconds)
+  await initMentionTracker();
+  (async () => {
+    while (running) {
+      try {
+        await scanInternalMentions(zendeskService);
+      } catch (e: any) {
+        console.warn(`[Mention Poller] Loop error:`, e.message);
+      }
+      await new Promise(r => setTimeout(r, 5000));
+    }
+  })();
+
   while (running) {
     try {
       const job = await claimNextJob(WORKER_ID);
@@ -436,9 +588,15 @@ async function main() {
       console.log(`[Worker] Claimed job ${job.job_id} for ticket #${job.ticket_id}`);
       const startTime = Date.now();
 
+      const isMentionJob = Boolean(
+        job.event_id?.startsWith('mention:') ||
+        job.expected_event_id?.startsWith('mention:')
+      );
+
       // Guard 1: Has this ticket already been transferred to human in database?
+      // NOTE: Mention jobs BYPASS this guard because an operator explicitly tagged @David Yang!
       const isHumanInDb = await isTicketHumanCancelled(job.ticket_id);
-      if (isHumanInDb) {
+      if (isHumanInDb && !isMentionJob) {
         const humanReason = `模式 B 人工优先保护：该工单此前已转人工客服，AI 坚决不介入。`;
         console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
         await markJobCancelled(job.job_id, humanReason);
@@ -450,19 +608,38 @@ async function main() {
         const initialDetails = await getTicketDetails(job.ticket_id, zendeskService);
 
         // Guard 2: Did the customer EVER ask for human in this conversation thread?
-        if (initialDetails.hasRequestedHuman) {
+        // NOTE: Mention jobs BYPASS this guard as well!
+        if (initialDetails.hasRequestedHuman && !isMentionJob) {
           const humanReason = `模式 B 人工优先保护：对话历史中检测到客户曾请求人工客服，AI 保持静默。`;
           console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
           await markJobCancelled(job.job_id, humanReason);
           continue;
         }
 
+        // If this is a mention job, extract the operator's note instructions
+        let effectiveCustomerMessage = initialDetails.message;
+        if (isMentionJob) {
+          try {
+            const evRes = await pool.query(
+              'SELECT payload FROM events WHERE event_id = $1 LIMIT 1',
+              [job.expected_event_id || job.event_id]
+            );
+            const operatorInstruction = evRes.rows[0]?.payload?.body;
+            if (operatorInstruction) {
+              effectiveCustomerMessage = `[来自人工座席内部备注 @David Yang 的直接指令]:\n"${operatorInstruction}"\n\n[工单客户最新消息]:\n"${initialDetails.message}"`;
+              console.log(`[Worker] 📌 Injected operator internal mention instruction for ticket #${job.ticket_id}: "${operatorInstruction.slice(0, 80)}"`);
+            }
+          } catch (e: any) {
+            console.warn(`[Worker] Could not read mention payload:`, e.message);
+          }
+        }
+
         const modelConfig = await getActiveModelConfig();
-        console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${initialDetails.email || 'unknown'}, Model: ${modelConfig.model}): "${initialDetails.message.slice(0, 80)}..."`);
+        console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${initialDetails.email || 'unknown'}, Model: ${modelConfig.model}${isMentionJob ? ', Trigger: @David Yang Mention' : ''}): "${effectiveCustomerMessage.slice(0, 80)}..."`);
 
         const agentResult = await runPiSupportAgent({
           ticketId: job.ticket_id,
-          customerMessage: initialDetails.message,
+          customerMessage: effectiveCustomerMessage,
           requesterEmail: initialDetails.email,
           tools: allTools,
           apiKey: modelConfig.apiKey,
@@ -480,7 +657,7 @@ async function main() {
         const freshDetails = await getTicketDetails(job.ticket_id, zendeskService);
 
         // Guard 3: Did customer request human during reasoning?
-        if (freshDetails.hasRequestedHuman) {
+        if (freshDetails.hasRequestedHuman && !isMentionJob) {
           const humanReason = `模式 B 人工优先保护：最新会话中检测到转人工诉求，旧答复已拦截并移交人工。`;
           console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
           await recordJobOutcome({
@@ -498,11 +675,13 @@ async function main() {
           continue;
         }
 
-        // Guard 4: Did customer send a new message during reasoning?
+        // Guard 4: Did customer send a new message during reasoning? (Skip if isMentionJob)
         const hasNewMessage =
-          (freshDetails.lastEventId && initialDetails.lastEventId && freshDetails.lastEventId !== initialDetails.lastEventId) ||
-          (freshDetails.customerEventsCount > initialDetails.customerEventsCount) ||
-          (freshDetails.message.trim() !== initialDetails.message.trim());
+          !isMentionJob && (
+            (freshDetails.lastEventId && initialDetails.lastEventId && freshDetails.lastEventId !== initialDetails.lastEventId) ||
+            (freshDetails.customerEventsCount > initialDetails.customerEventsCount) ||
+            (freshDetails.message.trim() !== initialDetails.message.trim())
+          );
 
         if (hasNewMessage) {
           const interceptReason = `检测到客户在推理期间发送了新消息（“${freshDetails.message.slice(0, 60)}...”）。旧答复已自动拦截作废，触发 10 秒防抖并重新排队最新会话。`;

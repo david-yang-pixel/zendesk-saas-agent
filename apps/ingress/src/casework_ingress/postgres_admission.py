@@ -130,7 +130,12 @@ class PostgresAdmission:
 
             # Check if ticket was previously handed over to human
             state = await TicketRepository(session).ensure_state(event.normalized.ticket_id)
-            if state.human_cancelled_at is not None:
+            if decision.reason == "operator_mention":
+                # Operator explicitly summoned AI via internal note @mention!
+                # Clear human takeover lock ("不受人工限制")
+                state.human_cancelled_at = None
+                state.updated_at = event.received_at
+            elif state.human_cancelled_at is not None:
                 return AdmissionResult(
                     action="ignore",
                     reason="human_takeover_active",

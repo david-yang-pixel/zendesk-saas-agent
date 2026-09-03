@@ -158,3 +158,23 @@ async def test_postgres_admission_human_command_fences_active_job(
     subsequent = await admission.admit(_event(event_id="evt-after-human", message="Why 401?"))
     assert subsequent.action == "ignore"
     assert subsequent.reason == "human_takeover_active"
+
+    # Verify that an internal note @David Yang actively triggers and clears human takeover restriction
+    operator_mention = AdmissionEvent(
+        event_id="evt-operator-mention",
+        received_at=datetime(2026, 9, 1, tzinfo=UTC),
+        normalized=NormalizedZendeskEvent(
+            ticket_id=3726,
+            tags=("saas",),
+            assignee="saas-support",
+            status="open",
+            is_customer_message=False,
+            message_text="@David Yang please analyze this customer issue",
+        ),
+        raw_payload={"event_id": "evt-operator-mention", "ticket_id": 3726},
+    )
+    mention_result = await admission.admit(operator_mention)
+    assert mention_result.action == "enqueue"
+    async with sessions.transaction() as session:
+        state = (await session.execute(select(TicketState))).scalar_one()
+        assert state.human_cancelled_at is None

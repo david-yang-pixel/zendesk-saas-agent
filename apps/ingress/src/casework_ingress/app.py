@@ -295,9 +295,20 @@ def create_app(
         except MessagingPayloadError as error:
             raise HTTPException(status_code=400, detail="bad_payload") from error
 
-        # Agent, system, unknown-origin, and non-public messages are never
-        # looked up or persisted as work candidates.
-        if not event.is_customer_message:
+        mention_triggers = (
+            "@david yang",
+            "@davidyang",
+            "**david yang**",
+            "@agent",
+            "@ai agent",
+            "@ai",
+            "@dify-agent",
+            "@saas-agent",
+        )
+        is_operator_mention = any(
+            tr in (event.message_text or "").lower() for tr in mention_triggers
+        )
+        if not event.is_customer_message and not is_operator_mention:
             return respond(
                 action="ignore",
                 reason="not_customer_message",

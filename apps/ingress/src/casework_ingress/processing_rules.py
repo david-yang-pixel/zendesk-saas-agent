@@ -185,6 +185,19 @@ def evaluate_processing_rules(
     """
 
     if not event.is_customer_message:
+        text = (event.message_text or "").lower()
+        mention_triggers = (
+            "@david yang",
+            "@davidyang",
+            "**david yang**",
+            "@agent",
+            "@ai agent",
+            "@ai",
+            "@dify-agent",
+            "@saas-agent",
+        )
+        if any(tr in text for tr in mention_triggers):
+            return _decision("enqueue", event, "operator_mention")
         return _decision("ignore", event, "not_customer_message")
 
     if _has_human_request(event, config):
