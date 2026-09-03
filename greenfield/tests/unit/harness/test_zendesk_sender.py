@@ -103,3 +103,44 @@ async def test_sender_factory_is_unavailable_without_credentials_and_mockable_wi
     assert isinstance(sender, ZendeskReplySender)
     assert sender.ready is True
     await close()
+
+
+@pytest.mark.asyncio
+async def test_zendesk_sender_extracts_comment_id_from_audit_events() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "ticket": {"id": 3726},
+                "audit": {
+                    "id": 123456,
+                    "events": [
+                        {
+                            "id": 987654,
+                            "type": "Comment",
+                            "body": "Answer text",
+                            "public": True,
+                        }
+                    ],
+                },
+            },
+            request=request,
+        )
+
+    config = ZendeskReplyConfig.from_environment(_environment())
+    assert config is not None
+    client = httpx.AsyncClient(
+        base_url=config.base_url,
+        auth=(f"{config.email}/token", config.api_token),
+        transport=httpx.MockTransport(handler),
+    )
+    sender = ZendeskReplySender(client=client)
+
+    receipt = await sender.send_reply(
+        ticket_id=3726,
+        body="Answer text",
+        idempotency_key="reply-key",
+    )
+    await client.aclose()
+
+    assert receipt.provider_message_id == "987654"

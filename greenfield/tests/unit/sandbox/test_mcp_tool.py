@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from casework_agent_core.runtime_config import MappingSecretResolver
-from casework_sandbox.mcp import McpStreamableHttpTool
+from casework_sandbox.mcp import McpStreamableHttpSession, McpStreamableHttpTool
 from casework_tool_sdk.registry import ToolExecutionContext
 from contracts.tool import ToolResultStatus
 
@@ -137,6 +137,75 @@ async def test_mcp_tool_handles_sse_and_initializes_once() -> None:
 
     assert first.status is ToolResultStatus.SUCCESS
     assert second.status is ToolResultStatus.SUCCESS
+    assert methods == ["initialize", "tools/call", "tools/call"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_tools_share_one_remote_session_for_cross_tool_cursor() -> None:
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        methods.append(payload["method"])
+        if payload["method"] == "initialize":
+            return httpx.Response(
+                200,
+                headers={"Mcp-Session-Id": "zendesk-session"},
+                json={"jsonrpc": "2.0", "id": payload["id"], "result": {}},
+            )
+        assert request.headers["mcp-session-id"] == "zendesk-session"
+        tool_name = payload["params"]["name"]
+        if tool_name == "get_ticket":
+            result = {"cursor": "session-bound-cursor"}
+        else:
+            assert payload["params"]["arguments"]["conversation_after"] == (
+                "session-bound-cursor"
+            )
+            result = {"events": ["latest-customer-message"]}
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": payload["id"],
+                "result": {"structuredContent": result},
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    session = McpStreamableHttpSession(
+        client=client,
+        endpoint_url="https://mcp.example.com/mcp",
+        credential_ref="mcp/tools",
+        resolver=MappingSecretResolver({"mcp/tools": "secret-token"}),
+    )
+    ticket_tool = McpStreamableHttpTool(
+        session=session,
+        name="get_ticket",
+        description="Get a ticket",
+        input_schema={"type": "object"},
+        remote_tool_name="get_ticket",
+    )
+    conversation_tool = McpStreamableHttpTool(
+        session=session,
+        name="get_ticket_conversation_log",
+        description="Continue a ticket conversation",
+        input_schema={"type": "object"},
+        remote_tool_name="get_ticket_conversation_log",
+    )
+    try:
+        first = await ticket_tool({}, _context())
+        assert first.data == {
+            "structured_content": {"cursor": "session-bound-cursor"}
+        }
+        second = await conversation_tool(
+            {"conversation_after": "session-bound-cursor"}, _context()
+        )
+    finally:
+        await client.aclose()
+
+    assert second.data == {
+        "structured_content": {"events": ["latest-customer-message"]}
+    }
     assert methods == ["initialize", "tools/call", "tools/call"]
 
 

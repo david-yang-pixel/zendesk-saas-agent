@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 
 import httpx
@@ -22,6 +22,10 @@ class ZendeskSnapshotError(RuntimeError):
     """The ticket could not be fetched completely and must not be answered."""
 
 
+_CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_MESSAGING_EVENT_CLOCK_SKEW = timedelta(seconds=10)
+
+
 def canonical_messaging_event_id(event_id: str) -> str:
     """Normalize webhook and snapshot identifiers to one comparison format."""
 
@@ -31,6 +35,30 @@ def canonical_messaging_event_id(event_id: str) -> str:
     if value.startswith("messaging:") or value.isdecimal():
         return value
     return f"messaging:{value}"
+
+
+def _messaging_event_time(event_id: str) -> datetime | None:
+    """Decode the timestamp carried by a Zendesk Messaging webhook ULID.
+
+    Zendesk uses different ULIDs for the webhook envelope and the conversation
+    event.  Exact equality is therefore insufficient, but the envelope ULID's
+    millisecond timestamp still provides a bounded freshness watermark.
+    """
+
+    value = event_id.removeprefix("messaging:").strip().upper()
+    if len(value) != 26 or value[0] not in "01234567":
+        return None
+    timestamp = 0
+    for character in value[:10]:
+        try:
+            digit = _CROCKFORD_BASE32.index(character)
+        except ValueError:
+            return None
+        timestamp = timestamp * 32 + digit
+    try:
+        return datetime.fromtimestamp(timestamp / 1_000, UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 class StructuredZendeskTool(Protocol):
@@ -169,15 +197,17 @@ class ZendeskMessagingLoader:
         payload: dict[str, Any],
     ) -> tuple[list[object], dict[str, Any]]:
         conversation = payload.get("conversation_log")
-        if not isinstance(conversation, dict):
+        if isinstance(conversation, dict):
+            nested = conversation.get("conversation_log")
+            source = (
+                cast(dict[str, Any], nested)
+                if isinstance(nested, dict)
+                else conversation
+            )
+        elif "events" in payload:
+            source = payload
+        else:
             return [], {}
-        conversation_mapping = cast(dict[str, Any], conversation)
-        nested = conversation_mapping.get("conversation_log")
-        source = (
-            cast(dict[str, Any], nested)
-            if isinstance(nested, dict)
-            else conversation_mapping
-        )
         events = source.get("events")
         meta = source.get("meta")
         if not isinstance(events, list):
@@ -212,8 +242,18 @@ class ZendeskMessagingLoader:
         )
         public = event.get("public") is not False and metadata_public is not False
         customer = author_type in {"end-user", "customer", "requester"}
+
+        msg_id = str(event_id).strip()
+        reference = str(event.get("reference") or "").strip()
+        alias_ids: list[str] = [f"messaging:{msg_id}", msg_id]
+        if reference.startswith("zen:sunco:conversation_message:"):
+            sunco_id = reference.split(":")[-1].strip()
+            if sunco_id:
+                msg_id = sunco_id
+                alias_ids.extend([f"messaging:{sunco_id}", sunco_id])
+
         return TicketMessage(
-            event_id=f"messaging:{event_id}",
+            event_id=f"messaging:{msg_id}",
             author_origin="customer" if customer else "agent",
             public=public,
             body=cls._body(content_mapping),
@@ -223,6 +263,7 @@ class ZendeskMessagingLoader:
             attachments=cls._attachments(
                 event, content_mapping, event_id=str(event_id)
             ),
+            alias_ids=tuple(dict.fromkeys(alias_ids)),
         )
 
     @staticmethod
@@ -415,8 +456,20 @@ class ZendeskApiReader:
 
     @staticmethod
     def _contains_event(snapshot: TicketSnapshot, expected_event_id: str) -> bool:
+        if any(
+            message.event_id == expected_event_id
+            or expected_event_id in getattr(message, "alias_ids", ())
+            for message in snapshot.messages
+        ):
+            return True
+        expected_at = _messaging_event_time(expected_event_id)
+        if expected_at is None:
+            return False
         return any(
-            message.event_id == expected_event_id for message in snapshot.messages
+            message.public
+            and message.author_origin == "customer"
+            and message.created_at >= expected_at - _MESSAGING_EVENT_CLOCK_SKEW
+            for message in snapshot.messages
         )
 
     @staticmethod

@@ -24,6 +24,7 @@ class TicketMessage(ContractModel):
     body: str
     created_at: datetime
     attachments: tuple[TicketAttachment, ...] = ()
+    alias_ids: tuple[str, ...] = ()
 
     @field_validator("created_at")
     @classmethod

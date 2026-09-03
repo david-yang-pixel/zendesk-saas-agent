@@ -131,6 +131,42 @@ async def test_reader_waits_until_triggering_messaging_event_is_visible() -> Non
 
 
 @pytest.mark.asyncio
+async def test_reader_accepts_webhook_ulid_when_latest_customer_message_is_current(
+) -> None:
+    # Zendesk's webhook event ID and Messaging conversation event ID are
+    # different identifiers. Their timestamps describe the same customer turn.
+    latest = TicketMessage(
+        event_id="messaging:01M1GRS7C956CAXQNAFNG7M21A",
+        author_origin="customer",
+        public=True,
+        body="Latest customer message",
+        created_at=datetime(2026, 9, 2, 9, 56, 40, tzinfo=UTC),
+    )
+    loader = _SequenceMessagingLoader([(latest,)])
+
+    async with httpx.AsyncClient(
+        base_url="https://tenant.zendesk.com",
+        transport=_ticket_transport(),
+    ) as client:
+        snapshot = await ZendeskApiReader(
+            client=client,
+            base_url="https://tenant.zendesk.com",
+            email="support@example.invalid",
+            api_token="test-token",
+            messaging_loader=cast(ZendeskMessagingLoader, loader),
+            snapshot_retry_delays=(),
+        ).fetch_ticket(
+            3726,
+            expected_event_id="messaging:01M1GRS82R7YP4SHJM831AXTE1",
+        )
+
+    assert snapshot.latest_customer_cursor == (
+        "messaging:01M1GRS7C956CAXQNAFNG7M21A"
+    )
+    assert loader.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_reader_raises_typed_retryable_error_when_trigger_never_appears() -> None:
     old = _messaging_message("evt-old", minute=1)
     loader = _SequenceMessagingLoader([(old,), (old,), (old,)])
@@ -430,3 +466,101 @@ async def test_reader_rejects_cross_origin_pagination_before_sending_credentials
             await reader.fetch_ticket(3726)
 
     assert seen_hosts == ["tenant.zendesk.com", "tenant.zendesk.com"]
+
+
+@pytest.mark.asyncio
+async def test_reader_merges_flat_page_and_extracts_sunco_reference() -> None:
+    ticket_tool = _FakeStructuredTool(
+        [
+            {
+                "success": True,
+                "data": {
+                    "conversation_log": {
+                        "events": [
+                            {
+                                "id": "01M1FIRST",
+                                "created_at": "2026-09-01T00:01:00Z",
+                                "author": {"type": "end-user"},
+                                "content": {"type": "text", "text": "Page 1 message"},
+                            },
+                        ],
+                        "meta": {"has_more": True, "after_cursor": "cursor-page-2"},
+                    }
+                },
+            }
+        ]
+    )
+    conversation_tool = _FakeStructuredTool(
+        [
+            {
+                "success": True,
+                "data": {
+                    "events": [
+                        {
+                            "id": "01M1SECOND",
+                            "reference": "zen:sunco:conversation_message:6a97f2d85b554468b974cad5",
+                            "created_at": "2026-09-01T00:02:00Z",
+                            "author": {"type": "end-user"},
+                            "content": {
+                                "type": "text",
+                                "text": "Page 2 message with SunCo ref",
+                            },
+                        }
+                    ],
+                    "meta": {"has_more": False},
+                },
+            }
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/tickets/3726.json":
+            return _response(
+                {
+                    "ticket": {
+                        "id": 3726,
+                        "status": "open",
+                        "requester_id": 10,
+                        "assignee_id": 20,
+                        "tags": ["saas"],
+                        "custom_fields": [],
+                    }
+                }
+            )
+        if request.url.path == "/api/v2/tickets/3726/comments.json":
+            return _response({"comments": [], "next_page": None})
+        if request.url.path == "/api/v2/users/10.json":
+            return _response({"user": {"id": 10, "locale": "zh-CN"}})
+        return _response({"error": "not found"}, status_code=404)
+
+    loader = ZendeskMessagingLoader(
+        ticket_tool=ticket_tool,
+        conversation_tool=conversation_tool,
+    )
+    async with httpx.AsyncClient(
+        base_url="https://tenant.zendesk.com",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        reader = ZendeskApiReader(
+            client=client,
+            base_url="https://tenant.zendesk.com",
+            email="support@example.invalid",
+            api_token="test-token",
+            messaging_loader=loader,
+        )
+        # Should match by SunCo message ID with prefix
+        snapshot = await reader.fetch_ticket(
+            3726, expected_event_id="messaging:6a97f2d85b554468b974cad5"
+        )
+        assert snapshot.latest_customer_cursor == "messaging:6a97f2d85b554468b974cad5"
+        assert len(snapshot.messages) == 2
+        sunco_msg = snapshot.messages[1]
+        assert sunco_msg.event_id == "messaging:6a97f2d85b554468b974cad5"
+        assert "messaging:01M1SECOND" in sunco_msg.alias_ids
+        assert "6a97f2d85b554468b974cad5" in sunco_msg.alias_ids
+
+        # Should also match by raw SunCo message ID without prefix
+        assert reader._contains_event(snapshot, "6a97f2d85b554468b974cad5")
+        # Should also match by ULID
+        assert reader._contains_event(snapshot, "01M1SECOND")
+        assert reader._contains_event(snapshot, "messaging:01M1SECOND")

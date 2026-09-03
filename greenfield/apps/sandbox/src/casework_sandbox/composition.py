@@ -37,7 +37,7 @@ from casework_agent_core.subagents import (
     SubagentTask,
 )
 from casework_agent_core.todo import TodoPlan
-from casework_sandbox.mcp import McpStreamableHttpTool
+from casework_sandbox.mcp import McpStreamableHttpSession, McpStreamableHttpTool
 from casework_sandbox.runtime import RuntimeOutcome, SandboxAgent
 from casework_sandbox.zendesk import ZendeskApiReader, ZendeskMessagingLoader
 from casework_tool_sdk.loop import ToolLoop
@@ -1111,6 +1111,7 @@ def create_production_commands(
     registry = ToolRegistry()
     adapters: list[HttpInvestigationTool | McpStreamableHttpTool] = []
     mcp_adapters: dict[str, McpStreamableHttpTool] = {}
+    mcp_sessions: dict[tuple[str, str], McpStreamableHttpSession] = {}
     for tool_config in config.tool_configs:
         if tool_config.is_mcp:
             remote_tool_name = tool_config.remote_tool_name
@@ -1119,16 +1120,26 @@ def create_production_commands(
                 raise SandboxConfigurationError(
                     "MCP tool config requires remote_tool_name and credential_ref"
                 )
+            session_key = (
+                tool_config.endpoint_url,
+                credential_ref,
+            )
+            session = mcp_sessions.get(session_key)
+            if session is None:
+                session = McpStreamableHttpSession(
+                    client=client,
+                    endpoint_url=tool_config.endpoint_url,
+                    credential_ref=credential_ref,
+                    resolver=resolver,
+                    timeout_seconds=tool_config.timeout_seconds,
+                )
+                mcp_sessions[session_key] = session
             adapter = McpStreamableHttpTool(
-                client=client,
+                session=session,
                 name=tool_config.name,
                 description=tool_config.description,
                 input_schema=tool_config.input_schema,
-                endpoint_url=tool_config.endpoint_url,
                 remote_tool_name=remote_tool_name,
-                credential_ref=credential_ref,
-                resolver=resolver,
-                timeout_seconds=tool_config.timeout_seconds,
             )
         else:
             adapter = HttpInvestigationTool(client=client, config=tool_config)

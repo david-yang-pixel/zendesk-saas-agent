@@ -25,25 +25,14 @@ class McpProtocolError(RuntimeError):
     """MCP returned an invalid or unsuccessful JSON-RPC response."""
 
 
-class McpStreamableHttpTool:
-    """Invoke one remote MCP tool using Streamable HTTP JSON-RPC.
-
-    The adapter performs ``initialize`` once per sandbox process and then sends
-    ``tools/call`` requests.  The caller's ticket and session identity are
-    intentionally not injected into MCP arguments: the configured remote tool
-    schema is the source of truth.  Credentials are resolved just-in-time and
-    used only in the HTTP Authorization header.
-    """
+class McpStreamableHttpSession:
+    """One authenticated Streamable HTTP session shared by related MCP tools."""
 
     def __init__(
         self,
         *,
         client: httpx.AsyncClient,
-        name: str,
-        description: str,
-        input_schema: dict[str, JsonValue],
         endpoint_url: str,
-        remote_tool_name: str,
         credential_ref: str,
         resolver: SecretResolver,
         timeout_seconds: float = 20.0,
@@ -51,15 +40,12 @@ class McpStreamableHttpTool:
     ) -> None:
         if not endpoint_url.startswith("https://"):
             raise McpToolConfigurationError("MCP endpoint_url must use HTTPS")
-        if not remote_tool_name.strip():
-            raise McpToolConfigurationError("MCP remote_tool_name is required")
         if not credential_ref.strip():
             raise McpToolConfigurationError("MCP credential_ref is required")
         if timeout_seconds <= 0:
             raise McpToolConfigurationError("MCP timeout_seconds must be positive")
         self._client = client
         self._endpoint_url = endpoint_url
-        self._remote_tool_name = remote_tool_name
         self._credential_ref = credential_ref
         self._resolver = resolver
         self._timeout_seconds = timeout_seconds
@@ -68,52 +54,21 @@ class McpStreamableHttpTool:
         self._initialized = False
         self._next_request_id = 0
         self._initialize_lock = asyncio.Lock()
-        self.definition = ToolDefinition(
-            name=name,
-            description=description,
-            input_schema=input_schema,
-            read_only=True,
-        )
 
     async def ready(self) -> bool:
-        """Validate credentials and MCP initialization without calling a tool."""
         try:
-            await self._ensure_initialized()
+            await self.ensure_initialized()
         except (McpToolConfigurationError, McpProtocolError, httpx.HTTPError):
             return False
         return True
 
-    async def __call__(
-        self,
-        arguments: dict[str, Any],
-        context: ToolExecutionContext,
-    ) -> ToolResult:
-        del context
-        await self._ensure_initialized()
-        response, _headers = await self._request(
-            "tools/call",
-            {
-                "name": self._remote_tool_name,
-                "arguments": arguments,
-            },
-        )
-        if "error" in response:
-            return self._failure_result("MCP tool call failed")
-        raw_result = response.get("result")
-        if not isinstance(raw_result, Mapping):
-            raise McpProtocolError("MCP tools/call response is missing result")
-        result = cast(Mapping[str, Any], raw_result)
-        if bool(result.get("isError")):
-            return self._normalize_failure(result)
-        return self._normalize_result(result)
-
-    async def _ensure_initialized(self) -> None:
+    async def ensure_initialized(self) -> None:
         if self._initialized:
             return
         async with self._initialize_lock:
             if self._initialized:
                 return
-            response, headers = await self._request(
+            response, headers = await self.request(
                 "initialize",
                 {
                     "protocolVersion": self._protocol_version,
@@ -132,7 +87,7 @@ class McpStreamableHttpTool:
             self._session_id = session_id.strip() if session_id else None
             self._initialized = True
 
-    async def _request(
+    async def request(
         self, method: str, params: dict[str, Any]
     ) -> tuple[dict[str, Any], httpx.Headers]:
         self._next_request_id += 1
@@ -142,7 +97,7 @@ class McpStreamableHttpTool:
             "method": method,
             "params": params,
         }
-        secret = self._credential()
+        secret = self.credential()
         headers = {
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
@@ -171,11 +126,97 @@ class McpStreamableHttpTool:
             raise McpProtocolError("MCP response id does not match request")
         return payload, response.headers
 
-    def _credential(self) -> str:
+    def credential(self) -> str:
         secret = self._resolver.resolve(self._credential_ref)
         if secret is None or not secret.strip():
             raise McpToolConfigurationError("MCP credential unavailable")
         return secret
+
+
+class McpStreamableHttpTool:
+    """Invoke one remote MCP tool using a shared Streamable HTTP session.
+
+    The session performs ``initialize`` once per remote endpoint and then sends
+    calls for all tools bound to it. The caller's ticket and session identity are
+    intentionally not injected into MCP arguments: the configured remote tool
+    schema is the source of truth.  Credentials are resolved just-in-time and
+    used only in the HTTP Authorization header.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        description: str,
+        input_schema: dict[str, JsonValue],
+        remote_tool_name: str,
+        session: McpStreamableHttpSession | None = None,
+        client: httpx.AsyncClient | None = None,
+        endpoint_url: str | None = None,
+        credential_ref: str | None = None,
+        resolver: SecretResolver | None = None,
+        timeout_seconds: float = 20.0,
+        protocol_version: str = "2025-03-26",
+    ) -> None:
+        if not remote_tool_name.strip():
+            raise McpToolConfigurationError("MCP remote_tool_name is required")
+        if session is None:
+            if (
+                client is None
+                or endpoint_url is None
+                or credential_ref is None
+                or resolver is None
+            ):
+                raise McpToolConfigurationError(
+                    "MCP tool requires a session or complete connection settings"
+                )
+            session = McpStreamableHttpSession(
+                client=client,
+                endpoint_url=endpoint_url,
+                credential_ref=credential_ref,
+                resolver=resolver,
+                timeout_seconds=timeout_seconds,
+                protocol_version=protocol_version,
+            )
+        self._session = session
+        self._remote_tool_name = remote_tool_name
+        self.definition = ToolDefinition(
+            name=name,
+            description=description,
+            input_schema=input_schema,
+            read_only=True,
+        )
+
+    async def ready(self) -> bool:
+        """Validate credentials and MCP initialization without calling a tool."""
+        return await self._session.ready()
+
+    async def __call__(
+        self,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        del context
+        await self._session.ensure_initialized()
+        response, _headers = await self._session.request(
+            "tools/call",
+            {
+                "name": self._remote_tool_name,
+                "arguments": arguments,
+            },
+        )
+        if "error" in response:
+            return self._failure_result("MCP tool call failed")
+        raw_result = response.get("result")
+        if not isinstance(raw_result, Mapping):
+            raise McpProtocolError("MCP tools/call response is missing result")
+        result = cast(Mapping[str, Any], raw_result)
+        if bool(result.get("isError")):
+            return self._normalize_failure(result)
+        return self._normalize_result(result)
+
+    def _credential(self) -> str:
+        return self._session.credential()
 
     def _normalize_result(self, result: Mapping[str, Any]) -> ToolResult:
         secret = self._credential()
@@ -304,6 +345,7 @@ def _text_parts(content: list[JsonValue]) -> tuple[str, ...]:
 
 __all__ = [
     "McpProtocolError",
+    "McpStreamableHttpSession",
     "McpStreamableHttpTool",
     "McpToolConfigurationError",
 ]

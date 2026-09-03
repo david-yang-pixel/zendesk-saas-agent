@@ -391,6 +391,21 @@ def _provider_message_id(payload: object) -> str | None:
                 value = cast(Mapping[str, object], item).get("id")
                 if isinstance(value, (str, int)) and str(value).strip():
                     return str(value)
+    audit = data.get("audit")
+    if isinstance(audit, Mapping):
+        audit_map = cast(Mapping[str, object], audit)
+        events = audit_map.get("events")
+        if isinstance(events, list):
+            for item in reversed(cast(list[object], events)):
+                if isinstance(item, Mapping):
+                    event_map = cast(Mapping[str, object], item)
+                    if str(event_map.get("type") or "").casefold() == "comment":
+                        value = event_map.get("id")
+                        if isinstance(value, (str, int)) and str(value).strip():
+                            return str(value)
+        audit_id = audit_map.get("id")
+        if isinstance(audit_id, (str, int)) and str(audit_id).strip():
+            return str(audit_id)
     ticket = data.get("ticket")
     if isinstance(ticket, Mapping):
         return _provider_message_id(cast(Mapping[str, object], ticket))

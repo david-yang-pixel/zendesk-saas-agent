@@ -510,6 +510,60 @@ async def test_factory_wires_configured_external_adapters_without_database_or_do
 
 
 @pytest.mark.asyncio
+async def test_factory_shares_one_mcp_session_across_tools_on_the_same_endpoint(
+) -> None:
+    env = {
+        "ZENDESK_BASE_URL": "https://tenant.zendesk.com",
+        "ZENDESK_EMAIL": "support@example.com",
+        "ZENDESK_API_TOKEN": "token",
+        "CASEWORK_MODEL_BASE_URL": "https://model.example.com",
+        "CASEWORK_MODEL_API_KEY": "model-key",
+        "CASEWORK_MODEL_NAME": "casework-model",
+        "CASEWORK_CREDENTIAL_MCP_TOOLS": "mcp-secret",
+        "CASEWORK_TOOL_CONFIG": json.dumps(
+            [
+                {
+                    "name": "get_ticket",
+                    "description": "Get ticket",
+                    "input_schema": {"type": "object"},
+                    "endpoint_url": "https://mcp.example.com/mcp",
+                    "remote_tool_name": "get_ticket",
+                    "credential_ref": "mcp/tools",
+                },
+                {
+                    "name": "get_ticket_conversation_log",
+                    "description": "Continue ticket conversation",
+                    "input_schema": {"type": "object"},
+                    "endpoint_url": "https://mcp.example.com/mcp",
+                    "remote_tool_name": "get_ticket_conversation_log",
+                    "credential_ref": "mcp/tools",
+                    "timeout_seconds": 30,
+                },
+            ]
+        ),
+    }
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v2/users/me.json":
+            return httpx.Response(200, json={"user": {"id": 1}})
+        payload = json.loads(request.content)
+        methods.append(payload["method"])
+        return httpx.Response(
+            200,
+            headers={"Mcp-Session-Id": "shared-zendesk-session"},
+            json={"jsonrpc": "2.0", "id": payload["id"], "result": {}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    commands = create_production_commands(environ=env, http_client=client)
+
+    assert await commands.is_ready() is True
+    assert methods == ["initialize"]
+    await commands.aclose()
+
+
+@pytest.mark.asyncio
 async def test_child_adapter_resolves_only_child_credential_and_model() -> None:
     observed: list[bytes] = []
     requests = 0
