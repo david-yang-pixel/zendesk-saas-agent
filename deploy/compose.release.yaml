@@ -19,7 +19,7 @@ services:
     cpus: 0.35
 
   migration:
-    image: ${CASEWORK_HARNESS_IMAGE:?render a release manifest first}
+    image: ${CASEWORK_ADMIN_IMAGE:-ghcr.io/david-yang-pixel/zendesk-saas-agent-casework-admin:latest}
     command: ["/app/.venv/bin/python", "/app/deploy/migrate.py"]
     environment: &common-environment
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
@@ -45,35 +45,23 @@ services:
     mem_limit: 256m
     cpus: 0.25
 
-  harness:
-    image: ${CASEWORK_HARNESS_IMAGE:?render a release manifest first}
+  pi-agent:
+    image: ${CASEWORK_PI_AGENT_IMAGE:-pi-agent:v1}
     environment:
       <<: *common-environment
-      SANDBOX_IMAGE: ${CASEWORK_SANDBOX_IMAGE:?render a release manifest first}
-      ZENDESK_BASE_URL: ${ZENDESK_BASE_URL:?set ZENDESK_BASE_URL}
-      ZENDESK_EMAIL: ${ZENDESK_EMAIL:?set ZENDESK_EMAIL}
-      ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}
-      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:?set CASEWORK_MODEL_BASE_URL}
-      CASEWORK_TOOL_CONFIG: ${CASEWORK_TOOL_CONFIG:?set CASEWORK_TOOL_CONFIG}
-      CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
-      CASEWORK_DELIVERY_MODE: ${CASEWORK_DELIVERY_MODE:-dry_run}
-      CASEWORK_CANARY_TICKET_IDS: ${CASEWORK_CANARY_TICKET_IDS:-}
-      CASEWORK_BROWSER_RELAY_URL: ${CASEWORK_BROWSER_RELAY_URL:-}
+      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://api.tokener.dev/v1}
+      CASEWORK_MODEL_NAME: ${CASEWORK_MODEL_NAME:-gpt-5.6-terra}
+      CASEWORK_BROWSER_RELAY_URL: ${CASEWORK_BROWSER_RELAY_URL:-https://zendesk.smlershou.top/zendesk-browser-relay}
       CASEWORK_BROWSER_RELAY_API_KEY: ${CASEWORK_BROWSER_RELAY_API_KEY:-}
     ports: ["127.0.0.1:${CASEWORK_HARNESS_PORT:-18102}:8102"]
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}:/run/casework-credentials:ro
-    group_add:
-      - "${DOCKER_GID:?set DOCKER_GID to the docker.sock group id}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}/credentials.env:/app/credentials.env:ro
     depends_on:
       migration:
         condition: service_completed_successfully
     restart: unless-stopped
-    mem_limit: 384m
-    cpus: 0.35
+    mem_limit: 512m
+    cpus: 0.5
 
   admin:
     image: ${CASEWORK_ADMIN_IMAGE:?render a release manifest first}
