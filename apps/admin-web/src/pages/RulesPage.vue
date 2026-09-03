@@ -305,9 +305,41 @@ onMounted(() => {
             </div>
           </div>
         </section>
+
+        <!-- Card 3: Debounce & Freshness Guard -->
+        <section class="apple-card">
+          <div class="card-header">
+            <div class="card-header-title">
+              <span class="card-tag">Concurrency & Freshness Guard</span>
+              <h2>防抖窗口与多消息上下文追随</h2>
+              <p>避免用户分段发多条消息时触发多次重复推理，并在答复发出前进行新鲜度核验。</p>
+            </div>
+            <span class="pill-active">已激活</span>
+          </div>
+
+          <div class="card-body">
+            <!-- Debounce Window -->
+            <div class="toggle-row">
+              <div class="toggle-label-group">
+                <label>10 秒静默防抖窗口 (Debounce Window)</label>
+                <p>收到客户消息后静默缓冲 10 秒；若 10 秒内客户继续追加多条短句，系统自动顺延 10 秒倒计时并合并多段提问，待客户发言停顿后统一提交 AI 一次性排障，大幅提升推理连贯性并节省模型 Token。</p>
+              </div>
+              <span class="tag-status">10 秒缓冲</span>
+            </div>
+
+            <!-- Pre-Delivery Freshness Check -->
+            <div class="toggle-row">
+              <div class="toggle-label-group">
+                <label>投递前工单新鲜度核验 (Pre-Delivery Freshness Guard)</label>
+                <p>AI 完成推理后、调用 Browser Relay 发出答复前，强制重新拉取工单最新会话流水；若检测到客户在推理期间发送了新消息或要求转人工，立即废弃当前旧答复并自动追随最新上下文，坚决避免跨消息误答。</p>
+              </div>
+              <span class="tag-status">实时核验</span>
+            </div>
+          </div>
+        </section>
       </div>
 
-      <!-- Card 3: Evaluation Preview Pipeline -->
+      <!-- Card 4: Evaluation Preview Pipeline -->
       <section class="apple-card preview-card">
         <div class="card-header">
           <div class="card-header-title">
@@ -320,25 +352,31 @@ onMounted(() => {
           <div class="flow-step">
             <span class="step-num">01</span>
             <strong>Zendesk 事件到达</strong>
-            <small>Webhook / 轮询监听</small>
+            <small>Webhook 实时接收</small>
           </div>
           <div class="flow-arrow">→</div>
           <div class="flow-step">
             <span class="step-num">02</span>
-            <strong>准入与保护过滤</strong>
-            <small>#{{ rules.saasTag }} · Group · 未分配人工</small>
+            <strong>10s 防抖与多消息合并</strong>
+            <small>静默 10s 后出库</small>
           </div>
           <div class="flow-arrow">→</div>
           <div class="flow-step">
             <span class="step-num">03</span>
+            <strong>模式 B 准入保护</strong>
+            <small>#{{ rules.saasTag }} · 未分配人工</small>
+          </div>
+          <div class="flow-arrow">→</div>
+          <div class="flow-step">
+            <span class="step-num">04</span>
             <strong>Pi Agent 证据推理</strong>
             <small>7 大 MCP 工具多轮推演</small>
           </div>
           <div class="flow-arrow">→</div>
-          <div class="flow-step flow-step--active">
-            <span class="step-num">04</span>
-            <strong>Browser Relay 交付</strong>
-            <small>{{ rules.replyEnabled ? '已启用前台发送' : '静默模式 (只记日志)' }}</small>
+          <div class="flow-step">
+            <span class="step-num">05</span>
+            <strong>新鲜度核验与投递</strong>
+            <small>比对最新游标后发信</small>
           </div>
         </div>
       </section>

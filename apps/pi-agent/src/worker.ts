@@ -188,7 +188,28 @@ async function markJobFailed(jobId: string, reason: string) {
   `, [jobId, reason.slice(0, 1024)]);
 }
 
-async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfig): Promise<{ message: string; email?: string }> {
+async function markJobCancelled(jobId: string, reason: string) {
+  await pool.query(`
+    UPDATE case_jobs
+    SET status = 'cancelled',
+        dead_letter_reason = $2,
+        finished_at = NOW(),
+        updated_at = NOW(),
+        lease_owner = NULL,
+        lease_expires_at = NULL
+    WHERE job_id = $1
+  `, [jobId, reason.slice(0, 1024)]);
+}
+
+interface TicketDetails {
+  message: string;
+  email?: string;
+  lastEventId?: string;
+  lastEventTime?: string;
+  customerEventsCount: number;
+}
+
+async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfig): Promise<TicketDetails> {
   try {
     let email = '';
     let subject = '';
@@ -210,6 +231,10 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
     }
 
     let customerMessage = '';
+    let lastEventId = '';
+    let lastEventTime = '';
+    let customerEventsCount = 0;
+
     try {
       const convLog = await callMcpTool(
         zendeskConfig.endpoint,
@@ -227,13 +252,18 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
           if (authorName.includes('David Yang') || authorName.includes('AI Agent') || ev.author?.type === 'agent') {
             continue;
           }
+          customerEventsCount++;
+          if (!lastEventId) {
+            lastEventId = String(ev.id || ev.message_id || '');
+            lastEventTime = String(ev.created_at || '');
+          }
           const bodyObj = ev.body || ev.message;
-          if (typeof bodyObj === 'string' && bodyObj.trim()) {
-            customerMessage = bodyObj.trim();
-            break;
-          } else if (bodyObj?.text && bodyObj.text.trim()) {
-            customerMessage = bodyObj.text.trim();
-            break;
+          if (!customerMessage) {
+            if (typeof bodyObj === 'string' && bodyObj.trim()) {
+              customerMessage = bodyObj.trim();
+            } else if (bodyObj?.text && bodyObj.text.trim()) {
+              customerMessage = bodyObj.text.trim();
+            }
           }
         }
       }
@@ -245,10 +275,16 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
       customerMessage = subject || `Ticket #${ticketId}`;
     }
 
-    return { message: customerMessage, email };
+    return {
+      message: customerMessage,
+      email,
+      lastEventId,
+      lastEventTime,
+      customerEventsCount,
+    };
   } catch (err: any) {
     console.warn(`[Worker] Error getting ticket details:`, err.message);
-    return { message: `Ticket #${ticketId}` };
+    return { message: `Ticket #${ticketId}`, email: '', customerEventsCount: 0 };
   }
 }
 
@@ -335,14 +371,14 @@ async function main() {
 
       let activeTrace: any = null;
       try {
-        const { message, email } = await getTicketDetails(job.ticket_id, zendeskService);
+        const initialDetails = await getTicketDetails(job.ticket_id, zendeskService);
         const modelConfig = await getActiveModelConfig();
-        console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${email || 'unknown'}, Model: ${modelConfig.model}): "${message.slice(0, 80)}..."`);
+        console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${initialDetails.email || 'unknown'}, Model: ${modelConfig.model}): "${initialDetails.message.slice(0, 80)}..."`);
 
         const agentResult = await runPiSupportAgent({
           ticketId: job.ticket_id,
-          customerMessage: message,
-          requesterEmail: email,
+          customerMessage: initialDetails.message,
+          requesterEmail: initialDetails.email,
           tools: allTools,
           apiKey: modelConfig.apiKey,
           modelBaseUrl: modelConfig.baseUrl,
@@ -350,8 +386,86 @@ async function main() {
         });
 
         activeTrace = agentResult.trace;
-        console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms (${agentResult.trace.toolCalls.length} tool calls). Delivering via Browser Relay...`);
+        console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms (${agentResult.trace.toolCalls.length} tool calls).`);
 
+        // =========================================================================
+        // Pre-Delivery Freshness Check (生成/投递前重新拉取工单内容，检查用户是否发了新消息)
+        // =========================================================================
+        console.log(`[Worker] Pre-delivery check: Fetching latest conversation for ticket #${job.ticket_id} to verify no new customer messages...`);
+        const freshDetails = await getTicketDetails(job.ticket_id, zendeskService);
+
+        const hasNewMessage =
+          (freshDetails.lastEventId && initialDetails.lastEventId && freshDetails.lastEventId !== initialDetails.lastEventId) ||
+          (freshDetails.customerEventsCount > initialDetails.customerEventsCount) ||
+          (freshDetails.message.trim() !== initialDetails.message.trim());
+
+        if (hasNewMessage) {
+          const interceptReason = `检测到客户在推理期间发送了新消息（“${freshDetails.message.slice(0, 60)}...”）。旧答复已自动拦截作废，触发 10 秒防抖并重新排队最新会话。`;
+          console.warn(`[Worker] 🚨 INTERCEPTED: ${interceptReason}`);
+
+          await recordJobOutcome({
+            jobId: job.job_id,
+            ticketId: job.ticket_id,
+            generation: job.generation,
+            status: 'cancelled',
+            startedAt: new Date(startTime),
+            finishedAt: new Date(),
+            trace: agentResult.trace,
+            delivery: null,
+            errorReason: interceptReason,
+          });
+
+          // Re-queue ticket with 10s debounce
+          await pool.query(`
+            INSERT INTO case_jobs (
+              job_id, session_id, event_id, expected_event_id, ticket_id, generation,
+              status, attempts, available_at, created_at, updated_at,
+              config_revision, root_model_config_id, child_model_config_ids,
+              model_digest, skill_digest, tool_digest
+            )
+            VALUES (
+              $1, $2, $3, $4, $5, $6,
+              'queued', 0, NOW() + INTERVAL '10 seconds', NOW(), NOW(),
+              'rev-1', 'gpt-5.6-terra', '[]', 'digest-model', 'digest-skill', 'digest-tool'
+            )
+            ON CONFLICT (ticket_id) WHERE status = 'queued'
+            DO UPDATE SET
+              available_at = NOW() + INTERVAL '10 seconds',
+              updated_at = NOW()
+          `, [
+            `job-${Date.now()}-${job.ticket_id}`,
+            `session-retry-${Date.now()}-${job.ticket_id}`,
+            freshDetails.lastEventId || `event-${Date.now()}`,
+            freshDetails.lastEventId || `event-${Date.now()}`,
+            job.ticket_id,
+            job.generation,
+          ]);
+
+          await markJobCancelled(job.job_id, interceptReason);
+          continue;
+        }
+
+        // Check if customer requested human or human agent took over
+        const isHumanTrigger = ['human', '人工', '真人', '客服'].some(kw => freshDetails.message.toLowerCase().includes(kw));
+        if (isHumanTrigger) {
+          const humanReason = `模式 B 人工优先保护：客户请求人工介入（“${freshDetails.message}”），AI 自动终止。`;
+          console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+          await recordJobOutcome({
+            jobId: job.job_id,
+            ticketId: job.ticket_id,
+            generation: job.generation,
+            status: 'cancelled',
+            startedAt: new Date(startTime),
+            finishedAt: new Date(),
+            trace: agentResult.trace,
+            delivery: null,
+            errorReason: humanReason,
+          });
+          await markJobCancelled(job.job_id, humanReason);
+          continue;
+        }
+
+        console.log(`[Worker] Pre-delivery check passed. Delivering via Browser Relay...`);
         const relayResult = await sendBrowserRelay(
           BROWSER_RELAY_URL,
           BROWSER_RELAY_KEY,

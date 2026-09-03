@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from datetime import timedelta
 from typing import Literal, cast
 from uuid import uuid4
 
@@ -157,7 +158,7 @@ class PostgresAdmission:
                 expected_event_id=self._expected_event_id(event),
                 config=self.frozen_config(revision.revision, runtime),
                 job_id=str(uuid4()),
-                available_at=event.received_at,
+                available_at=event.received_at + timedelta(seconds=10),
             )
             if not queued.accepted:
                 return AdmissionResult(
