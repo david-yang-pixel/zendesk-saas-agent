@@ -151,8 +151,8 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #09090b;
-  color: #ededed;
+  background: #ffffff;
+  color: #1d1d1f;
   overflow: hidden;
 }
 
@@ -161,9 +161,9 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: #0c0c0e;
+  padding: 14px 24px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: #fbfbfd;
 }
 .studio-title-group {
   display: flex;
@@ -175,8 +175,8 @@ onMounted(() => {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #10b981;
-  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
+  background: rgba(16, 185, 129, 0.1);
   border: 1px solid rgba(16, 185, 129, 0.25);
   padding: 3px 8px;
   border-radius: 6px;
@@ -185,13 +185,13 @@ onMounted(() => {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: #fff;
+  color: #1d1d1f;
   letter-spacing: -0.01em;
 }
 .header-text p {
   margin: 2px 0 0;
-  font-size: 11px;
-  color: #71717a;
+  font-size: 12px;
+  color: #86868b;
 }
 .studio-actions {
   display: flex;
@@ -199,40 +199,42 @@ onMounted(() => {
   gap: 12px;
 }
 .toast {
-  font-size: 11px;
-  padding: 4px 10px;
+  font-size: 12px;
+  padding: 5px 12px;
   border-radius: 6px;
+  font-weight: 500;
 }
 .toast--success {
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(52, 199, 89, 0.12);
+  color: #059669;
+  border: 1px solid rgba(52, 199, 89, 0.25);
 }
 .toast--error {
-  background: rgba(239, 68, 68, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(255, 59, 48, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(255, 59, 48, 0.25);
 }
 .action-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 32px;
-  padding: 0 14px;
-  border-radius: 7px;
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 8px;
   border: none;
-  background: #ffffff;
-  color: #000000;
+  background: #000000;
+  color: #ffffff;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   transition: background 0.15s;
 }
 .action-btn:hover {
-  background: #e4e4e7;
+  background: #27272a;
 }
 .action-btn:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
@@ -246,21 +248,21 @@ onMounted(() => {
 
 /* Left Sidebar */
 .skills-sidebar {
-  width: 320px;
-  flex: 0 0 320px;
+  width: 310px;
+  flex: 0 0 310px;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  background: #09090b;
+  border-right: 1px solid rgba(0, 0, 0, 0.08);
+  background: #fbfbfd;
 }
 .sidebar-meta {
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #52525b;
+  color: #86868b;
 }
 .skills-nav {
   flex: 1;
@@ -276,32 +278,35 @@ onMounted(() => {
   gap: 12px;
   padding: 12px;
   border-radius: 8px;
-  border: 1px solid transparent;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: #ffffff;
   cursor: pointer;
   transition: all 0.12s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 .skill-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: #f5f5f7;
+  border-color: rgba(0, 0, 0, 0.12);
 }
 .skill-item.active {
-  background: #141416;
-  border-color: rgba(255, 255, 255, 0.12);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  background: #ffffff;
+  border-color: #0071e3;
+  box-shadow: 0 0 0 1px #0071e3, 0 2px 8px rgba(0, 113, 227, 0.1);
 }
 .item-icon {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  color: #71717a;
+  background: #f5f5f7;
+  color: #6e6e73;
   display: grid;
   place-items: center;
   flex: 0 0 28px;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 .skill-item.active .item-icon {
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
+  background: rgba(0, 113, 227, 0.1);
+  color: #0071e3;
 }
 .item-content {
   flex: 1;
@@ -310,16 +315,16 @@ onMounted(() => {
 .item-title {
   font-size: 13px;
   font-weight: 600;
-  color: #f4f4f5;
+  color: #1d1d1f;
   font-family: ui-monospace, "SF Mono", monospace;
   margin-bottom: 3px;
 }
 .skill-item.active .item-title {
-  color: #ffffff;
+  color: #0071e3;
 }
 .item-desc {
   font-size: 11px;
-  color: #71717a;
+  color: #6e6e73;
   line-height: 1.4;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -333,7 +338,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: #09090b;
+  background: #ffffff;
 }
 .editor-shell {
   display: flex;
@@ -345,8 +350,8 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 10px 20px;
-  background: #0e0e11;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #f8f9fa;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
 }
 .editor-file {
   display: flex;
@@ -359,12 +364,12 @@ onMounted(() => {
   letter-spacing: 0.08em;
   padding: 2px 6px;
   border-radius: 4px;
-  background: rgba(59, 130, 246, 0.15);
-  color: #60a5fa;
+  background: rgba(0, 113, 227, 0.1);
+  color: #0071e3;
 }
 .file-name {
   font-size: 12px;
-  color: #d4d4d8;
+  color: #1d1d1f;
   font-family: "SF Mono", Menlo, Consolas, monospace;
 }
 .editor-hints {
@@ -372,7 +377,7 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 11px;
-  color: #52525b;
+  color: #86868b;
 }
 .editor-body {
   flex: 1;
@@ -385,11 +390,11 @@ onMounted(() => {
   height: 100%;
   border: none;
   outline: none;
-  background: #09090b;
-  color: #ededed;
-  font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  background: #ffffff;
+  color: #1d1d1f;
+  font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
   padding: 20px 24px;
   resize: none;
   tab-size: 2;
@@ -398,7 +403,7 @@ onMounted(() => {
   display: grid;
   place-content: center;
   height: 100%;
-  color: #52525b;
+  color: #86868b;
   gap: 12px;
   text-align: center;
 }
