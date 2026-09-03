@@ -271,6 +271,54 @@ class ZendeskReplyConfig:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class BrowserRelayConfig:
+    relay_url: str
+    api_key: str
+    timeout_seconds: float = 90.0
+
+    def __post_init__(self) -> None:
+        if not self.relay_url.strip() or not self.api_key.strip():
+            raise ValueError("Browser relay configuration must not be blank")
+        if self.timeout_seconds <= 0:
+            raise ValueError("Browser relay timeout must be positive")
+
+    @classmethod
+    def from_environment(
+        cls, environment: Mapping[str, str] | None = None
+    ) -> BrowserRelayConfig | None:
+        values = environment if environment is not None else os.environ
+        relay_url = (
+            values.get("CASEWORK_BROWSER_RELAY_URL")
+            or values.get("BROWSER_RELAY_URL")
+            or ""
+        ).strip().strip('"')
+        api_key = (
+            values.get("CASEWORK_BROWSER_RELAY_API_KEY")
+            or values.get("BROWSER_RELAY_API_KEY")
+            or values.get("RELAY_API_KEY")
+            or ""
+        ).strip().strip('"')
+        if not relay_url or not api_key:
+            return None
+        raw_timeout = (
+            values.get("CASEWORK_BROWSER_RELAY_TIMEOUT_SECONDS")
+            or values.get("BROWSER_RELAY_TIMEOUT_SECONDS")
+            or "90"
+        ).strip().strip('"')
+        try:
+            timeout_seconds = float(raw_timeout)
+        except ValueError as error:
+            raise ValueError(
+                "CASEWORK_BROWSER_RELAY_TIMEOUT_SECONDS must be numeric"
+            ) from error
+        return cls(
+            relay_url=relay_url.rstrip("/"),
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def _outcome_body(outcome: Outcome) -> str | None:
     if outcome.kind is OutcomeKind.ANSWER:
         return outcome.answer
@@ -326,6 +374,66 @@ class UnavailableZendeskReplySender:
         raise DeliveryUnavailableError(
             "live Zendesk sender is not configured; no customer write performed"
         )
+
+
+class ZendeskBrowserRelaySender:
+    """Send a customer-visible reply through the Zendesk Browser Relay."""
+
+    ready = True
+
+    def __init__(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        relay_url: str,
+        api_key: str,
+    ) -> None:
+        self._client = client
+        self._relay_url = relay_url.rstrip("/")
+        self._api_key = api_key
+
+    async def send_reply(
+        self, *, ticket_id: int, body: str, idempotency_key: str
+    ) -> ZendeskReplyReceipt:
+        endpoint = f"{self._relay_url}/send"
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "ticket_id": ticket_id,
+            "body": body,
+        }
+        try:
+            response = await self._client.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception as error:
+            raise DeliveryUnavailableError(
+                f"Browser relay send failed: {error}"
+            ) from error
+
+        if not isinstance(data, dict):
+            raise DeliveryUnavailableError(
+                "Browser relay response was not valid JSON"
+            )
+        data_dict = cast(dict[str, Any], data)
+        if not data_dict.get("ok"):
+            err = data_dict.get("error") or data_dict.get("status") or "send_failed"
+            raise DeliveryUnavailableError(f"Browser relay send failed: {err}")
+
+        receipt_id = (
+            str(data_dict.get("current_url") or "").strip()
+            or f"browser-relay:{ticket_id}"
+        )
+        return ZendeskReplyReceipt(provider_message_id=receipt_id)
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
 
 class ZendeskReplySender:
@@ -421,9 +529,19 @@ def create_zendesk_reply_sender(
 ) -> tuple[ZendeskReplyPort, Callable[[], Awaitable[None]]]:
     """Build a sender without making a network request.
 
-    Missing or incomplete credentials return the explicit unavailable sender;
-    callers can expose that state through readiness and remain fail-closed.
+    Prefers Browser Relay when configured; falls back to Zendesk REST sender,
+    or returns UnavailableZendeskReplySender when neither is available.
     """
+
+    relay_config = BrowserRelayConfig.from_environment(environment)
+    if relay_config is not None:
+        client = httpx.AsyncClient(timeout=relay_config.timeout_seconds)
+        relay_sender = ZendeskBrowserRelaySender(
+            client=client,
+            relay_url=relay_config.relay_url,
+            api_key=relay_config.api_key,
+        )
+        return relay_sender, relay_sender.aclose
 
     config = ZendeskReplyConfig.from_environment(environment)
     if config is None:
@@ -1071,6 +1189,7 @@ class ProtocolCallable(Protocol):
 
 
 __all__ = [
+    "BrowserRelayConfig",
     "ControllerDeliveryAdapter",
     "DeliveryConfigPort",
     "DeliveryConfigUnavailable",
@@ -1090,6 +1209,7 @@ __all__ = [
     "TicketFreshness",
     "TicketFreshnessPort",
     "UnavailableZendeskReplySender",
+    "ZendeskBrowserRelaySender",
     "ZendeskReplyConfig",
     "ZendeskReplyPort",
     "ZendeskReplyReceipt",
