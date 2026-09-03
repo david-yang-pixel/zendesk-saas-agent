@@ -1,7 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   ModelRuntime,
   createAgentSession,
   SessionManager,
+  DefaultResourceLoader,
+  getAgentDir,
+  createSyntheticSourceInfo,
+  type Skill,
 } from '@earendil-works/pi-coding-agent';
 import { CustomTool } from './mcp.js';
 
@@ -15,6 +21,44 @@ export interface AgentRunOptions {
   apiKey?: string;
 }
 
+function getProjectSkills(): Skill[] {
+  const possiblePaths = [
+    path.resolve(process.cwd(), 'skills'),
+    path.resolve(process.cwd(), '../skills'),
+    path.resolve(process.cwd(), '../../skills'),
+    '/app/skills',
+  ];
+  const skillsDir = possiblePaths.find((p) => fs.existsSync(p));
+  const projectSkills: Skill[] = [];
+  if (!skillsDir) return projectSkills;
+
+  try {
+    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const skillPath = path.join(skillsDir, entry.name, 'SKILL.md');
+        if (fs.existsSync(skillPath)) {
+          const content = fs.readFileSync(skillPath, 'utf8');
+          const matchName = content.match(/^name:\s*(.+)$/m);
+          const matchDesc = content.match(/^description:\s*(.+)$/m);
+          if (matchName && matchDesc) {
+            projectSkills.push({
+              name: matchName[1].trim(),
+              description: matchDesc[1].trim(),
+              filePath: skillPath,
+              baseDir: path.dirname(skillPath),
+              sourceInfo: createSyntheticSourceInfo(skillPath, { source: 'project' }),
+              disableModelInvocation: false,
+            });
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    console.warn('[Agent] Error reading skills directory:', e.message);
+  }
+  return projectSkills;
+}
+
 const DIFY_SUPPORT_SYSTEM_PROMPT = `
 You are the official Dify SaaS AI Support Agent assisting customers on Zendesk Messaging.
 
@@ -22,7 +66,7 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
 
 ### Core Guidelines
 1. **Evidence-driven Investigation**:
-   - Always investigate using available tools before answering technical, billing, or account questions.
+   - Always investigate using available tools and loaded skills before answering technical, billing, or account questions.
    - Do NOT guess, assume, or hallucinate IDs, dates, versions, or subscription details. If a tool returns no data, explain what was checked and what is needed from the user.
 
 2. **Database Tips (Dify Architecture)**:
@@ -75,7 +119,21 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<strin
     throw new Error(`Failed to initialize model ${modelName} with provider openai`);
   }
 
+  const projectSkills = getProjectSkills();
+  console.log(`[Agent] Registered ${projectSkills.length} project skills:`, projectSkills.map(s => s.name));
+
+  const loader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: getAgentDir(),
+    skillsOverride: (current) => ({
+      skills: [...current.skills, ...projectSkills],
+      diagnostics: current.diagnostics,
+    }),
+  });
+  await loader.reload();
+
   const { session } = await createAgentSession({
+    resourceLoader: loader,
     sessionManager: SessionManager.inMemory(),
     modelRuntime: runtime,
     model: model,
@@ -111,7 +169,7 @@ ${options.customerMessage}
 System Instructions:
 ${DIFY_SUPPORT_SYSTEM_PROMPT}
 
-Please investigate using your available tools and formulate a complete, helpful, accurate answer to the customer.
+Please investigate using your available tools and skills, and formulate a complete, helpful, accurate answer to the customer.
 `.trim();
 
   console.log(`[Agent] Sending prompt to session for ticket #${options.ticketId}...`);

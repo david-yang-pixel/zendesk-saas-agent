@@ -175,7 +175,7 @@ async function main() {
     console.log(`[Worker] Healthcheck listening on http://0.0.0.0:${PORT}/readyz`);
   });
 
-  // Discover MCP services
+  // Discover all 6 MCP services
   const mcpServices: McpServiceConfig[] = [
     {
       name: 'db-gateway',
@@ -202,6 +202,11 @@ async function main() {
       name: 'github',
       endpoint: cleanEnv(process.env.GITHUB_MCP_URL) || 'https://zendesk.smlershou.top/github-mcp/mcp',
       apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_GITHUB_MCP),
+    },
+    {
+      name: 'docs',
+      endpoint: cleanEnv(process.env.DOCS_MCP_URL) || 'https://zendesk.smlershou.top/docs-tool-service/mcp',
+      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_DOCS_MCP),
     },
   ];
 
