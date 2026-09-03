@@ -1,28 +1,34 @@
 import { describe, it, expect } from 'vitest';
 import { CustomTool } from './mcp.js';
 
-describe('Pi Agent unit tests', () => {
-  it('defines custom tool structure correctly', () => {
-    const tool: CustomTool = {
+describe('Pi Support Agent Tool Format', () => {
+  it('correctly constructs tool definition conforming to Pi Agent schema', () => {
+    const mockTool: CustomTool = {
       name: 'test_tool',
       label: 'test_tool',
       description: 'Test description',
-      promptSnippet: 'Test snippet',
-      parameters: { type: 'object', properties: { q: { type: 'string' } } },
-      execute: async ({ q }) => ({ query: q, status: 'ok' })
+      promptSnippet: 'Test description',
+      parameters: {
+        type: 'object',
+        properties: { q: { type: 'string' } },
+        required: ['q'],
+      },
+      execute: async (_id: string, params: any) => ({
+        content: [{ type: 'text', text: `mock result for ${params?.q}` }],
+        details: { q: params?.q },
+      }),
     };
 
-    expect(tool.name).toBe('test_tool');
-    expect(tool.parameters.type).toBe('object');
+    expect(mockTool.name).toBe('test_tool');
+    expect(mockTool.parameters.type).toBe('object');
   });
 
-  it('formats footer correctly for Chinese queries', () => {
-    const isChinese = /[\u4e00-\u9fa5]/.test('测试问题');
-    expect(isChinese).toBe(true);
-  });
+  it('correctly formats footer in Chinese and English', () => {
+    const chineseMsg = '我想知道 OpenAI 插件版本';
+    const englishMsg = 'I want to check plugin version';
 
-  it('formats footer correctly for English queries', () => {
-    const isChinese = /[\u4e00-\u9fa5]/.test('What is my subscription?');
-    expect(isChinese).toBe(false);
+    const isChinese = (msg: string) => /[\u4e00-\u9fa5]/.test(msg);
+    expect(isChinese(chineseMsg)).toBe(true);
+    expect(isChinese(englishMsg)).toBe(false);
   });
 });

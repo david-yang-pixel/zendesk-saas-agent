@@ -72,7 +72,7 @@ async function claimNextJob(workerId: string): Promise<any | null> {
 async function markJobSucceeded(jobId: string) {
   await pool.query(`
     UPDATE case_jobs
-    SET status = 'succeeded',
+    SET status = 'completed',
         finished_at = NOW(),
         updated_at = NOW(),
         lease_owner = NULL,
@@ -96,41 +96,65 @@ async function markJobFailed(jobId: string, reason: string) {
 
 async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfig): Promise<{ message: string; email?: string }> {
   try {
-    const result = await callMcpTool(
-      zendeskConfig.endpoint,
-      zendeskConfig.apiKey,
-      'get_ticket_conversation_log',
-      { ticket_id: ticketId }
-    );
+    let email = '';
+    let subject = '';
+
+    try {
+      const rawTicket = await callMcpTool(
+        zendeskConfig.endpoint,
+        zendeskConfig.apiKey,
+        'get_ticket',
+        { ticket_id: ticketId }
+      );
+      if (rawTicket?.content?.[0]?.text) {
+        const parsed = JSON.parse(rawTicket.content[0].text);
+        email = parsed?.data?.ticket?.requester?.email || parsed?.data?.ticket?.email || '';
+        subject = parsed?.data?.ticket?.subject || '';
+      }
+    } catch (e: any) {
+      console.warn(`[Worker] Could not fetch ticket metadata:`, e.message);
+    }
 
     let customerMessage = '';
-    let email = '';
+    try {
+      const convLog = await callMcpTool(
+        zendeskConfig.endpoint,
+        zendeskConfig.apiKey,
+        'get_ticket_conversation_log',
+        { ticket_id: ticketId }
+      );
 
-    if (result && typeof result === 'object') {
-      const messages = result.messages || result.conversation || [];
-      if (Array.isArray(messages)) {
-        for (let i = messages.length - 1; i >= 0; i--) {
-          const msg = messages[i];
-          if (msg.author_role === 'end-user' || msg.is_customer) {
-            customerMessage = msg.body || msg.content || '';
-            email = msg.author_email || msg.email || '';
+      if (convLog?.content?.[0]?.text) {
+        const parsed = JSON.parse(convLog.content[0].text);
+        const events = parsed?.data?.events || [];
+        for (let i = events.length - 1; i >= 0; i--) {
+          const ev = events[i];
+          const authorName = ev.author?.display_name || '';
+          if (authorName.includes('David Yang') || authorName.includes('AI Agent') || ev.author?.type === 'agent') {
+            continue;
+          }
+          const bodyObj = ev.body || ev.message;
+          if (typeof bodyObj === 'string' && bodyObj.trim()) {
+            customerMessage = bodyObj.trim();
+            break;
+          } else if (bodyObj?.text && bodyObj.text.trim()) {
+            customerMessage = bodyObj.text.trim();
             break;
           }
         }
       }
-      if (!customerMessage && result.subject) {
-        customerMessage = result.subject;
-      }
+    } catch (e: any) {
+      console.warn(`[Worker] Could not fetch conversation log:`, e.message);
     }
 
     if (!customerMessage) {
-      customerMessage = `Ticket #${ticketId} analysis request`;
+      customerMessage = subject || `Ticket #${ticketId}`;
     }
 
     return { message: customerMessage, email };
   } catch (err: any) {
-    console.warn(`[Worker] Could not fetch conversation log for ticket #${ticketId}:`, err.message);
-    return { message: `Ticket #${ticketId} (unable to prefetch conversation log)` };
+    console.warn(`[Worker] Error getting ticket details:`, err.message);
+    return { message: `Ticket #${ticketId}` };
   }
 }
 

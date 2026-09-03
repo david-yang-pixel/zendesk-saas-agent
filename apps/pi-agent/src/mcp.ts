@@ -11,7 +11,7 @@ export interface CustomTool {
   description: string;
   promptSnippet: string;
   parameters: Record<string, any>;
-  execute: (args: any) => Promise<any>;
+  execute: (toolCallId: string, params: any, signal?: AbortSignal) => Promise<any>;
 }
 
 export async function callMcpTool(
@@ -33,7 +33,7 @@ export async function callMcpTool(
       method: 'tools/call',
       params: {
         name: toolName,
-        arguments: toolArgs,
+        arguments: toolArgs || {},
       },
     }),
   });
@@ -93,8 +93,20 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
         description: tool.description || `Tool ${tool.name}`,
         promptSnippet: (tool.description || tool.name).slice(0, 100),
         parameters: tool.inputSchema || { type: 'object', properties: {} },
-        execute: async (args: any) => {
-          return await callMcpTool(service.endpoint, service.apiKey, tool.name, args);
+        execute: async (_toolCallId: string, params: any, _signal?: AbortSignal) => {
+          try {
+            const mcpResult = await callMcpTool(service.endpoint, service.apiKey, tool.name, params || {});
+            const serialized = typeof mcpResult === 'string' ? mcpResult : JSON.stringify(mcpResult, null, 2);
+            return {
+              content: [{ type: 'text', text: serialized }],
+              details: mcpResult,
+            };
+          } catch (err: any) {
+            return {
+              content: [{ type: 'text', text: `Tool error: ${err.message || String(err)}` }],
+              details: { error: err.message || String(err) },
+            };
+          }
         },
       });
     }
@@ -102,7 +114,7 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
     console.log(`[MCP] Discovered ${tools.length} tools from ${service.name}: ${tools.map(t => t.name).join(', ')}`);
     return tools;
   } catch (err: any) {
-    console.error(`[MCP] Error discovering tools from ${service.name}:`, err.message);
+    console.error(`[MCP] Error connecting to ${service.name} (${service.endpoint}):`, err.message);
     return [];
   }
 }
