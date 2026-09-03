@@ -419,6 +419,7 @@ async def test_zendesk_ticket_reader_uses_read_only_projection() -> None:
         tags=("saas", "priority"),
         group_id=40685275477140,
         status="open",
+        assignee_id=None,
     )
     assert len(requests) == 1
     assert requests[0].method == "GET"

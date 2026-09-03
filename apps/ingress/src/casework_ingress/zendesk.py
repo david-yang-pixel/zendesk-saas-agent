@@ -21,6 +21,7 @@ class ZendeskTicket:
     tags: tuple[str, ...]
     group_id: str | int | None
     status: str
+    assignee_id: int | None = None
 
 
 class ZendeskTicketReader(Protocol):
@@ -126,11 +127,18 @@ class ZendeskApiTicketReader:
             if raw_group_id is None
             else self._positive_integer(raw_group_id)
         )
+        raw_assignee_id = raw_ticket.get("assignee_id")
+        assignee_id = (
+            None
+            if raw_assignee_id is None
+            else self._positive_integer(raw_assignee_id)
+        )
         return ZendeskTicket(
             ticket_id=ticket_id,
             tags=tuple(tags),
             group_id=group_id,
             status=status,
+            assignee_id=assignee_id,
         )
 
     async def close(self) -> None:

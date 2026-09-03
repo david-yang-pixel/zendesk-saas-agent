@@ -119,16 +119,22 @@ class ZendeskWebhookPayload(BaseModel):
         if message_text is None:
             message_text = self.message if isinstance(self.message, str) else ""
         assignment_group = self.group_id
+        individual_assignee = None
         if assignment_group is None:
             # Compatibility for an older custom webhook template. New
             # templates and Messaging ticket lookups must supply group_id.
             assignment_group = (
                 self.assignee if self.assignee is not None else self.assignee_id
             )
+        else:
+            individual_assignee = (
+                self.assignee_id if self.assignee_id is not None else self.assignee
+            )
         return NormalizedZendeskEvent(
             ticket_id=self.ticket_id,
             tags=self.tags or (),
             assignee=assignment_group,
+            assignee_id=individual_assignee,
             status=self.status or "",
             is_customer_message=customer_message,
             message_text=message_text,

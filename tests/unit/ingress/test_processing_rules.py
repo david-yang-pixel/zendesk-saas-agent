@@ -56,6 +56,9 @@ def test_event_is_ignored_when_any_normal_processing_condition_is_missing() -> N
     assert evaluate_processing_rules(
         _event(is_customer_message=False), config=config
     ).reason == "not_customer_message"
+    assert evaluate_processing_rules(
+        _event(assignee_id=45433304089364), config=config
+    ).reason == "already_assigned_to_human"
 
 
 def test_human_keyword_cancels_independently_of_normal_conditions() -> None:

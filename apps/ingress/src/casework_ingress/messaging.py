@@ -50,6 +50,7 @@ class MessagingEvent:
             # ProcessingRuleConfig keeps the legacy ``saas_assignee`` storage
             # key, but routing is intentionally based on the Zendesk group.
             assignee=ticket.group_id,
+            assignee_id=ticket.assignee_id,
             status=ticket.status,
             is_customer_message=self.is_customer_message,
             message_text=self.message_text,

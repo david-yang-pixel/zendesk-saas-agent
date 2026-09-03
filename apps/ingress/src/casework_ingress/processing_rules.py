@@ -59,6 +59,7 @@ class NormalizedZendeskEvent:
     ticket_id: int
     tags: tuple[str, ...] = ()
     assignee: str | int | None = None
+    assignee_id: str | int | None = None
     status: str = ""
     is_customer_message: bool = False
     message_text: str = ""
@@ -159,6 +160,17 @@ def _has_human_request(
     return text in triggers
 
 
+def _has_individual_assignee(assignee_id: str | int | None) -> bool:
+    if assignee_id is None:
+        return False
+    if isinstance(assignee_id, int):
+        return assignee_id > 0
+    if isinstance(assignee_id, str):
+        cleaned = assignee_id.strip()
+        return bool(cleaned and cleaned != "0" and cleaned.casefold() not in {"null", "none"})
+    return False
+
+
 def evaluate_processing_rules(
     event: NormalizedZendeskEvent,
     config: ProcessingRuleConfig,
@@ -177,6 +189,9 @@ def evaluate_processing_rules(
 
     if _has_human_request(event, config):
         return _decision("cancel", event, "human")
+
+    if _has_individual_assignee(event.assignee_id):
+        return _decision("ignore", event, "already_assigned_to_human")
 
     if config.saas_tag not in event.tags:
         return _decision("ignore", event, "saas_tag_missing")
