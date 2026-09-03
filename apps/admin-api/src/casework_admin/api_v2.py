@@ -423,85 +423,87 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
 
     @router.get("/mcp/mesh", response_model=McpMeshResponse)
     async def get_mcp_mesh() -> McpMeshResponse:
-        results: list[McpServiceStatus] = []
-        total_tools = 0
+        import asyncio
 
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            for spec in MCP_SERVICES_SPEC:
-                key = os.environ.get(spec["key_env"], "")
-                start = time.perf_counter()
-                online = False
-                latency = 0
-                tools: list[dict[str, Any]] = []
-                err_msg: str | None = None
+        async def _probe_single(client: httpx.AsyncClient, spec: dict[str, str]) -> McpServiceStatus:
+            key = os.environ.get(spec["key_env"], "")
+            start = time.perf_counter()
+            online = False
+            latency = 0
+            tools: list[dict[str, Any]] = []
+            err_msg: str | None = None
 
-                try:
-                    if spec["type"] == "action":
-                        res = await client.get(
-                            f"{spec['url']}/ready",
-                            headers={"Authorization": f"Bearer {key}"},
-                        )
-                        latency = int((time.perf_counter() - start) * 1000)
-                        online = res.status_code in (200, 429)
-                        tools = [
-                            {
-                                "name": "send_zendesk_native_message",
-                                "description": "Send a customer-visible Zendesk native messaging reply through server browser relay.",
-                                "inputSchema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "ticket_id": {"type": "integer"},
-                                        "body": {"type": "string"},
-                                    },
-                                    "required": ["ticket_id", "body"],
-                                },
-                            }
-                        ]
-                    else:
-                        rpc_payload = {
-                            "jsonrpc": "2.0",
-                            "id": "mesh-probe",
-                            "method": "tools/list",
-                            "params": {},
-                        }
-                        res = await client.post(
-                            spec["url"],
-                            headers={
-                                "Content-Type": "application/json",
-                                "Authorization": f"Bearer {key}",
-                            },
-                            json=rpc_payload,
-                        )
-                        latency = int((time.perf_counter() - start) * 1000)
-                        if res.status_code == 200:
-                            online = True
-                            data = res.json()
-                            tools = data.get("result", {}).get("tools", [])
-                        else:
-                            online = False
-                            err_msg = f"HTTP {res.status_code}"
-                except Exception as exc:
-                    latency = int((time.perf_counter() - start) * 1000)
-                    online = False
-                    err_msg = str(exc)
-
-                results.append(
-                    McpServiceStatus(
-                        id=spec["id"],
-                        name=spec["name"],
-                        label=spec["label"],
-                        service_type=spec["type"],
-                        endpoint=spec["url"],
-                        online=online,
-                        latency_ms=latency,
-                        tool_count=len(tools),
-                        tools=tools,
-                        error=err_msg,
+            try:
+                if spec["type"] == "action":
+                    res = await client.get(
+                        f"{spec['url']}/ready",
+                        headers={"Authorization": f"Bearer {key}"},
+                        timeout=5.0,
                     )
-                )
-                total_tools += len(tools)
+                    latency = int((time.perf_counter() - start) * 1000)
+                    online = res.status_code in (200, 429)
+                    tools = [
+                        {
+                            "name": "send_zendesk_native_message",
+                            "description": "Send a customer-visible Zendesk native messaging reply through server browser relay.",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "ticket_id": {"type": "integer"},
+                                    "body": {"type": "string"},
+                                },
+                                "required": ["ticket_id", "body"],
+                            },
+                        }
+                    ]
+                else:
+                    rpc_payload = {
+                        "jsonrpc": "2.0",
+                        "id": "mesh-probe",
+                        "method": "tools/list",
+                        "params": {},
+                    }
+                    res = await client.post(
+                        spec["url"],
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {key}",
+                        },
+                        json=rpc_payload,
+                        timeout=5.0,
+                    )
+                    latency = int((time.perf_counter() - start) * 1000)
+                    if res.status_code == 200:
+                        online = True
+                        data = res.json()
+                        tools = data.get("result", {}).get("tools", [])
+                    else:
+                        online = False
+                        err_msg = f"HTTP {res.status_code}"
+            except Exception as exc:
+                latency = int((time.perf_counter() - start) * 1000)
+                online = False
+                err_msg = str(exc)
 
-        return McpMeshResponse(services=results, total_tools=total_tools)
+            return McpServiceStatus(
+                id=spec["id"],
+                name=spec["name"],
+                label=spec["label"],
+                service_type=spec["type"],
+                endpoint=spec["url"],
+                online=online,
+                latency_ms=latency,
+                tool_count=len(tools),
+                tools=tools,
+                error=err_msg,
+            )
+
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            tasks = [_probe_single(client, spec) for spec in MCP_SERVICES_SPEC]
+            results = await asyncio.gather(*tasks)
+
+        total_tools = sum(s.tool_count for s in results)
+        return McpMeshResponse(services=list(results), total_tools=total_tools)
 
     # -----------------------------------------------------------------------
     # Endpoints: Skills Management
