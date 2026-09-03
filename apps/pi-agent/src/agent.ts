@@ -43,7 +43,7 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<string> {
   const modelName = options.modelName || process.env.CASEWORK_MODEL_NAME || 'gpt-5.6-terra';
-  const rawBaseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.openai.com/v1';
+  const rawBaseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.tokener.dev';
   let baseUrl = rawBaseUrl.replace(/\/+$/, '');
   if (!baseUrl.endsWith('/v1')) {
     baseUrl += '/v1';
@@ -60,8 +60,8 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<strin
       {
         id: modelName,
         name: modelName,
-        api: 'openai-completions',
-        reasoning: false,
+        api: 'openai-responses',
+        reasoning: true,
         input: ['text'],
         cost: { input: 0, output: 0 },
         contextWindow: 128000,
