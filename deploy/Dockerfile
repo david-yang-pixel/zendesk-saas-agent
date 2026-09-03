@@ -20,7 +20,7 @@ RUN apt-get update \
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /bin/
 
-WORKDIR /src
+WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
 COPY packages ./packages
@@ -76,7 +76,7 @@ CMD ["/app/.venv/bin/uvicorn", "casework_sandbox.composition:create_app", "--fac
 FROM base AS admin
 
 WORKDIR /app
-COPY --from=builder --chown=casework:casework /src/.venv /app/.venv
+COPY --from=builder --chown=casework:casework /app/.venv /app/.venv
 COPY --chown=casework:casework pyproject.toml uv.lock ./
 COPY --chown=casework:casework packages ./packages
 COPY --chown=casework:casework deploy ./deploy
@@ -84,7 +84,7 @@ COPY --chown=casework:casework skills ./skills
 COPY --chown=casework:casework apps/admin-api ./apps/admin-api
 COPY --from=admin-web-build --chown=casework:casework /src/apps/admin-web/dist /app/apps/admin-web/dist
 EXPOSE 8104
-CMD ["/app/.venv/bin/uvicorn", "casework_admin.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]
+CMD ["/app/.venv/bin/python", "-m", "uvicorn", "casework_admin.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8104"]
 
 FROM node:22-alpine AS pi-agent
 
