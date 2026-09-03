@@ -7,12 +7,21 @@ import { sendBrowserRelay } from './relay.js';
 
 dotenv.config();
 
+function cleanEnv(val?: string): string {
+  if (!val) return '';
+  let s = val.trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    s = s.slice(1, -1);
+  }
+  return s.trim();
+}
+
 const WORKER_ID = `pi-agent-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-const PORT = parseInt(process.env.SERVICE_PORT || '8102', 10);
-const rawDbUrl = process.env.DATABASE_URL || '';
+const PORT = parseInt(cleanEnv(process.env.SERVICE_PORT) || '8102', 10);
+const rawDbUrl = cleanEnv(process.env.DATABASE_URL);
 const DATABASE_URL = rawDbUrl.replace(/^postgresql\+[a-zA-Z0-9_]+:\/\//, 'postgresql://');
-const BROWSER_RELAY_URL = process.env.CASEWORK_BROWSER_RELAY_URL || 'https://zendesk.smlershou.top/zendesk-browser-relay';
-const BROWSER_RELAY_KEY = process.env.CASEWORK_BROWSER_RELAY_API_KEY || '';
+const BROWSER_RELAY_URL = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_URL) || 'https://zendesk.smlershou.top/zendesk-browser-relay';
+const BROWSER_RELAY_KEY = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_API_KEY);
 
 if (!DATABASE_URL) {
   console.error('[Worker] Fatal: DATABASE_URL is required');
@@ -146,29 +155,29 @@ async function main() {
   const mcpServices: McpServiceConfig[] = [
     {
       name: 'db-gateway',
-      endpoint: process.env.DB_GATEWAY_MCP_URL || 'https://zendesk.smlershou.top/db-gateway/mcp',
-      apiKey: process.env.CASEWORK_CREDENTIAL_DB_GATEWAY || '',
+      endpoint: cleanEnv(process.env.DB_GATEWAY_MCP_URL) || 'https://zendesk.smlershou.top/db-gateway/mcp',
+      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_DB_GATEWAY),
     },
     {
       name: 'zendesk',
-      endpoint: process.env.ZENDESK_MCP_URL || 'https://zendesk.smlershou.top/zendesk-mcp/mcp',
-      apiKey: process.env.CASEWORK_CREDENTIAL_ZENDESK_MCP || '',
+      endpoint: cleanEnv(process.env.ZENDESK_MCP_URL) || 'https://zendesk.smlershou.top/zendesk-mcp/mcp',
+      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_ZENDESK_MCP),
       excludedTools: ['add_internal_note', 'update_ticket_status', 'update_ticket_metadata'],
     },
     {
       name: 'signoz',
-      endpoint: process.env.SIGNOZ_MCP_URL || 'https://zendesk.smlershou.top/signoz-mcp/mcp',
-      apiKey: process.env.CASEWORK_CREDENTIAL_SIGNOZ_MCP || '',
+      endpoint: cleanEnv(process.env.SIGNOZ_MCP_URL) || 'https://zendesk.smlershou.top/signoz-mcp/mcp',
+      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_SIGNOZ_MCP),
     },
     {
       name: 'source',
-      endpoint: process.env.SOURCE_MCP_URL || 'https://zendesk.smlershou.top/source-mcp/mcp',
-      apiKey: process.env.CASEWORK_CREDENTIAL_SOURCE_MCP || '',
+      endpoint: cleanEnv(process.env.SOURCE_MCP_URL) || 'https://zendesk.smlershou.top/source-mcp/mcp',
+      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_SOURCE_MCP),
     },
     {
       name: 'github',
-      endpoint: process.env.GITHUB_MCP_URL || 'https://zendesk.smlershou.top/tool-services/mcp',
-      apiKey: process.env.CASEWORK_CREDENTIAL_GITHUB_MCP || '',
+      endpoint: cleanEnv(process.env.GITHUB_MCP_URL) || 'https://zendesk.smlershou.top/github-mcp/mcp',
+      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_GITHUB_MCP),
     },
   ];
 
@@ -210,6 +219,8 @@ async function main() {
           customerMessage: message,
           requesterEmail: email,
           tools: allTools,
+          apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY),
+          modelBaseUrl: cleanEnv(process.env.CASEWORK_MODEL_BASE_URL),
         });
 
         console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms. Delivering via Browser Relay...`);
