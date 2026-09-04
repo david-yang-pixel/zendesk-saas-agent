@@ -102,14 +102,29 @@ export async function runLarkCli(args: string[]): Promise<{ stdout: string; stde
   } catch (err: any) {
     const stdout = (err.stdout || '').toString().trim();
     const stderr = (err.stderr || '').toString().trim();
-    const exitCode = err.code || err.status || 1;
-
-    // lark-cli prints JSON error to stdout even when exit code is non-zero
-    if (stdout) {
-      return { stdout, stderr };
+    const output = stdout || stderr;
+    if (output) {
+      return { stdout: output, stderr };
     }
+    const exitCode = err.code || err.status || 1;
     throw new Error(`lark-cli exited with code ${exitCode}: ${stderr || err.message}`);
   }
+}
+
+export function formatToolOutput(rawOutput: string): ToolCallResult {
+  let isError = false;
+  try {
+    const parsed = JSON.parse(rawOutput);
+    if (parsed && (parsed.ok === false || parsed.error || (parsed.code !== undefined && parsed.code !== 0))) {
+      isError = true;
+    }
+  } catch {
+    // Non-JSON output (e.g. plain text or markdown)
+  }
+  return {
+    content: [{ type: 'text', text: rawOutput }],
+    isError,
+  };
 }
 
 export async function handleDocRead(args: DocReadArgs): Promise<ToolCallResult> {
@@ -143,10 +158,7 @@ export async function handleDocRead(args: DocReadArgs): Promise<ToolCallResult> 
   }
 
   const { stdout } = await runLarkCli(cmdArgs);
-  return {
-    content: [{ type: 'text', text: stdout }],
-    isError: false,
-  };
+  return formatToolOutput(stdout);
 }
 
 export async function handleWikiListSpaces(args: WikiListSpacesArgs): Promise<ToolCallResult> {
@@ -160,10 +172,7 @@ export async function handleWikiListSpaces(args: WikiListSpacesArgs): Promise<To
   }
 
   const { stdout } = await runLarkCli(cmdArgs);
-  return {
-    content: [{ type: 'text', text: stdout }],
-    isError: false,
-  };
+  return formatToolOutput(stdout);
 }
 
 export async function handleWikiListNodes(args: WikiListNodesArgs): Promise<ToolCallResult> {
@@ -188,10 +197,7 @@ export async function handleWikiListNodes(args: WikiListNodesArgs): Promise<Tool
   }
 
   const { stdout } = await runLarkCli(cmdArgs);
-  return {
-    content: [{ type: 'text', text: stdout }],
-    isError: false,
-  };
+  return formatToolOutput(stdout);
 }
 
 export async function handleWikiGetNode(args: WikiGetNodeArgs): Promise<ToolCallResult> {
@@ -210,10 +216,7 @@ export async function handleWikiGetNode(args: WikiGetNodeArgs): Promise<ToolCall
   }
 
   const { stdout } = await runLarkCli(cmdArgs);
-  return {
-    content: [{ type: 'text', text: stdout }],
-    isError: false,
-  };
+  return formatToolOutput(stdout);
 }
 
 export async function handleDocSearch(args: DocSearchArgs): Promise<ToolCallResult> {
@@ -235,8 +238,5 @@ export async function handleDocSearch(args: DocSearchArgs): Promise<ToolCallResu
   }
 
   const { stdout } = await runLarkCli(cmdArgs);
-  return {
-    content: [{ type: 'text', text: stdout }],
-    isError: false,
-  };
+  return formatToolOutput(stdout);
 }

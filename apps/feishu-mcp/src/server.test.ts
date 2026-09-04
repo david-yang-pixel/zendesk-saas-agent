@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { AddressInfo } from 'node:net';
-import { validateReadOnlyCommand } from './lark.js';
+import { validateReadOnlyCommand, formatToolOutput } from './lark.js';
 import { getToolDefinitions, executeTool } from './tools.js';
 import { createServer } from './server.js';
 
@@ -74,6 +74,17 @@ describe('Feishu MCP Tool Registry', () => {
     const emptySearch = await executeTool('feishu_doc_search', {});
     expect(emptySearch.isError).toBe(true);
     expect(emptySearch.content[0].text).toContain('query is required');
+  });
+
+  it('correctly detects isError in tool output', () => {
+    const successResult = formatToolOutput('{"code": 0, "msg": "ok", "data": {}}');
+    expect(successResult.isError).toBe(false);
+
+    const apiErrorResult = formatToolOutput('{"ok": false, "error": {"code": 99991672, "message": "access denied"}}');
+    expect(apiErrorResult.isError).toBe(true);
+
+    const plainTextResult = formatToolOutput('# Document Markdown Content');
+    expect(plainTextResult.isError).toBe(false);
   });
 });
 
