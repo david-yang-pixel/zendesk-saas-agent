@@ -56,6 +56,10 @@ jobs:
         run: |
           pnpm --filter pi-agent test
           pnpm --filter pi-agent build
+      - name: Test and build Feishu MCP
+        run: |
+          pnpm --filter feishu-mcp test
+          pnpm --filter feishu-mcp build
 
   build:
     needs: quality
@@ -70,6 +74,7 @@ jobs:
       sandbox_digest: ${{ steps.sandbox.outputs.digest }}
       admin_digest: ${{ steps.admin.outputs.digest }}
       pi_agent_digest: ${{ steps.pi_agent.outputs.digest }}
+      feishu_mcp_digest: ${{ steps.feishu_mcp.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -148,6 +153,20 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Build and push Feishu MCP
+        id: feishu_mcp
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: feishu-mcp
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-feishu-mcp:sha-${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-feishu-mcp:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
   deploy:
     needs: build
@@ -173,9 +192,10 @@ jobs:
           SANDBOX_DIGEST: ${{ needs.build.outputs.sandbox_digest }}
           ADMIN_DIGEST: ${{ needs.build.outputs.admin_digest }}
           PI_AGENT_DIGEST: ${{ needs.build.outputs.pi_agent_digest }}
+          FEISHU_MCP_DIGEST: ${{ needs.build.outputs.feishu_mcp_digest }}
         run: |
           set -euo pipefail
-          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS GHCR_PAT INGRESS_DIGEST HARNESS_DIGEST SANDBOX_DIGEST ADMIN_DIGEST PI_AGENT_DIGEST)
+          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS GHCR_PAT INGRESS_DIGEST HARNESS_DIGEST SANDBOX_DIGEST ADMIN_DIGEST PI_AGENT_DIGEST FEISHU_MCP_DIGEST)
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required deployment input: ${name}" >&2; exit 1; }
           done
@@ -194,6 +214,7 @@ jobs:
             printf 'export CASEWORK_SANDBOX_IMAGE=%q\n' "${IMAGE_PREFIX}-sandbox@${SANDBOX_DIGEST}"
             printf 'export CASEWORK_ADMIN_IMAGE=%q\n' "${IMAGE_PREFIX}-admin@${ADMIN_DIGEST}"
             printf 'export CASEWORK_PI_AGENT_IMAGE=%q\n' "${IMAGE_PREFIX}-pi-agent@${PI_AGENT_DIGEST}"
+            printf 'export CASEWORK_FEISHU_MCP_IMAGE=%q\n' "${IMAGE_PREFIX}-feishu-mcp@${FEISHU_MCP_DIGEST}"
             printf 'export CASEWORK_RELEASE_REVISION=%q\n' "$GITHUB_SHA"
             cat <<'REMOTE'
           set -euo pipefail

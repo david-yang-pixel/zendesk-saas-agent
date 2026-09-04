@@ -27,7 +27,7 @@ required=(
   GHCR_USERNAME GHCR_PAT CASEWORK_RELEASE_REVISION
   CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE
   CASEWORK_SANDBOX_IMAGE CASEWORK_ADMIN_IMAGE
-  CASEWORK_PI_AGENT_IMAGE
+  CASEWORK_PI_AGENT_IMAGE CASEWORK_FEISHU_MCP_IMAGE
 )
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -40,7 +40,7 @@ if [[ ! "$CASEWORK_RELEASE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
   echo "CASEWORK_RELEASE_REVISION must be a full Git commit SHA" >&2
   exit 1
 fi
-for image_name in CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE CASEWORK_SANDBOX_IMAGE CASEWORK_ADMIN_IMAGE CASEWORK_PI_AGENT_IMAGE; do
+for image_name in CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE CASEWORK_SANDBOX_IMAGE CASEWORK_ADMIN_IMAGE CASEWORK_PI_AGENT_IMAGE CASEWORK_FEISHU_MCP_IMAGE; do
   if [[ ! "${!image_name}" =~ @sha256:[0-9a-f]{64}$ ]]; then
     echo "${image_name} must be digest-pinned" >&2
     exit 1
@@ -74,13 +74,13 @@ printf '%s' "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-st
 
 compose=(docker compose --project-name casework-greenfield --env-file "$RUNTIME_ENV" -f "$COMPOSE_FILE")
 "${compose[@]}" config --quiet
-"${compose[@]}" pull postgres ingress pi-agent admin migration
+"${compose[@]}" pull postgres ingress pi-agent admin migration feishu-mcp
 docker pull "$CASEWORK_SANDBOX_IMAGE" >/dev/null
 
 "${compose[@]}" up -d postgres
 "${compose[@]}" run --rm migration
-docker rm -f casework-greenfield-ingress-1 casework-greenfield-pi-agent-1 casework-greenfield-admin-1 2>/dev/null || true
-"${compose[@]}" up -d --remove-orphans ingress pi-agent admin
+docker rm -f casework-greenfield-ingress-1 casework-greenfield-pi-agent-1 casework-greenfield-admin-1 casework-greenfield-feishu-mcp-1 2>/dev/null || true
+"${compose[@]}" up -d --remove-orphans ingress pi-agent admin feishu-mcp
 
 wait_ready() {
   local name="$1"
@@ -100,6 +100,7 @@ wait_ready() {
 wait_ready ingress http://127.0.0.1:18101/readyz
 wait_ready admin http://127.0.0.1:18104/readyz
 wait_ready pi-agent http://127.0.0.1:18102/readyz
+wait_ready feishu-mcp http://127.0.0.1:18115/readyz
 
 python3 "$DEPLOY_DIR/migrate_legacy_model_config.py" \
   --base-url http://127.0.0.1:18104 \
@@ -118,10 +119,11 @@ CASEWORK_HARNESS_IMAGE=$CASEWORK_HARNESS_IMAGE
 CASEWORK_SANDBOX_IMAGE=$CASEWORK_SANDBOX_IMAGE
 CASEWORK_ADMIN_IMAGE=$CASEWORK_ADMIN_IMAGE
 CASEWORK_PI_AGENT_IMAGE=$CASEWORK_PI_AGENT_IMAGE
+CASEWORK_FEISHU_MCP_IMAGE=$CASEWORK_FEISHU_MCP_IMAGE
 EOF
 chmod 600 "$RELEASE_ENV"
 
-for service in ingress pi-agent admin; do
+for service in ingress pi-agent admin feishu-mcp; do
   container="casework-greenfield-${service}-1"
   docker inspect "$container" --format '{{.Name}} {{.Image}} {{.State.Status}}'
 done

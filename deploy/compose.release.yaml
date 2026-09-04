@@ -90,5 +90,18 @@ services:
     mem_limit: 256m
     cpus: 0.25
 
+  feishu-mcp:
+    image: ${CASEWORK_FEISHU_MCP_IMAGE:-feishu-mcp:v1}
+    environment:
+      FEISHU_MCP_PORT: "8115"
+      FEISHU_MCP_API_KEY: ${CASEWORK_CREDENTIAL_FEISHU_MCP:-}
+    ports: ["127.0.0.1:${CASEWORK_FEISHU_MCP_PORT:-18115}:8115"]
+    volumes:
+      - /root/.lark-cli:/root/.lark-cli
+      - /root/.local/share/lark-cli:/root/.local/share/lark-cli:ro
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.25
+
 volumes:
   casework-postgres:

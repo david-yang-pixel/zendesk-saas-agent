@@ -304,6 +304,10 @@ def prepare(
             "CASEWORK_CREDENTIAL_OPENAI_PRIMARY",
             _required(legacy, "OPENAI_API_KEY"),
         )
+        feishu_mcp_key = (
+            credentials.get("CASEWORK_CREDENTIAL_FEISHU_MCP") or secrets.token_hex(24)
+        )
+        credentials["CASEWORK_CREDENTIAL_FEISHU_MCP"] = feishu_mcp_key
         credentials.update(service_credentials)
         _write_dotenv(credentials_path, credentials)
     if os.geteuid() == 0:
@@ -369,6 +373,8 @@ def prepare(
         "CASEWORK_INGRESS_PORT": "18101",
         "CASEWORK_HARNESS_PORT": "18102",
         "CASEWORK_ADMIN_PORT": "18104",
+        "CASEWORK_FEISHU_MCP_PORT": "18115",
+        "CASEWORK_CREDENTIAL_FEISHU_MCP": feishu_mcp_key,
         "CASEWORK_SAAS_GROUP_ID": "40685275477140",
         "CASEWORK_ROOT_MODEL": "gpt-5.5",
         "CASEWORK_ROOT_MODEL_BASE_URL": "https://api.openai.com",

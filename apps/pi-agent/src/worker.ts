@@ -612,6 +612,11 @@ async function main() {
       endpoint: cleanEnv(process.env.DOCS_MCP_URL) || 'https://zendesk.smlershou.top/docs-tool-service/mcp',
       apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_DOCS_MCP),
     },
+    {
+      name: 'feishu',
+      endpoint: cleanEnv(process.env.FEISHU_MCP_URL) || 'http://feishu-mcp:8115/mcp',
+      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_FEISHU_MCP),
+    },
   ];
 
   let allTools: CustomTool[] = [];

@@ -59,6 +59,7 @@ export interface AgentRunResult {
 
 export function inferToolService(toolName: string): string {
   if (toolName === 'db_gateway_query') return 'db-gateway';
+  if (toolName.startsWith('feishu_')) return 'feishu';
   if (toolName.startsWith('signoz_') || toolName === 'sz_run') return 'signoz';
   if (toolName.startsWith('official_docs_')) return 'docs';
   if (toolName.startsWith('github_')) return 'github';

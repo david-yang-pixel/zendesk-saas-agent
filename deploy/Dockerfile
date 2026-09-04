@@ -104,3 +104,19 @@ RUN pnpm --dir apps/pi-agent build
 
 EXPOSE 8102
 CMD ["node", "apps/pi-agent/dist/worker.js"]
+
+FROM node:22-alpine AS feishu-mcp
+
+ENV NODE_ENV=production \
+    FEISHU_MCP_PORT=8115
+
+WORKDIR /app
+RUN apk add --no-cache ca-certificates && corepack enable && npm install -g @larksuite/cli
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY apps/feishu-mcp/package.json ./apps/feishu-mcp/
+RUN pnpm --dir apps/feishu-mcp install --frozen-lockfile
+COPY apps/feishu-mcp ./apps/feishu-mcp
+RUN pnpm --dir apps/feishu-mcp build
+
+EXPOSE 8115
+CMD ["node", "apps/feishu-mcp/dist/server.js"]

@@ -1,3 +1,4 @@
 packages:
   - apps/admin-web
   - apps/pi-agent
+  - apps/feishu-mcp

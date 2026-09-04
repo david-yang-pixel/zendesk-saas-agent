@@ -39,6 +39,18 @@ importers:
         specifier: ^2.2.0
         version: 2.2.12(typescript@5.9.3)
 
+  apps/feishu-mcp:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.9
+        version: 22.20.1
+      typescript:
+        specifier: ^5.8.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.7
+        version: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1)
+
   apps/pi-agent:
     dependencies:
       '@earendil-works/pi-ai':
