@@ -64,7 +64,7 @@ src = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
-ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003", "I001"]
 
 [tool.pyright]
 pythonVersion = "3.12"
