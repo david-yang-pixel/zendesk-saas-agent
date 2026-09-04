@@ -11,6 +11,7 @@ describe('Feishu MCP Read-Only Security Guard', () => {
     expect(() => validateReadOnlyCommand(['wiki', '+node-list', '--space-id', 'sp_123', '--as', 'bot'])).not.toThrow();
     expect(() => validateReadOnlyCommand(['wiki', '+node-get', '--node-token', 'nd_123', '--as', 'bot'])).not.toThrow();
     expect(() => validateReadOnlyCommand(['docs', '+search', '--query', 'incident', '--json'])).not.toThrow();
+    expect(() => validateReadOnlyCommand(['drive', '+search', '--query', 'incident', '--as', 'bot', '--json'])).not.toThrow();
     expect(() => validateReadOnlyCommand(['whoami'])).not.toThrow();
   });
 

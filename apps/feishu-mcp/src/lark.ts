@@ -17,6 +17,7 @@ const ALLOWED_COMMAND_PREFIXES = [
   ['wiki', '+space-list'],
   ['wiki', '+node-list'],
   ['wiki', '+node-get'],
+  ['drive', '+search'],
   ['docs', '+search'],
   ['whoami'],
 ];
@@ -228,7 +229,7 @@ export async function handleDocSearch(args: DocSearchArgs): Promise<ToolCallResu
     };
   }
 
-  const cmdArgs = ['docs', '+search', '--query', query, '--json'];
+  const cmdArgs = ['drive', '+search', '--query', query, '--as', 'bot', '--json'];
 
   if (args.page_token) {
     cmdArgs.push('--page-token', args.page_token);
