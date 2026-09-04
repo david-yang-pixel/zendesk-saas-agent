@@ -42,7 +42,7 @@ FROM base AS ingress
 
 USER casework
 WORKDIR /app
-COPY --from=builder --chown=casework:casework /src/.venv /app/.venv
+COPY --from=builder --chown=casework:casework /app/.venv /app/.venv
 COPY --chown=casework:casework pyproject.toml uv.lock ./
 COPY --chown=casework:casework packages ./packages
 COPY --chown=casework:casework deploy ./deploy
@@ -53,7 +53,7 @@ CMD ["/app/.venv/bin/uvicorn", "casework_ingress.composition:create_app", "--fac
 FROM base AS harness
 
 WORKDIR /app
-COPY --from=builder --chown=casework:casework /src/.venv /app/.venv
+COPY --from=builder --chown=casework:casework /app/.venv /app/.venv
 COPY --chown=casework:casework pyproject.toml uv.lock ./
 COPY --chown=casework:casework packages ./packages
 COPY --chown=casework:casework deploy ./deploy
@@ -65,7 +65,7 @@ FROM base AS sandbox
 
 USER casework
 WORKDIR /app
-COPY --from=builder --chown=casework:casework /src/.venv /app/.venv
+COPY --from=builder --chown=casework:casework /app/.venv /app/.venv
 COPY --chown=casework:casework pyproject.toml uv.lock ./
 COPY --chown=casework:casework packages ./packages
 COPY --chown=casework:casework deploy ./deploy
