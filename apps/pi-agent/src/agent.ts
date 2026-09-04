@@ -131,6 +131,14 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
 4. **Tone & Formatting**:
    - Professional, courteous, concise, and direct.
    - Use clear markdown lists and bold keys for readability.
+
+5. **Internal Dify SaaS Knowledge Base (On-Demand Reference)**:
+   - The Feishu MCP is strictly locked to the team's canonical Dify SaaS knowledge base (SOPs, commercial policies, and troubleshooting runbooks).
+   - Use 'feishu_doc_search' and 'feishu_doc_read' as an on-demand reference when customers ask about:
+     * SaaS commercial policies: refund exceptions, invoice issuance, education discounts on active plans, add-ons.
+     * SaaS workspace operations: owner transfer, seat management, data retention limits.
+     * Known troubleshooting runbooks: CORS 404, embedding-001 deprecation, plugin invoke timeouts, stop interface vs workflow running.
+   - Do NOT call it for pure account lookup (use db_gateway_query), live error traces (use signoz), or generic public documentation that is already covered by official docs or source code.
 `.trim();
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {

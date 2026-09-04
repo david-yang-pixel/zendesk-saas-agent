@@ -220,6 +220,23 @@ export async function handleWikiGetNode(args: WikiGetNodeArgs): Promise<ToolCall
   return formatToolOutput(stdout);
 }
 
+const DEFAULT_SAAS_FOLDERS = [
+  'MGC0fbkWwloYg3dmI6pc5oWLnVe', // Root SaaS知识库
+  'AVkLfqLmmlCFAIdjX6yc1z1pnYd', // 01-产品功能
+  'T5AffWkitlimvkdWlvHczIZbnYe', // 应用与工作流
+  'Cm5RfA9yPljnv1dG643cKVeFnHg', // API与集成
+  'PI1AfGzUel50TadiAu1c7muBnYb', // 模型与插件
+  'FZdcfv0YnljNSLdbvOScyvtJnyg', // 知识库与RAG
+  'Hl66fzSADlKYjfdaBTucXkEonFg', // 02-运行与排障
+  'Hqr4ffyHflmyCQdOCIecKCasnie', // 异常与恢复
+  'S1WjfyBj3lfYJkd6DQGcfCDunkh', // 执行与性能
+  'MwHOfYhSVlY0fydSkUycURTtnZb', // 可观测性与日志
+  'G4sFfTE4mlZN3gd5eTucDjgFnSg', // 03-账号与商业
+  'XgN1fksWbl5l6udry6mcQrONnKb', // 工作空间与权限
+  'H28RfJVZKl8glWdpBhPcWNSln9f', // 套餐账单与配额
+  'UX3Tf0hX3ljBAbdTiz4cefJcnuf', // 04-使用指南与SOP
+];
+
 export async function handleDocSearch(args: DocSearchArgs): Promise<ToolCallResult> {
   const query = (args.query || '').trim();
   if (!query) {
@@ -229,7 +246,18 @@ export async function handleDocSearch(args: DocSearchArgs): Promise<ToolCallResu
     };
   }
 
-  const cmdArgs = ['drive', '+search', '--query', query, '--as', 'bot', '--json'];
+  const folderTokens = process.env.FEISHU_FOLDER_TOKENS || DEFAULT_SAAS_FOLDERS.join(',');
+  const cmdArgs = [
+    'drive',
+    '+search',
+    '--query',
+    query,
+    '--folder-tokens',
+    folderTokens,
+    '--as',
+    'bot',
+    '--json',
+  ];
 
   if (args.page_token) {
     cmdArgs.push('--page-token', args.page_token);
