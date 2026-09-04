@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import { discoverMcpTools, callMcpTool, CustomTool, McpServiceConfig } from './mcp.js';
 import { runPiSupportAgent } from './agent.js';
 import { sendBrowserRelay } from './relay.js';
+import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 
 dotenv.config();
 
@@ -22,6 +23,24 @@ const rawDbUrl = cleanEnv(process.env.DATABASE_URL);
 const DATABASE_URL = rawDbUrl.replace(/^postgresql\+[a-zA-Z0-9_]+:\/\//, 'postgresql://');
 const BROWSER_RELAY_URL = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_URL) || 'https://zendesk.smlershou.top/zendesk-browser-relay';
 const BROWSER_RELAY_KEY = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_API_KEY);
+const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL) || 'https://open.feishu.cn/open-apis/bot/v2/hook/81c40459-690e-49d6-8874-2a89206ec5ea';
+
+const humanAlertTracker = new HumanAlertTracker(30 * 60 * 1000);
+
+async function notifyHumanTakeover(ticketId: number, customerMessage: string, reason: string): Promise<void> {
+  if (!humanAlertTracker.shouldAlert(ticketId)) {
+    console.log(`[Worker] Human takeover alert for ticket #${ticketId} suppressed (cooldown active).`);
+    return;
+  }
+  humanAlertTracker.recordAlert(ticketId);
+  await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
+    title: '🙋 Dify 工单转人工接管提醒',
+    ticketId,
+    status: '模式 B 人工优先锁定（AI 保持静默）',
+    customerMessage: customerMessage ? customerMessage.slice(0, 500) : '客户请求人工支持',
+    note: reason || '检测到客户诉求转人工或已有真人介入，AI 已自动暂停并移交，请真人客服及时跟进。',
+  });
+}
 
 if (!DATABASE_URL) {
   console.error('[Worker] Fatal: DATABASE_URL is required');
@@ -485,6 +504,7 @@ async function scanInternalMentions(zendeskService: McpServiceConfig) {
               updated_at = NOW()
           WHERE ticket_id = $1
         `, [tid]);
+        humanAlertTracker.clear(tid);
 
         // 2. Persist in events table for deduplication
         await pool.query(`
@@ -640,6 +660,10 @@ async function main() {
       if (isHumanInDb && !isMentionJob) {
         const humanReason = `模式 B 人工优先保护：该工单此前已转人工客服，AI 坚决不介入。`;
         console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+        if (humanAlertTracker.shouldAlert(job.ticket_id)) {
+          const details = await getTicketDetails(job.ticket_id, zendeskService);
+          await notifyHumanTakeover(job.ticket_id, details.message, humanReason);
+        }
         await markJobCancelled(job.job_id, humanReason);
         continue;
       }
@@ -662,6 +686,17 @@ async function main() {
         if (initialDetails.hasRequestedHuman && !isMentionJob) {
           const humanReason = `模式 B 人工优先保护：对话历史中检测到客户曾请求人工客服，AI 保持静默。`;
           console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+          try {
+            await pool.query(
+              `INSERT INTO ticket_states (ticket_id, human_cancelled_at, updated_at)
+               VALUES ($1, NOW(), NOW())
+               ON CONFLICT (ticket_id) DO UPDATE SET human_cancelled_at = NOW(), updated_at = NOW()`,
+              [job.ticket_id]
+            );
+          } catch (e: any) {
+            console.warn('[Worker] Failed to update ticket_states for human cancellation:', e.message);
+          }
+          await notifyHumanTakeover(job.ticket_id, initialDetails.message, humanReason);
           await markJobCancelled(job.job_id, humanReason);
           continue;
         }
@@ -710,6 +745,17 @@ async function main() {
         if (freshDetails.hasRequestedHuman && !isMentionJob) {
           const humanReason = `模式 B 人工优先保护：最新会话中检测到转人工诉求，旧答复已拦截并移交人工。`;
           console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+          try {
+            await pool.query(
+              `INSERT INTO ticket_states (ticket_id, human_cancelled_at, updated_at)
+               VALUES ($1, NOW(), NOW())
+               ON CONFLICT (ticket_id) DO UPDATE SET human_cancelled_at = NOW(), updated_at = NOW()`,
+              [job.ticket_id]
+            );
+          } catch (e: any) {
+            console.warn('[Worker] Failed to update ticket_states for human cancellation:', e.message);
+          }
+          await notifyHumanTakeover(job.ticket_id, freshDetails.message, humanReason);
           await recordJobOutcome({
             jobId: job.job_id,
             ticketId: job.ticket_id,
@@ -787,6 +833,18 @@ async function main() {
           agentResult.reply
         );
 
+        if (relayResult.status !== 'sent') {
+          const relayErrMsg = relayResult.error || `Browser relay returned unexpected status: ${relayResult.status}`;
+          await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
+            title: '🚨 Dify 工单投递失败警告',
+            ticketId: job.ticket_id,
+            status: `投递异常 (${relayResult.status})`,
+            reason: relayErrMsg,
+            draftReply: agentResult.reply,
+          });
+          throw new Error(relayErrMsg);
+        }
+
         console.log(`[Worker] Browser Relay delivered successfully for ticket #${job.ticket_id}: status=${relayResult.status} (relayMs=${relayResult.total_duration_ms ?? 0})`);
 
         await recordJobOutcome({
@@ -839,6 +897,15 @@ async function main() {
           errorReason: runErr.message,
         });
         await markJobFailed(job.job_id, runErr.message);
+
+        // 🚨 Dispatch Feishu failure alert with draft reply (if generated)
+        await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
+          title: '🚨 Dify 工单投递/处理失败警告',
+          ticketId: job.ticket_id,
+          status: '处理/投递失败',
+          reason: runErr.message,
+          draftReply: activeTrace?.finalReply || undefined,
+        });
       }
     } catch (loopErr: any) {
       console.error('[Worker] Polling loop error:', loopErr.message);

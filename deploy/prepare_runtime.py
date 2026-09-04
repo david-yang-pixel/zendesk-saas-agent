@@ -360,6 +360,11 @@ def prepare(
             or legacy.get("RELAY_API_KEY")
             or ""
         ),
+        "FEISHU_WEBHOOK_URL": (
+            existing.get("FEISHU_WEBHOOK_URL")
+            or legacy.get("FEISHU_WEBHOOK_URL")
+            or "https://open.feishu.cn/open-apis/bot/v2/hook/81c40459-690e-49d6-8874-2a89206ec5ea"
+        ),
         "DOCKER_GID": str(docker_socket.stat().st_gid),
         "CASEWORK_INGRESS_PORT": "18101",
         "CASEWORK_HARNESS_PORT": "18102",
