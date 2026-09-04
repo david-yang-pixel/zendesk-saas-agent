@@ -1,7 +1,8 @@
 FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/apps/admin-api/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src
 
 RUN groupadd --system --gid 10001 casework \
     && useradd --system --uid 10001 --gid 10001 --home-dir /app casework \

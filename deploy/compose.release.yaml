@@ -24,6 +24,7 @@ services:
     environment: &common-environment
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       CASEWORK_CONFIG_REVISION: ${CASEWORK_CONFIG_REVISION:?set CASEWORK_CONFIG_REVISION}
+      PYTHONPATH: /app/apps/admin-api/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src
     depends_on:
       postgres:
         condition: service_healthy
