@@ -123,7 +123,7 @@ chmod 600 "$RELEASE_ENV"
 
 for service in ingress pi-agent admin; do
   container="casework-greenfield-${service}-1"
-  docker inspect "$container" --format '{{.Name}} {{.Image}} {{.State.Health.Status}}'
+  docker inspect "$container" --format '{{.Name}} {{.Image}} {{.State.Status}}'
 done
 
 # Clean up dangling images and obsolete unreferenced images (>7 days) to preserve server disk space
