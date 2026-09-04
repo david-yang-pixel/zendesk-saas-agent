@@ -7,14 +7,18 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select, text
 
-from casework_persistence.models import CaseJobRow, RunRecordRow, OutboxMessage, EventRecord
+from casework_persistence.models import (
+    CaseJobRow,
+    OutboxMessage,
+    RunRecordRow,
+)
 
 router = APIRouter(prefix="/api", tags=["modern_admin"])
 
@@ -166,8 +170,9 @@ def _parse_tool_result(raw: Any) -> Any:
         csv_text = raw.get("csv")
         if isinstance(csv_text, str) and "," in csv_text:
             try:
-                import csv, io
-                clean_lines = [l for l in csv_text.splitlines() if not l.startswith("(")]
+                import csv
+                import io
+                clean_lines = [line for line in csv_text.splitlines() if not line.startswith("(")]
                 reader = csv.DictReader(io.StringIO("\n".join(clean_lines)))
                 rows = list(reader)
                 if rows:
@@ -392,7 +397,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         # Normalize steps
         raw_steps = (best_run.tool_call_records if best_run and isinstance(best_run.tool_call_records, list) else [])
         steps = []
-        for idx, st in enumerate(raw_steps):
+        for _idx, st in enumerate(raw_steps):
             if not isinstance(st, dict):
                 continue
             tname = st.get("tool_name") or st.get("toolName") or "mcp_tool"
@@ -597,7 +602,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                 ok=False,
                 status_code=500,
                 latency_ms=latency,
-                message=f"Network error connecting to {url}: {str(exc)}",
+                message=f"Network error connecting to {url}: {exc!s}",
             )
 
     # -----------------------------------------------------------------------
@@ -682,7 +687,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                 id=spec["id"],
                 name=spec["name"],
                 label=spec["label"],
-                service_type=spec["type"],
+                service_type=cast(Literal["query", "action"], spec["type"]),
                 endpoint=spec["url"],
                 online=online,
                 latency_ms=latency,

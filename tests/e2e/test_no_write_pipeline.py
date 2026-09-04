@@ -148,7 +148,7 @@ async def test_webhook_to_ephemeral_sandbox_no_write_dry_run() -> None:
             "is_customer_message": True,
             "actor": "customer",
             "visibility": "public",
-            "message_text": "日本語で回答できますか？",  # noqa: RUF001
+            "message_text": "日本語で回答できますか？",
         },
     )
     assert response.json()["action"] == "enqueue"
@@ -165,7 +165,7 @@ async def test_webhook_to_ephemeral_sandbox_no_write_dry_run() -> None:
                 event_id="customer-ja-1",
                 author_origin="customer",
                 public=True,
-                body="日本語で回答できますか？",  # noqa: RUF001
+                body="日本語で回答できますか？",
                 created_at=datetime.now(UTC),
             ),
         ),

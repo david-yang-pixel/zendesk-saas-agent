@@ -112,7 +112,7 @@ def test_human_normalization_accepts_width_and_surrounding_punctuation() -> None
     )
 
     assert evaluate_processing_rules(
-        _event(message_text="（ＨＵＭＡＮ！）"),  # noqa: RUF001
+        _event(message_text="（ＨＵＭＡＮ！）"),
         config=config,
     ).action == "cancel"
     assert evaluate_processing_rules(

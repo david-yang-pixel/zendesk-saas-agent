@@ -52,6 +52,10 @@ jobs:
         run: pnpm --dir apps/admin-web test
       - name: Build Admin console
         run: pnpm --dir apps/admin-web build
+      - name: Test and build Pi Agent
+        run: |
+          pnpm --filter pi-agent test
+          pnpm --filter pi-agent build
 
   build:
     needs: quality
@@ -65,6 +69,7 @@ jobs:
       harness_digest: ${{ steps.harness.outputs.digest }}
       sandbox_digest: ${{ steps.sandbox.outputs.digest }}
       admin_digest: ${{ steps.admin.outputs.digest }}
+      pi_agent_digest: ${{ steps.pi_agent.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -129,10 +134,24 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Build and push Pi Agent
+        id: pi_agent
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: pi-agent
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-pi-agent:sha-${{ github.sha }}
+            ${{ env.IMAGE_PREFIX }}-pi-agent:main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
   deploy:
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy
+    if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.deploy)
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 20
@@ -153,9 +172,10 @@ jobs:
           HARNESS_DIGEST: ${{ needs.build.outputs.harness_digest }}
           SANDBOX_DIGEST: ${{ needs.build.outputs.sandbox_digest }}
           ADMIN_DIGEST: ${{ needs.build.outputs.admin_digest }}
+          PI_AGENT_DIGEST: ${{ needs.build.outputs.pi_agent_digest }}
         run: |
           set -euo pipefail
-          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS GHCR_PAT INGRESS_DIGEST HARNESS_DIGEST SANDBOX_DIGEST ADMIN_DIGEST)
+          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS GHCR_PAT INGRESS_DIGEST HARNESS_DIGEST SANDBOX_DIGEST ADMIN_DIGEST PI_AGENT_DIGEST)
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required deployment input: ${name}" >&2; exit 1; }
           done
@@ -173,6 +193,7 @@ jobs:
             printf 'export CASEWORK_HARNESS_IMAGE=%q\n' "${IMAGE_PREFIX}-harness@${HARNESS_DIGEST}"
             printf 'export CASEWORK_SANDBOX_IMAGE=%q\n' "${IMAGE_PREFIX}-sandbox@${SANDBOX_DIGEST}"
             printf 'export CASEWORK_ADMIN_IMAGE=%q\n' "${IMAGE_PREFIX}-admin@${ADMIN_DIGEST}"
+            printf 'export CASEWORK_PI_AGENT_IMAGE=%q\n' "${IMAGE_PREFIX}-pi-agent@${PI_AGENT_DIGEST}"
             printf 'export CASEWORK_RELEASE_REVISION=%q\n' "$GITHUB_SHA"
             cat <<'REMOTE'
           set -euo pipefail

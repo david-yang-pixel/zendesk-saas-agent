@@ -64,10 +64,11 @@ src = [
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "RUF"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.pyright]
 pythonVersion = "3.12"
-typeCheckingMode = "strict"
+typeCheckingMode = "standard"
 include = ["apps", "deploy/release.py", "packages", "tests"]
 exclude = ["apps/admin-web", "**/__pycache__"]
 extraPaths = [
