@@ -124,4 +124,10 @@ for service in ingress pi-agent admin; do
   container="casework-greenfield-${service}-1"
   docker inspect "$container" --format '{{.Name}} {{.Image}} {{.State.Health.Status}}'
 done
+
+# Clean up dangling images and obsolete unreferenced images (>7 days) to preserve server disk space
+echo "Pruning obsolete Docker images on host..."
+docker image prune -f >/dev/null 2>&1 || true
+docker image prune -a -f --filter "until=168h" >/dev/null 2>&1 || true
+
 echo "Greenfield bundle is ready; the existing Agent run state was preserved."

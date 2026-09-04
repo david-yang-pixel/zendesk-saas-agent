@@ -77,7 +77,8 @@ FROM base AS admin
 
 WORKDIR /app
 COPY --from=builder --chown=casework:casework /app/.venv /app/.venv
-COPY --chown=casework:casework pyproject.toml uv.lock ./
+COPY --chown=casework:casework pyproject.toml uv.lock alembic.ini ./
+COPY --chown=casework:casework migrations ./migrations
 COPY --chown=casework:casework packages ./packages
 COPY --chown=casework:casework deploy ./deploy
 COPY --chown=casework:casework skills ./skills
