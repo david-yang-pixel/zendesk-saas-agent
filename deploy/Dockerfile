@@ -111,7 +111,7 @@ ENV NODE_ENV=production \
     FEISHU_MCP_PORT=8115
 
 WORKDIR /app
-RUN apk add --no-cache ca-certificates && corepack enable && npm install -g @larksuite/cli
+RUN apk add --no-cache ca-certificates curl && corepack enable && npm install -g @larksuite/cli
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY apps/feishu-mcp/package.json ./apps/feishu-mcp/
 RUN pnpm --dir apps/feishu-mcp install --frozen-lockfile
