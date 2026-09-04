@@ -79,7 +79,8 @@ docker pull "$CASEWORK_SANDBOX_IMAGE" >/dev/null
 
 "${compose[@]}" up -d postgres
 "${compose[@]}" run --rm migration
-"${compose[@]}" up -d ingress pi-agent admin
+docker rm -f casework-greenfield-pi-agent-1 2>/dev/null || true
+"${compose[@]}" up -d --remove-orphans ingress pi-agent admin
 
 wait_ready() {
   local name="$1"
