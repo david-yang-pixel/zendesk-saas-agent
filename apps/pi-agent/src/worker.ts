@@ -1,4 +1,5 @@
 import http from 'node:http';
+import fs from 'node:fs';
 import pg from 'pg';
 import dotenv from 'dotenv';
 import { discoverMcpTools, callMcpTool, CustomTool, McpServiceConfig } from './mcp.js';
@@ -7,6 +8,12 @@ import { sendBrowserRelay } from './relay.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 
 dotenv.config();
+for (const credPath of ['/app/credentials.env', './credentials.env', '../credentials.env']) {
+  if (fs.existsSync(credPath)) {
+    dotenv.config({ path: credPath });
+    break;
+  }
+}
 
 function cleanEnv(val?: string): string {
   if (!val) return '';
