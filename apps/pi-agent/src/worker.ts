@@ -60,11 +60,29 @@ async function claimNextJob(workerId: string): Promise<any | null> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+
+    // 1. Automatically dead-letter any jobs whose lease expired and max attempts (3) have been reached
+    await client.query(`
+      UPDATE case_jobs
+      SET status = 'failed',
+          dead_letter_reason = 'lease_expired_max_attempts_exceeded',
+          finished_at = NOW(),
+          updated_at = NOW()
+      WHERE status = 'running'
+        AND lease_expires_at IS NOT NULL
+        AND lease_expires_at <= NOW()
+        AND attempts >= 3
+    `);
+
+    // 2. Select next job: either standard queued job OR expired running lease with attempts < 3
     const selectRes = await client.query(`
-      SELECT job_id, ticket_id, session_id, event_id, expected_event_id, generation
+      SELECT job_id, ticket_id, session_id, event_id, expected_event_id, generation, status as prev_status, attempts
       FROM case_jobs
-      WHERE status = 'queued' AND available_at <= NOW()
-      ORDER BY available_at ASC
+      WHERE (
+        (status = 'queued' AND available_at <= NOW())
+        OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= NOW() AND attempts < 3)
+      )
+      ORDER BY (CASE WHEN status = 'running' THEN 0 ELSE 1 END), available_at ASC, created_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
     `);
@@ -75,6 +93,10 @@ async function claimNextJob(workerId: string): Promise<any | null> {
     }
 
     const job = selectRes.rows[0];
+    if (job.prev_status === 'running') {
+      console.warn(`[Worker] 🔄 Lease Reclaim: Reclaiming expired running job ${job.job_id} for ticket #${job.ticket_id} (lease expired, retry attempt ${job.attempts + 1}/3)...`);
+    }
+
     await client.query(`
       UPDATE case_jobs
       SET status = 'running',
@@ -681,6 +703,20 @@ async function main() {
       }
 
       let activeTrace: any = null;
+      const heartbeatTimer = setInterval(async () => {
+        try {
+          await pool.query(`
+            UPDATE case_jobs
+            SET lease_expires_at = NOW() + interval '180 seconds',
+                heartbeat_at = NOW(),
+                updated_at = NOW()
+            WHERE job_id = $1 AND status = 'running'
+          `, [job.job_id]);
+        } catch (e: any) {
+          console.warn(`[Worker] Failed to update heartbeat for job ${job.job_id}:`, e.message);
+        }
+      }, 60000);
+
       try {
         const initialDetails = await getTicketDetails(job.ticket_id, zendeskService);
 
@@ -918,6 +954,8 @@ async function main() {
           reason: runErr.message,
           draftReply: activeTrace?.finalReply || undefined,
         });
+      } finally {
+        clearInterval(heartbeatTimer);
       }
     } catch (loopErr: any) {
       console.error('[Worker] Polling loop error:', loopErr.message);
