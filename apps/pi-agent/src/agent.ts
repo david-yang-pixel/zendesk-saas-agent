@@ -11,6 +11,13 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { CustomTool } from './mcp.js';
 
+export interface AgentAttachment {
+  id: string;
+  name: string;
+  url?: string;
+  contentType?: string;
+}
+
 export interface AgentRunOptions {
   ticketId: number;
   customerMessage: string;
@@ -19,6 +26,8 @@ export interface AgentRunOptions {
   modelName?: string;
   modelBaseUrl?: string;
   apiKey?: string;
+  abortSignal?: AbortSignal;
+  attachments?: AgentAttachment[];
 }
 
 export interface AgentTraceStep {
@@ -33,23 +42,27 @@ export interface AgentTraceStep {
 }
 
 export interface AgentTracePayload {
-  ticketId: number;
+  ticketId?: number;
   requesterEmail?: string;
-  customerMessage: string;
-  model: string;
-  startedAt: string;
-  finishedAt: string;
-  totalDurationMs: number;
+  customerMessage?: string;
+  model?: string;
+  steps: AgentTraceStep[];
   thinking: string[];
   toolCalls: Array<{
     toolCallId: string;
     toolName: string;
-    service?: string;
+    service: string;
     arguments: any;
     result: any;
   }>;
-  steps: AgentTraceStep[];
   finalReply: string;
+  totalDurationMs: number;
+  tokens?: {
+    input?: number;
+    output?: number;
+  };
+  startedAt: string;
+  finishedAt: string;
 }
 
 export interface AgentRunResult {
@@ -116,6 +129,7 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
 1. **Evidence-driven Investigation**:
    - Always investigate using available tools and loaded skills before answering technical, billing, or account questions.
    - Do NOT guess, assume, or hallucinate IDs, dates, versions, or subscription details. If a tool returns no data, explain what was checked and what is needed from the user.
+   - When the customer provides screenshots or attachments, inspect the attached files or URLs, or use 'download_attachment' if needed to verify error messages and canvas configurations.
 
 2. **Database Tips (Dify Architecture)**:
    - When checking a customer's workspace, look up tenant_id in 'prod' database first (e.g. from accounts, tenants, tenant_account_joins).
@@ -142,6 +156,12 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
 `.trim();
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {
+  if (options.abortSignal?.aborted) {
+    const err = new Error(`Agent run aborted before start for ticket #${options.ticketId}`);
+    err.name = 'AbortError';
+    throw err;
+  }
+
   const modelName = options.modelName || process.env.CASEWORK_MODEL_NAME || 'gpt-5.6-terra';
   const rawBaseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.tokener.dev';
   let baseUrl = rawBaseUrl.replace(/\/+$/, '');
@@ -162,7 +182,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
         name: modelName,
         api: 'openai-responses',
         reasoning: true,
-        input: ['text'],
+        input: ['text', 'image'],
         cost: { input: 0, output: 0 },
         contextWindow: 128000,
         maxTokens: 16384,
@@ -197,6 +217,18 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     tools: options.tools.map(t => t.name),
   });
 
+  // Wire up immediate abort hook
+  if (options.abortSignal) {
+    options.abortSignal.addEventListener('abort', async () => {
+      console.warn(`[Agent] 🛑 Received abort signal for ticket #${options.ticketId}, aborting session immediately...`);
+      try {
+        await session.abort();
+      } catch (abortErr: any) {
+        console.warn(`[Agent] Error during session.abort for ticket #${options.ticketId}:`, abortErr.message);
+      }
+    }, { once: true });
+  }
+
   session.subscribe((event: any) => {
     if (event.type === 'message_update') {
       const sub = event.assistantMessageEvent;
@@ -214,6 +246,12 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     }
   });
 
+  let attachmentSection = '';
+  if (options.attachments && options.attachments.length > 0) {
+    attachmentSection = '\nCustomer Uploaded Attachments / Screenshots:\n' +
+      options.attachments.map(a => `- ${a.name} (type: ${a.contentType || 'unknown'}, URL: ${a.url || 'N/A'})`).join('\n') + '\n';
+  }
+
   const prompt = `
 Customer Ticket #${options.ticketId}
 Requester Email: ${options.requesterEmail || 'Unknown'}
@@ -221,7 +259,7 @@ Customer Message:
 """
 ${options.customerMessage}
 """
-
+${attachmentSection}
 System Instructions:
 ${DIFY_SUPPORT_SYSTEM_PROMPT}
 
@@ -232,7 +270,22 @@ Please investigate using your available tools and skills, and formulate a comple
   const startedAt = new Date().toISOString();
 
   console.log(`[Agent] Sending prompt to session for ticket #${options.ticketId}...`);
-  await session.prompt(prompt);
+  try {
+    await session.prompt(prompt);
+  } catch (promptErr: any) {
+    if (options.abortSignal?.aborted || (session as any).aborted || promptErr.name === 'AbortError' || promptErr.message?.includes('aborted')) {
+      const abortErr = new Error(`Agent execution aborted for ticket #${options.ticketId}`);
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
+    throw promptErr;
+  }
+
+  if (options.abortSignal?.aborted || (session as any).aborted) {
+    const abortErr = new Error(`Agent execution aborted for ticket #${options.ticketId}`);
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
 
   const finishedAt = new Date().toISOString();
   const totalDurationMs = Date.now() - startTime;

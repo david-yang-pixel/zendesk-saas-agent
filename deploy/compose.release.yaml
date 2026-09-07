@@ -56,6 +56,7 @@ services:
       CASEWORK_BROWSER_RELAY_API_KEY: ${CASEWORK_BROWSER_RELAY_API_KEY:-}
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-https://open.feishu.cn/open-apis/bot/v2/hook/81c40459-690e-49d6-8874-2a89206ec5ea}
       NODE_OPTIONS: "--max-old-space-size=768"
+      CASEWORK_WORKER_CONCURRENCY: ${CASEWORK_WORKER_CONCURRENCY:-2}
     ports: ["127.0.0.1:${CASEWORK_HARNESS_PORT:-18102}:8102"]
     volumes:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}/credentials.env:/app/credentials.env:ro
