@@ -36,7 +36,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 function isToolCall(part: Record<string, unknown>): boolean {
-  return part.type === 'toolCall' || part.type === 'tool_call';
+  return part.type === 'toolCall' || part.type === 'tool_call' || part.type === 'tool_use' || part.type === 'toolUse';
 }
 
 function textParts(content: unknown): string[] {
@@ -86,8 +86,8 @@ export function extractAgentTrace(messages: readonly unknown[]): {
   const results = new Map<string, unknown>();
   for (const value of messages) {
     const message = asRecord(value);
-    if (message?.role !== 'toolResult' && message?.role !== 'tool_result') continue;
-    const callId = message.toolCallId ?? message.tool_call_id ?? message.id;
+    if (message?.role !== 'toolResult' && message?.role !== 'tool_result' && message?.role !== 'tool') continue;
+    const callId = message.toolCallId ?? message.tool_call_id ?? message.tool_use_id ?? message.id;
     if (typeof callId === 'string') results.set(callId, toolResultContent(message.content));
   }
 
@@ -109,7 +109,7 @@ export function extractAgentTrace(messages: readonly unknown[]): {
           toolCallId: part.id,
           toolName: part.name,
           service: inferToolService(part.name),
-          arguments: part.arguments ?? null,
+          arguments: part.arguments ?? part.args ?? part.input ?? null,
           result: results.get(part.id) ?? null,
         };
         toolCalls.push(call);

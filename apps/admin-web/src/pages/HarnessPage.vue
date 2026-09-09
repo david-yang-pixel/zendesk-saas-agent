@@ -3,10 +3,12 @@ import { inject, onMounted, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import { ADMIN_API_KEY } from '../api/client'
 import type { AdminApiClient } from '../api/client'
+import { useI18n } from '../composables/useI18n'
 
 const injectedApi = inject(ADMIN_API_KEY)
 if (!injectedApi) throw new Error('Admin API client is not provided')
 const api: AdminApiClient = injectedApi
+const { t, locale } = useI18n()
 
 const provider = ref('openai')
 const baseUrl = ref('https://api.tokener.dev/v1')
@@ -99,8 +101,56 @@ async function saveSettings() {
   }
 }
 
+interface SkillItem {
+  name: string
+  description: string
+  path: string
+  content: string
+}
+
+const skills = ref<SkillItem[]>([])
+const selectedSkill = ref<SkillItem | null>(null)
+const editingPrompt = ref('')
+const savingSkill = ref(false)
+const skillMessage = ref('')
+
+async function loadSkills() {
+  try {
+    const list = await api.getSkills()
+    skills.value = list || []
+    if (skills.value.length > 0 && !selectedSkill.value) {
+      selectSkill(skills.value[0])
+    }
+  } catch (err: any) {
+    console.warn('Failed to load skills/prompts:', err)
+  }
+}
+
+function selectSkill(s: SkillItem) {
+  selectedSkill.value = s
+  editingPrompt.value = s.content
+  skillMessage.value = ''
+}
+
+async function saveSkillPrompt() {
+  if (!selectedSkill.value) return
+  savingSkill.value = true
+  skillMessage.value = ''
+  try {
+    await api.saveSkill(selectedSkill.value.name, editingPrompt.value)
+    selectedSkill.value.content = editingPrompt.value
+    skillMessage.value = `人设/Prompt【${selectedSkill.value.name}】已保存！秒级热重载生效。`
+    setTimeout(() => { skillMessage.value = ''; }, 4000)
+  } catch (err: any) {
+    errorMessage.value = `保存 Prompt 失败: ${err.message}`
+  } finally {
+    savingSkill.value = false
+  }
+}
+
 onMounted(() => {
   loadSettings()
+  loadSkills()
 })
 </script>
 
@@ -109,18 +159,16 @@ onMounted(() => {
     <div class="studio-container">
       <header class="studio-header">
         <div class="header-left">
-          <div class="badge-tag">Model Studio</div>
-          <h2>模型配置与实时测速中心</h2>
-          <p>动态调整 Pi Agent 的上游大模型端点、推理深度与凭据，支持热更新与现场延迟诊断。</p>
+          <h2>{{ t('model.title') }}</h2>
         </div>
         <div class="header-actions">
           <button class="btn-test" :disabled="testing" @click="testConnection">
             <AppIcon name="activity" :size="15" />
-            <span>{{ testing ? '测速中...' : '测试连通性 (Ping Test)' }}</span>
+            <span>{{ testing ? t('model.btn.testing') : t('model.btn.test') }}</span>
           </button>
           <button class="btn-save" :disabled="loading" @click="saveSettings">
             <AppIcon name="check" :size="15" />
-            <span>{{ loading ? '保存中...' : '保存并热生效' }}</span>
+            <span>{{ loading ? t('model.btn.saving') : t('model.btn.save') }}</span>
           </button>
         </div>
       </header>
@@ -134,18 +182,18 @@ onMounted(() => {
         <div class="test-header">
           <div class="test-status">
             <span class="status-indicator"></span>
-            <strong>{{ testResult.ok ? '模型连通测试通过' : '模型连通失败' }}</strong>
+            <strong>{{ testResult.ok ? t('model.test.success') : t('model.test.failed') }}</strong>
             <span class="status-code">HTTP {{ testResult.status_code }}</span>
           </div>
           <div class="test-latency">
-            <span>首字延迟:</span>
+            <span>{{ t('model.test.latency') }}</span>
             <strong>{{ testResult.latency_ms }} ms</strong>
           </div>
         </div>
         <div class="test-detail">
           <span>{{ testResult.message }}</span>
           <div v-if="testResult.sample_text" class="sample-box">
-            <small>回复样本:</small>
+            <small>{{ t('model.test.sample') }}</small>
             <code>{{ testResult.sample_text }}</code>
           </div>
         </div>
@@ -157,11 +205,11 @@ onMounted(() => {
         <section class="studio-card">
           <div class="card-title">
             <AppIcon name="spark" :size="18" />
-            <h3>模型网关参数</h3>
+            <h3>{{ t('model.card.gateway') }}</h3>
           </div>
 
           <div class="form-group">
-            <label>Provider 服务商类型</label>
+            <label>{{ t('model.provider.label') }}</label>
             <select v-model="provider" class="studio-select">
               <option value="openai">OpenAI 兼容接口 (Tokener / OpenAI / 代理网关)</option>
               <option value="azure">Azure OpenAI</option>
@@ -172,7 +220,7 @@ onMounted(() => {
           </div>
 
           <div class="form-group">
-            <label>API Base URL (网关地址)</label>
+            <label>{{ t('model.base_url.label') }}</label>
             <input
               v-model="baseUrl"
               type="text"
@@ -183,7 +231,7 @@ onMounted(() => {
           </div>
 
           <div class="form-group">
-            <label>Model Identifier (模型名称)</label>
+            <label>{{ t('model.name.label') }}</label>
             <input
               v-model="model"
               type="text"
@@ -194,14 +242,14 @@ onMounted(() => {
           </div>
 
           <div class="form-group">
-            <label>API Key (访问密钥)</label>
+            <label>{{ t('model.key.label') }}</label>
             <div class="key-input-row">
               <input
                 v-if="!showKey"
                 type="password"
                 v-model="apiKey"
                 class="studio-input key-input"
-                :placeholder="hasKey ? '已配置: ' + apiKeyMasked + ' (输入新 Key 以覆盖)' : 'sk-...'"
+                :placeholder="hasKey ? t('model.key.configured') + apiKeyMasked + ' ' + t('model.key.override') : 'sk-...'"
               />
               <input
                 v-else
@@ -211,10 +259,10 @@ onMounted(() => {
                 placeholder="sk-..."
               />
               <button class="btn-secondary" @click="showKey = !showKey">
-                {{ showKey ? '隐藏' : '明文' }}
+                {{ showKey ? (locale === 'zh-CN' ? '隐藏' : 'Hide') : (locale === 'zh-CN' ? '明文' : 'Show') }}
               </button>
             </div>
-            <small>密钥安全加密保存在生产数据库，绝不在前端明文暴露。</small>
+            <small>{{ t('model.key.hint') }}</small>
           </div>
         </section>
 
@@ -222,21 +270,21 @@ onMounted(() => {
         <section class="studio-card">
           <div class="card-title">
             <AppIcon name="sliders" :size="18" />
-            <h3>推理与超时策略</h3>
+            <h3>{{ t('model.card.runtime') }}</h3>
           </div>
 
           <div class="form-group">
-            <label>深度思维链 (Reasoning Mode)</label>
+            <label>{{ t('model.reasoning.label') }}</label>
             <div class="toggle-row">
               <input type="checkbox" id="reasoningToggle" v-model="reasoning" class="studio-checkbox" />
               <label for="reasoningToggle" class="checkbox-label">
-                允许模型产生 <code>thinking</code> 思考块，并在管理后台提供可折叠回放
+                {{ t('model.reasoning.desc') }}
               </label>
             </div>
           </div>
 
           <div class="form-group">
-            <label>单步推理超时阈值: {{ timeoutSeconds }} 秒</label>
+            <label>{{ t('model.timeout.label') }}{{ timeoutSeconds }}{{ t('model.timeout.sec') }}</label>
             <input
               v-model.number="timeoutSeconds"
               type="range"
@@ -265,6 +313,51 @@ onMounted(() => {
           </div>
         </section>
       </div>
+
+      <!-- Prompt & Persona Studio -->
+      <section class="studio-card prompt-card" v-if="skills.length > 0">
+        <div class="card-title-row">
+          <div class="card-title">
+            <AppIcon name="spark" :size="18" />
+            <div>
+              <h3>{{ t('model.prompt.title') }}</h3>
+              <small>{{ t('model.prompt.subtitle') }}</small>
+            </div>
+          </div>
+          <div class="prompt-actions">
+            <span v-if="skillMessage" class="skill-toast">{{ skillMessage }}</span>
+            <button class="btn-save-prompt" :disabled="savingSkill" @click="saveSkillPrompt">
+              <AppIcon name="check" :size="14" />
+              <span>{{ savingSkill ? t('model.prompt.saving') : t('model.prompt.btn.save') }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="prompt-tabs">
+          <button
+            v-for="s in skills"
+            :key="s.name"
+            :class="['prompt-tab-btn', { active: selectedSkill?.name === s.name }]"
+            @click="selectSkill(s)"
+          >
+            <strong>{{ s.name }}</strong>
+            <small>{{ s.description || '业务推理规约' }}</small>
+          </button>
+        </div>
+
+        <div class="prompt-editor-area" v-if="selectedSkill">
+          <div class="editor-meta">
+            <span>文件路径: <code>{{ selectedSkill.path }}</code></span>
+            <span>字符数: {{ editingPrompt.length }}</span>
+          </div>
+          <textarea
+            v-model="editingPrompt"
+            class="prompt-textarea"
+            rows="16"
+            placeholder="输入 Markdown 格式的 System Prompt 或排障人设准则..."
+          ></textarea>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -272,8 +365,8 @@ onMounted(() => {
 <style scoped>
 .model-studio {
   min-height: 100%;
-  background: #ffffff;
-  color: #1d1d1f;
+  background: var(--surface);
+  color: var(--ink);
   padding: 28px 40px;
   overflow-y: auto;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
@@ -287,39 +380,18 @@ onMounted(() => {
 .studio-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
-  padding-bottom: 20px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  margin-bottom: 24px;
-}
-
-.badge-tag {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: #8b5cf6;
-  background: rgba(175, 82, 222, 0.1);
-  padding: 3px 8px;
-  border-radius: 6px;
-  margin-bottom: 8px;
+  align-items: center;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 20px;
 }
 
 .studio-header h2 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 600;
-  color: #1d1d1f;
-  letter-spacing: -0.02em;
-}
-
-.studio-header p {
   margin: 0;
-  color: #86868b;
-  font-size: 13px;
-  max-width: 600px;
-  line-height: 1.5;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
 }
 
 .header-actions {
@@ -334,16 +406,16 @@ onMounted(() => {
   height: 36px;
   padding: 0 16px;
   border-radius: 8px;
-  border: 1px solid #d2d2d7;
-  background: #ffffff;
-  color: #1d1d1f;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
 }
 .btn-test:hover {
-  background: #f5f5f7;
+  background: var(--surface-hover);
 }
 
 .btn-save {
@@ -354,15 +426,15 @@ onMounted(() => {
   padding: 0 18px;
   border-radius: 8px;
   border: none;
-  background: #000000;
-  color: #ffffff;
+  background: var(--ink);
+  color: var(--surface);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s;
 }
 .btn-save:hover {
-  background: #27272a;
+  opacity: 0.9;
 }
 
 .notice-banner {
@@ -372,14 +444,14 @@ onMounted(() => {
   margin-bottom: 24px;
 }
 .notice-banner.success {
-  background: rgba(52, 199, 89, 0.12);
+  background: var(--green-soft);
   border: 1px solid rgba(52, 199, 89, 0.25);
-  color: #059669;
+  color: var(--green);
 }
 .notice-banner.error {
-  background: rgba(255, 59, 48, 0.1);
+  background: var(--red-soft);
   border: 1px solid rgba(255, 59, 48, 0.25);
-  color: #dc2626;
+  color: var(--red);
 }
 
 /* Test Card */
@@ -390,11 +462,11 @@ onMounted(() => {
   border: 1px solid transparent;
 }
 .test-card.success {
-  background: rgba(52, 199, 89, 0.08);
+  background: var(--green-soft);
   border-color: rgba(52, 199, 89, 0.3);
 }
 .test-card.failed {
-  background: rgba(255, 59, 48, 0.08);
+  background: var(--red-soft);
   border-color: rgba(255, 59, 48, 0.3);
 }
 
@@ -414,23 +486,23 @@ onMounted(() => {
   height: 8px;
   border-radius: 50%;
 }
-.test-card.success .status-indicator { background: #34c759; }
-.test-card.failed .status-indicator { background: #ff3b30; }
+.test-card.success .status-indicator { background: var(--green); }
+.test-card.failed .status-indicator { background: var(--red); }
 
 .status-code {
   font-size: 11px;
   font-family: ui-monospace, monospace;
-  background: rgba(0, 0, 0, 0.06);
-  color: #1d1d1f;
+  background: var(--surface-soft);
+  color: var(--ink);
   padding: 2px 6px;
   border-radius: 4px;
 }
 .test-latency {
   font-size: 12px;
-  color: #86868b;
+  color: var(--muted);
 }
 .test-latency strong {
-  color: #1d1d1f;
+  color: var(--ink);
   font-family: ui-monospace, monospace;
   font-size: 13px;
   margin-left: 4px;
@@ -438,20 +510,20 @@ onMounted(() => {
 
 .test-detail {
   font-size: 12px;
-  color: #515154;
+  color: var(--ink-soft);
 }
 .sample-box {
   margin-top: 8px;
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
   padding: 8px 12px;
   border-radius: 6px;
   display: flex;
   gap: 8px;
   align-items: center;
 }
-.sample-box small { color: #86868b; }
-.sample-box code { color: #059669; font-family: ui-monospace, monospace; }
+.sample-box small { color: var(--muted); }
+.sample-box code { color: var(--green); font-family: ui-monospace, monospace; }
 
 /* Grid */
 .studio-grid {
@@ -461,8 +533,8 @@ onMounted(() => {
 }
 
 .studio-card {
-  background: #ffffff;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 24px;
   box-shadow: var(--shadow-sm);
@@ -473,13 +545,13 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   margin-bottom: 20px;
-  color: #1d1d1f;
+  color: var(--ink);
 }
 .card-title h3 {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--ink);
 }
 
 .form-group {
@@ -489,13 +561,13 @@ onMounted(() => {
   display: block;
   font-size: 12px;
   font-weight: 600;
-  color: #1d1d1f;
+  color: var(--ink);
   margin-bottom: 6px;
 }
 .form-group small {
   display: block;
   font-size: 11px;
-  color: #86868b;
+  color: var(--muted);
   margin-top: 5px;
 }
 .form-group code {
@@ -507,17 +579,17 @@ onMounted(() => {
   height: 38px;
   padding: 0 12px;
   border-radius: 8px;
-  border: 1px solid #d2d2d7;
-  background: #ffffff;
-  color: #1d1d1f;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-soft);
+  color: var(--ink);
   font-size: 13px;
   outline: none;
   font-family: inherit;
   transition: border-color 0.15s;
 }
 .studio-input:focus, .studio-select:focus {
-  border-color: #0071e3;
-  box-shadow: 0 0 0 3px rgba(0, 113, 227, 0.12);
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px var(--blue-soft);
 }
 
 .key-input-row {
@@ -532,14 +604,14 @@ onMounted(() => {
   height: 38px;
   padding: 0 12px;
   border-radius: 8px;
-  border: 1px solid #d2d2d7;
-  background: #ffffff;
-  color: #1d1d1f;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--ink);
   font-size: 12px;
   cursor: pointer;
 }
 .btn-secondary:hover {
-  background: #f5f5f7;
+  background: var(--surface-hover);
 }
 
 .toggle-row {
@@ -555,27 +627,27 @@ onMounted(() => {
 .checkbox-label {
   font-size: 12px !important;
   font-weight: 400 !important;
-  color: #515154 !important;
+  color: var(--ink-soft) !important;
   margin-bottom: 0 !important;
   cursor: pointer;
 }
 
 .studio-range {
   width: 100%;
-  accent-color: #0071e3;
+  accent-color: var(--blue);
 }
 
 .runtime-status-box {
   margin-top: 24px;
-  background: #fbfbfd;
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 14px 16px;
 }
 .runtime-status-box h4 {
   margin: 0 0 10px;
   font-size: 11px;
-  color: #86868b;
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -584,11 +656,165 @@ onMounted(() => {
   justify-content: space-between;
   font-size: 12px;
   padding: 6px 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid var(--line);
 }
 .status-row:last-child {
   border-bottom: none;
 }
-.status-row span { color: #86868b; }
-.status-row strong { color: #1d1d1f; }
+.status-row span { color: var(--muted); }
+.status-row strong { color: var(--ink); }
+
+/* Prompt & Persona Studio */
+.prompt-card {
+  margin-top: 24px;
+}
+
+.card-title-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.card-title-row .card-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 0;
+}
+
+.card-title-row h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.card-title-row small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.skill-toast {
+  font-size: 12px;
+  color: var(--green);
+  font-weight: 500;
+}
+
+.btn-save-prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--blue);
+  color: #fff;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-save-prompt:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btn-save-prompt:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.prompt-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.prompt-tab-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 8px 14px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s;
+  min-width: 140px;
+}
+
+.prompt-tab-btn:hover {
+  background: var(--surface-hover);
+}
+
+.prompt-tab-btn.active {
+  background: var(--surface);
+  border-color: var(--blue);
+  box-shadow: 0 1px 4px var(--blue-soft);
+}
+
+.prompt-tab-btn strong {
+  font-size: 12px;
+  color: var(--ink);
+}
+
+.prompt-tab-btn small {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.prompt-editor-area {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.editor-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.editor-meta code {
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.prompt-textarea {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.prompt-textarea:focus {
+  border-color: var(--blue);
+  outline: none;
+}
 </style>

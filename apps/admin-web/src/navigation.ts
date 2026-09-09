@@ -1,10 +1,8 @@
 import type { NavItem } from './types'
 
 export const navItems = [
-  { label: '运行总览', path: '/', icon: 'overview', hint: '服务大盘与核心指标' },
-  { label: '工单推演', path: '/runs', icon: 'runs', hint: 'AI思考链与工具调用回放' },
-  { label: '模型配置', path: '/harness', icon: 'spark', hint: '模型网关与实时测速' },
-  { label: 'MCP 总线', path: '/mcp', icon: 'database', hint: '7大服务与工具网格' },
-  { label: '技能中心', path: '/skills', icon: 'skills', hint: 'SOP与排查知识库' },
-  { label: '准入规则', path: '/rules', icon: 'rules', hint: '人工保护与过滤策略' },
+  { label: '工单日志', path: '/runs', icon: 'runs', hint: '工单流水与实时控制台' },
+  { label: '模型配置', path: '/model', icon: 'spark', hint: '模型切换与即时测速' },
+  { label: '规则与安全', path: '/rules', icon: 'rules', hint: '模式开关与告警隔离' },
+  { label: '工具中心', path: '/tools', icon: 'database', hint: 'MCP网格与在线调试' },
 ] as const satisfies readonly NavItem[]

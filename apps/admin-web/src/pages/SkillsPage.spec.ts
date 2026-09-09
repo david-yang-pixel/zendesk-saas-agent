@@ -41,6 +41,22 @@ function apiFixture(saveCalls: any[] = []): AdminApiClient {
       saveCalls.push({ name, content })
       return { ok: true, message: 'saved' }
     },
+    skipJob: async () => ({ ok: true, job_id: 'job-1', message: 'skipped' }),
+    escalateJob: async () => ({ ok: true, ticket_id: 1, message: 'escalated' }),
+    getControlMode: async () => ({ mode: 'live' as const }),
+    setControlMode: async () => ({ ok: true, mode: 'live' as const }),
+    getSafetySettings: async () => ({
+      escalation_keywords: [],
+      auto_escalate_on_fail: true,
+      max_retries: 2,
+      ticket_blacklist: [],
+      requester_blacklist: [],
+      feishu_webhook_url: '',
+    }),
+    saveSafetySettings: async () => ({ ok: true, message: 'saved' }),
+    testFeishuWebhook: async () => ({ ok: true, status_code: 200, latency_ms: 15, message: 'ok' }),
+    getMeshHealth: async () => ({ items: [], overall_status: 'healthy' as const }),
+    getLiveLogs: async () => ({ lines: ['[Worker] Mock log line'], total: 1 }),
   }
 }
 

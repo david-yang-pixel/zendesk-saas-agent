@@ -37,6 +37,10 @@ export type IconName =
   | 'terminal'
   | 'download'
   | 'logout'
+  | 'sun'
+  | 'moon'
+  | 'globe'
+  | 'sidebar'
 
 export interface MetricCard {
   readonly label: string
@@ -251,4 +255,29 @@ export interface RunRecord extends RecentRun {
   readonly failureReason: string | null
   readonly retryClassification: string | null
   readonly snapshotCursor: string | null
+}
+
+export type ControlMode = 'live' | 'dry_run' | 'paused'
+
+export interface SafetySettings {
+  escalation_keywords: string[]
+  auto_escalate_on_fail: boolean
+  max_retries: number
+  ticket_blacklist: number[]
+  requester_blacklist: string[]
+  feishu_webhook_url: string
+}
+
+export interface MeshHealthItem {
+  name: string
+  label: string
+  status: 'healthy' | 'warning' | 'error'
+  latency_ms: number
+  endpoint?: string
+  detail?: string
+}
+
+export interface MeshHealthResponse {
+  items: MeshHealthItem[]
+  overall_status: 'healthy' | 'warning' | 'error'
 }

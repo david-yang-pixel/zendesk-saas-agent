@@ -229,16 +229,44 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     }, { once: true });
   }
 
+  const liveExecutedTools = new Map<string, { toolCallId: string; toolName: string; service: string; arguments: any; result: any; status: string }>();
+
   session.subscribe((event: any) => {
-    if (event.type === 'message_update') {
+    if (event.type === 'tool_execution_start') {
+      const callId = event.toolCallId || `call-${liveExecutedTools.size + 1}`;
+      console.log(`\n[Agent Tool Call Start] ${event.toolName} (${callId}):`, JSON.stringify(event.args).slice(0, 200));
+      liveExecutedTools.set(callId, {
+        toolCallId: callId,
+        toolName: event.toolName,
+        service: inferToolService(event.toolName),
+        arguments: event.args ?? {},
+        result: null,
+        status: 'running',
+      });
+    } else if (event.type === 'tool_execution_end') {
+      const callId = event.toolCallId || `call-${liveExecutedTools.size}`;
+      console.log(`\n[Agent Tool Result End] ${event.toolName} (${callId}): isError=${event.isError}, result:`, JSON.stringify(event.result).slice(0, 200));
+      const existing = liveExecutedTools.get(callId);
+      if (existing) {
+        existing.result = event.result;
+        existing.status = event.isError ? 'failed' : 'succeeded';
+      } else {
+        liveExecutedTools.set(callId, {
+          toolCallId: callId,
+          toolName: event.toolName,
+          service: inferToolService(event.toolName),
+          arguments: event.args ?? {},
+          result: event.result,
+          status: event.isError ? 'failed' : 'succeeded',
+        });
+      }
+    } else if (event.type === 'message_update') {
       const sub = event.assistantMessageEvent;
       if (sub?.type === 'text_delta') {
         process.stdout.write(sub.delta);
-      } else if (sub?.type === 'tool_call') {
-        console.log(`\n[Agent Tool Call] ${sub.name}:`, JSON.stringify(sub.arguments).slice(0, 150));
+      } else if (sub?.type === 'toolCall' || sub?.type === 'tool_call') {
+        console.log(`\n[Agent Tool Call Update] ${sub.name}:`, JSON.stringify(sub.arguments).slice(0, 150));
       }
-    } else if (event.type === 'tool_result') {
-      console.log(`\n[Agent Tool Result] ${event.toolName}:`, JSON.stringify(event.result).slice(0, 150));
     } else if (event.type === 'error') {
       console.error('\n[Agent Error Event]', event.error);
     } else {
@@ -292,24 +320,42 @@ Please investigate using your available tools and skills, and formulate a comple
 
   console.log(`\n[Agent] Prompt finished in ${totalDurationMs}ms. Total messages in session: ${session.messages.length}`);
   
-  const messages = session.messages as any[];
+  const messages = (session.messages || (session as any).state?.messages || []) as any[];
   const toolResultsMap = new Map<string, any>();
   for (const m of messages) {
-    if (m.role === 'toolResult' || m.role === 'tool_result') {
-      const callId = m.toolCallId || m.id;
+    if (m.role === 'toolResult' || m.role === 'tool_result' || m.role === 'tool') {
+      const callId = m.toolCallId || m.id || m.tool_call_id || m.tool_use_id;
       if (callId) {
         let contentVal = m.content;
         if (Array.isArray(contentVal)) {
-          const textPart = contentVal.find((p: any) => p.type === 'text');
-          if (textPart) {
+          const textParts = contentVal
+            .filter((p: any) => p && (p.type === 'text' || typeof p.text === 'string'))
+            .map((p: any) => p.text);
+          if (textParts.length > 0) {
+            const joined = textParts.join('\n');
             try {
-              contentVal = JSON.parse(textPart.text);
+              contentVal = JSON.parse(joined);
             } catch {
-              contentVal = textPart.text;
+              contentVal = joined;
             }
+          }
+        } else if (typeof contentVal === 'string') {
+          try {
+            contentVal = JSON.parse(contentVal);
+          } catch {
+            // keep as string
           }
         }
         toolResultsMap.set(callId, contentVal);
+      }
+    } else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part && (part.type === 'tool_result' || part.type === 'toolResult')) {
+          const callId = part.toolUseId || part.tool_use_id || part.toolCallId || part.tool_call_id;
+          if (callId) {
+            toolResultsMap.set(callId, part.content ?? part.output ?? null);
+          }
+        }
       }
     }
   }
@@ -322,20 +368,26 @@ Please investigate using your available tools and skills, and formulate a comple
   for (const m of messages) {
     if (m.role === 'assistant' && Array.isArray(m.content)) {
       for (const part of m.content) {
-        if (part.type === 'thinking' && part.thinking) {
-          thinkingList.push(part.thinking);
+        if (part.type === 'thinking' && (part.thinking || part.text)) {
+          const tText = part.thinking || part.text;
+          thinkingList.push(tText);
           steps.push({
             type: 'thinking',
-            thinking: part.thinking,
+            thinking: tText,
           });
-        } else if (part.type === 'tool_call') {
-          const res = toolResultsMap.get(part.id);
+        } else if (part.type === 'toolCall' || part.type === 'tool_call' || part.type === 'tool_use' || part.type === 'toolUse') {
+          const toolCallId = part.id || part.toolCallId || part.call_id || part.tool_use_id;
+          const toolName = part.name || part.toolName;
+          const res = toolResultsMap.get(toolCallId) ?? liveExecutedTools.get(toolCallId)?.result ?? null;
+          const args = part.arguments || part.args || part.input || liveExecutedTools.get(toolCallId)?.arguments || {};
+          const status = liveExecutedTools.get(toolCallId)?.status ?? 'succeeded';
           const toolItem = {
-            toolCallId: part.id,
-            toolName: part.name,
-            service: inferToolService(part.name),
-            arguments: part.arguments,
-            result: res ?? null,
+            toolCallId: toolCallId,
+            toolName: toolName,
+            service: inferToolService(toolName),
+            arguments: args,
+            result: res,
+            status: status,
           };
           toolCallsList.push(toolItem);
           steps.push({
@@ -355,6 +407,18 @@ Please investigate using your available tools and skills, and formulate a comple
       steps.push({
         type: 'answer',
         text: m.content,
+      });
+    }
+  }
+
+  // Fallback: if session messages didn't yield tool calls, populate from liveExecutedTools
+  if (toolCallsList.length === 0 && liveExecutedTools.size > 0) {
+    console.log(`[Agent] Populating ${liveExecutedTools.size} tool calls from live event listener fallback`);
+    for (const item of liveExecutedTools.values()) {
+      toolCallsList.push(item);
+      steps.push({
+        type: 'tool_call',
+        ...item,
       });
     }
   }

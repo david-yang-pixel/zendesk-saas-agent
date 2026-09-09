@@ -9,6 +9,9 @@ import type {
   RegistryData,
   RunListData,
   SandboxPolicy,
+  ControlMode,
+  SafetySettings,
+  MeshHealthResponse,
 } from '../types'
 import type { FailureItem, MetricCard, QueueHealth, RecentRun, RunRecord, SkillRecord, ToolRecord } from '../types'
 import type { InjectionKey } from 'vue'
@@ -431,12 +434,21 @@ export interface AdminApiClient {
   getTraces(input?: { query?: string; status?: string }): Promise<{ items: any[]; total: number }>
   getTrace(ticketId: number): Promise<any>
   retryJob(jobId: string): Promise<{ ok: boolean; message: string }>
+  skipJob(jobId: string): Promise<{ ok: boolean; job_id: string; message: string }>
+  escalateJob(jobId: string): Promise<{ ok: boolean; ticket_id: number; message: string }>
+  getControlMode(): Promise<{ mode: ControlMode }>
+  setControlMode(mode: ControlMode): Promise<{ ok: boolean; mode: ControlMode }>
+  getSafetySettings(): Promise<SafetySettings>
+  saveSafetySettings(data: SafetySettings): Promise<{ ok: boolean; message: string }>
+  testFeishuWebhook(data?: { webhook_url?: string }): Promise<{ ok: boolean; status_code: number; latency_ms: number; message: string }>
+  getMeshHealth(): Promise<MeshHealthResponse>
   getModelSettings(): Promise<any>
   saveModelSettings(data: any): Promise<{ ok: boolean; message: string }>
   testModelConnection(data: any): Promise<{ ok: boolean; status_code: number; latency_ms: number; message: string; sample_text: string }>
   getMcpMesh(): Promise<{ services: any[]; total_tools: number }>
   getSkills(): Promise<any[]>
   saveSkill(skillName: string, content: string): Promise<{ ok: boolean; message: string }>
+  getLiveLogs(tail?: number): Promise<{ lines: string[]; total: number }>
 }
 
 export function createAdminApiClient(transport: AdminApiTransport = new FetchAdminApiTransport()): AdminApiClient {
@@ -577,6 +589,42 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
     async retryJob(jobId) {
       return transport.request(`/api/traces/${jobId}/retry`, { method: 'POST' })
     },
+    async skipJob(jobId) {
+      return transport.request(`/api/traces/${jobId}/skip`, { method: 'POST' })
+    },
+    async escalateJob(jobId) {
+      return transport.request(`/api/traces/${jobId}/escalate`, { method: 'POST' })
+    },
+    async getControlMode() {
+      return transport.request('/api/control/mode')
+    },
+    async setControlMode(mode) {
+      return transport.request('/api/control/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      })
+    },
+    async getSafetySettings() {
+      return transport.request('/api/settings/safety')
+    },
+    async saveSafetySettings(data) {
+      return transport.request('/api/settings/safety', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+    },
+    async testFeishuWebhook(data = {}) {
+      return transport.request('/api/settings/feishu/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+    },
+    async getMeshHealth() {
+      return transport.request('/api/system/mesh-health')
+    },
     async getModelSettings() {
       return transport.request('/api/settings/model')
     },
@@ -606,6 +654,9 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content }),
       })
+    },
+    async getLiveLogs(tail = 150) {
+      return transport.request(`/api/logs/live?tail=${tail}`)
     },
   }
 }

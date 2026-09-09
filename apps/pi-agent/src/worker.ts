@@ -9,9 +9,37 @@ import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { detectHumanHandoffIntent } from './intent.js';
 
 dotenv.config();
-for (const credPath of ['/app/credentials.env', './credentials.env', '../credentials.env']) {
-  if (fs.existsSync(credPath)) {
-    dotenv.config({ path: credPath });
+
+function loadCredentialFile(filePath: string) {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    let loadedCount = 0;
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx <= 0) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      let val = trimmed.slice(eqIdx + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+        val = val.slice(1, -1);
+      }
+      if (key) {
+        process.env[key] = val;
+        loadedCount++;
+      }
+    }
+    console.log(`[Worker] Loaded ${loadedCount} credentials from ${filePath}`);
+    return true;
+  } catch (err: any) {
+    console.warn(`[Worker] Failed to read ${filePath}:`, err.message);
+    return false;
+  }
+}
+
+for (const credPath of ['/app/credentials.env', './credentials.env', '../credentials.env', '../../credentials.env']) {
+  if (loadCredentialFile(credPath)) {
     break;
   }
 }

@@ -78,6 +78,22 @@ function apiFixture(): AdminApiClient {
     getMcpMesh: async () => ({ services: [], total_tools: 0 }),
     getSkills: async () => [],
     saveSkill: async () => ({ ok: true, message: 'saved' }),
+    skipJob: async () => ({ ok: true, job_id: 'job-1', message: 'skipped' }),
+    escalateJob: async () => ({ ok: true, ticket_id: 1, message: 'escalated' }),
+    getControlMode: async () => ({ mode: 'live' as const }),
+    setControlMode: async () => ({ ok: true, mode: 'live' as const }),
+    getSafetySettings: async () => ({
+      escalation_keywords: [],
+      auto_escalate_on_fail: true,
+      max_retries: 2,
+      ticket_blacklist: [],
+      requester_blacklist: [],
+      feishu_webhook_url: '',
+    }),
+    saveSafetySettings: async () => ({ ok: true, message: 'saved' }),
+    testFeishuWebhook: async () => ({ ok: true, status_code: 200, latency_ms: 15, message: 'ok' }),
+    getMeshHealth: async () => ({ items: [], overall_status: 'healthy' as const }),
+    getLiveLogs: async () => ({ lines: ['[Worker] Mock system live log 1'], total: 1 }),
   }
 }
 
@@ -89,8 +105,54 @@ describe('RunsPage Trace Player', () => {
     expect(wrapper.text()).toContain('工单推演流水')
     expect(wrapper.text()).toContain('#3726')
     expect(wrapper.text()).toContain('customer@acme.com')
+    expect(wrapper.text()).toContain('工单处理详细日志')
     expect(wrapper.text()).toContain('深度思考链')
     expect(wrapper.text()).toContain('signoz_search_logs')
+    expect(wrapper.text()).toContain('输入参数 (Arguments)')
+    expect(wrapper.text()).toContain('status >= 500')
+    expect(wrapper.text()).toContain('执行结果 (Output)')
+    expect(wrapper.text()).toContain('timeout')
     expect(wrapper.text()).toContain('Zendesk Browser Relay 前台投递回执')
+
+    // Test collapsible processing log bar (default collapsed)
+    const procToggleBtn = wrapper.find('.btn-toggle-processing-log')
+    expect(procToggleBtn.exists()).toBe(true)
+    expect(procToggleBtn.text()).toBe('点击展开详细处理日志 ▾')
+    const procBody = wrapper.find('.processing-log-body')
+    expect(procBody.attributes('style')).toContain('display: none')
+
+    // Expand processing log
+    await procToggleBtn.trigger('click')
+    expect(procToggleBtn.text()).toBe('收起详细处理日志 ▴')
+    expect(procBody.attributes('style') || '').not.toContain('display: none')
+
+    // Test toggle tool collapse / expand inside processing log
+    const toggleBtn = wrapper.find('.tool-toggle-btn')
+    expect(toggleBtn.exists()).toBe(true)
+    expect(toggleBtn.text()).toBe('折叠')
+    await toggleBtn.trigger('click')
+    expect(toggleBtn.text()).toBe('展开')
+  })
+
+  it('renders direct reasoning node when a ticket has no tool calls', async () => {
+    const fixture = apiFixture()
+    fixture.getTrace = async () => ({
+      ...mockTraceDetail,
+      ticket_id: 4341,
+      steps: [
+        {
+          type: 'thinking' as const,
+          thinking: 'Customer asks about upgrade options. Answering directly from knowledge base.',
+        },
+      ],
+      final_reply: 'You can upgrade your plan in settings.',
+    })
+
+    const wrapper = mount(RunsPage, { global: { provide: { [ADMIN_API_KEY as symbol]: fixture } } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('端到端直接推理')
+    expect(wrapper.text()).toContain('基于知识库与规则解答')
+    expect(wrapper.text()).toContain('未触发外部 MCP 工具')
   })
 })

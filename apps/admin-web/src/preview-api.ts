@@ -296,4 +296,45 @@ export const previewAdminApi: AdminApiClient = {
   async saveSkill(skillName, content) {
     return { ok: true, message: `Saved skill ${skillName}` }
   },
+  async skipJob(jobId) {
+    return { ok: true, job_id: jobId, message: `Job ${jobId} skipped` }
+  },
+  async escalateJob(jobId) {
+    return { ok: true, ticket_id: 1234, message: `Job ${jobId} escalated` }
+  },
+  async getControlMode() {
+    return { mode: 'live' }
+  },
+  async setControlMode(mode) {
+    return { ok: true, mode }
+  },
+  async getSafetySettings() {
+    return {
+      escalation_keywords: ['退款', '投诉', '人工'],
+      auto_escalate_on_fail: true,
+      max_retries: 2,
+      ticket_blacklist: [4308],
+      requester_blacklist: [],
+      feishu_webhook_url: '',
+    }
+  },
+  async saveSafetySettings(_data) {
+    return { ok: true, message: 'Saved safety settings' }
+  },
+  async testFeishuWebhook(_data) {
+    return { ok: true, status_code: 200, latency_ms: 120, message: 'Test message sent' }
+  },
+  async getMeshHealth() {
+    return {
+      items: [
+        { name: 'db', label: 'PostgreSQL', status: 'healthy', latency_ms: 5 },
+        { name: 'llm', label: 'LLM Gateway', status: 'healthy', latency_ms: 120 },
+      ],
+      overall_status: 'healthy',
+    }
+  },
+  async getLiveLogs(_tail) {
+    return { lines: ['[INFO] Container running normally', '[INFO] Worker idle polling'], total: 2 }
+  },
 }
+

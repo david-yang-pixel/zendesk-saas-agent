@@ -3,46 +3,50 @@
 Modern event-driven, sandbox-isolated Zendesk AI Agent system.
 Provides automated ticket analysis, multi-source evidence investigation, and customer inquiry response generation.
 
-## Services
+## Architecture & Services
 
-- `casework-ingress`: Zendesk webhook and deterministic processing rules.
-- `casework-harness`: durable job consumer, sandbox controller and delivery.
-- `casework-sandbox`: ephemeral per-run Agent Harness runtime.
-- `casework-admin`: practical management API and Vue console.
+The project is structured as a modern Polyglot Monorepo:
+
+### Applications (`apps/`)
+- `apps/ingress`: Zendesk webhook ingestion and deterministic triage / admission rules (FastAPI / Python).
+- `apps/pi-agent`: AI casework reasoning engine worker (TypeScript / Node.js).
+- `apps/admin-api`: Management & observability API, MCP service mesh probe (FastAPI / Python).
+- `apps/admin-web`: Management console UI with live trace player & MCP mesh monitor (Vue 3 / Vite).
+- `apps/feishu-mcp`: Feishu alert bot and human escalation MCP adapter (TypeScript / Node.js).
+- `apps/harness`: Durable queue consumer, sandbox controller and delivery engine (Python).
+- `apps/sandbox`: Ephemeral per-run sandbox runtime for isolated tool executions (Python).
+
+### Shared Packages (`packages/`)
+- `packages/contracts`: Versioned schemas and JSON message contracts across all services.
+- `packages/persistence`: PostgreSQL SQLAlchemy models and repository layer.
+- `packages/agent-core`: State machine, context budget, and core casework reasoning domain.
+- `packages/tool-sdk`: MCP tool interfaces, evidence extraction, and loop adapters.
+
+### Skills (`skills/`)
+- Agent persona definitions & specialized investigation instructions (`core-casework`, `dify-saas-support`, `dify-db-investigation`, `app-run-investigation`).
 
 ## Development
 
 ```bash
+# Python services & test suite
 uv sync --dev
 uv run pytest -q
 uv run ruff check .
-uv run pyright
 
+# Frontend & Node services (pnpm workspace)
 corepack enable
-pnpm --dir apps/admin-web install
+pnpm install
 pnpm --dir apps/admin-web test
 pnpm --dir apps/admin-web build
+pnpm --dir apps/pi-agent build
 
 docker build -f deploy/Dockerfile --target sandbox -t casework-sandbox:dev .
 docker compose -f deploy/compose.yaml up --build
 ```
 
-`casework-sandbox` is an image only, not a long-running Compose service. The
-Harness creates a fresh container for each run and removes it on every terminal
-path. Build that image before starting the long-running services.
+## Production & Deployment (`deploy/`)
 
-On Linux, set `DOCKER_GID` to the numeric group owner of
-`/var/run/docker.sock` before starting the Harness. The release Compose file
-requires it explicitly so the non-root Harness process can create and destroy
-ephemeral Sandbox containers. Release manifests render image, source and
-configuration revisions; database credentials remain externally injected.
-
-The Harness forwards only the explicit Sandbox adapter allowlist
-(`ZENDESK_*`, `CASEWORK_MODEL_BASE_URL`, `CASEWORK_TOOL_CONFIG`, and
-`CASEWORK_CREDENTIAL_*`) to each ephemeral container. Model configuration stores
-only credential references. The Admin console validates and atomically replaces
-model credentials in the dedicated directory selected by
-`CASEWORK_CREDENTIAL_DIR`, while returning masked status only. Each new Sandbox
-reloads that file. Do not put provider keys in versioned configuration or the
-release manifest. The Harness never forwards `DATABASE_URL` or unrelated
-process secrets.
+- **Release Orchestration**: Production runs via `deploy/compose.release.yaml`, managing PostgreSQL, Ingress, Pi-Agent, Admin, and Feishu-MCP.
+- **Worker Reasoning**: `apps/pi-agent` operates as the primary concurrency worker, consuming admissions from PostgreSQL, executing tool calls via the MCP Mesh, and delivering replies through the Zendesk Browser Relay.
+- **Tool Mesh**: The system integrates 8 core MCP services (`db-gateway`, `zendesk`, `signoz`, `source`, `github`, `docs`, `feishu`, `zendesk-browser-relay`), providing 49 tools for ticket investigation.
+- **Zero-Secret Boundary**: Production credentials are mount-injected via `/run/casework-credentials/credentials.env` and never committed to the repository. The Admin console allows hot-updating model endpoints and tokens without container rebuilds.

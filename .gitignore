@@ -15,11 +15,9 @@ logs/
 .coverage
 htmlcov/
 .DS_Store
-ai-docs/tickets/
-.state/
-example/
-# log-viewer 独立子项目的 uv 锁文件，不纳入主仓
-log-viewer/uv.lock
+*.DS_Store
+.sc/
+feishu-codex-bridge/
 
 node_modules/
 apps/admin-web/dist/

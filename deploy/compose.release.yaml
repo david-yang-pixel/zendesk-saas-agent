@@ -81,10 +81,14 @@ services:
       CASEWORK_ADMIN_AUTH_FILE: ${CASEWORK_ADMIN_AUTH_FILE:?set CASEWORK_ADMIN_AUTH_FILE}
       CASEWORK_ADMIN_INTERNAL_TOKEN_FILE: ${CASEWORK_ADMIN_INTERNAL_TOKEN_FILE:?set CASEWORK_ADMIN_INTERNAL_TOKEN_FILE}
       CASEWORK_ADMIN_PUBLIC_ORIGIN: ${CASEWORK_ADMIN_PUBLIC_ORIGIN:?set CASEWORK_ADMIN_PUBLIC_ORIGIN}
+      ADMIN_WEB_DIST: ${ADMIN_WEB_DIST:-/app/apps/admin-web/dist}
     ports: ["127.0.0.1:${CASEWORK_ADMIN_PORT:-18104}:8104"]
     volumes:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}:/run/casework-credentials
       - ${CASEWORK_ADMIN_AUTH_DIR:?set CASEWORK_ADMIN_AUTH_DIR}:/run/casework-admin-auth
+      - /opt/zd-agent/code/apps/admin-web/dist:/app/apps/admin-web/dist:ro
+      - /opt/zd-agent/code/apps/admin-api/src/casework_admin/api_v2.py:/app/apps/admin-api/src/casework_admin/api_v2.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       migration:
         condition: service_completed_successfully
