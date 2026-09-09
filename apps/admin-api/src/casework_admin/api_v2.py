@@ -1130,7 +1130,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
     async def get_live_logs(tail: int = 150) -> dict[str, Any]:
         lines: list[str] = []
         sock_path = Path("/var/run/docker.sock")
-        if sock_path.exists():
+        if sock_path.exists():  # noqa: ASYNC240
             try:
                 transport = httpx.AsyncHTTPTransport(uds=str(sock_path))
                 async with httpx.AsyncClient(transport=transport) as client:
