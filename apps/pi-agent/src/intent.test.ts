@@ -13,6 +13,19 @@ describe('detectHumanHandoffIntent', () => {
       expect(detectHumanHandoffIntent('Real person please')).toBe(true);
     });
 
+    it('detects standalone keywords and short commands', () => {
+      expect(detectHumanHandoffIntent('support')).toBe(true);
+      expect(detectHumanHandoffIntent('Support')).toBe(true);
+      expect(detectHumanHandoffIntent('support!')).toBe(true);
+      expect(detectHumanHandoffIntent('human')).toBe(true);
+      expect(detectHumanHandoffIntent('agent')).toBe(true);
+      expect(detectHumanHandoffIntent('live agent')).toBe(true);
+      expect(detectHumanHandoffIntent('human please')).toBe(true);
+      expect(detectHumanHandoffIntent('please support')).toBe(true);
+      expect(detectHumanHandoffIntent('Are you a human?')).toBe(true);
+      expect(detectHumanHandoffIntent('Is this a bot?')).toBe(true);
+    });
+
     it('does NOT trigger on technical or product inquiries containing keywords', () => {
       expect(detectHumanHandoffIntent('How do I configure a human-in-the-loop workflow in Dify?')).toBe(false);
       expect(detectHumanHandoffIntent('We are testing human-eval benchmarks with our dataset')).toBe(false);
@@ -28,12 +41,17 @@ describe('detectHumanHandoffIntent', () => {
     it('detects explicit requests for human agent', () => {
       expect(detectHumanHandoffIntent('转人工')).toBe(true);
       expect(detectHumanHandoffIntent('人工客服')).toBe(true);
+      expect(detectHumanHandoffIntent('人工')).toBe(true);
+      expect(detectHumanHandoffIntent('客服')).toBe(true);
       expect(detectHumanHandoffIntent('请帮我转人工服务')).toBe(true);
       expect(detectHumanHandoffIntent('需要真人客服协助一下')).toBe(true);
       expect(detectHumanHandoffIntent('呼叫人工客服')).toBe(true);
       expect(detectHumanHandoffIntent('你们有人工客服在吗？')).toBe(true);
       expect(detectHumanHandoffIntent('我要找人工')).toBe(true);
       expect(detectHumanHandoffIntent('转人工客服解决一下')).toBe(true);
+      expect(detectHumanHandoffIntent('是不是人工？')).toBe(true);
+      expect(detectHumanHandoffIntent('是人工吗')).toBe(true);
+      expect(detectHumanHandoffIntent('有人在吗')).toBe(true);
     });
 
     it('does NOT trigger on technical inquiries with keywords', () => {

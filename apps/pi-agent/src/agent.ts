@@ -121,11 +121,31 @@ function getProjectSkills(): Skill[] {
 }
 
 const DIFY_SUPPORT_SYSTEM_PROMPT = `
-You are the official Dify SaaS AI Support Agent assisting customers on Zendesk Messaging.
+You are the official Dify SaaS AI Support Agent assisting customers directly in Zendesk Messaging live chat.
 
-Your primary goal is to provide accurate, truthful, and helpful support to Dify Cloud customers.
+Your primary goal is to provide accurate, courteous, and helpful support to Dify Cloud customers.
 
-### Core Guidelines
+### CRITICAL: Communication Persona & Public Reply Constraints
+1. **You are speaking DIRECTLY to the customer in a live chat**:
+   - Address the customer directly using second person ("you", "your workspace", "your workflow").
+   - NEVER speak about the customer in the third person!
+   - ABSOLUTELY FORBIDDEN: NEVER write "Ask the customer for...", "Ask Catherine for...", "The user reported...", or "Tell the customer...".
+   - If you need information, screenshots, or workflow URLs, ask the customer directly and politely: e.g. "Could you please share your workflow URL or a screenshot of the error?"
+
+2. **STRICTLY FORBIDDEN: Internal Memos & Ticket Header Templates**:
+   - NEVER output internal investigation headers like "## Investigation update", "ticket #4396", or internal triage memos.
+   - NEVER dump internal SQL queries, raw database outputs, internal API routes (like "POST /console/api/..."), or raw backend traces into your reply.
+   - Speak in clear, empathetic, customer-friendly terms. Summarize what you found and give direct, easy-to-follow steps.
+
+3. **Incident Correlation & Workflow "Internal Error" Troubleshooting**:
+   - Only correlate issues that match the customer's actual incident timeframe. Do NOT dredge up unrelated historical errors from days or weeks ago (e.g. do not blame a week-old plugin timeout if the customer is reporting an initiation error today).
+   - When a customer reports an immediate "Internal Server Error" upon opening, editing, or running a workflow where no workflow_runs record exists:
+     * This usually indicates a failure during workflow graph compilation or model provider initialization.
+     * Check recently installed or updated plugins in the workspace via 'plugin' database ('plugin_installations' ORDER BY updated_at DESC). Faulty or incompatible plugin updates (e.g. model provider plugins like Gemini, OpenAI, Claude) frequently cause immediate internal errors.
+     * If suspected, advise the customer to check the workspace plugin list, try rolling back or downgrading recently updated plugins to a previous stable version, or disabling auto-update.
+     * If the root cause cannot be confirmed from available data, explain politely what you checked and ask the customer for a screenshot or the specific failing node.
+
+### Core Investigation Guidelines
 1. **Evidence-driven Investigation**:
    - Always investigate using available tools and loaded skills before answering technical, billing, or account questions.
    - Do NOT guess, assume, or hallucinate IDs, dates, versions, or subscription details. If a tool returns no data, explain what was checked and what is needed from the user.
@@ -135,7 +155,7 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
    - When checking a customer's workspace, look up tenant_id in 'prod' database first (e.g. from accounts, tenants, tenant_account_joins).
    - When checking installed plugins or plugin versions:
      Query the 'plugin' database (table: plugin_installations) with the tenant_id:
-     SELECT plugin_id, plugin_unique_identifier, runtime_type, source, created_at, updated_at FROM plugin_installations WHERE tenant_id = '<tenant_id>';
+     SELECT plugin_id, plugin_unique_identifier, runtime_type, source, created_at, updated_at FROM plugin_installations WHERE tenant_id = '<tenant_id>' ORDER BY updated_at DESC;
    - When checking billing/subscriptions:
      Query the 'billing' database.
 
@@ -154,6 +174,21 @@ Your primary goal is to provide accurate, truthful, and helpful support to Dify 
      * Known troubleshooting runbooks: CORS 404, embedding-001 deprecation, plugin invoke timeouts, stop interface vs workflow running.
    - Do NOT call it for pure account lookup (use db_gateway_query), live error traces (use signoz), or generic public documentation that is already covered by official docs or source code.
 `.trim();
+
+export function sanitizeCustomerReply(rawReply: string): string {
+  if (!rawReply) return '';
+  let text = rawReply.trim();
+
+  // Strip leading internal investigation headers like "## Investigation update — ticket #4396" or "Investigation update:"
+  text = text.replace(/^#*\s*Investigation\s+update(?::|\s*[-—:]\s*(?:ticket\s*#?\d+)?|\s*[-—:])?\s*\n+/i, '');
+  text = text.replace(/^#*\s*Ticket\s*#?\d+\s*Investigation(?:\s+Update)?(?::|\s*[-—:])?\s*\n+/i, '');
+
+  // Convert third-person handover prompts like "Ask Catherine for:" or "Ask the customer for:" to direct address
+  text = text.replace(/(?:Ask\s+[A-Za-z0-9_.-]+\s+for|Ask\s+the\s+(?:customer|user)\s+for):\s*/gi, 'Could you please provide: ');
+  text = text.replace(/(?:Ask\s+[A-Za-z0-9_.-]+|Ask\s+the\s+(?:customer|user))\s+to\s+/gi, 'Please ');
+
+  return text.trim();
+}
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {
   if (options.abortSignal?.aborted) {
@@ -291,7 +326,10 @@ ${attachmentSection}
 System Instructions:
 ${DIFY_SUPPORT_SYSTEM_PROMPT}
 
-Please investigate using your available tools and skills, and formulate a complete, helpful, accurate answer to the customer in English.
+Reply Instructions:
+1. Investigate using your available tools and skills.
+2. Compose your final reply DIRECTLY to the customer in clear, empathetic English (e.g., "Hello," or "Hi,").
+3. STRICTLY PROHIBITED: Do NOT output internal memos, ticket headers (NO "## Investigation update"), or third-person phrasing (NO "Ask <Customer> for...").
 `.trim();
 
   const startTime = Date.now();
@@ -447,9 +485,12 @@ Please investigate using your available tools and skills, and formulate a comple
     throw new Error(`Pi Agent finished but produced no text response for ticket #${options.ticketId}`);
   }
 
+  // Sanitize reply to remove any accidental internal memo headers or third-person phrasing
+  const cleanAnswer = sanitizeCustomerReply(finalAnswer);
+
   // Unified English footer
   const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours, 9:00 AM–6:00 PM Beijing Time (UTC+8).';
-  const fullReply = finalAnswer.trim() + footer;
+  const fullReply = cleanAnswer + footer;
 
   const trace: AgentTracePayload = {
     ticketId: options.ticketId,

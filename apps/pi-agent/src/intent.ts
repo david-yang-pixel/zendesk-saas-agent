@@ -42,26 +42,34 @@ const NEGATIVE_TECHNICAL_PATTERNS = [
 
 // Positive handoff intent patterns
 const POSITIVE_INTENT_PATTERNS: RegExp[] = [
-  // 1. English handoff intents
-  /\b(?:transfer|connect|switch|pass)\s+(?:me\s+)?(?:to\s+)?(?:(?:a|an)\s+)?(?:human|agent|person|representative|operator|live\s+support)\b/i,
+  // 1. Standalone English handoff keywords / short commands (with optional punctuation & please)
+  /^(?:(?:please|can\s+i\s+get|i\s+need|i\s+want)\s+)?(?:human|support|agent|live\s*agent|live\s*support|representative|operator|real\s*person)(?:\s+(?:please|now|help|assist))*[\s\?!.,~]*$/i,
+
+  // 2. English questions asking if current responder is human or bot
+  /\b(?:are\s+you|is\s+this|am\s+i\s+talking\s+to)\s+(?:a\s+)?(?:human|bot|robot|ai|machine|real\s+person)\b/i,
+
+  // 3. English phrase handoff intents
+  /\b(?:transfer|connect|switch|pass)\s+(?:me\s+)?(?:to\s+)?(?:(?:a|an)\s+)?(?:human|agent|person|representative|operator|live\s+support|someone\s+else)\b/i,
   /\b(?:talk|speak|chat)\s+(?:to|with)\s+(?:(?:a|an)\s+)?(?:human|agent|person|representative|operator|real\s+person|someone\s+else)\b/i,
   /\b(?:need|want|get|request)\s+(?:(?:a|an)\s+)?(?:human|real\s+person|live\s+agent|human\s+support|human\s+agent|representative)\b/i,
-  /\b(?:human|live)\s+(?:agent|support|representative|operator|help)\s+(?:please|needed|now)?\b/i,
-  /\breal\s+person\s+(?:please|now)?\b/i,
+  /\b(?:human|live)\s+(?:agent|support|representative|operator|help)\s*(?:please|needed|now)?\b/i,
+  /\breal\s+person\s*(?:please|now)?\b/i,
   /\bcan\s+i\s+(?:talk|speak)\s+to\s+(?:someone|a\s+human)\b/i,
 
-  // 2. Chinese handoff intents
-  /(?:转|找|呼叫|切换到|接入|连线|需要|叫|请帮我转|我要)(?:一个)?(?:人工客服|真人客服|在线客服|人工服务|真人服务|人工)/i,
-  /(?:人工客服|真人客服|人工服务|真人服务)(?:在哪|在吗|出来|请问|帮我|解决一下)/i,
+  // 4. Chinese handoff intents
+  /(?:转|找|呼叫|切换到|接入|连线|需要|叫|请帮我转|我要)(?:一个)?(?:人工客服|真人客服|在线客服|人工服务|真人服务|人工|客服)/i,
+  /(?:人工客服|真人客服|人工服务|真人服务|客服)(?:在哪|在吗|出来|请问|帮我|解决一下)/i,
   /(?:需要|请|让)(?:人工|真人)(?:介入|接管|处理|回答|协助)/i,
-  /^(?:转?人工|人工客服|找人工|呼叫人工|人工帮助|人工服务|真人)$/i,
+  /(?:是|是不是|有没有|你们是)(?:人工|真人)(?:吗|客服|？|\?)?/i,
+  /(?:有人在吗|有人吗|在线客服|转人工|找客服)/i,
+  /^(?:请?转?人工|人工客服|找人工|呼叫人工|人工帮助|人工服务|真人|客服|找客服|转客服)[\s\?!.,~，。？！]*$/i,
 
-  // 3. Japanese handoff intents
+  // 5. Japanese handoff intents
   /(?:オペレーター|担当者|人間|スタッフ|サポート窓口)(?:に|と|を)?(?:代わって|繋いで|話したい|話せます|話せる|連絡したい|相談したい|交代|呼んで)/i,
   /(?:人間|真人|有人)(?:のサポート|のオペレーター|の対応)/i,
-  /^(?:オペレーター|担当者|有人サポート)$/i,
+  /^(?:オペレーター|担当者|有人サポート|サポート|人間)[\s\?!.,~，。？！]*$/i,
 
-  // 4. Spanish / Portuguese basics
+  // 6. Spanish / Portuguese basics
   /\b(?:hablar|falar)\s+con\s+(?:(?:un|uma)\s+)?(?:humano|agente|persona|atendente)\b/i,
   /\b(?:transferir|conectar)\s+(?:a\s+(?:un|uma)\s+)?(?:humano|agente|atendente)\b/i,
 ];
@@ -80,7 +88,17 @@ export function detectHumanHandoffIntent(text: string): boolean {
     return false;
   }
 
-  // 2. If positive matched, check if it's purely a technical inquiry
+  // 2. Direct standalone handoff requests bypass negative technical checks
+  const isDirectHandoffKeyword =
+    /^(?:(?:please|can\s+i\s+get|i\s+need|i\s+want)\s+)?(?:human|support|agent|live\s*agent|live\s*support|representative|operator|real\s*person)(?:\s+(?:please|now|help|assist))*[\s\?!.,~]*$/i.test(trimmed)
+    || /^(?:请?转?人工|人工客服|找人工|呼叫人工|人工帮助|人工服务|真人|客服|找客服|转客服)[\s\?!.,~，。？！]*$/i.test(trimmed)
+    || /^(?:オペレーター|担当者|有人サポート|サポート|人間)[\s\?!.,~，。？！]*$/i.test(trimmed);
+
+  if (isDirectHandoffKeyword) {
+    return true;
+  }
+
+  // 3. If positive matched, check if it's purely a technical inquiry
   // Only apply negative check if the message has technical context AND does NOT have an explicit "transfer" action
   const hasStrongTransferAction = /(?:转|呼叫|接入|切换到|我要找|transfer\s+(?:me\s+)?to|talk\s+to\s+(?:a\s+)?human|connect\s+me\s+to|代わって|繋いで)/i.test(trimmed);
   if (!hasStrongTransferAction) {
