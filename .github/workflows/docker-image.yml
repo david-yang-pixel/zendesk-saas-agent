@@ -241,5 +241,83 @@ jobs:
     needs: deploy
     if: success()
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
-      - run: echo "Casework Greenfield digest-pinned production bundle deployed successfully."
+      - name: Send deployment success email
+        env:
+          SMTP_HOST: ${{ secrets.DEPLOY_NOTIFY_SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.DEPLOY_NOTIFY_SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.DEPLOY_NOTIFY_SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.DEPLOY_NOTIFY_SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.DEPLOY_NOTIFY_EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.DEPLOY_NOTIFY_EMAIL_TO }}
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import smtplib
+          import ssl
+          from email.message import EmailMessage
+
+          required = [
+              "SMTP_HOST",
+              "SMTP_PORT",
+              "SMTP_USERNAME",
+              "SMTP_PASSWORD",
+              "EMAIL_FROM",
+              "EMAIL_TO",
+          ]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              print("Missing required email notification secrets, skipping: " + ", ".join(missing))
+              exit(0)
+
+          smtp_host = os.environ["SMTP_HOST"]
+          smtp_port = int(os.environ["SMTP_PORT"])
+          smtp_username = os.environ["SMTP_USERNAME"]
+          smtp_password = os.environ["SMTP_PASSWORD"]
+          email_from = os.environ["EMAIL_FROM"]
+          email_to = os.environ["EMAIL_TO"]
+          repository = os.environ["REPOSITORY"]
+          sha = os.environ["SHA"]
+          short_sha = sha[:7]
+          run_url = f"{os.environ['SERVER_URL']}/{repository}/actions/runs/{os.environ['RUN_ID']}"
+
+          msg = EmailMessage()
+          msg["Subject"] = f"zd-agent deployed successfully: {short_sha}"
+          msg["From"] = email_from
+          msg["To"] = email_to
+          msg.set_content(
+              "\n".join(
+                  [
+                      "zd-agent production deployment completed successfully.",
+                      "",
+                      f"Repository: {repository}",
+                      f"Commit: {sha}",
+                      f"Workflow run: {run_url}",
+                  ]
+              )
+          )
+
+          try:
+              context = ssl.create_default_context()
+              if smtp_port == 465:
+                  with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+                      server.login(smtp_username, smtp_password)
+                      server.send_message(msg)
+              else:
+                  with smtplib.SMTP(smtp_host, smtp_port) as server:
+                      server.starttls(context=context)
+                      server.login(smtp_username, smtp_password)
+                      server.send_message(msg)
+              print("Deployment notification email sent successfully!")
+          except Exception as e:
+              print(f"Failed to send email notification: {e}")
+          PY
