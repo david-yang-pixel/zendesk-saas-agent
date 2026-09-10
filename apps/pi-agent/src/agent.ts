@@ -67,6 +67,8 @@ export interface AgentTracePayload {
 
 export interface AgentRunResult {
   reply: string;
+  customerReply: string;
+  internalNote?: string;
   trace: AgentTracePayload;
 }
 
@@ -173,6 +175,22 @@ Your primary goal is to provide accurate, courteous, and helpful support to Dify
      * SaaS workspace operations: owner transfer, seat management, data retention limits.
      * Known troubleshooting runbooks: CORS 404, embedding-001 deprecation, plugin invoke timeouts, stop interface vs workflow running.
    - Do NOT call it for pure account lookup (use db_gateway_query), live error traces (use signoz), or generic public documentation that is already covered by official docs or source code.
+
+6. **DUAL-TRACK OUTPUT PROTOCOL (MANDATORY)**:
+   To ensure complete separation between technical engineering details and customer-facing chat messages, your final assistant message MUST be structured into two sections delimited by exact markers:
+
+   === INTERNAL NOTE ===
+   [Factual engineering triage note for human support engineers]
+   - **Workspace / Tenant**: <tenant_id>
+   - **Investigated Resources**: <apps / workflows / plugins inspected>
+   - **Root Cause Analysis**: <factual finding or 'No execution trace found around reported time'>
+   - **Technical Recommendations**: <concrete actions for human engineers, e.g. check plugin downgrade, database fix, or escalation>
+
+   === CUSTOMER REPLY ===
+   [Direct, empathetic message to the customer in English]
+   - Greet the customer and speak directly using "you" / "your workflow".
+   - Give the simplified, actionable conclusion or kindly request missing info.
+   - NO internal SQL, NO raw logs, NO internal memos, and NO third-person handover prompts.
 `.trim();
 
 export function sanitizeCustomerReply(rawReply: string): string {
@@ -188,6 +206,61 @@ export function sanitizeCustomerReply(rawReply: string): string {
   text = text.replace(/(?:Ask\s+[A-Za-z0-9_.-]+|Ask\s+the\s+(?:customer|user))\s+to\s+/gi, 'Please ');
 
   return text.trim();
+}
+
+export interface DualTrackOutput {
+  customerReply: string;
+  internalNote?: string;
+}
+
+export function extractDualTrackOutputs(rawText: string): DualTrackOutput {
+  if (!rawText) return { customerReply: '' };
+
+  const internalMarker = '=== INTERNAL NOTE ===';
+  const customerMarker = '=== CUSTOMER REPLY ===';
+
+  const internalIdx = rawText.indexOf(internalMarker);
+  const customerIdx = rawText.indexOf(customerMarker);
+
+  if (internalIdx !== -1 && customerIdx !== -1) {
+    let internalContent = '';
+    let customerContent = '';
+
+    if (internalIdx < customerIdx) {
+      internalContent = rawText.substring(internalIdx + internalMarker.length, customerIdx).trim();
+      customerContent = rawText.substring(customerIdx + customerMarker.length).trim();
+    } else {
+      customerContent = rawText.substring(customerIdx + customerMarker.length, internalIdx).trim();
+      internalContent = rawText.substring(internalIdx + internalMarker.length).trim();
+    }
+
+    return {
+      customerReply: sanitizeCustomerReply(customerContent),
+      internalNote: internalContent || undefined,
+    };
+  }
+
+  // Fallback: If only customerMarker is found
+  if (customerIdx !== -1) {
+    const customerContent = rawText.substring(customerIdx + customerMarker.length).trim();
+    return {
+      customerReply: sanitizeCustomerReply(customerContent),
+    };
+  }
+
+  // Fallback: If only internalMarker is found
+  if (internalIdx !== -1) {
+    const internalContent = rawText.substring(internalIdx + internalMarker.length).trim();
+    return {
+      customerReply: sanitizeCustomerReply(rawText.substring(0, internalIdx).trim()),
+      internalNote: internalContent || undefined,
+    };
+  }
+
+  // Fallback: If no markers were emitted, sanitize whole text for customer
+  return {
+    customerReply: sanitizeCustomerReply(rawText),
+  };
 }
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -328,8 +401,12 @@ ${DIFY_SUPPORT_SYSTEM_PROMPT}
 
 Reply Instructions:
 1. Investigate using your available tools and skills.
-2. Compose your final reply DIRECTLY to the customer in clear, empathetic English (e.g., "Hello," or "Hi,").
-3. STRICTLY PROHIBITED: Do NOT output internal memos, ticket headers (NO "## Investigation update"), or third-person phrasing (NO "Ask <Customer> for...").
+2. Structure your final response strictly using the DUAL-TRACK OUTPUT PROTOCOL with both delimiters:
+=== INTERNAL NOTE ===
+(Technical summary for human support engineers: Tenant ID, investigated resources, root cause analysis, next actions)
+
+=== CUSTOMER REPLY ===
+(Direct, courteous English message to the customer: address them as "you", simplified findings, next steps. NO internal headers, NO raw SQL/logs, NO third-person handover prompts)
 `.trim();
 
   const startTime = Date.now();
@@ -485,12 +562,12 @@ Reply Instructions:
     throw new Error(`Pi Agent finished but produced no text response for ticket #${options.ticketId}`);
   }
 
-  // Sanitize reply to remove any accidental internal memo headers or third-person phrasing
-  const cleanAnswer = sanitizeCustomerReply(finalAnswer);
+  // Extract dual-track outputs: customer reply + internal engineering triage note
+  const { customerReply, internalNote } = extractDualTrackOutputs(finalAnswer);
 
-  // Unified English footer
+  // Unified English footer for customer reply
   const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours, 9:00 AM–6:00 PM Beijing Time (UTC+8).';
-  const fullReply = cleanAnswer + footer;
+  const fullReply = customerReply.trim() + footer;
 
   const trace: AgentTracePayload = {
     ticketId: options.ticketId,
@@ -508,6 +585,8 @@ Reply Instructions:
 
   return {
     reply: fullReply,
+    customerReply: customerReply.trim(),
+    internalNote: internalNote ? `🤖 [Dify AI Agent 调查备忘录]\n\n${internalNote}` : undefined,
     trace,
   };
 }

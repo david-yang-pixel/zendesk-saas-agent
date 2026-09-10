@@ -84,6 +84,7 @@ if (!DATABASE_URL) {
 }
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
+let sharedMcpServices: McpServiceConfig[] = [];
 
 async function claimNextJob(workerId: string): Promise<any | null> {
   const client = await pool.connect();
@@ -744,6 +745,7 @@ async function main() {
       apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_FEISHU_MCP),
     },
   ];
+  sharedMcpServices = mcpServices;
 
   let allTools: CustomTool[] = [];
   for (const s of mcpServices) {
@@ -1078,6 +1080,33 @@ async function main() {
         return;
       }
 
+      // 1. Dual-track delivery: If an internal investigation note was produced, write it as a private internal comment
+      if (agentResult.internalNote) {
+        try {
+          console.log(`[Worker] Writing dual-track internal investigation note to ticket #${job.ticket_id}...`);
+          const zendeskService = sharedMcpServices.find((s: McpServiceConfig) => s.name === 'zendesk');
+          if (zendeskService) {
+            await callMcpTool(
+              zendeskService.endpoint,
+              zendeskService.apiKey,
+              'add_internal_note',
+              {
+                ticket_id: job.ticket_id,
+                body: agentResult.internalNote,
+                explicit_user_internal_note_request: 'Worker dual-track investigation record',
+                confirm: true,
+              }
+            );
+            console.log(`[Worker] ✅ Dual-track internal note written successfully for ticket #${job.ticket_id}`);
+          } else {
+            console.warn(`[Worker] Zendesk MCP service not found, skipping internal note delivery`);
+          }
+        } catch (noteErr: any) {
+          console.warn(`[Worker] Non-blocking error writing dual-track internal note for ticket #${job.ticket_id}:`, noteErr.message);
+        }
+      }
+
+      // 2. Deliver public customer reply via Browser Relay
       console.log(`[Worker] Pre-delivery check passed. Delivering via Browser Relay...`);
       const relayResult = await sendBrowserRelay(
         BROWSER_RELAY_URL,

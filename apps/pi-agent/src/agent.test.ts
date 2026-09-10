@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { CustomTool } from './mcp.js';
-import { inferToolService, sanitizeCustomerReply } from './agent.js';
+import { inferToolService, sanitizeCustomerReply, extractDualTrackOutputs } from './agent.js';
 
 describe('Pi Support Agent Tool Format', () => {
   it('correctly constructs tool definition conforming to Pi Agent schema', () => {
@@ -67,3 +67,43 @@ describe('sanitizeCustomerReply', () => {
     expect(sanitizeCustomerReply(raw)).toBe(`Please retry running the node.`);
   });
 });
+
+describe('extractDualTrackOutputs', () => {
+  it('correctly splits internal note and customer reply when both markers are present', () => {
+    const output = `
+=== INTERNAL NOTE ===
+- **Workspace**: aafa
+- **Finding**: Recent update to gemini plugin caused initiation error.
+- **Action**: Check if rolling back to 0.9.8 helps.
+
+=== CUSTOMER REPLY ===
+Hello! We noticed that a recent update to the model plugin in your workspace might have caused the issue. Could you please try downgrading it?
+    `.trim();
+
+    const res = extractDualTrackOutputs(output);
+    expect(res.internalNote).toContain('Recent update to gemini plugin');
+    expect(res.customerReply).toBe('Hello! We noticed that a recent update to the model plugin in your workspace might have caused the issue. Could you please try downgrading it?');
+  });
+
+  it('handles inverted marker order gracefully', () => {
+    const output = `
+=== CUSTOMER REPLY ===
+Hi there, we are checking your workflow now.
+
+=== INTERNAL NOTE ===
+- **Tenant**: 12345
+    `.trim();
+
+    const res = extractDualTrackOutputs(output);
+    expect(res.customerReply).toBe('Hi there, we are checking your workflow now.');
+    expect(res.internalNote).toBe('- **Tenant**: 12345');
+  });
+
+  it('falls back to customer reply when no markers are provided and applies sanitizer', () => {
+    const output = `## Investigation update — ticket #100\nHello, please check your network.`;
+    const res = extractDualTrackOutputs(output);
+    expect(res.internalNote).toBeUndefined();
+    expect(res.customerReply).toBe('Hello, please check your network.');
+  });
+});
+
