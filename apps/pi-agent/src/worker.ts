@@ -59,7 +59,7 @@ const rawDbUrl = cleanEnv(process.env.DATABASE_URL);
 const DATABASE_URL = rawDbUrl.replace(/^postgresql\+[a-zA-Z0-9_]+:\/\//, 'postgresql://');
 const BROWSER_RELAY_URL = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_URL) || 'https://zendesk.smlershou.top/zendesk-browser-relay';
 const BROWSER_RELAY_KEY = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_API_KEY);
-const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL) || 'https://open.feishu.cn/open-apis/bot/v2/hook/81c40459-690e-49d6-8874-2a89206ec5ea';
+const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL) || 'https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0';
 
 const humanAlertTracker = new HumanAlertTracker(30 * 60 * 1000);
 

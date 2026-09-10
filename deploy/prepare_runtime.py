@@ -367,7 +367,7 @@ def prepare(
         "FEISHU_WEBHOOK_URL": (
             existing.get("FEISHU_WEBHOOK_URL")
             or legacy.get("FEISHU_WEBHOOK_URL")
-            or "https://open.feishu.cn/open-apis/bot/v2/hook/81c40459-690e-49d6-8874-2a89206ec5ea"
+            or "https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0"
         ),
         "DOCKER_GID": str(docker_socket.stat().st_gid),
         "CASEWORK_INGRESS_PORT": "18101",
