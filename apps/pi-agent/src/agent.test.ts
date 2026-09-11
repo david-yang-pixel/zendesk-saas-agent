@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { CustomTool } from './mcp.js';
-import { inferToolService, sanitizeCustomerReply, extractDualTrackOutputs } from './agent.js';
+import {
+  inferToolService,
+  sanitizeCustomerReply,
+  extractDualTrackOutputs,
+  DIFY_SUPPORT_SYSTEM_PROMPT,
+} from './agent.js';
 
 describe('Pi Support Agent Tool Format', () => {
   it('correctly constructs tool definition conforming to Pi Agent schema', () => {
@@ -112,6 +117,22 @@ Hi there, we are checking your workflow now.
     // Verifies sanitizer and prompt contract expectations
     const promptText = 'SELECT tenant_id, account_id, valid_starts_at, valid_ends_at FROM education_promotion_logs';
     expect(promptText).toContain('education_promotion_logs');
+  });
+
+  it('contains P0 Knowledge Base Two-Tier Routing Matrix in system prompt', () => {
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier A: Public Product Documentation');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('official_docs_search');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('official_docs_read');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier B: Internal Dify SaaS Knowledge Base');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('feishu_doc_search');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('feishu_doc_read');
+  });
+
+  it('contains P1 Evidence Confidence & Anti-Hallucination Gate in system prompt', () => {
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Evidence Confidence & Anti-Hallucination Gate (P1');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier 1 (High Confidence - Verified Evidence)');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier 2 (Inconclusive - No Backend Traces / Potential Client-side Issue)');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('[Inconclusive - Needs Human Investigation]');
   });
 });
 
