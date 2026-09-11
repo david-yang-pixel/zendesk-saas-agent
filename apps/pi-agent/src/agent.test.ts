@@ -39,6 +39,8 @@ describe('inferToolService', () => {
     expect(inferToolService('db_gateway_query')).toBe('db-gateway');
     expect(inferToolService('feishu_doc_search')).toBe('feishu');
     expect(inferToolService('signoz_search_logs')).toBe('signoz');
+    expect(inferToolService('official_docs_search')).toBe('docs');
+    expect(inferToolService('official_docs_read')).toBe('docs');
     expect(inferToolService('github_search_issues')).toBe('github');
     expect(inferToolService('source_read')).toBe('source');
     expect(inferToolService('get_ticket')).toBe('zendesk');
