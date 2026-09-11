@@ -20,4 +20,22 @@ description: Dify Cloud database architecture knowledge and SQL query patterns f
    - Pay close attention to `updated_at`—if a plugin was updated right around the time the user started experiencing errors, inspect that plugin version.
 
 3. **billing database**:
-   - Subscriptions and billing records.
+   - Subscriptions, payment records, and education promotions.
+   - **Subscription settings**: `tenant_subscription_settings` (`tenant_id`, `plan`, `interval`, `expiration_date`, `stripe_subscription_id`)
+     * Note: `plan = 'professional'` is identical for both regular paying subscribers and education discount users. You CANNOT distinguish an education discount workspace from a regular paid workspace using `tenant_subscription_settings` alone.
+   - **Education Promotion Logs (Canonical Source of Truth)**: `education_promotion_logs` (`id`, `tenant_id`, `account_id`, `valid_starts_at`, `valid_ends_at`, `stripe_promo_id`, `role`)
+     * Verifies whether an education promotion is actually applied to a specific workspace and its validity period:
+       ```sql
+       SELECT tenant_id, account_id, valid_starts_at, valid_ends_at, stripe_promo_id
+       FROM education_promotion_logs
+       WHERE tenant_id = '<tenant_id>'
+         AND NOW() BETWEEN valid_starts_at AND valid_ends_at;
+       ```
+   - **Education Identities**: `education_identities` (`account_id`, `institution`, `school_role`, `discount_claimed`, `expired_at`)
+     * Proves whether a user account passed education certification and claimed the discount.
+     * Note: `education_identities` alone does NOT prove that a specific workspace is currently using the education discount; always cross-reference `education_promotion_logs` by `tenant_id`.
+   - **Credit Policy for Education Promotion**:
+     * Workspaces under an active Education Promotion receive a one-time grant of 200 credits upon activation.
+     * **There is NO monthly renewal or monthly reset of credits** for education plans (credits do NOT reset on the monthly billing cycle date).
+     * Once the 200 credits are exhausted, the user must configure BYOK (Bring Your Own Key) in model provider settings to continue using models.
+     * Never tell users on an education promotion that their credits will replenish next month.

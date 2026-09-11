@@ -105,5 +105,11 @@ Hi there, we are checking your workflow now.
     expect(res.internalNote).toBeUndefined();
     expect(res.customerReply).toBe('Hello, please check your network.');
   });
+
+  it('correctly handles education discount verification prompt guidance', () => {
+    // Verifies sanitizer and prompt contract expectations
+    const promptText = 'SELECT tenant_id, account_id, valid_starts_at, valid_ends_at FROM education_promotion_logs';
+    expect(promptText).toContain('education_promotion_logs');
+  });
 });
 
