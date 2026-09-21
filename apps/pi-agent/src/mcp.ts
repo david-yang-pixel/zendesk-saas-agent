@@ -19,6 +19,42 @@ export interface CustomTool {
   execute: (toolCallId: string, params: any, signal?: AbortSignal) => Promise<any>;
 }
 
+async function parseMcpHttpResponse(res: Response): Promise<any> {
+  const body = await res.text();
+  const trimmed = body.trim();
+  if (!trimmed) {
+    throw new Error('MCP returned an empty response');
+  }
+
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    return JSON.parse(trimmed);
+  }
+
+  const messages: any[] = [];
+  for (const frame of body.split(/\r?\n\r?\n/)) {
+    const data = frame
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n')
+      .trim();
+    if (!data || data === '[DONE]') continue;
+    try {
+      messages.push(JSON.parse(data));
+    } catch {
+      continue;
+    }
+  }
+
+  const response = [...messages]
+    .reverse()
+    .find((message: any) => message?.result !== undefined || message?.error !== undefined);
+  if (response === undefined) {
+    throw new Error('MCP returned an unreadable event stream');
+  }
+  return response;
+}
+
 export async function callMcpTool(
   endpoint: string,
   apiKey: string,
@@ -50,7 +86,7 @@ export async function callMcpTool(
     throw new Error(`MCP tool ${toolName} call failed (${res.status}): ${text}`);
   }
 
-  const data = (await res.json()) as any;
+  const data = await parseMcpHttpResponse(res);
   if (data?.error) {
     throw new Error(`MCP tool ${toolName} error: ${data.error.message || JSON.stringify(data.error)}`);
   }
@@ -80,7 +116,7 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
       return [];
     }
 
-    const data = (await res.json()) as any;
+    const data = await parseMcpHttpResponse(res);
     const rawTools = data?.result?.tools;
     if (!Array.isArray(rawTools)) {
       return [];

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   callOpenConnectorTool,
   createOpenConnectorServiceConfig,
+  discoverOpenConnectorTools,
   inferOpenConnectorService,
   validateOpenConnectorControlCall,
 } from './openconnector.js';
@@ -19,11 +20,51 @@ function mcpResponse(payload: unknown): Response {
   });
 }
 
+function sseMcpResponse(result: unknown): Response {
+  return new Response(`event: message\ndata: ${JSON.stringify({
+    jsonrpc: '2.0',
+    id: 1,
+    result,
+  })}\n\n`, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('OpenConnector hard read-only boundary', () => {
+  it('discovers controls from a streamable HTTP event response', async () => {
+    const fetchMock = vi.fn(async () => sseMcpResponse({
+      tools: [
+        { name: 'search_actions', description: 'Search actions', inputSchema: { type: 'object' } },
+        { name: 'list_apps', description: 'List apps', inputSchema: { type: 'object' } },
+      ],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+
+    const tools = await discoverOpenConnectorTools(config);
+
+    expect(tools.map(tool => tool.name)).toEqual(['search_actions']);
+  });
+
+  it('reads tool results from a streamable HTTP event response', async () => {
+    const fetchMock = vi.fn(async () => sseMcpResponse({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, data: { connections: [] } }) }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+
+    await expect(callOpenConnectorTool(config, 'list_connections', {
+      service: 'custom_mcp',
+    })).resolves.toEqual({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, data: { connections: [] } }) }],
+    });
+  });
+
   it('requires scoped discovery and blocks Gmail', () => {
     expect(() => validateOpenConnectorControlCall('list_connections', {})).toThrow(/service filter/);
     expect(() => validateOpenConnectorControlCall('search_actions', { service: 'gmail' })).toThrow(/disabled/);
