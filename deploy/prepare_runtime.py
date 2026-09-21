@@ -189,6 +189,8 @@ def _discover_tools(service: McpService, secret: str) -> list[dict[str, object]]
             "Accept": "application/json, text/event-stream",
             "Authorization": f"Bearer {secret}",
             "Content-Type": "application/json",
+            # Cloudflare rejects Python urllib's default browser signature.
+            "User-Agent": "ZD-Agent-Deploy/1.0",
         },
         method="POST",
     )

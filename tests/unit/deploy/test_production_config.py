@@ -23,6 +23,51 @@ def _source_environment(path: Path) -> None:
     path.write_text("".join(f'{key}="{value}"\n' for key, value in values.items()))
 
 
+def test_discover_tools_uses_cloudflare_safe_user_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_request: Any = None
+
+    class Response:
+        def __enter__(self) -> Response:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "search_actions",
+                                "description": "Search actions",
+                                "inputSchema": {"type": "object"},
+                            }
+                        ]
+                    },
+                }
+            ).encode()
+
+    def fake_urlopen(request: Any, *, timeout: int) -> Response:
+        nonlocal captured_request
+        captured_request = request
+        assert timeout == 20
+        return Response()
+
+    monkeypatch.setattr(prepare_runtime.urllib.request, "urlopen", fake_urlopen)
+
+    tools = prepare_runtime._discover_tools(  # pyright: ignore[reportPrivateUsage]
+        prepare_runtime.READ_ONLY_SERVICES[0], "runtime-secret"
+    )
+
+    assert len(tools) == 1
+    assert captured_request.get_header("User-agent") == "ZD-Agent-Deploy/1.0"
+
+
 def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
