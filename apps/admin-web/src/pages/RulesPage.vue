@@ -582,7 +582,7 @@ onMounted(() => {
           <div class="flow-step">
             <span class="step-num">04</span>
             <strong>Pi Agent 证据推理</strong>
-            <small>7 大 MCP 工具多轮推演</small>
+            <small>OpenConnector 只读调查</small>
           </div>
           <div class="flow-arrow">→</div>
           <div class="flow-step">

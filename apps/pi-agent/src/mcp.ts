@@ -3,6 +3,11 @@ export interface McpServiceConfig {
   endpoint: string;
   apiKey: string;
   excludedTools?: string[];
+  executeTool?: (
+    toolName: string,
+    params: Record<string, any>,
+    signal?: AbortSignal,
+  ) => Promise<any>;
 }
 
 export interface CustomTool {
@@ -18,7 +23,8 @@ export async function callMcpTool(
   endpoint: string,
   apiKey: string,
   toolName: string,
-  toolArgs: Record<string, any>
+  toolArgs: Record<string, any>,
+  signal?: AbortSignal,
 ): Promise<any> {
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -36,6 +42,7 @@ export async function callMcpTool(
         arguments: toolArgs || {},
       },
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -93,9 +100,11 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
         description: tool.description || `Tool ${tool.name}`,
         promptSnippet: (tool.description || tool.name).slice(0, 100),
         parameters: tool.inputSchema || { type: 'object', properties: {} },
-        execute: async (_toolCallId: string, params: any, _signal?: AbortSignal) => {
+        execute: async (_toolCallId: string, params: any, signal?: AbortSignal) => {
           try {
-            const mcpResult = await callMcpTool(service.endpoint, service.apiKey, tool.name, params || {});
+            const mcpResult = service.executeTool
+              ? await service.executeTool(tool.name, params || {}, signal)
+              : await callMcpTool(service.endpoint, service.apiKey, tool.name, params || {}, signal);
             const serialized = typeof mcpResult === 'string' ? mcpResult : JSON.stringify(mcpResult, null, 2);
             return {
               content: [{ type: 'text', text: serialized }],

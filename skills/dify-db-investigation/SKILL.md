@@ -1,11 +1,18 @@
 ---
 name: dify-db-investigation
-description: Dify Cloud database architecture knowledge and SQL query patterns for prod, plugin, and billing databases.
+description: Use the read-only Dify database route to verify customer-specific workspace, run, plugin, billing, and credit state without turning remembered schema or policy into current fact.
 ---
 
 # Dify Database Investigation
 
-## Schema Architecture
+## Database boundaries
+
+- Access the database only through OpenConnector `custom_mcp/dify-db` and the discovered `db_gateway_query` read tool.
+- Query `information_schema` before relying on uncertain tables or columns. Use bounded, tenant-scoped selects; never attempt a mutation.
+- Preserve the database name, identifiers, UTC time window, query purpose, and returned evidence in the internal trace. Do not expose SQL or private values to the customer.
+
+## Common schema anchors
+
 1. **prod database**:
    - Accounts: `accounts` (`id`, `email`, `name`)
    - Tenants: `tenants` (`id`, `name`)
@@ -34,8 +41,6 @@ description: Dify Cloud database architecture knowledge and SQL query patterns f
    - **Education Identities**: `education_identities` (`account_id`, `institution`, `school_role`, `discount_claimed`, `expired_at`)
      * Proves whether a user account passed education certification and claimed the discount.
      * Note: `education_identities` alone does NOT prove that a specific workspace is currently using the education discount; always cross-reference `education_promotion_logs` by `tenant_id`.
-   - **Credit Policy for Education Promotion**:
-     * Workspaces under an active Education Promotion receive a one-time grant of 200 credits upon activation.
-     * **There is NO monthly renewal or monthly reset of credits** for education plans (credits do NOT reset on the monthly billing cycle date).
-     * Once the 200 credits are exhausted, the user must configure BYOK (Bring Your Own Key) in model provider settings to continue using models.
-     * Never tell users on an education promotion that their credits will replenish next month.
+   - For education or other promotions, build the account/workspace entitlement and usage timeline from current records. Do not infer promotion application from the plan name alone.
+   - Treat `COMMIT` as consumed usage evidence and `RESERVE` as provisional; do not double-count them.
+   - Verify current policy through the relevant internal knowledge route before stating replenishment, refund, exception, or approval rules.

@@ -12,7 +12,7 @@ The project is structured as a modern Polyglot Monorepo:
 - `apps/pi-agent`: AI casework reasoning engine worker (TypeScript / Node.js).
 - `apps/admin-api`: Management & observability API, MCP service mesh probe (FastAPI / Python).
 - `apps/admin-web`: Management console UI with live trace player & MCP mesh monitor (Vue 3 / Vite).
-- `apps/feishu-mcp`: Feishu alert bot and human escalation MCP adapter (TypeScript / Node.js).
+- `apps/feishu-mcp`: Legacy Feishu MCP adapter retained for compatibility; it is not part of the production investigation path.
 - `apps/harness`: Durable queue consumer, sandbox controller and delivery engine (Python).
 - `apps/sandbox`: Ephemeral per-run sandbox runtime for isolated tool executions (Python).
 
@@ -23,7 +23,7 @@ The project is structured as a modern Polyglot Monorepo:
 - `packages/tool-sdk`: MCP tool interfaces, evidence extraction, and loop adapters.
 
 ### Skills (`skills/`)
-- Agent persona definitions & specialized investigation instructions (`core-casework`, `dify-saas-support`, `dify-db-investigation`, `app-run-investigation`).
+- Agent persona definitions, OpenConnector routing, and specialized investigation instructions (`core-casework`, `openconnector-routing`, `dify-saas-support`, `dify-db-investigation`, `app-run-investigation`).
 
 ## Development
 
@@ -46,7 +46,9 @@ docker compose -f deploy/compose.yaml up --build
 
 ## Production & Deployment (`deploy/`)
 
-- **Release Orchestration**: Production runs via `deploy/compose.release.yaml`, managing PostgreSQL, Ingress, Pi-Agent, Admin, and Feishu-MCP.
+- **Release Orchestration**: Production runs via `deploy/compose.release.yaml`, managing PostgreSQL, Ingress, Pi-Agent, and Admin.
 - **Worker Reasoning**: `apps/pi-agent` operates as the primary concurrency worker, consuming admissions from PostgreSQL, executing tool calls via the MCP Mesh, and delivering replies through the Zendesk Browser Relay.
-- **Tool Mesh**: The system integrates 8 core MCP services (`db-gateway`, `zendesk`, `signoz`, `source`, `github`, `docs`, `feishu`, `zendesk-browser-relay`), providing 49 tools for ticket investigation.
+- **Tool Boundary**: OpenConnector is the sole read-only investigation gateway (including Zendesk, Dify DB, SigNoz, source, docs, GitHub MCP, and approved native providers). Zendesk Browser Relay is the separate and only public-reply write path; Gmail is excluded.
 - **Zero-Secret Boundary**: Production credentials are mount-injected via `/run/casework-credentials/credentials.env` and never committed to the repository. The Admin console allows hot-updating model endpoints and tokens without container rebuilds.
+
+The production source environment must provide `OPENCONNECTOR_RUNTIME_TOKEN`. `prepare_runtime.py` stores it as `CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME` and removes legacy per-MCP credentials from the mounted Pi Agent credential file. Configure the OpenConnector token and every granted connection as read-only. The five GitHub semantic read tools must also be classified as `read` in the `github-mcp` connection's trusted `toolOperationTypes`; the Agent refuses them if live discovery reports `write`.

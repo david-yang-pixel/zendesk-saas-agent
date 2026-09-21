@@ -49,6 +49,10 @@ describe('inferToolService', () => {
     expect(inferToolService('github_search_issues')).toBe('github');
     expect(inferToolService('source_read')).toBe('source');
     expect(inferToolService('get_ticket')).toBe('zendesk');
+    expect(inferToolService('execute_action', {
+      actionId: 'custom_mcp.call_tool',
+      connectionName: 'dify-signoz',
+    })).toBe('signoz');
     expect(inferToolService('unknown_tool')).toBe('other');
   });
 });
@@ -113,26 +117,67 @@ Hi there, we are checking your workflow now.
     expect(res.customerReply).toBe('Hello, please check your network.');
   });
 
+  it('strips "Suggested Reply:" prefix and truncates internal analysis in sanitizeCustomerReply', () => {
+    const raw = `### Suggested Reply:
+Hello, please verify your settings.
+
+---
+🔍 Internal Analysis:
+- Ticket Summary: The user encountered a bug.
+- Root Cause: Missing config in DB.
+- Confidence Score: high
+`;
+    const cleaned = sanitizeCustomerReply(raw);
+    expect(cleaned).toBe('Hello, please verify your settings.');
+    expect(cleaned).not.toContain('Internal Analysis');
+    expect(cleaned).not.toContain('Suggested Reply');
+  });
+
+  it('splits suggested reply and internal analysis into dual-track outputs even without explicit markers', () => {
+    const output = `### Suggested Reply:
+Hello! Currently Dify does not provide this setting.
+
+---
+🔍 Internal Analysis:
+- Root Cause / Findings: No bulk disable mechanism exists.
+- Confidence Score: high
+`;
+    const res = extractDualTrackOutputs(output);
+    expect(res.customerReply).toBe('Hello! Currently Dify does not provide this setting.');
+    expect(res.internalNote).toContain('Root Cause / Findings: No bulk disable mechanism exists.');
+    expect(res.customerReply).not.toContain('Internal Analysis');
+  });
+
+  it('truncates Chinese internal memo patterns in sanitizeCustomerReply', () => {
+    const raw = `尊敬的用户您好，请尝试刷新页面。
+
+---
+### 内部调查备忘录 / 排查记录:
+- 查询了 db_gateway 发现无报错
+`;
+    const cleaned = sanitizeCustomerReply(raw);
+    expect(cleaned).toBe('尊敬的用户您好，请尝试刷新页面。');
+    expect(cleaned).not.toContain('内部调查备忘录');
+  });
+
   it('correctly handles education discount verification prompt guidance', () => {
     // Verifies sanitizer and prompt contract expectations
     const promptText = 'SELECT tenant_id, account_id, valid_starts_at, valid_ends_at FROM education_promotion_logs';
     expect(promptText).toContain('education_promotion_logs');
   });
 
-  it('contains P0 Knowledge Base Two-Tier Routing Matrix in system prompt', () => {
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier A: Public Product Documentation');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('official_docs_search');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('official_docs_read');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier B: Internal Dify SaaS Knowledge Base');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('feishu_doc_search');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('feishu_doc_read');
+  it('routes all investigations through read-only OpenConnector and excludes Gmail', () => {
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('OpenConnector is the only investigation gateway');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('custom_mcp.list_tools');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('custom_mcp.call_tool');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('github-mcp');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Gmail is outside this agent\'s scope');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Zendesk Browser Reply');
   });
 
-  it('contains P1 Evidence Confidence & Anti-Hallucination Gate in system prompt', () => {
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Evidence Confidence & Anti-Hallucination Gate (P1');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier 1 (High Confidence - Verified Evidence)');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Tier 2 (Inconclusive - No Backend Traces / Potential Client-side Issue)');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('[Inconclusive - Needs Human Investigation]');
+  it('preserves evidence confidence and trace-only internal analysis', () => {
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('confirmed, evidence-supported, ruled out, or unknown');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Trace-only factual investigation summary');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('never send confirmOperation');
   });
 });
-

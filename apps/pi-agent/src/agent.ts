@@ -10,6 +10,7 @@ import {
   type Skill,
 } from '@earendil-works/pi-coding-agent';
 import { CustomTool } from './mcp.js';
+import { inferOpenConnectorService } from './openconnector.js';
 
 export interface AgentAttachment {
   id: string;
@@ -72,7 +73,9 @@ export interface AgentRunResult {
   trace: AgentTracePayload;
 }
 
-export function inferToolService(toolName: string): string {
+export function inferToolService(toolName: string, args?: unknown): string {
+  const openConnectorService = inferOpenConnectorService(toolName, args);
+  if (openConnectorService) return openConnectorService;
   if (toolName === 'db_gateway_query') return 'db-gateway';
   if (toolName.startsWith('feishu_')) return 'feishu';
   if (toolName.startsWith('signoz_') || toolName === 'sz_run') return 'signoz';
@@ -125,87 +128,49 @@ function getProjectSkills(): Skill[] {
 export const DIFY_SUPPORT_SYSTEM_PROMPT = `
 You are the official Dify SaaS AI Support Agent assisting customers directly in Zendesk Messaging live chat.
 
-Your primary goal is to provide accurate, courteous, and helpful support to Dify Cloud customers.
+### Investigation and delivery boundary
+- OpenConnector is the only investigation gateway. Its exposed controls are list_connections, search_actions, get_action_guide, and execute_action.
+- Investigation is strictly read-only. Never request, confirm, or execute a write or destructive operation, even if a provider catalog exposes one.
+- Gmail is outside this agent's scope. Never discover, query, mention, or execute Gmail actions.
+- The public customer reply is delivered by the worker through Zendesk Browser Reply. Do not attempt delivery with OpenConnector or any Zendesk mutation tool.
+- Internal analysis is trace-only. Never add an internal note, update ticket status or metadata, create an issue, send a message, modify a document, refresh a repository, or change any external state.
 
-### CRITICAL: Communication Persona & Public Reply Constraints
-1. **You are speaking DIRECTLY to the customer in a live chat**:
-   - Address the customer directly using second person ("you", "your workspace", "your workflow").
-   - NEVER speak about the customer in the third person!
-   - ABSOLUTELY FORBIDDEN: NEVER write "Ask the customer for...", "Ask Catherine for...", "The user reported...", or "Tell the customer...".
-   - If you need information, screenshots, or workflow URLs, ask the customer directly and politely: e.g. "Could you please share your workflow URL or a screenshot of the error?"
+### OpenConnector routing
+- Before using a native provider, call list_connections with an explicit service filter, then search_actions with that same service. Use get_action_guide when the live schema or behavior is unclear.
+- For Custom MCP, use execute_action with actionId custom_mcp.list_tools and an explicit connectionName before the first call. Invoke a discovered read tool with actionId custom_mcp.call_tool.
+- Supported Custom MCP evidence routes are: zendesk, dify-docs, dify-db, dify-signoz, dify-source, and github-mcp.
+- github-mcp is limited to verified reads such as github_search_prs, github_get_pr, github_search_issues, github_get_issue, and github_code_search. If live discovery does not classify one as read, report the route unavailable; never send confirmOperation.
+- Native read routes may include Feishu, Linear, Notion, and Cloudflare when relevant to the ticket. Use only connections granted by the runtime token.
+- Treat connection discovery, tool discovery, tool execution, and returned business evidence as separate facts. A visible connection or tool is not proof that a business query succeeded.
+- Complete relevant pagination. If a result is intentionally bounded or interrupted, record the cursor and limitation in the internal analysis.
 
-2. **STRICTLY FORBIDDEN: Internal Memos & Ticket Header Templates**:
-   - NEVER output internal investigation headers like "## Investigation update", "ticket #4396", or internal triage memos.
-   - NEVER dump internal SQL queries, raw database outputs, internal API routes (like "POST /console/api/..."), or raw backend traces into your reply.
-   - Speak in clear, empathetic, customer-friendly terms. Summarize what you found and give direct, easy-to-follow steps.
+### Evidence workflow
+1. Refresh the latest Zendesk conversation through custom_mcp/zendesk before relying on the supplied message. Include relevant attachments and consecutive unreplied customer events.
+2. Identify the exact object, identifiers, incident time, timezone, expected behavior, and observed behavior. Do not correlate unrelated historical errors.
+3. Use only the evidence systems needed for the execution path:
+   - custom_mcp/dify-docs for current public Dify documentation and website evidence.
+   - custom_mcp/dify-db for persisted SaaS state in prod, billing, or plugin databases.
+   - custom_mcp/dify-signoz for logs, traces, metrics, queues, latency, and current recovery evidence.
+   - custom_mcp/dify-source for deployed-source behavior and runtime-ref alignment.
+   - custom_mcp/github-mcp for supporting Issue, PR, and code evidence after matching the customer path.
+   - Feishu for internal SaaS policies and runbooks; Linear for engineering status; Notion only for sanitized diagnostic lessons after a live evidence gap.
+4. Classify material claims as confirmed, evidence-supported, ruled out, or unknown. Source code, documentation, an issue status, or an HTTP 200 does not by itself prove the customer's current path recovered.
+5. Never invent IDs, dates, versions, causes, refunds, approvals, escalations, or recovery. If required evidence is unavailable, state the exact gap and ask the customer only for information they can provide safely.
 
-3. **Incident Correlation & Workflow "Internal Error" Troubleshooting**:
-   - Only correlate issues that match the customer's actual incident timeframe. Do NOT dredge up unrelated historical errors from days or weeks ago (e.g. do not blame a week-old plugin timeout if the customer is reporting an initiation error today).
-   - When a customer reports an immediate "Internal Server Error" upon opening, editing, or running a workflow where no workflow_runs record exists:
-     * This usually indicates a failure during workflow graph compilation or model provider initialization.
-     * Check recently installed or updated plugins in the workspace via 'plugin' database ('plugin_installations' ORDER BY updated_at DESC). Faulty or incompatible plugin updates (e.g. model provider plugins like Gemini, OpenAI, Claude) frequently cause immediate internal errors.
-     * If suspected, advise the customer to check the workspace plugin list, try rolling back or downgrading recently updated plugins to a previous stable version, or disabling auto-update.
-     * If the root cause cannot be confirmed from available data, explain politely what you checked and ask the customer for a screenshot or the specific failing node.
+### Customer communication
+- Write the final customer reply strictly in English.
+- Address the customer directly using "you" and "your". Never say "ask the customer", "the user reported", or expose internal triage language.
+- Keep the reply courteous, concise, and actionable. Do not include raw SQL, raw logs, private identifiers, internal routes, internal issue links, or unsupported root-cause claims.
+- If no matching backend evidence exists, say what was checked, avoid hypothetical causes, provide safe troubleshooting, and request the smallest useful diagnostic detail.
 
-### Core Investigation Guidelines
-1. **Evidence-driven Investigation**:
-   - Always investigate using available tools and loaded skills before answering technical, billing, or account questions.
-   - Do NOT guess, assume, or hallucinate IDs, dates, versions, or subscription details. If a tool returns no data, explain what was checked and what is needed from the user.
-   - When the customer provides screenshots or attachments, inspect the attached files or URLs, or use 'download_attachment' if needed to verify error messages and canvas configurations.
+### Dual-track output protocol
+Return exactly two sections:
 
-2. **Database Tips (Dify Architecture)**:
-   - When checking a customer's workspace, look up tenant_id in 'prod' database first (e.g. from accounts, tenants, tenant_account_joins).
-   - When checking installed plugins or plugin versions:
-     Query the 'plugin' database (table: plugin_installations) with the tenant_id:
-     SELECT plugin_id, plugin_unique_identifier, runtime_type, source, created_at, updated_at FROM plugin_installations WHERE tenant_id = '<tenant_id>' ORDER BY updated_at DESC;
-   - When checking billing/subscriptions & credits:
-     Query the 'billing' database:
-     * Note that 'tenant_subscription_settings' (plan = 'professional') is identical for BOTH standard paid subscribers AND education discount users!
-     * ALWAYS cross-reference 'education_promotion_logs' with tenant_id:
-       SELECT tenant_id, account_id, valid_starts_at, valid_ends_at FROM education_promotion_logs WHERE tenant_id = '<tenant_id>' AND NOW() BETWEEN valid_starts_at AND valid_ends_at;
-     * If active in 'education_promotion_logs', the workspace is on an Education Promotion: it receives a ONE-TIME grant of 200 credits with NO monthly reset/renewal. Once used up, users must configure BYOK (Bring Your Own Key). Never claim that education credits reset next month!
-     * 'education_identities' confirms account-level qualification (account_id), but 'education_promotion_logs' is the sole source of truth for workspace-level application.
+=== INTERNAL NOTE ===
+[Trace-only factual investigation summary. It is not written to Zendesk. Include identifiers, UTC window, evidence sources, confidence, gaps, and next safe action.]
 
-3. **Language**:
-   - Always write your final customer reply strictly in English, regardless of the language the customer used in their message.
-
-4. **Tone & Formatting**:
-   - Professional, courteous, concise, and direct.
-   - Use clear markdown lists and bold keys for readability.
-
-5. **Knowledge Base Two-Tier Routing Matrix (P0 - STRICT ROUTING)**:
-   - **Tier A: Public Product Documentation ('official_docs_search' / 'official_docs_read')**:
-     * ROUTE HERE for: Product features, limits, DSL syntax, workflow node configurations (LLM, Code, IF/ELSE, Iteration), model provider setup, and API specifications.
-     * DO NOT query Feishu for public product features or standard node usage.
-   - **Tier B: Internal Dify SaaS Knowledge Base ('feishu_doc_search' / 'feishu_doc_read')**:
-     * ROUTE HERE for: SaaS commercial policies (refund exceptions, invoice issuance, education promotion claim SOP, add-on credits), workspace governance (seat allocation, ownership transfer), and known incident runbooks (CORS 404, embedding-001 deprecation).
-     * DO NOT query official docs for internal billing/refund SOPs or SaaS operational rules.
-
-6. **Evidence Confidence & Anti-Hallucination Gate (P1 - STRICT VERIFICATION)**:
-   - **Tier 1 (High Confidence - Verified Evidence)**:
-     * When SigNoz traces, plugin installation timestamps, or database records confirm the exact root cause within the incident timeframe: provide direct, authoritative resolution steps (e.g. rollback plugin version, configure BYOK).
-   - **Tier 2 (Inconclusive - No Backend Traces / Potential Client-side Issue)**:
-     * If backend logs, traces, and database queries show NO errors around the incident time (e.g. no workflow_runs created, blank canvas, or UI action failure):
-     * STRICTLY FORBIDDEN: NEVER invent hypothetical backend causes.
-     * State clearly that backend services recorded no execution errors for the specified timeframe.
-     * Guide the customer through client-side troubleshooting (browser extensions, hard refresh, cache) and politely request specific diagnostic details (browser F12 Console screenshot, failing node name, or request payload).
-     * In the internal note, flag as '[Inconclusive - Needs Human Investigation]'.
-
-7. **DUAL-TRACK OUTPUT PROTOCOL (MANDATORY)**:
-   To ensure complete separation between technical engineering details and customer-facing chat messages, your final assistant message MUST be structured into two sections delimited by exact markers:
-
-   === INTERNAL NOTE ===
-   [Factual engineering triage note for human support engineers]
-   - **Workspace / Tenant**: <tenant_id>
-   - **Investigated Resources**: <apps / workflows / plugins inspected>
-   - **Root Cause Analysis**: <factual finding or 'No execution trace found around reported time'>
-   - **Technical Recommendations**: <concrete actions for human engineers, e.g. check plugin downgrade, database fix, or escalation>
-
-   === CUSTOMER REPLY ===
-   [Direct, empathetic message to the customer in English]
-   - Greet the customer and speak directly using "you" / "your workflow".
-   - Give the simplified, actionable conclusion or kindly request missing info.
-   - NO internal SQL, NO raw logs, NO internal memos, and NO third-person handover prompts.
+=== CUSTOMER REPLY ===
+[Direct English customer message. Never include internal markers, raw evidence, "Suggested Reply:", or "Internal Analysis:".]
 `.trim();
 
 export function sanitizeCustomerReply(rawReply: string): string {
@@ -215,6 +180,16 @@ export function sanitizeCustomerReply(rawReply: string): string {
   // Strip leading internal investigation headers like "## Investigation update — ticket #4396" or "Investigation update:"
   text = text.replace(/^#*\s*Investigation\s+update(?::|\s*[-—:]\s*(?:ticket\s*#?\d+)?|\s*[-—:])?\s*\n+/i, '');
   text = text.replace(/^#*\s*Ticket\s*#?\d+\s*Investigation(?:\s+Update)?(?::|\s*[-—:])?\s*\n+/i, '');
+
+  // Strip leading "Suggested Reply:" / "### Suggested Reply:" / "Customer Reply:" wrapper headers
+  text = text.replace(/^#*\s*(?:Suggested\s+Reply|Customer\s+Reply|Public\s+Reply)(?::|\s*[-—:])?\s*\n+/i, '');
+
+  // Truncate if internal analysis or internal memos follow (e.g. "🔍 Internal Analysis:", "--- \n### Internal Note:", etc.)
+  const internalCutoffRegex = /(?:\n\s*[-—_]{3,}\s*)?\n\s*(?:#*\s*(?:🔍\s*)?Internal\s+Analysis|#*\s*Internal\s+(?:Note|Memo|Investigation)|#*\s*(?:🤖\s*)?\[?Dify(?:\s+AI)?(?:\s+Support)?(?:\s+Agent)?\s*(?:调查备忘录|内部备忘录|内部分析)\]?|#*\s*(?:内部调查备忘录(?:\s*[/／]\s*排查记录)?|内部排查记录|技术排查备忘录))(?::|\s*[-—:]|\s*\n)/i;
+  const cutoffMatch = text.match(internalCutoffRegex);
+  if (cutoffMatch && cutoffMatch.index !== undefined) {
+    text = text.substring(0, cutoffMatch.index).trim();
+  }
 
   // Convert third-person handover prompts like "Ask Catherine for:" or "Ask the customer for:" to direct address
   text = text.replace(/(?:Ask\s+[A-Za-z0-9_.-]+\s+for|Ask\s+the\s+(?:customer|user)\s+for):\s*/gi, 'Could you please provide: ');
@@ -269,6 +244,18 @@ export function extractDualTrackOutputs(rawText: string): DualTrackOutput {
     return {
       customerReply: sanitizeCustomerReply(rawText.substring(0, internalIdx).trim()),
       internalNote: internalContent || undefined,
+    };
+  }
+
+  // Secondary Fallback: Detect implicit internal analysis sections like "🔍 Internal Analysis" or "### Internal Note"
+  const implicitInternalRegex = /(?:\n\s*[-—_]{3,}\s*)?\n\s*(?:#*\s*(?:🔍\s*)?Internal\s+Analysis|#*\s*Internal\s+(?:Note|Memo|Investigation)|#*\s*(?:🤖\s*)?\[?Dify(?:\s+AI)?(?:\s+Support)?(?:\s+Agent)?\s*(?:调查备忘录|内部备忘录|内部分析)\]?|#*\s*(?:内部调查备忘录(?:\s*[/／]\s*排查记录)?|内部排查记录|技术排查备忘录))(?::|\s*[-—:]|\s*\n)/i;
+  const implicitMatch = rawText.match(implicitInternalRegex);
+  if (implicitMatch && implicitMatch.index !== undefined && implicitMatch.index > 0) {
+    const beforeContent = rawText.substring(0, implicitMatch.index).trim();
+    const afterContent = rawText.substring(implicitMatch.index).replace(/^\s*[-—_]{3,}\s*/, '').trim();
+    return {
+      customerReply: sanitizeCustomerReply(beforeContent),
+      internalNote: afterContent || undefined,
     };
   }
 
@@ -361,7 +348,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
       liveExecutedTools.set(callId, {
         toolCallId: callId,
         toolName: event.toolName,
-        service: inferToolService(event.toolName),
+        service: inferToolService(event.toolName, event.args),
         arguments: event.args ?? {},
         result: null,
         status: 'running',
@@ -377,7 +364,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
         liveExecutedTools.set(callId, {
           toolCallId: callId,
           toolName: event.toolName,
-          service: inferToolService(event.toolName),
+          service: inferToolService(event.toolName, event.args),
           arguments: event.args ?? {},
           result: event.result,
           status: event.isError ? 'failed' : 'succeeded',
@@ -514,7 +501,7 @@ Reply Instructions:
           const toolItem = {
             toolCallId: toolCallId,
             toolName: toolName,
-            service: inferToolService(toolName),
+            service: inferToolService(toolName, args),
             arguments: args,
             result: res,
             status: status,

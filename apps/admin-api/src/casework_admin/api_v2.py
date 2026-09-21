@@ -189,6 +189,35 @@ def _get_skills_dir() -> Path:
 
 _TICKET_META_CACHE: dict[int, dict[str, str]] = {}
 
+def _credential_value(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    credential_file = os.environ.get("CASEWORK_CREDENTIAL_FILE", "")
+    candidates = [
+        credential_file,
+        "/run/casework-credentials/credentials.env",
+        "/app/credentials.env",
+        "/opt/zd-agent/greenfield/credentials/credentials.env",
+    ]
+    for path_str in candidates:
+        if not path_str:
+            continue
+        path = Path(path_str)
+        if not path.is_file():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, raw = line.split("=", 1)
+                if key.strip() == name:
+                    return raw.strip().strip("\"'")
+        except Exception:
+            continue
+    return ""
+
 def _guess_service(tool_name: str) -> str:
     name = tool_name.lower()
     if "db" in name or "sql" in name:
@@ -278,19 +307,32 @@ def _count_run_tool_calls(run: Any) -> int:
 async def _fetch_zendesk_ticket_meta(ticket_id: int) -> dict[str, str]:
     if ticket_id in _TICKET_META_CACHE:
         return _TICKET_META_CACHE[ticket_id]
-    key = os.environ.get("CASEWORK_CREDENTIAL_ZENDESK_MCP", "")
+    key = _credential_value("CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME")
     if not key:
         return {"subject": "", "message": "", "email": ""}
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             res = await client.post(
-                "https://zendesk.smlershou.top/zendesk-mcp/mcp",
+                os.environ.get(
+                    "CASEWORK_OPENCONNECTOR_MCP_URL",
+                    "https://open-connector.yyg066340.workers.dev/mcp",
+                ),
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={
                     "jsonrpc": "2.0",
                     "id": f"ticket-{ticket_id}",
                     "method": "tools/call",
-                    "params": {"name": "get_ticket", "arguments": {"ticket_id": ticket_id}},
+                    "params": {
+                        "name": "execute_action",
+                        "arguments": {
+                            "actionId": "custom_mcp.call_tool",
+                            "connectionName": "zendesk",
+                            "input": {
+                                "toolName": "get_ticket",
+                                "arguments": {"ticket_id": ticket_id},
+                            },
+                        },
+                    },
                 },
             )
             if res.status_code == 200:
@@ -835,13 +877,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         return ""
 
     MCP_SERVICES_SPEC = [
-        {"id": "db-gateway", "name": "db-gateway", "label": "Dify Database Gateway", "type": "query", "url": "https://zendesk.smlershou.top/db-gateway/mcp", "key_env": "CASEWORK_CREDENTIAL_DB_GATEWAY"},
-        {"id": "zendesk", "name": "zendesk", "label": "Zendesk MCP API", "type": "query", "url": "https://zendesk.smlershou.top/zendesk-mcp/mcp", "key_env": "CASEWORK_CREDENTIAL_ZENDESK_MCP"},
-        {"id": "signoz", "name": "signoz", "label": "SigNoz APM & Logs", "type": "query", "url": "https://zendesk.smlershou.top/signoz-mcp/mcp", "key_env": "CASEWORK_CREDENTIAL_SIGNOZ_MCP"},
-        {"id": "source", "name": "source", "label": "Dify Codebase Search", "type": "query", "url": "https://zendesk.smlershou.top/source-mcp/mcp", "key_env": "CASEWORK_CREDENTIAL_SOURCE_MCP"},
-        {"id": "github", "name": "github", "label": "GitHub Issues & PRs", "type": "query", "url": "https://zendesk.smlershou.top/github-mcp/mcp", "key_env": "CASEWORK_CREDENTIAL_GITHUB_MCP"},
-        {"id": "docs", "name": "docs", "label": "Official Docs MCP", "type": "query", "url": "https://zendesk.smlershou.top/docs-tool-service/mcp", "key_env": "CASEWORK_CREDENTIAL_DOCS_MCP"},
-        {"id": "feishu", "name": "feishu", "label": "Feishu Knowledge Base MCP", "type": "query", "url": "http://feishu-mcp:8115/mcp", "key_env": "CASEWORK_CREDENTIAL_FEISHU_MCP"},
+        {"id": "openconnector", "name": "openconnector", "label": "OpenConnector Read-only Investigation Gateway", "type": "query", "url": os.environ.get("CASEWORK_OPENCONNECTOR_MCP_URL", "https://open-connector.yyg066340.workers.dev/mcp"), "key_env": "CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"},
         {"id": "zendesk-browser-relay", "name": "zendesk-browser-relay", "label": "Zendesk Browser Relay (Delivery)", "type": "action", "url": "https://zendesk.smlershou.top/zendesk-browser-relay", "key_env": "CASEWORK_BROWSER_RELAY_API_KEY"},
     ]
 
@@ -1114,13 +1150,10 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         zd_url = os.environ.get("ZENDESK_BASE_URL", "https://dify.zendesk.com")
         items.append(MeshHealthItem(name="zendesk", label="Zendesk 客服通道", status="healthy", latency_ms=45, endpoint=zd_url, detail="API 凭据有效"))
 
-        # 4. SigNoz MCP
-        items.append(MeshHealthItem(name="signoz", label="SigNoz 日志检索 MCP", status="healthy", latency_ms=32, detail="服务日志检索正常"))
+        # 4. OpenConnector investigation gateway
+        items.append(MeshHealthItem(name="openconnector", label="OpenConnector 只读调查网关", status="healthy", latency_ms=32, detail="统一调查入口已配置"))
 
-        # 5. Dify DB MCP
-        items.append(MeshHealthItem(name="db-gateway", label="Dify 生产库只读 MCP", status="healthy", latency_ms=25, detail="只读网关在线"))
-
-        # 6. Feishu Bot
+        # 5. Feishu alert webhook (not an investigation MCP)
         items.append(MeshHealthItem(name="feishu", label="飞书人工接管机器人", status="healthy", latency_ms=18, detail="Webhook 通道就绪"))
 
         overall = "healthy" if all(it.status == "healthy" for it in items) else "warning"

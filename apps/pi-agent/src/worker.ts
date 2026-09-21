@@ -2,7 +2,12 @@ import http from 'node:http';
 import fs from 'node:fs';
 import pg from 'pg';
 import dotenv from 'dotenv';
-import { discoverMcpTools, callMcpTool, CustomTool, McpServiceConfig } from './mcp.js';
+import { CustomTool, McpServiceConfig } from './mcp.js';
+import {
+  callOpenConnectorCustomMcpTool,
+  createOpenConnectorServiceConfig,
+  discoverOpenConnectorTools,
+} from './openconnector.js';
 import { runPiSupportAgent, AgentAttachment } from './agent.js';
 import { sendBrowserRelay } from './relay.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
@@ -59,6 +64,10 @@ const rawDbUrl = cleanEnv(process.env.DATABASE_URL);
 const DATABASE_URL = rawDbUrl.replace(/^postgresql\+[a-zA-Z0-9_]+:\/\//, 'postgresql://');
 const BROWSER_RELAY_URL = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_URL) || 'https://zendesk.smlershou.top/zendesk-browser-relay';
 const BROWSER_RELAY_KEY = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_API_KEY);
+const OPENCONNECTOR_MCP_URL = cleanEnv(process.env.CASEWORK_OPENCONNECTOR_MCP_URL) || 'https://open-connector.yyg066340.workers.dev/mcp';
+const OPENCONNECTOR_RUNTIME_TOKEN = cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME)
+  || cleanEnv(process.env.OPENCONNECTOR_RUNTIME_TOKEN)
+  || cleanEnv(process.env.OOMOL_CONNECT_RUNTIME_TOKEN);
 const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL) || 'https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0';
 
 const humanAlertTracker = new HumanAlertTracker(30 * 60 * 1000);
@@ -84,7 +93,6 @@ if (!DATABASE_URL) {
 }
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
-let sharedMcpServices: McpServiceConfig[] = [];
 
 async function claimNextJob(workerId: string): Promise<any | null> {
   const client = await pool.connect();
@@ -374,15 +382,15 @@ interface TicketDetails {
   unrepliedCount: number;
 }
 
-async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfig): Promise<TicketDetails> {
+async function getTicketDetails(ticketId: number, openConnector: McpServiceConfig): Promise<TicketDetails> {
   try {
     let email = '';
     let subject = '';
 
     try {
-      const rawTicket = await callMcpTool(
-        zendeskConfig.endpoint,
-        zendeskConfig.apiKey,
+      const rawTicket = await callOpenConnectorCustomMcpTool(
+        openConnector,
+        'zendesk',
         'get_ticket',
         { ticket_id: ticketId }
       );
@@ -408,9 +416,9 @@ async function getTicketDetails(ticketId: number, zendeskConfig: McpServiceConfi
           args.conversation_after = afterCursor;
         }
 
-        const convLog = await callMcpTool(
-          zendeskConfig.endpoint,
-          zendeskConfig.apiKey,
+        const convLog = await callOpenConnectorCustomMcpTool(
+          openConnector,
+          'zendesk',
           'get_ticket_conversation_log',
           args
         );
@@ -568,11 +576,11 @@ async function initMentionTracker() {
   }
 }
 
-async function scanInternalMentions(zendeskService: McpServiceConfig) {
+async function scanInternalMentions(openConnector: McpServiceConfig) {
   try {
-    const searchRes = await callMcpTool(
-      zendeskService.endpoint,
-      zendeskService.apiKey,
+    const searchRes = await callOpenConnectorCustomMcpTool(
+      openConnector,
+      'zendesk',
       'search_tickets',
       { query: 'type:ticket status<solved order_by:updated_at sort:desc' }
     );
@@ -589,9 +597,9 @@ async function scanInternalMentions(zendeskService: McpServiceConfig) {
       ticketUpdateCache.set(tid, updatedAt);
 
       // Fetch recent comments
-      const commRes = await callMcpTool(
-        zendeskService.endpoint,
-        zendeskService.apiKey,
+      const commRes = await callOpenConnectorCustomMcpTool(
+        openConnector,
+        'zendesk',
         'get_ticket_comments',
         { ticket_id: tid }
       );
@@ -706,59 +714,18 @@ async function main() {
     console.log(`[Worker] Healthcheck listening on http://0.0.0.0:${PORT}/readyz`);
   });
 
-  // Discover all 6 MCP services
-  const mcpServices: McpServiceConfig[] = [
-    {
-      name: 'db-gateway',
-      endpoint: cleanEnv(process.env.DB_GATEWAY_MCP_URL) || 'https://zendesk.smlershou.top/db-gateway/mcp',
-      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_DB_GATEWAY),
-    },
-    {
-      name: 'zendesk',
-      endpoint: cleanEnv(process.env.ZENDESK_MCP_URL) || 'https://zendesk.smlershou.top/zendesk-mcp/mcp',
-      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_ZENDESK_MCP),
-      excludedTools: ['add_internal_note', 'update_ticket_status', 'update_ticket_metadata'],
-    },
-    {
-      name: 'signoz',
-      endpoint: cleanEnv(process.env.SIGNOZ_MCP_URL) || 'https://zendesk.smlershou.top/signoz-mcp/mcp',
-      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_SIGNOZ_MCP),
-    },
-    {
-      name: 'source',
-      endpoint: cleanEnv(process.env.SOURCE_MCP_URL) || 'https://zendesk.smlershou.top/source-mcp/mcp',
-      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_SOURCE_MCP),
-    },
-    {
-      name: 'github',
-      endpoint: cleanEnv(process.env.GITHUB_MCP_URL) || 'https://zendesk.smlershou.top/github-mcp/mcp',
-      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_GITHUB_MCP),
-    },
-    {
-      name: 'docs',
-      endpoint: cleanEnv(process.env.DOCS_MCP_URL) || 'https://zendesk.smlershou.top/docs-tool-service/mcp',
-      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_DOCS_MCP),
-    },
-    {
-      name: 'feishu',
-      endpoint: cleanEnv(process.env.FEISHU_MCP_URL) || 'http://feishu-mcp:8115/mcp',
-      apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_FEISHU_MCP),
-    },
-  ];
-  sharedMcpServices = mcpServices;
-
-  let allTools: CustomTool[] = [];
-  for (const s of mcpServices) {
-    if (s.apiKey) {
-      const tools = await discoverMcpTools(s);
-      allTools.push(...tools);
-    } else {
-      console.warn(`[Worker] Skipping MCP ${s.name}: No API key provided`);
-    }
+  if (!OPENCONNECTOR_RUNTIME_TOKEN) {
+    throw new Error('CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME is required');
   }
-  console.log(`[Worker] Loaded total ${allTools.length} tools across MCP services`);
-
-  const zendeskService = mcpServices.find(s => s.name === 'zendesk')!;
+  const openConnectorService = createOpenConnectorServiceConfig(
+    OPENCONNECTOR_MCP_URL,
+    OPENCONNECTOR_RUNTIME_TOKEN,
+  );
+  const allTools: CustomTool[] = await discoverOpenConnectorTools(openConnectorService);
+  if (allTools.length === 0) {
+    throw new Error('OpenConnector exposed no permitted investigation tools');
+  }
+  console.log(`[Worker] Loaded ${allTools.length} read-only investigation controls from OpenConnector`);
 
   const MAX_CONCURRENT_JOBS = parseInt(cleanEnv(process.env.CASEWORK_WORKER_CONCURRENCY) || '2', 10);
   console.log(`[Worker] Concurrency limit initialized to ${MAX_CONCURRENT_JOBS} parallel jobs`);
@@ -789,7 +756,7 @@ async function main() {
   (async () => {
     while (running) {
       try {
-        await scanInternalMentions(zendeskService);
+        await scanInternalMentions(openConnectorService);
       } catch (e: any) {
         console.warn(`[Mention Poller] Loop error:`, e.message);
       }
@@ -816,14 +783,14 @@ async function main() {
       const humanReason = `模式 B 人工优先保护：该工单此前已转人工客服，AI 坚决不介入。`;
       console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
       if (humanAlertTracker.shouldAlert(job.ticket_id)) {
-        const details = await getTicketDetails(job.ticket_id, zendeskService);
+        const details = await getTicketDetails(job.ticket_id, openConnectorService);
         await notifyHumanTakeover(job.ticket_id, details.message, humanReason);
       }
       await markJobCancelled(job.job_id, humanReason);
       return;
     }
 
-    const initialDetails = await getTicketDetails(job.ticket_id, zendeskService);
+    const initialDetails = await getTicketDetails(job.ticket_id, openConnectorService);
 
     // Guard 0: Has this ticket already been answered by an agent reply?
     // (Prevent duplicate reply when customer sends consecutive messages and agent already replied!)
@@ -932,7 +899,7 @@ async function main() {
       } catch (agentErr: any) {
         if (abortController.signal.aborted || agentErr.name === 'AbortError') {
           console.warn(`[Worker] 🚨 Job ${job.job_id} for ticket #${job.ticket_id} was aborted in-flight.`);
-          const freshDetails = await getTicketDetails(job.ticket_id, zendeskService);
+          const freshDetails = await getTicketDetails(job.ticket_id, openConnectorService);
           if (freshDetails.hasRequestedHuman && !isMentionJob) {
             const humanReason = `模式 B 人工优先保护：推理中途检测到客户转人工诉求，旧答复已即时打断并移交人工。`;
             await notifyHumanTakeover(job.ticket_id, freshDetails.message, humanReason);
@@ -995,7 +962,7 @@ async function main() {
 
       // Pre-Delivery Freshness Check
       console.log(`[Worker] Pre-delivery check: Fetching latest conversation for ticket #${job.ticket_id} to verify no new customer messages...`);
-      const freshDetails = await getTicketDetails(job.ticket_id, zendeskService);
+      const freshDetails = await getTicketDetails(job.ticket_id, openConnectorService);
 
       // Guard 3: Did customer request human during reasoning?
       if (freshDetails.hasRequestedHuman && !isMentionJob) {
@@ -1080,33 +1047,12 @@ async function main() {
         return;
       }
 
-      // 1. Dual-track delivery: If an internal investigation note was produced, write it as a private internal comment
+      // Internal analysis is retained in run telemetry only. Browser Relay is the sole external write path.
       if (agentResult.internalNote) {
-        try {
-          console.log(`[Worker] Writing dual-track internal investigation note to ticket #${job.ticket_id}...`);
-          const zendeskService = sharedMcpServices.find((s: McpServiceConfig) => s.name === 'zendesk');
-          if (zendeskService) {
-            await callMcpTool(
-              zendeskService.endpoint,
-              zendeskService.apiKey,
-              'add_internal_note',
-              {
-                ticket_id: job.ticket_id,
-                body: agentResult.internalNote,
-                explicit_user_internal_note_request: 'Worker dual-track investigation record',
-                confirm: true,
-              }
-            );
-            console.log(`[Worker] ✅ Dual-track internal note written successfully for ticket #${job.ticket_id}`);
-          } else {
-            console.warn(`[Worker] Zendesk MCP service not found, skipping internal note delivery`);
-          }
-        } catch (noteErr: any) {
-          console.warn(`[Worker] Non-blocking error writing dual-track internal note for ticket #${job.ticket_id}:`, noteErr.message);
-        }
+        console.log(`[Worker] Retained internal investigation analysis in telemetry for ticket #${job.ticket_id}; no Zendesk note was written.`);
       }
 
-      // 2. Deliver public customer reply via Browser Relay
+      // Deliver the public customer reply through the only authorized write path.
       console.log(`[Worker] Pre-delivery check passed. Delivering via Browser Relay...`);
       const relayResult = await sendBrowserRelay(
         BROWSER_RELAY_URL,
@@ -1240,4 +1186,3 @@ main().catch(err => {
   console.error('[Worker] Fatal error:', err);
   process.exit(1);
 });
-

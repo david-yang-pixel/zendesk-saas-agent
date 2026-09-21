@@ -258,15 +258,20 @@ export const previewAdminApi: AdminApiClient = {
     return {
       services: [
         {
-          id: 'db-gateway',
-          name: 'db-gateway',
-          label: 'Dify Database Gateway',
+          id: 'openconnector',
+          name: 'openconnector',
+          label: 'OpenConnector Read-only Investigation Gateway',
           service_type: 'query',
-          endpoint: 'https://zendesk.smlershou.top/db-gateway/mcp',
+          endpoint: 'https://open-connector.yyg066340.workers.dev/mcp',
           online: true,
           latency_ms: 45,
-          tool_count: 1,
-          tools: [{ name: 'db_gateway_query', description: 'Query read-only replica' }],
+          tool_count: 4,
+          tools: [
+            { name: 'list_connections', description: 'List scoped connections' },
+            { name: 'search_actions', description: 'Search scoped actions' },
+            { name: 'get_action_guide', description: 'Inspect live action schema and risk' },
+            { name: 'execute_action', description: 'Execute verified read-only actions' },
+          ],
         },
         {
           id: 'zendesk-browser-relay',
@@ -280,7 +285,7 @@ export const previewAdminApi: AdminApiClient = {
           tools: [{ name: 'send_zendesk_native_message', description: 'Send browser native messaging reply' }],
         },
       ],
-      total_tools: 2,
+      total_tools: 5,
     }
   },
   async getSkills() {
@@ -337,4 +342,3 @@ export const previewAdminApi: AdminApiClient = {
     return { lines: ['[INFO] Container running normally', '[INFO] Worker idle polling'], total: 2 }
   },
 }
-

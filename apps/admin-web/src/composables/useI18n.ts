@@ -151,7 +151,7 @@ export const messages: Record<Locale, Record<string, string>> = {
 
     // Menu 4: Tools Center
     'tools.title': '全能力 MCP 工具总线 (MCP Mesh)',
-    'tools.subtitle': '聚合排查检索类与前台投递类 7 大服务，提供工具清单、Schema 参数定义与实时连通性探测。',
+    'tools.subtitle': 'OpenConnector 统一承载只读调查，Zendesk Browser Relay 独立承载公开回复，并提供实时连通性探测。',
     'tools.btn.refresh': '刷新服务状态',
     'tools.btn.probing': '探测中...',
     'tools.type.action': 'ACTION 投递',
@@ -303,7 +303,7 @@ export const messages: Record<Locale, Record<string, string>> = {
 
     // Menu 4: Tools Center
     'tools.title': 'MCP Tool Bus (MCP Mesh)',
-    'tools.subtitle': 'Unified telemetry across 7 query and action services, providing tool specs, schemas, and live health probes.',
+    'tools.subtitle': 'OpenConnector provides the read-only investigation plane, while Zendesk Browser Relay is the separate public-reply path.',
     'tools.btn.refresh': 'Refresh Mesh Health',
     'tools.btn.probing': 'Probing...',
     'tools.type.action': 'ACTION Delivery',

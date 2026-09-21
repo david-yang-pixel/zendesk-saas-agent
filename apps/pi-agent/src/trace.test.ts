@@ -131,6 +131,24 @@ describe('extractAgentTrace', () => {
     expect(trace.finalAnswer).toBe('Please provide the time of the failed request so we can continue.');
   });
 
+  it('attributes OpenConnector execute_action calls to the selected evidence connection', () => {
+    const args = {
+      actionId: 'custom_mcp.call_tool',
+      connectionName: 'dify-db',
+      input: { toolName: 'db_gateway_query', arguments: { database: 'prod' } },
+    };
+    const trace = extractAgentTrace([
+      assistant([{ type: 'toolCall', id: 'oc-call', name: 'execute_action', arguments: args }], 'toolUse'),
+      result('oc-call', [{ type: 'text', text: '{"rows":[]}' }]),
+      assistant([{ type: 'text', text: 'No matching record was found.' }]),
+    ]);
+    expect(trace.toolCalls[0]).toMatchObject({
+      toolName: 'execute_action',
+      service: 'db-gateway',
+      arguments: args,
+    });
+  });
+
   it('does not reuse an old answer after a new user message or a thinking-only assistant message', () => {
     const earlier = assistant([{ type: 'text', text: 'An earlier answer.' }]);
     expect(extractAgentTrace([earlier, { role: 'user', content: 'A new question.' }]).finalAnswer).toBe('');

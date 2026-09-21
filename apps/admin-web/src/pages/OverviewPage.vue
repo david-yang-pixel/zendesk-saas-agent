@@ -129,8 +129,7 @@ async function loadMeshHealth() {
       { name: 'postgres', label: 'PostgreSQL 持久队列', status: 'healthy', latency_ms: 12, detail: '连接正常' },
       { name: 'llm', label: 'LLM 推理网关 (gpt-5.6-terra)', status: 'healthy', latency_ms: 68, detail: '网关就绪' },
       { name: 'zendesk', label: 'Zendesk 客服通道', status: 'healthy', latency_ms: 45, detail: '凭据有效' },
-      { name: 'signoz', label: 'SigNoz 日志检索 MCP', status: 'healthy', latency_ms: 32, detail: '服务日志检索正常' },
-      { name: 'db-gateway', label: 'Dify 生产库只读 MCP', status: 'healthy', latency_ms: 25, detail: '只读网关在线' },
+      { name: 'openconnector', label: 'OpenConnector 只读调查网关', status: 'healthy', latency_ms: 32, detail: '统一调查入口已配置' },
       { name: 'feishu', label: '飞书人工接管机器人', status: 'healthy', latency_ms: 18, detail: 'Webhook 通道就绪' },
     ]
   } finally {

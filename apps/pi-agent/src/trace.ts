@@ -16,7 +16,11 @@ interface ToolCallTrace {
   result: unknown;
 }
 
-export function inferToolService(toolName: string): string {
+import { inferOpenConnectorService } from './openconnector.js';
+
+export function inferToolService(toolName: string, args?: unknown): string {
+  const openConnectorService = inferOpenConnectorService(toolName, args);
+  if (openConnectorService) return openConnectorService;
   if (toolName === 'db_gateway_query') return 'db-gateway';
   if (toolName.startsWith('feishu_')) return 'feishu';
   if (toolName.startsWith('signoz_') || toolName === 'sz_run') return 'signoz';
@@ -105,11 +109,12 @@ export function extractAgentTrace(messages: readonly unknown[]): {
       const part = asRecord(value);
       if (!part) continue;
       if (isToolCall(part) && typeof part.id === 'string' && typeof part.name === 'string') {
+        const args = part.arguments ?? part.args ?? part.input ?? null;
         const call: ToolCallTrace = {
           toolCallId: part.id,
           toolName: part.name,
-          service: inferToolService(part.name),
-          arguments: part.arguments ?? part.args ?? part.input ?? null,
+          service: inferToolService(part.name, args),
+          arguments: args,
           result: results.get(part.id) ?? null,
         };
         toolCalls.push(call);

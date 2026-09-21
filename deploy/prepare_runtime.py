@@ -33,45 +33,24 @@ class McpService:
 
 READ_ONLY_SERVICES = (
     McpService(
-        "source",
-        "https://zendesk.smlershou.top/source-mcp/mcp",
-        "source-mcp",
-        "SOURCE_MCP_API_KEY",
-        frozenset({"refresh_repos"}),
+        "openconnector",
+        "https://open-connector.yyg066340.workers.dev/mcp",
+        "openconnector-runtime",
+        "OPENCONNECTOR_RUNTIME_TOKEN",
+        frozenset({"list_apps"}),
     ),
-    McpService(
-        "github",
-        "https://zendesk.smlershou.top/github-mcp/mcp",
-        "github-mcp",
-        "GITHUB_MCP_API_KEY",
-    ),
-    McpService(
-        "signoz",
-        "https://zendesk.smlershou.top/signoz-mcp/mcp",
-        "signoz-mcp",
-        "SIGNOZ_MCP_API_KEY",
-    ),
-    McpService(
-        "docs",
-        "https://zendesk.smlershou.top/docs-tool-service/mcp",
-        "docs-mcp",
-        "DOCS_TOOL_SERVICE_API_KEY",
-    ),
-    McpService(
-        "zendesk",
-        "https://zendesk.smlershou.top/zendesk-mcp/mcp",
-        "zendesk-mcp",
-        "ZENDESK_MCP_API_KEY",
-        frozenset(
-            {"add_internal_note", "update_ticket_status", "update_ticket_metadata"}
-        ),
-    ),
-    McpService(
-        "db-gateway",
-        "https://zendesk.smlershou.top/db-gateway/mcp",
-        "db-gateway",
-        "DB_GATEWAY_API_KEY",
-    ),
+)
+
+LEGACY_INVESTIGATION_CREDENTIAL_KEYS = frozenset(
+    {
+        "CASEWORK_CREDENTIAL_SOURCE_MCP",
+        "CASEWORK_CREDENTIAL_GITHUB_MCP",
+        "CASEWORK_CREDENTIAL_SIGNOZ_MCP",
+        "CASEWORK_CREDENTIAL_DOCS_MCP",
+        "CASEWORK_CREDENTIAL_ZENDESK_MCP",
+        "CASEWORK_CREDENTIAL_DB_GATEWAY",
+        "CASEWORK_CREDENTIAL_FEISHU_MCP",
+    }
 )
 
 
@@ -260,6 +239,13 @@ def prepare(
     legacy_auth_path: Path = Path("/opt/zd-agent/resources/.state/admin_auth.json"),
 ) -> None:
     legacy = _parse_dotenv(source_env)
+    # GitHub Actions injects this production secret into the remote deploy
+    # process. Prefer it over the host dotenv so rotations have one authority.
+    openconnector_runtime_token = os.environ.get(
+        "OPENCONNECTOR_RUNTIME_TOKEN", ""
+    ).strip()
+    if openconnector_runtime_token:
+        legacy["OPENCONNECTOR_RUNTIME_TOKEN"] = openconnector_runtime_token
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_dir.chmod(0o700)
 
@@ -304,10 +290,8 @@ def prepare(
             "CASEWORK_CREDENTIAL_OPENAI_PRIMARY",
             _required(legacy, "OPENAI_API_KEY"),
         )
-        feishu_mcp_key = (
-            credentials.get("CASEWORK_CREDENTIAL_FEISHU_MCP") or secrets.token_hex(24)
-        )
-        credentials["CASEWORK_CREDENTIAL_FEISHU_MCP"] = feishu_mcp_key
+        for legacy_key in LEGACY_INVESTIGATION_CREDENTIAL_KEYS:
+            credentials.pop(legacy_key, None)
         credentials.update(service_credentials)
         _write_dotenv(credentials_path, credentials)
     if os.geteuid() == 0:
@@ -341,6 +325,7 @@ def prepare(
             legacy, "ZENDESK_MESSAGING_WEBHOOK_SECRET"
         ),
         "CASEWORK_MODEL_BASE_URL": "https://api.openai.com",
+        "CASEWORK_OPENCONNECTOR_MCP_URL": READ_ONLY_SERVICES[0].endpoint,
         "CASEWORK_TOOL_CONFIG": json.dumps(
             all_tools, ensure_ascii=False, separators=(",", ":")
         ),
@@ -373,8 +358,6 @@ def prepare(
         "CASEWORK_INGRESS_PORT": "18101",
         "CASEWORK_HARNESS_PORT": "18102",
         "CASEWORK_ADMIN_PORT": "18104",
-        "CASEWORK_FEISHU_MCP_PORT": "18115",
-        "CASEWORK_CREDENTIAL_FEISHU_MCP": feishu_mcp_key,
         "CASEWORK_SAAS_GROUP_ID": "40685275477140",
         "CASEWORK_ROOT_MODEL": "gpt-5.5",
         "CASEWORK_ROOT_MODEL_BASE_URL": "https://api.openai.com",
