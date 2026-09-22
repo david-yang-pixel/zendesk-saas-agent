@@ -579,7 +579,13 @@ async function scanInternalMentions(openConnector: McpServiceConfig) {
       openConnector,
       'zendesk',
       'search_tickets',
-      { query: 'type:ticket status<solved order_by:updated_at sort:desc' }
+      {
+        query: 'type:ticket status<solved',
+        sort_by: 'updated_at',
+        sort_order: 'desc',
+        page: 1,
+        per_page: 10,
+      }
     );
     if (!searchRes?.content?.[0]?.text) return;
     const parsed = JSON.parse(searchRes.content[0].text);
