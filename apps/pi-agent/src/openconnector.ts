@@ -169,7 +169,7 @@ async function assertCustomMcpToolIsReadOnly(
   connectionName: string,
   toolName: string,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<Record<string, any>> {
   let cache = customMcpToolCache.get(config);
   if (!cache) {
     cache = new Map();
@@ -210,6 +210,25 @@ async function assertCustomMcpToolIsReadOnly(
       `OpenConnector custom MCP tool ${connectionName}/${toolName} is ${String(descriptor.operationType || 'unclassified')}; only read tools are allowed.${githubHint}`,
     );
   }
+  return descriptor;
+}
+
+export function validateCustomMcpPagination(input: Record<string, any>, rule?: Record<string, any>): void {
+  const args = asRecord(input.arguments) ?? {};
+  const pagination = asRecord(input.pagination);
+  const cursorField = rule?.requestCursorField;
+  const remoteCursorFields = new Set(['conversation_after', ...(cursorField ? [cursorField] : [])]);
+  for (const field of remoteCursorFields) {
+    if (typeof args[field] === 'string' && args[field].startsWith('ocmcp1.')) {
+      throw new Error(`OpenConnector wrapped cursor belongs in input.pagination.cursor, not input.arguments.${field}. Use pagination: { mode: "single", cursor: nextCursor, pageSize: 25 } with the same tool and query.`);
+    }
+    if (pagination?.cursor != null && args[field] != null) {
+      throw new Error('Specify either input.pagination.cursor or the native cursor, never both');
+    }
+  }
+  if (pagination?.cursor != null && (typeof pagination.cursor !== 'string' || !pagination.cursor.startsWith('ocmcp1.'))) {
+    throw new Error('input.pagination.cursor requires the opaque OpenConnector nextCursor (ocmcp1.); native after_cursor belongs in the remote arguments');
+  }
 }
 
 export async function callOpenConnectorTool(
@@ -230,7 +249,8 @@ export async function callOpenConnectorTool(
         throw new Error('OpenConnector confirmOperation is forbidden for Zendesk Agent investigations');
       }
       const remoteToolName = requiredString(input.toolName, 'custom MCP toolName');
-      await assertCustomMcpToolIsReadOnly(config, connectionName, remoteToolName, signal);
+      const descriptor = await assertCustomMcpToolIsReadOnly(config, connectionName, remoteToolName, signal);
+      validateCustomMcpPagination(input, descriptor.pagination);
     } else if (actionId !== 'custom_mcp.list_tools') {
       await assertNativeActionIsReadOnly(config, actionId, connectionName, signal);
     }
@@ -255,7 +275,10 @@ export function createOpenConnectorServiceConfig(endpoint: string, apiKey: strin
 
 export async function discoverOpenConnectorTools(config: McpServiceConfig): Promise<CustomTool[]> {
   const tools = await discoverMcpTools(config);
-  return tools.filter((tool) => OPENCONNECTOR_TOOL_SET.has(tool.name));
+  return tools.filter((tool) => OPENCONNECTOR_TOOL_SET.has(tool.name)).map(tool => tool.name !== 'execute_action' ? tool : {
+    ...tool,
+    description: `${tool.description}\nFor custom_mcp.call_tool, continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
+  });
 }
 
 export async function callOpenConnectorCustomMcpTool(

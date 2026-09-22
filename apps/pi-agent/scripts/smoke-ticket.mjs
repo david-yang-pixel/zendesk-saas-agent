@@ -29,7 +29,7 @@ if (process.argv.includes('--model')) {
   const tools = await discoverOpenConnectorTools(connector);
   if (tools.length !== 4) throw new Error(`Expected four read-only controls, got ${tools.length}`);
   const result = await runPiSupportAgent({
-    ticketId, requesterEmail: details.email, attachments: details.attachments,
+    ticketId, requesterEmail: details.email, attachments: details.attachments, contextPrepared: true,
     customerMessage: `内部只读诊断，不发送、不修改任何数据。请必须调用 execute_action，actionId=custom_mcp.call_tool，connectionName=zendesk，input={"toolName":"get_ticket","arguments":{"ticket_id":${ticketId}}} 核对当前工单，再根据以下最新客户消息给出简短未发送草稿：\n${details.message}`,
     tools, apiKey: model?.api_key || process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY,
     modelBaseUrl: model?.base_url || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.tokener.dev/v1',
@@ -37,8 +37,9 @@ if (process.argv.includes('--model')) {
   });
   const calls = result.trace.toolCalls;
   if (!calls.length || !result.trace.finalReply?.trim()) throw new Error('Smoke requires actual tool execution and a nonempty final reply');
-  const ticketRead = calls.find(call => call.toolName === 'execute_action' && call.arguments?.input?.toolName === 'get_ticket');
-  const readResult = ticketRead?.result?.details;
-  if (!ticketRead || ticketRead.status === 'failed' || ticketRead.result?.isError || !readResult || readResult.isError || readResult.error) throw new Error('Model did not complete the required ticket read');
-  console.log(JSON.stringify({ phase: 'model', toolCalls: calls.map(call => ({ name: call.toolName, isError: call.result?.isError })), replyLength: result.trace.finalReply.length, noDelivery: true }));
+  const ticketRead = calls.find(call => call.toolName === 'execute_action' &&
+    call.arguments?.input?.toolName === 'get_ticket' && call.outcome?.status === 'succeeded' &&
+    Number(call.outcome.data?.ticket?.id) === ticketId);
+  console.log(JSON.stringify({ phase: 'model', verifiedTicketRead: Boolean(ticketRead), toolCalls: calls.map(call => ({ name: call.toolName, status: call.outcome?.status })), replyLength: result.trace.finalReply.length, noDelivery: true }));
+  if (!ticketRead) throw new Error('Model did not complete the required ticket read');
 }

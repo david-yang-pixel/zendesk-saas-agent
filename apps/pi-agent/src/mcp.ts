@@ -1,3 +1,5 @@
+import { normalizeToolResult } from './tool-result.js';
+
 export interface McpServiceConfig {
   name: string;
   endpoint: string;
@@ -169,11 +171,13 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
             return {
               content: [{ type: 'text', text: serialized }],
               details: mcpResult,
+              isError: normalizeToolResult(mcpResult).status === 'failed',
             };
           } catch (err: any) {
             return {
               content: [{ type: 'text', text: `Tool error: ${err.message || String(err)}` }],
               details: { error: err.message || String(err) },
+              isError: true,
             };
           }
         },

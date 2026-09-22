@@ -598,6 +598,7 @@ async function main() {
         agentResult = await runPiSupportAgent({
           ticketId: job.ticket_id,
           customerMessage: effectiveCustomerMessage,
+          contextPrepared: true,
           requesterEmail: initialDetails.email,
           tools: allTools,
           apiKey: modelConfig.apiKey,

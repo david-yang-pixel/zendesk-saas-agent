@@ -11,6 +11,7 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import { CustomTool } from './mcp.js';
 import { inferOpenConnectorService } from './openconnector.js';
+import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
 
 export interface AgentAttachment {
   id: string;
@@ -29,6 +30,7 @@ export interface AgentRunOptions {
   apiKey?: string;
   abortSignal?: AbortSignal;
   attachments?: AgentAttachment[];
+  contextPrepared?: boolean;
 }
 
 export interface AgentTraceStep {
@@ -55,6 +57,8 @@ export interface AgentTracePayload {
     service: string;
     arguments: any;
     result: any;
+    status?: string;
+    outcome?: ToolOutcome;
   }>;
   finalReply: string;
   totalDurationMs: number;
@@ -387,7 +391,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
       const existing = liveExecutedTools.get(callId);
       if (existing) {
         existing.result = event.result;
-        existing.status = event.isError ? 'failed' : 'succeeded';
+        existing.status = normalizeToolResult(event.result, event.isError).status;
       } else {
         liveExecutedTools.set(callId, {
           toolCallId: callId,
@@ -395,7 +399,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
           service: inferToolService(event.toolName, event.args),
           arguments: event.args ?? {},
           result: event.result,
-          status: event.isError ? 'failed' : 'succeeded',
+          status: normalizeToolResult(event.result, event.isError).status,
         });
       }
     } else if (event.type === 'message_update') {
@@ -426,6 +430,7 @@ Customer Message:
 ${options.customerMessage}
 """
 ${attachmentSection}
+${options.contextPrepared ? 'Context preparation: the worker already read all conversation pages and selected the unreplied customer messages shown above. For a greeting or clarification, use those messages without fetching the full history again. Fetch historical context only when the investigation needs it; use get_ticket_conversation_log, with bounded pages, rather than get_ticket with comments and attachments enabled.' : ''}
 System Instructions:
 ${DIFY_SUPPORT_SYSTEM_PROMPT}
 
@@ -491,7 +496,7 @@ Reply Instructions:
             // keep as string
           }
         }
-        toolResultsMap.set(callId, contentVal);
+        toolResultsMap.set(callId, m.isError ? { isError: true, details: contentVal } : contentVal);
       }
     } else if (Array.isArray(m.content)) {
       for (const part of m.content) {
@@ -561,17 +566,15 @@ Reply Instructions:
     throw new Error(`Pi Agent model request failed for ticket #${options.ticketId}: ${modelError}`);
   }
 
-  // Fallback: if session messages didn't yield tool calls, populate from liveExecutedTools
-  if (toolCallsList.length === 0 && liveExecutedTools.size > 0) {
-    console.log(`[Agent] Populating ${liveExecutedTools.size} tool calls from live event listener fallback`);
-    for (const item of liveExecutedTools.values()) {
-      toolCallsList.push(item);
-      steps.push({
-        type: 'tool_call',
-        ...item,
-      });
-    }
+  const mergedCalls = mergeToolCalls(toolCallsList, liveExecutedTools.values());
+  toolCallsList.splice(0, toolCallsList.length, ...mergedCalls);
+  const remainingCalls = new Map(mergedCalls.map(call => [call.toolCallId, call]));
+  for (const step of steps) {
+    if (step.type !== 'tool_call' || !step.toolCallId) continue;
+    const call = remainingCalls.get(step.toolCallId);
+    if (call) { Object.assign(step, call); remainingCalls.delete(step.toolCallId); }
   }
+  for (const call of remainingCalls.values()) steps.push({ type: 'tool_call', ...call });
 
   if (!finalAnswer.trim()) {
     for (let i = messages.length - 1; i >= 0; i--) {
