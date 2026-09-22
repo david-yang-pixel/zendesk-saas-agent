@@ -232,6 +232,31 @@ def _discover_tools(service: McpService, secret: str) -> list[dict[str, object]]
     return tools
 
 
+def _saved_tools(existing: Mapping[str, str]) -> list[dict[str, object]]:
+    """Explicit offline deploy using only previously saved, allowed contracts."""
+    try:
+        tools = json.loads(existing.get("CASEWORK_TOOL_CONFIG", ""))
+    except (ValueError, TypeError) as error:
+        raise RuntimeError("No valid saved tool configuration") from error
+    if not isinstance(tools, list) or not tools:
+        raise RuntimeError("No valid saved tool configuration")
+    allowed = {(s.endpoint, s.credential_ref): s for s in READ_ONLY_SERVICES}
+    for tool in tools:
+        if not isinstance(tool, dict):
+            raise RuntimeError("Invalid saved tool contract")
+        service = allowed.get((tool.get("endpoint_url"), tool.get("credential_ref")))
+        if (
+            service is None or tool.get("read_only") is not True
+            or not isinstance(tool.get("name"), str) or not tool["name"]
+            or not isinstance(tool.get("input_schema"), dict)
+            or not isinstance(tool.get("description"), str)
+            or not isinstance(tool.get("remote_tool_name"), str)
+            or tool["remote_tool_name"] in service.excluded_tools
+        ):
+            raise RuntimeError("Invalid saved tool contract")
+    return tools
+
+
 def prepare(
     *,
     source_env: Path,
@@ -264,15 +289,9 @@ def prepare(
         or legacy.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "")
         or existing.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "")
     )
-    mention_poller = (
-        os.environ.get("MENTION_POLLER_ENABLED", "").strip()
-        or legacy.get("MENTION_POLLER_ENABLED", "")
-        or existing.get("MENTION_POLLER_ENABLED", "true")
-    ).strip().lower()
-    if mention_poller not in {"true", "false"}:
-        raise RuntimeError("MENTION_POLLER_ENABLED must be true or false")
-    if mention_poller == "false" and not ticket_events_secret:
-        raise RuntimeError("Disabling Mention Poller requires a ticket events signing secret")
+    reuse_tools = os.environ.get("CASEWORK_REUSE_TOOL_CONFIG", "false").strip().lower()
+    if reuse_tools not in {"true", "false"}:
+        raise RuntimeError("CASEWORK_REUSE_TOOL_CONFIG must be true or false")
 
     credential_dir = state_dir / "credentials"
     credential_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -282,13 +301,16 @@ def prepare(
     if os.geteuid() == 0:
         os.chown(credential_dir, 10_001, 10_001)
     all_tools: list[dict[str, object]] = []
+    if reuse_tools == "true":
+        all_tools = _saved_tools(existing)
     service_credentials: dict[str, str] = {}
     for service in READ_ONLY_SERVICES:
         secret = _required(legacy, service.secret_name)
         service_credentials[
             "CASEWORK_CREDENTIAL_" + service.credential_ref.replace("-", "_").upper()
         ] = secret
-        all_tools.extend(_discover_tools(service, secret))
+        if reuse_tools != "true":
+            all_tools.extend(_discover_tools(service, secret))
 
     lock_path = credential_dir / ".credentials.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
@@ -342,7 +364,6 @@ def prepare(
             legacy, "ZENDESK_MESSAGING_WEBHOOK_SECRET"
         ),
         "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET": ticket_events_secret,
-        "MENTION_POLLER_ENABLED": mention_poller,
         "CASEWORK_MODEL_BASE_URL": "https://api.openai.com",
         "CASEWORK_OPENCONNECTOR_MCP_URL": READ_ONLY_SERVICES[0].endpoint,
         "CASEWORK_TOOL_CONFIG": json.dumps(

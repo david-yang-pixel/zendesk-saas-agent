@@ -15,8 +15,13 @@ Official payload: https://developer.zendesk.com/api-reference/webhooks/event-typ
   Precedence: nonempty deployment environment, source env, saved runtime env.
 - `prepare_runtime.py` writes the private `runtime.env` (0600); Compose injects
   the secret into ingress only. It is not baked into an image.
-- Keep `MENTION_POLLER_ENABLED=true` (default). Set the GitHub Actions variable
-  of that name to `false` only after real acceptance. It is injected into pi-agent.
+- Mention Poller and its configuration have been removed by explicit approval.
+  Internal-note triggering now depends on this webhook alone.
+- For an outage-time deployment, set GitHub production variable
+  `CASEWORK_REUSE_TOOL_CONFIG=true` to reuse validated saved tool contracts.
+  Missing/invalid saved contracts fail deployment. This does not bypass runtime
+  tool authorization or change Pi Agent's live discovery. Set it back to false
+  after deployment to resume normal discovery on subsequent releases.
 - Without the new secret, existing endpoints and health remain available;
   the new endpoint rejects all signatures with 401.
 
@@ -41,13 +46,10 @@ Official payload: https://developer.zendesk.com/api-reference/webhooks/event-typ
    payloads or signing secrets. Raw Zendesk payloads are not retained; the
    operator instruction is retained in the event's DB payload for the worker,
    but is not emitted in ingress/worker log messages.
-7. After acceptance, set `MENTION_POLLER_ENABLED=false` and redeploy. Confirm
-   `Mention Poller Disabled` at startup and no periodic scan calls. Observe
-   real-time delivery before removing Poller code in a subsequent change.
+7. Confirm there are no periodic Mention Poller scans. Live model/tool execution
+   may still fail independently while OpenConnector is unavailable.
 
-No cross-channel Poller/Webhook deduplication is implemented, by request.
-Webhook retries alone deduplicate using the top-level event ID. Do not treat
-an overlap-period Poller run as proof of webhook acceptance.
+Webhook retries deduplicate using the top-level event ID. No Poller remains.
 
 HTTP outcomes: 202 enqueue/duplicate/ignore; 400 bad_payload; 401 bad_signature;
 503 admission_unavailable (retry after restoring PostgreSQL/configuration).

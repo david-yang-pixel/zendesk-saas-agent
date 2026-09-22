@@ -77,15 +77,13 @@ def test_ticket_events_runtime_settings_survive_redeploy(tmp_path, monkeypatch):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
     monkeypatch.setenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "independent-secret")
-    monkeypatch.setenv("MENTION_POLLER_ENABLED", "false")
     args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40, docker_socket=socket)
     prepare_runtime.prepare(**args)
     monkeypatch.delenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET")
-    monkeypatch.delenv("MENTION_POLLER_ENABLED")
     prepare_runtime.prepare(**args)
     runtime = prepare_runtime._parse_dotenv(tmp_path / "state/runtime.env")
     assert runtime["ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"] == "independent-secret"
-    assert runtime["MENTION_POLLER_ENABLED"] == "false"
+    assert "MENTION_POLLER_ENABLED" not in runtime
     assert runtime["ZENDESK_MESSAGING_WEBHOOK_SECRET"] == "webhook-secret"
 
 
@@ -94,9 +92,37 @@ def test_ticket_events_compose_and_ci_wiring():
     compose = (root / "deploy/compose.release.yaml").read_text()
     workflow = (root / ".github/workflows/docker-image.yml").read_text()
     assert "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET:-}" in compose
-    assert "MENTION_POLLER_ENABLED: ${MENTION_POLLER_ENABLED:-true}" in compose
+    assert "MENTION_POLLER_ENABLED" not in compose
     assert "secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET" in workflow
-    assert "vars.MENTION_POLLER_ENABLED" in workflow
+    assert "vars.CASEWORK_REUSE_TOOL_CONFIG" in workflow
+
+
+def test_saved_tools_validate_and_reuse_without_discovery(tmp_path, monkeypatch):
+    source = tmp_path / "source.env"
+    socket = tmp_path / "socket"
+    socket.touch()
+    _source_environment(source)
+    for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_HARNESS_IMAGE", "CASEWORK_SANDBOX_IMAGE", "CASEWORK_ADMIN_IMAGE"):
+        monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
+    service = prepare_runtime.READ_ONLY_SERVICES[0]
+    tool = {"name": "search_actions", "remote_tool_name": "search_actions",
+            "description": "Search", "input_schema": {}, "read_only": True,
+            "endpoint_url": service.endpoint, "credential_ref": service.credential_ref}
+    state = tmp_path / "state"
+    state.mkdir()
+    prepare_runtime._write_dotenv(state / "runtime.env", {"CASEWORK_TOOL_CONFIG": json.dumps([tool])})
+    monkeypatch.setenv("CASEWORK_REUSE_TOOL_CONFIG", "true")
+    def no_discovery(*_):
+        raise AssertionError("must not discover")
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", no_discovery)
+    prepare_runtime.prepare(source_env=source, state_dir=state, revision="a" * 40, docker_socket=socket)
+    saved = prepare_runtime._parse_dotenv(state / "runtime.env")
+    assert json.loads(saved["CASEWORK_TOOL_CONFIG"]) == [tool]
+    for invalid in ([], [{**tool, "read_only": False}], [{**tool, "endpoint_url": "https://invalid"}]):
+        with pytest.raises(RuntimeError):
+            prepare_runtime._saved_tools({"CASEWORK_TOOL_CONFIG": json.dumps(invalid)})
+    with pytest.raises(RuntimeError):
+        prepare_runtime._saved_tools({})
 
 
 def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
@@ -152,7 +178,7 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert runtime["CASEWORK_OPENCONNECTOR_MCP_URL"].endswith("/mcp")
     assert runtime["ZENDESK_BASE_URL"] == "https://example.zendesk.com"
     assert runtime["CASEWORK_DELIVERY_MODE"] == "dry_run"
-    assert runtime["MENTION_POLLER_ENABLED"] == "true"
+    assert "MENTION_POLLER_ENABLED" not in runtime
     assert runtime["ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"] == ""
     assert runtime["DOCKER_GID"] == str(socket.stat().st_gid)
     assert runtime["CASEWORK_ADMIN_AUTH_DIR"] == str(state_dir / "admin-auth")

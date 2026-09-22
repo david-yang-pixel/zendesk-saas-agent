@@ -2,9 +2,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import pg from 'pg';
 import dotenv from 'dotenv';
-import { CustomTool, McpServiceConfig } from './mcp.js';
+import { CustomTool } from './mcp.js';
 import {
-  callOpenConnectorCustomMcpTool,
   createOpenConnectorServiceConfig,
   discoverOpenConnectorTools,
 } from './openconnector.js';
@@ -13,7 +12,6 @@ import { sendBrowserRelay } from './relay.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob } from './job-queue.js';
-import { mentionPollerEnabled, runMentionPoller } from './mention-poller.js';
 
 dotenv.config();
 
@@ -71,11 +69,6 @@ const OPENCONNECTOR_RUNTIME_TOKEN = cleanEnv(process.env.CASEWORK_CREDENTIAL_OPE
   || cleanEnv(process.env.OPENCONNECTOR_RUNTIME_TOKEN)
   || cleanEnv(process.env.OOMOL_CONNECT_RUNTIME_TOKEN);
 const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL) || 'https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0';
-const configuredMentionPollInterval = Number.parseInt(cleanEnv(process.env.CASEWORK_MENTION_POLL_INTERVAL_MS) || '60000', 10);
-const MENTION_POLL_INTERVAL_MS = Number.isFinite(configuredMentionPollInterval)
-  ? Math.max(configuredMentionPollInterval, 15_000)
-  : 60_000;
-
 const humanAlertTracker = new HumanAlertTracker(30 * 60 * 1000);
 
 async function notifyHumanTakeover(ticketId: number, customerMessage: string, reason: string): Promise<void> {
@@ -247,172 +240,6 @@ async function isTicketHumanCancelled(ticketId: number): Promise<boolean> {
 }
 
 
-// =========================================================================
-// Mention Poller: Scan for @David Yang internal notes
-// =========================================================================
-const processedMentions = new Set<string>();
-const ticketUpdateCache = new Map<number, string>();
-
-async function initMentionTracker() {
-  try {
-    const res = await pool.query("SELECT event_id FROM events WHERE source = 'zendesk_internal_mention'");
-    for (const row of res.rows) {
-      const cid = String(row.event_id).replace('mention:', '');
-      processedMentions.add(cid);
-    }
-    console.log(`[Mention Poller] Initialized tracker with ${processedMentions.size} existing processed mentions.`);
-  } catch (err: any) {
-    console.warn(`[Mention Poller] Could not initialize tracker from DB:`, err.message);
-  }
-}
-
-async function scanInternalMentions(openConnector: McpServiceConfig) {
-  try {
-    const searchRes = await callOpenConnectorCustomMcpTool(
-      openConnector,
-      'zendesk',
-      'search_tickets',
-      {
-        query: 'type:ticket status<solved',
-        sort_by: 'updated_at',
-        sort_order: 'desc',
-        page: 1,
-        per_page: 10,
-      }
-    );
-    if (!searchRes?.content?.[0]?.text) return;
-    const parsed = JSON.parse(searchRes.content[0].text);
-    const tickets = parsed?.data?.results || [];
-
-    for (const t of tickets.slice(0, 15)) {
-      const tid = Number(t.id);
-      const updatedAt = String(t.updated_at || '');
-      if (ticketUpdateCache.get(tid) === updatedAt) {
-        continue;
-      }
-      // Fetch the comment count with a one-item page, then read only the final
-      // five comments. The remote default is 100 comments and can exceed
-      // OpenConnector's inline result limit for long-running tickets.
-      const firstCommentPage = await callOpenConnectorCustomMcpTool(
-        openConnector,
-        'zendesk',
-        'get_ticket_comments',
-        { ticket_id: tid, page: 1, per_page: 1 }
-      );
-      if (!firstCommentPage?.content?.[0]?.text) continue;
-      const firstParsed = JSON.parse(firstCommentPage.content[0].text);
-      const totalComments = Number(firstParsed?.data?.count || 0);
-      let comments = Array.isArray(firstParsed?.data?.comments)
-        ? firstParsed.data.comments
-        : [];
-
-      if (totalComments > 1) {
-        const commentPageSize = 5;
-        const lastPage = Math.ceil(totalComments / commentPageSize);
-        const lastCommentPage = await callOpenConnectorCustomMcpTool(
-          openConnector,
-          'zendesk',
-          'get_ticket_comments',
-          { ticket_id: tid, page: lastPage, per_page: commentPageSize }
-        );
-        if (!lastCommentPage?.content?.[0]?.text) continue;
-        const lastParsed = JSON.parse(lastCommentPage.content[0].text);
-        comments = Array.isArray(lastParsed?.data?.comments)
-          ? lastParsed.data.comments
-          : [];
-      }
-
-      for (const c of comments.slice(-5)) {
-        const cid = String(c.id);
-        if (processedMentions.has(cid)) continue;
-
-        // Must be internal note (public: false)
-        if (c.public !== false) continue;
-
-        const body = String(c.body || '').trim();
-        if (!body) continue;
-
-        // Skip AI bot signatures
-        if (body.includes('Dify AI Agent') || body.includes('AI Agent is now processing')) {
-          continue;
-        }
-
-        const lower = body.toLowerCase();
-        const mentionTriggers = [
-          '@david yang',
-          '@davidyang',
-          '**david yang**',
-          '@agent',
-          '@ai agent',
-          '@ai',
-          '@dify-agent',
-          '@saas-agent',
-        ];
-        const matchedTrigger = mentionTriggers.find(tr => lower.includes(tr));
-        if (!matchedTrigger) continue;
-
-        console.log(`[Mention Poller] Detected mention on ticket #${tid}, comment ${cid}`);
-        processedMentions.add(cid);
-
-        // 1. Clear human takeover lock ("不受人工限制")
-        await pool.query(`
-          UPDATE ticket_states
-          SET human_cancelled_at = NULL,
-              updated_at = NOW()
-          WHERE ticket_id = $1
-        `, [tid]);
-        humanAlertTracker.clear(tid);
-
-        // 2. Persist in events table for deduplication
-        await pool.query(`
-          INSERT INTO events (
-            event_id, ticket_id, occurred_at, source, customer_origin, event_type, message_id, payload, received_at
-          ) VALUES (
-            $1, $2, NOW(), 'zendesk_internal_mention', 'operator', 'ticket.mention', $3, $4, NOW()
-          ) ON CONFLICT (event_id) DO NOTHING
-        `, [
-          `mention:${cid}`,
-          tid,
-          cid,
-          JSON.stringify({ comment_id: cid, body, trigger: matchedTrigger })
-        ]);
-
-        // 3. Enqueue job in case_jobs
-        const jobId = `job-mention-${cid}`;
-        const sessionId = `session-mention-${cid}`;
-        const eventId = `mention:${cid}`;
-
-        await pool.query(`
-          INSERT INTO case_jobs (
-            job_id, session_id, event_id, expected_event_id, ticket_id, generation,
-            status, attempts, available_at, created_at, updated_at,
-            config_revision, root_model_config_id, child_model_config_ids,
-            model_digest, skill_digest, tool_digest
-          )
-          VALUES (
-            $1, $2, $3, $4, $5, 1,
-            'queued', 0, NOW(), NOW(), NOW(),
-            'rev-1', 'gpt-5.6-terra', '[]', 'digest-model', 'digest-skill', 'digest-tool'
-          )
-          ON CONFLICT (ticket_id) WHERE status = 'queued'
-          DO UPDATE SET
-            job_id = $1,
-            session_id = $2,
-            event_id = $3,
-            expected_event_id = $4,
-            available_at = NOW(),
-            updated_at = NOW()
-        `, [jobId, sessionId, eventId, eventId, tid]);
-
-        console.log(`[Mention Poller] 🚀 Enqueued active mention job ${jobId} for ticket #${tid}. Human restriction unlocked!`);
-      }
-      ticketUpdateCache.set(tid, updatedAt);
-    }
-  } catch (err: any) {
-    console.warn('[Mention Poller] Scan failed');
-  }
-}
-
 async function main() {
   console.log(`[Worker] Starting Pi Agent Worker (${WORKER_ID}) on port ${PORT}...`);
 
@@ -466,18 +293,6 @@ async function main() {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
-
-  // Start background mention poller. A slower default avoids repeatedly
-  // rediscovering remote MCP tools and exhausting the OpenConnector Worker.
-  const pollerEnabled = mentionPollerEnabled(cleanEnv(process.env.MENTION_POLLER_ENABLED));
-  console.log(`[Mention Poller] ${pollerEnabled ? 'Enabled' : 'Disabled'}`);
-  void runMentionPoller({
-    enabled: pollerEnabled,
-    running: () => running,
-    initialize: initMentionTracker,
-    scan: () => scanInternalMentions(openConnectorService),
-    wait: () => new Promise(r => setTimeout(r, MENTION_POLL_INTERVAL_MS)),
-  }).catch(() => console.warn('[Mention Poller] Background loop stopped'));
 
   async function processJob(
     job: any,
