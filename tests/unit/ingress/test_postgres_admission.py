@@ -11,10 +11,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Result
 from sqlalchemy.orm import Session
 
-from casework_ingress.ports import AdmissionEvent
+from casework_ingress.ports import AdmissionEvent, AdmissionUnavailable
 from casework_ingress.postgres_admission import PostgresAdmission
 from casework_ingress.processing_rules import NormalizedZendeskEvent
-from casework_persistence.models import Base, CaseJobRow, TicketState
+from casework_persistence.models import Base, CaseJobRow, TicketState, EventRecord
 from casework_persistence.repositories import ConfigRevisionRepository
 
 
@@ -178,3 +178,44 @@ async def test_postgres_admission_human_command_fences_active_job(
     async with sessions.transaction() as session:
         state = (await session.execute(select(TicketState))).scalar_one()
         assert state.human_cancelled_at is None
+
+
+@pytest.mark.asyncio
+async def test_webhook_mention_uses_one_event_and_replay_preserves_later_human_lock(tmp_path):
+    from casework_ingress.ticket_events import parse_ticket_event
+    from tests.unit.ingress.test_ticket_events_webhook import payload
+
+    sessions = _SessionAdapter(tmp_path / "mention.sqlite")
+    async with sessions.transaction() as session:
+        await ConfigRevisionRepository(session).bootstrap(revision="cfg-1", config=CONFIG, actor="test")
+    parsed = parse_ticket_event(payload())
+    assert parsed is not None
+    event = AdmissionEvent(event_id=parsed.event_id, received_at=datetime.now(UTC),
+                           normalized=parsed.normalized(), raw_payload=parsed.payload())
+    admission = PostgresAdmission(transaction_scope=sessions.transaction)
+    assert (await admission.admit(event)).action == "enqueue"
+    async with sessions.transaction() as session:
+        state = (await session.execute(select(TicketState))).scalar_one()
+        state.human_cancelled_at = datetime(2026, 9, 23, tzinfo=UTC)
+    assert (await admission.admit(event)).action == "duplicate"
+    async with sessions.transaction() as session:
+        assert len((await session.execute(select(EventRecord))).scalars().all()) == 1
+        job = (await session.execute(select(CaseJobRow))).scalar_one()
+        assert job.event_id == parsed.event_id
+        assert job.expected_event_id == "mention:1234"
+        state = (await session.execute(select(TicketState))).scalar_one()
+        assert state.human_cancelled_at is not None
+
+
+@pytest.mark.asyncio
+async def test_database_failure_is_sanitized():
+    from sqlalchemy.exc import OperationalError
+
+    @asynccontextmanager
+    async def unavailable():
+        raise OperationalError("sensitive query", {}, Exception("private"))
+        yield  # pragma: no cover
+
+    admission = PostgresAdmission(transaction_scope=unavailable)
+    with pytest.raises(AdmissionUnavailable, match=r"^postgres_unavailable$"):
+        await admission.admit(_event(event_id="failure"))

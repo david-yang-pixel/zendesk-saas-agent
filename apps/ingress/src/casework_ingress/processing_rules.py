@@ -16,6 +16,15 @@ _ACTIVE_STATUSES = frozenset({"new", "open"})
 _HUMAN_KEYWORD = "human"
 _ProcessingAction = Literal["enqueue", "ignore", "cancel"]
 
+MENTION_TRIGGERS = (
+    "@david yang", "@davidyang", "**david yang**", "@agent",
+    "@ai agent", "@ai", "@dify-agent", "@saas-agent",
+)
+
+
+def has_operator_mention(text: str) -> bool:
+    return any(trigger in text.lower() for trigger in MENTION_TRIGGERS)
+
 
 def _normalise_text(value: object) -> str:
     """Return a comparison-safe representation of one configured string."""
@@ -185,18 +194,7 @@ def evaluate_processing_rules(
     """
 
     if not event.is_customer_message:
-        text = (event.message_text or "").lower()
-        mention_triggers = (
-            "@david yang",
-            "@davidyang",
-            "**david yang**",
-            "@agent",
-            "@ai agent",
-            "@ai",
-            "@dify-agent",
-            "@saas-agent",
-        )
-        if any(tr in text for tr in mention_triggers):
+        if has_operator_mention(event.message_text):
             return _decision("enqueue", event, "operator_mention")
         return _decision("ignore", event, "not_customer_message")
 

@@ -13,6 +13,7 @@ import { sendBrowserRelay } from './relay.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob } from './job-queue.js';
+import { mentionPollerEnabled, runMentionPoller } from './mention-poller.js';
 
 dotenv.config();
 
@@ -350,7 +351,7 @@ async function scanInternalMentions(openConnector: McpServiceConfig) {
         const matchedTrigger = mentionTriggers.find(tr => lower.includes(tr));
         if (!matchedTrigger) continue;
 
-        console.log(`[Mention Poller] 🔔 Detected internal note @David Yang mention on ticket #${tid} (comment ${cid}): "${body.slice(0, 100)}"`);
+        console.log(`[Mention Poller] Detected mention on ticket #${tid}, comment ${cid}`);
         processedMentions.add(cid);
 
         // 1. Clear human takeover lock ("不受人工限制")
@@ -408,7 +409,7 @@ async function scanInternalMentions(openConnector: McpServiceConfig) {
       ticketUpdateCache.set(tid, updatedAt);
     }
   } catch (err: any) {
-    console.warn(`[Mention Poller] Scan error:`, err.message);
+    console.warn('[Mention Poller] Scan failed');
   }
 }
 
@@ -468,17 +469,15 @@ async function main() {
 
   // Start background mention poller. A slower default avoids repeatedly
   // rediscovering remote MCP tools and exhausting the OpenConnector Worker.
-  await initMentionTracker();
-  (async () => {
-    while (running) {
-      try {
-        await scanInternalMentions(openConnectorService);
-      } catch (e: any) {
-        console.warn(`[Mention Poller] Loop error:`, e.message);
-      }
-      await new Promise(r => setTimeout(r, MENTION_POLL_INTERVAL_MS));
-    }
-  })();
+  const pollerEnabled = mentionPollerEnabled(cleanEnv(process.env.MENTION_POLLER_ENABLED));
+  console.log(`[Mention Poller] ${pollerEnabled ? 'Enabled' : 'Disabled'}`);
+  void runMentionPoller({
+    enabled: pollerEnabled,
+    running: () => running,
+    initialize: initMentionTracker,
+    scan: () => scanInternalMentions(openConnectorService),
+    wait: () => new Promise(r => setTimeout(r, MENTION_POLL_INTERVAL_MS)),
+  }).catch(() => console.warn('[Mention Poller] Background loop stopped'));
 
   async function processJob(
     job: any,
@@ -554,15 +553,19 @@ async function main() {
         try {
           const evRes = await pool.query(
             'SELECT payload FROM events WHERE event_id = $1 LIMIT 1',
-            [job.expected_event_id || job.event_id]
+            [job.event_id]
           );
           const operatorInstruction = evRes.rows[0]?.payload?.body;
+          if (typeof operatorInstruction !== 'string' || !operatorInstruction.trim()) {
+            throw new Error('Missing operator instruction');
+          }
           if (operatorInstruction) {
             effectiveCustomerMessage = `[来自人工座席内部备注 @David Yang 的直接指令]:\n"${operatorInstruction}"\n\n[工单客户最新消息]:\n"${initialDetails.message}"`;
-            console.log(`[Worker] 📌 Injected operator internal mention instruction for ticket #${job.ticket_id}: "${operatorInstruction.slice(0, 80)}"`);
+            console.log(`[Worker] Injected operator instruction for ticket #${job.ticket_id}`);
           }
         } catch (e: any) {
-          console.warn(`[Worker] Could not read mention payload:`, e.message);
+          // Fail closed: do not answer a customer without the operator instruction.
+          throw new Error('Could not load operator mention instruction');
         }
       }
 
@@ -591,7 +594,7 @@ async function main() {
       }, 5000);
 
       const modelConfig = await getActiveModelConfig();
-      console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${initialDetails.email || 'unknown'}, Model: ${modelConfig.model}${isMentionJob ? ', Trigger: @David Yang Mention' : ''}): "${effectiveCustomerMessage.slice(0, 80)}..."`);
+      console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Model: ${modelConfig.model}${isMentionJob ? ', Trigger: operator mention' : ''})`);
 
       let agentResult: any;
       try {

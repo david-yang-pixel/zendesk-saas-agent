@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.exc import SQLAlchemyError
 
 from casework_ingress.ports import (
     AdmissionEvent,
@@ -98,6 +99,8 @@ class PostgresAdmission:
             return await self._admit(event)
         except ConfigRevisionMissing as error:
             raise AdmissionUnavailable("configuration_not_ready") from error
+        except (SQLAlchemyError, OSError, TimeoutError) as error:
+            raise AdmissionUnavailable("postgres_unavailable") from error
 
     async def _admit(self, event: AdmissionEvent) -> AdmissionResult:
         async with self._transaction_scope() as session:
@@ -130,12 +133,7 @@ class PostgresAdmission:
 
             # Check if ticket was previously handed over to human
             state = await TicketRepository(session).ensure_state(event.normalized.ticket_id)
-            if decision.reason == "operator_mention":
-                # Operator explicitly summoned AI via internal note @mention!
-                # Clear human takeover lock ("不受人工限制")
-                state.human_cancelled_at = None
-                state.updated_at = event.received_at
-            elif state.human_cancelled_at is not None:
+            if decision.reason != "operator_mention" and state.human_cancelled_at is not None:
                 return AdmissionResult(
                     action="ignore",
                     reason="human_takeover_active",
@@ -154,6 +152,10 @@ class PostgresAdmission:
             )
             if not inserted:
                 return self._duplicate(event)
+            if decision.reason == "operator_mention":
+                # A replay must never undo a later human cancellation.
+                state.human_cancelled_at = None
+                state.updated_at = event.received_at
             if decision.action == "ignore":
                 return AdmissionResult(
                     action="ignore",

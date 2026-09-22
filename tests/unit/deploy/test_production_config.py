@@ -68,6 +68,37 @@ def test_discover_tools_uses_cloudflare_safe_user_agent(
     assert captured_request.get_header("User-agent") == "ZD-Agent-Deploy/1.0"
 
 
+def test_ticket_events_runtime_settings_survive_redeploy(tmp_path, monkeypatch):
+    source = tmp_path / "source.env"
+    socket = tmp_path / "socket"
+    socket.touch()
+    _source_environment(source)
+    for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_HARNESS_IMAGE", "CASEWORK_SANDBOX_IMAGE", "CASEWORK_ADMIN_IMAGE"):
+        monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
+    monkeypatch.setenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "independent-secret")
+    monkeypatch.setenv("MENTION_POLLER_ENABLED", "false")
+    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40, docker_socket=socket)
+    prepare_runtime.prepare(**args)
+    monkeypatch.delenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET")
+    monkeypatch.delenv("MENTION_POLLER_ENABLED")
+    prepare_runtime.prepare(**args)
+    runtime = prepare_runtime._parse_dotenv(tmp_path / "state/runtime.env")
+    assert runtime["ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"] == "independent-secret"
+    assert runtime["MENTION_POLLER_ENABLED"] == "false"
+    assert runtime["ZENDESK_MESSAGING_WEBHOOK_SECRET"] == "webhook-secret"
+
+
+def test_ticket_events_compose_and_ci_wiring():
+    root = Path(__file__).resolve().parents[3]
+    compose = (root / "deploy/compose.release.yaml").read_text()
+    workflow = (root / ".github/workflows/docker-image.yml").read_text()
+    assert "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET:-}" in compose
+    assert "MENTION_POLLER_ENABLED: ${MENTION_POLLER_ENABLED:-true}" in compose
+    assert "secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET" in workflow
+    assert "vars.MENTION_POLLER_ENABLED" in workflow
+
+
 def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -121,6 +152,8 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert runtime["CASEWORK_OPENCONNECTOR_MCP_URL"].endswith("/mcp")
     assert runtime["ZENDESK_BASE_URL"] == "https://example.zendesk.com"
     assert runtime["CASEWORK_DELIVERY_MODE"] == "dry_run"
+    assert runtime["MENTION_POLLER_ENABLED"] == "true"
+    assert runtime["ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"] == ""
     assert runtime["DOCKER_GID"] == str(socket.stat().st_gid)
     assert runtime["CASEWORK_ADMIN_AUTH_DIR"] == str(state_dir / "admin-auth")
     assert runtime["CASEWORK_ADMIN_PUBLIC_ORIGIN"] == "https://zendesk.smlershou.top"

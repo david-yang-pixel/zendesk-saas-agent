@@ -55,6 +55,14 @@ GREENFIELD_ROUTES = """    # BEGIN casework-greenfield routes
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 60s;
     }
+    location = /webhook/zendesk-ticket-events {
+        proxy_pass http://127.0.0.1:18101/webhook/zendesk-ticket-events;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
     # END casework-greenfield routes
 
 """
@@ -97,7 +105,9 @@ def render_admin_greenfield(text: str) -> str:
 
 def render_greenfield(text: str) -> str:
     if BEGIN in text:
-        return text
+        start = text.index(BEGIN)
+        end = text.index(END, start) + len(END)
+        return text[:start] + GREENFIELD_ROUTES.rstrip() + text[end:]
     text = text.replace(
         "# HTTPS reverse proxy to 127.0.0.1:8080 (zd-agent container)",
         "# HTTPS routes for Casework Greenfield and supporting tool services",

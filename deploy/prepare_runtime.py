@@ -258,6 +258,21 @@ def prepare(
     postgres_password = existing.get("POSTGRES_PASSWORD") or secrets.token_hex(24)
     delivery_mode = existing.get("CASEWORK_DELIVERY_MODE", "dry_run")
     canary_ids = existing.get("CASEWORK_CANARY_TICKET_IDS", "")
+    # Optional during staged rollout. Never reuse the Messaging signing key.
+    ticket_events_secret = (
+        os.environ.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "").strip()
+        or legacy.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "")
+        or existing.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "")
+    )
+    mention_poller = (
+        os.environ.get("MENTION_POLLER_ENABLED", "").strip()
+        or legacy.get("MENTION_POLLER_ENABLED", "")
+        or existing.get("MENTION_POLLER_ENABLED", "true")
+    ).strip().lower()
+    if mention_poller not in {"true", "false"}:
+        raise RuntimeError("MENTION_POLLER_ENABLED must be true or false")
+    if mention_poller == "false" and not ticket_events_secret:
+        raise RuntimeError("Disabling Mention Poller requires a ticket events signing secret")
 
     credential_dir = state_dir / "credentials"
     credential_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -326,6 +341,8 @@ def prepare(
         "ZENDESK_MESSAGING_WEBHOOK_SECRET": _required(
             legacy, "ZENDESK_MESSAGING_WEBHOOK_SECRET"
         ),
+        "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET": ticket_events_secret,
+        "MENTION_POLLER_ENABLED": mention_poller,
         "CASEWORK_MODEL_BASE_URL": "https://api.openai.com",
         "CASEWORK_OPENCONNECTOR_MCP_URL": READ_ONLY_SERVICES[0].endpoint,
         "CASEWORK_TOOL_CONFIG": json.dumps(

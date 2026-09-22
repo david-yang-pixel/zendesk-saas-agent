@@ -30,6 +30,8 @@ def test_render_switches_only_casework_public_routes() -> None:
     rendered = render_greenfield(LEGACY)
     assert "18101/webhook/zendesk" in rendered
     assert "18101/webhook/zendesk-messaging" in rendered
+    assert "location = /webhook/zendesk-ticket-events {" in rendered
+    assert "18101/webhook/zendesk-ticket-events;" in rendered
     assert "18101/healthz" in rendered
     assert "proxy_pass http://127.0.0.1:18104/;" in rendered
     assert "location /webhook/" not in rendered
@@ -38,6 +40,14 @@ def test_render_switches_only_casework_public_routes() -> None:
     assert "location /source-mcp/" in rendered
     assert "127.0.0.1:8099" in rendered
     assert render_greenfield(rendered) == rendered
+
+
+def test_upgrade_existing_greenfield_routes_preserves_other_locations() -> None:
+    from deploy.nginx_switch import BEGIN, END
+
+    current = render_greenfield(LEGACY)
+    old = current[:current.index(BEGIN)] + BEGIN + "\n    # old routes\n" + current[current.index(END):]
+    assert render_greenfield(old) == current
 
 
 def test_switch_keeps_only_transient_backup(tmp_path: Path) -> None:

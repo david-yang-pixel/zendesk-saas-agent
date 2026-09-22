@@ -119,6 +119,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         ticket_reader=reader,
         messaging_signing_secret=signing_secret,
+        ticket_events_signing_secret=os.environ.get(
+            "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", ""
+        ).strip(),
         messaging_signature_max_age_seconds=max_age_seconds,
     )
 

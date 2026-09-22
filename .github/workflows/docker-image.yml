@@ -186,6 +186,8 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.ZD_AGENT_DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.ZD_AGENT_DEPLOY_KNOWN_HOSTS }}
           OPENCONNECTOR_RUNTIME_TOKEN: ${{ secrets.OPENCONNECTOR_RUNTIME_TOKEN }}
+          ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${{ secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET }}
+          MENTION_POLLER_ENABLED: ${{ vars.MENTION_POLLER_ENABLED }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
           INGRESS_DIGEST: ${{ needs.build.outputs.ingress_digest }}
@@ -211,6 +213,8 @@ jobs:
             printf 'export GHCR_USERNAME=%q\n' "$GHCR_USERNAME"
             printf 'export GHCR_PAT=%q\n' "$GHCR_PAT"
             printf 'export OPENCONNECTOR_RUNTIME_TOKEN=%q\n' "$OPENCONNECTOR_RUNTIME_TOKEN"
+            printf 'export ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET=%q\n' "$ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"
+            printf 'export MENTION_POLLER_ENABLED=%q\n' "$MENTION_POLLER_ENABLED"
             printf 'export CASEWORK_INGRESS_IMAGE=%q\n' "${IMAGE_PREFIX}-ingress@${INGRESS_DIGEST}"
             printf 'export CASEWORK_HARNESS_IMAGE=%q\n' "${IMAGE_PREFIX}-harness@${HARNESS_DIGEST}"
             printf 'export CASEWORK_SANDBOX_IMAGE=%q\n' "${IMAGE_PREFIX}-sandbox@${SANDBOX_DIGEST}"

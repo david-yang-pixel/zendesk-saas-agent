@@ -13,6 +13,30 @@ function workerJob(dependencies: Record<string, unknown>) {
   return new Function(...Object.keys(dependencies), `${js}; return processJob;`)(...Object.values(dependencies));
 }
 afterEach(() => vi.useRealTimers());
+it('webhook UUID jobs load instructions by event ID and bypass customer-only guards without logging the note', async () => {
+  vi.useFakeTimers();
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const query = vi.fn(async () => ({ rows: [{ payload: { body: '@agent private-test-note' } }] }));
+  const runPiSupportAgent = vi.fn(async () => { throw new Error('test-stop'); });
+  const markJobCancelled = vi.fn();
+  const process = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query },
+    isTicketHumanCancelled: async () => true,
+    getTicketDetails: async () => ({ isAlreadyAnswered: true, hasRequestedHuman: true, message: 'customer' }),
+    getActiveModelConfig: async () => ({ model: 'test' }),
+    openConnectorService: {}, allTools: [], runPiSupportAgent,
+    recordJobOutcome: vi.fn(), markJobFailed: vi.fn(), markJobCancelled,
+    sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
+  });
+  try {
+    await process({ job_id: 'test', ticket_id: 99999, event_id: 'uuid-webhook', expected_event_id: 'mention:1234' }, new AbortController());
+    expect(query).toHaveBeenCalledWith('SELECT payload FROM events WHERE event_id = $1 LIMIT 1', ['uuid-webhook']);
+    expect(runPiSupportAgent).toHaveBeenCalledWith(expect.objectContaining({ customerMessage: expect.stringContaining('@agent private-test-note') }));
+    expect(markJobCancelled).not.toHaveBeenCalled();
+    expect(JSON.stringify(log.mock.calls)).not.toContain('private-test-note');
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { log.mockRestore(); }
+});
 it('records a context-read failure, marks the job failed, and clears its lease heartbeat', async () => {
   vi.useFakeTimers();
   const recordJobOutcome = vi.fn();

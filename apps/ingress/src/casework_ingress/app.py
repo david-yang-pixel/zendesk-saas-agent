@@ -34,6 +34,7 @@ from .processing_rules import (
     evaluate_processing_rules,
 )
 from .zendesk import ZendeskTicketError, ZendeskTicketReader
+from .ticket_events import parse_ticket_event
 
 WEBHOOK_PATH = "/webhook/zendesk"
 
@@ -176,6 +177,7 @@ def create_app(
     messaging_secret: str | None = None,
     messaging_signature_max_age_seconds: float = 300.0,
     messaging_clock: Callable[[], float] | None = None,
+    ticket_events_signing_secret: str = "",
 ) -> FastAPI:
     """Build the ingress app with injected side-effect destinations.
 
@@ -384,6 +386,44 @@ def create_app(
             ticket_id=decision.ticket_id,
         )
 
+    async def ticket_events_webhook(request: Request) -> dict[str, object]:
+        body = await request.body()
+        if not verify_zendesk_signature(
+            secret=ticket_events_signing_secret,
+            timestamp=request.headers.get("X-Zendesk-Webhook-Signature-Timestamp", ""),
+            signature=request.headers.get("X-Zendesk-Webhook-Signature", ""),
+            body=body,
+            now=messaging_clock() if messaging_clock is not None else None,
+            max_age_seconds=messaging_signature_max_age_seconds,
+        ):
+            raise HTTPException(status_code=401, detail="bad_signature")
+        try:
+            event = parse_ticket_event(decode_json_body(body))
+        except MessagingPayloadError as error:
+            raise HTTPException(status_code=400, detail="bad_payload") from error
+        if event is None:
+            ingress_metrics.record_webhook(action="ignore", reason="unsupported_event_type")
+            return {"action": "ignore", "reason": "unsupported_event_type"}
+        if not event.eligible:
+            return respond(action="ignore", reason="not_operator_mention", ticket_id=event.ticket_id).model_dump()
+        if admission is None:
+            raise HTTPException(status_code=503, detail="admission_unavailable")
+        try:
+            admitted = await admission.admit(AdmissionEvent(
+                event_id=event.event_id,
+                received_at=datetime.now(UTC),
+                normalized=event.normalized(),
+                raw_payload=event.payload(),
+            ))
+        except AdmissionUnavailable as error:
+            # Never reflect exception text: DB errors may contain parameters.
+            raise HTTPException(status_code=503, detail="admission_unavailable") from error
+        return respond(action=admitted.action, reason=admitted.reason, ticket_id=admitted.ticket_id).model_dump()
+
+    app.add_api_route(
+        "/webhook/zendesk-ticket-events", ticket_events_webhook,
+        methods=["POST"], status_code=202,
+    )
     app.add_api_route("/healthz", healthz, methods=["GET"])
     app.add_api_route("/readyz", readyz, methods=["GET"])
     app.add_api_route("/metrics", metrics_endpoint, methods=["GET"])
