@@ -14,6 +14,11 @@ export const OPENCONNECTOR_AGENT_TOOLS = [
 
 const OPENCONNECTOR_TOOL_SET = new Set<string>(OPENCONNECTOR_AGENT_TOOLS);
 const BLOCKED_SERVICES = new Set(['gmail']);
+const CUSTOM_MCP_TOOL_CACHE_TTL_MS = 60_000;
+const customMcpToolCache = new WeakMap<
+  McpServiceConfig,
+  Map<string, { expiresAt: number; tools: Promise<any[]> }>
+>();
 
 const CUSTOM_MCP_SERVICE_NAMES: Record<string, string> = {
   zendesk: 'zendesk',
@@ -136,17 +141,34 @@ async function assertCustomMcpToolIsReadOnly(
   toolName: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const listResult = await callRawOpenConnectorAction(
-    config,
-    'custom_mcp.list_tools',
-    connectionName,
-    {},
-    signal,
-  );
-  const tools = payloadData(listResult).tools;
-  if (!Array.isArray(tools)) {
-    throw new Error(`OpenConnector custom MCP ${connectionName} did not return a tool list`);
+  let cache = customMcpToolCache.get(config);
+  if (!cache) {
+    cache = new Map();
+    customMcpToolCache.set(config, cache);
   }
+  const now = Date.now();
+  let cached = cache.get(connectionName);
+  if (!cached || cached.expiresAt <= now) {
+    const tools = callRawOpenConnectorAction(
+      config,
+      'custom_mcp.list_tools',
+      connectionName,
+      {},
+      signal,
+    ).then((listResult) => {
+      const discovered = payloadData(listResult).tools;
+      if (!Array.isArray(discovered)) {
+        throw new Error(`OpenConnector custom MCP ${connectionName} did not return a tool list`);
+      }
+      return discovered;
+    });
+    cached = { expiresAt: now + CUSTOM_MCP_TOOL_CACHE_TTL_MS, tools };
+    cache.set(connectionName, cached);
+    tools.catch(() => {
+      if (cache?.get(connectionName)?.tools === tools) cache.delete(connectionName);
+    });
+  }
+  const tools = await cached.tools;
   const descriptor = tools.find((tool: any) => tool?.name === toolName);
   if (!descriptor) {
     throw new Error(`OpenConnector custom MCP tool not found: ${connectionName}/${toolName}`);

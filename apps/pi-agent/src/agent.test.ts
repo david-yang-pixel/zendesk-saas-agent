@@ -4,6 +4,8 @@ import {
   inferToolService,
   sanitizeCustomerReply,
   extractDualTrackOutputs,
+  getTerminalAssistantError,
+  supportsExplicitReasoningEffort,
   DIFY_SUPPORT_SYSTEM_PROMPT,
 } from './agent.js';
 
@@ -36,6 +38,20 @@ describe('Pi Support Agent Tool Format', () => {
     const isChinese = (msg: string) => /[一-龥]/.test(msg);
     expect(isChinese(chineseMsg)).toBe(true);
     expect(isChinese(englishMsg)).toBe(false);
+  });
+});
+
+describe('model provider compatibility', () => {
+  it('omits explicit reasoning effort for Tokener while preserving it for OpenAI-compatible providers', () => {
+    expect(supportsExplicitReasoningEffort('https://api.tokener.dev/v1')).toBe(false);
+    expect(supportsExplicitReasoningEffort('https://api.openai.com/v1')).toBe(true);
+  });
+
+  it('surfaces the terminal provider error instead of reporting an empty answer', () => {
+    expect(getTerminalAssistantError([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', stopReason: 'error', errorMessage: 'OpenAI API error (400): invalid_request' },
+    ])).toBe('OpenAI API error (400): invalid_request');
   });
 });
 

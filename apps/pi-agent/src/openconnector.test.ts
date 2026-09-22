@@ -133,6 +133,29 @@ describe('OpenConnector hard read-only boundary', () => {
     expect(secondRequest.params.arguments.input).not.toHaveProperty('confirmOperation');
   });
 
+  it('reuses a recent custom MCP read classification instead of listing tools before every call', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mcpResponse({
+        ok: true,
+        data: {
+          tools: [{ name: 'get_ticket', operationType: 'read', confirmationRequired: false }],
+        },
+      }))
+      .mockImplementation(async () => mcpResponse({ ok: true, data: { ticket: { id: 1 } } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const params = {
+      actionId: 'custom_mcp.call_tool',
+      connectionName: 'zendesk',
+      input: { toolName: 'get_ticket', arguments: { ticket_id: 1 } },
+    };
+
+    await callOpenConnectorTool(config, 'execute_action', params);
+    await callOpenConnectorTool(config, 'execute_action', params);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('blocks native provider writes after reading the live action guide', async () => {
     const fetchMock = vi.fn(async () => mcpResponse({
       ok: true,

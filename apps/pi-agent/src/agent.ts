@@ -73,6 +73,31 @@ export interface AgentRunResult {
   trace: AgentTracePayload;
 }
 
+export function supportsExplicitReasoningEffort(baseUrl: string): boolean {
+  try {
+    const hostname = new URL(baseUrl).hostname.toLowerCase();
+    return hostname !== 'api.tokener.dev' && !hostname.endsWith('.tokener.dev');
+  } catch {
+    return true;
+  }
+}
+
+export function getTerminalAssistantError(messages: readonly unknown[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (!message || typeof message !== 'object' || Array.isArray(message)) continue;
+    const record = message as Record<string, unknown>;
+    if (record.role !== 'assistant') continue;
+    if (record.stopReason !== 'error' && record.stop_reason !== 'error' && !record.errorMessage) {
+      return undefined;
+    }
+    return typeof record.errorMessage === 'string' && record.errorMessage.trim()
+      ? record.errorMessage.trim()
+      : 'The model provider ended the request with an error.';
+  }
+  return undefined;
+}
+
 export function inferToolService(toolName: string, args?: unknown): string {
   const openConnectorService = inferOpenConnectorService(toolName, args);
   if (openConnectorService) return openConnectorService;
@@ -291,7 +316,10 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
         id: modelName,
         name: modelName,
         api: 'openai-responses',
-        reasoning: true,
+        // Tokener's Responses-compatible endpoint currently rejects the SDK's
+        // explicit reasoning.effort field. It still applies its own server-side
+        // reasoning default when the field is omitted.
+        reasoning: supportsExplicitReasoningEffort(baseUrl),
         input: ['text', 'image'],
         cost: { input: 0, output: 0 },
         contextWindow: 128000,
@@ -526,6 +554,11 @@ Reply Instructions:
         text: m.content,
       });
     }
+  }
+
+  const modelError = getTerminalAssistantError(messages);
+  if (modelError) {
+    throw new Error(`Pi Agent model request failed for ticket #${options.ticketId}: ${modelError}`);
   }
 
   // Fallback: if session messages didn't yield tool calls, populate from liveExecutedTools

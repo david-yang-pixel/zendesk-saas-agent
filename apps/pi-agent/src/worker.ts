@@ -69,6 +69,10 @@ const OPENCONNECTOR_RUNTIME_TOKEN = cleanEnv(process.env.CASEWORK_CREDENTIAL_OPE
   || cleanEnv(process.env.OPENCONNECTOR_RUNTIME_TOKEN)
   || cleanEnv(process.env.OOMOL_CONNECT_RUNTIME_TOKEN);
 const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL) || 'https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0';
+const configuredMentionPollInterval = Number.parseInt(cleanEnv(process.env.CASEWORK_MENTION_POLL_INTERVAL_MS) || '60000', 10);
+const MENTION_POLL_INTERVAL_MS = Number.isFinite(configuredMentionPollInterval)
+  ? Math.max(configuredMentionPollInterval, 15_000)
+  : 60_000;
 
 const humanAlertTracker = new HumanAlertTracker(30 * 60 * 1000);
 
@@ -423,19 +427,21 @@ async function getTicketDetails(ticketId: number, openConnector: McpServiceConfi
           args
         );
 
-        if (convLog?.content?.[0]?.text) {
-          const parsed = JSON.parse(convLog.content[0].text);
-          const pageEvents = parsed?.data?.events || [];
-          allEvents.push(...pageEvents);
-          hasMore = Boolean(parsed?.data?.meta?.has_more);
-          afterCursor = parsed?.data?.meta?.after_cursor;
-          if (!hasMore || !afterCursor) break;
-        } else {
-          break;
+        if (!convLog?.content?.[0]?.text) {
+          throw new Error('OpenConnector returned an empty Zendesk conversation response');
         }
+        const parsed = JSON.parse(convLog.content[0].text);
+        const pageEvents = parsed?.data?.events;
+        if (!Array.isArray(pageEvents)) {
+          throw new Error('OpenConnector returned an invalid Zendesk conversation response');
+        }
+        allEvents.push(...pageEvents);
+        hasMore = Boolean(parsed?.data?.meta?.has_more);
+        afterCursor = parsed?.data?.meta?.after_cursor;
+        if (!hasMore || !afterCursor) break;
       }
     } catch (e: any) {
-      console.warn(`[Worker] Could not fetch conversation log:`, e.message);
+      throw new Error(`Could not fetch Zendesk conversation log for ticket #${ticketId}: ${e.message}`);
     }
 
     // Collect unreplied customer messages since the last agent message
@@ -544,16 +550,7 @@ async function getTicketDetails(ticketId: number, openConnector: McpServiceConfi
       unrepliedCount: unrepliedCustomerMessages.length,
     };
   } catch (err: any) {
-    console.warn(`[Worker] Error getting ticket details:`, err.message);
-    return {
-      message: `Ticket #${ticketId}`,
-      email: '',
-      attachments: [],
-      customerEventsCount: 0,
-      hasRequestedHuman: false,
-      isAlreadyAnswered: false,
-      unrepliedCount: 0,
-    };
+    throw new Error(`Unable to load complete ticket context for #${ticketId}: ${err.message}`);
   }
 }
 
@@ -751,7 +748,8 @@ async function main() {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  // Start background mention poller (checks every 5 seconds)
+  // Start background mention poller. A slower default avoids repeatedly
+  // rediscovering remote MCP tools and exhausting the OpenConnector Worker.
   await initMentionTracker();
   (async () => {
     while (running) {
@@ -760,7 +758,7 @@ async function main() {
       } catch (e: any) {
         console.warn(`[Mention Poller] Loop error:`, e.message);
       }
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, MENTION_POLL_INTERVAL_MS));
     }
   })();
 
