@@ -3,6 +3,7 @@ export interface McpServiceConfig {
   endpoint: string;
   apiKey: string;
   excludedTools?: string[];
+  protocolVersion?: '2026-07-28';
   executeTool?: (
     toolName: string,
     params: Record<string, any>,
@@ -17,6 +18,21 @@ export interface CustomTool {
   promptSnippet: string;
   parameters: Record<string, any>;
   execute: (toolCallId: string, params: any, signal?: AbortSignal) => Promise<any>;
+}
+
+function protocolMeta(version?: string): Record<string, any> {
+  return version ? { _meta: {
+    'io.modelcontextprotocol/protocolVersion': version,
+    'io.modelcontextprotocol/clientCapabilities': {},
+  } } : {};
+}
+
+function protocolHeaders(version: string | undefined, method: string, name?: string): Record<string, string> {
+  return version ? {
+    'MCP-Protocol-Version': version,
+    'MCP-Method': method,
+    ...(name ? { 'MCP-Name': name } : {}),
+  } : {};
 }
 
 async function parseMcpHttpResponse(res: Response): Promise<any> {
@@ -61,6 +77,7 @@ export async function callMcpTool(
   toolName: string,
   toolArgs: Record<string, any>,
   signal?: AbortSignal,
+  protocolVersion?: string,
 ): Promise<any> {
   const res = await fetch(endpoint, {
     method: 'POST',
@@ -68,12 +85,14 @@ export async function callMcpTool(
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
       Authorization: `Bearer ${apiKey}`,
+      ...protocolHeaders(protocolVersion, 'tools/call', toolName),
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
       id: Date.now(),
       method: 'tools/call',
       params: {
+        ...protocolMeta(protocolVersion),
         name: toolName,
         arguments: toolArgs || {},
       },
@@ -83,7 +102,11 @@ export async function callMcpTool(
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`MCP tool ${toolName} call failed (${res.status}): ${text}`);
+    const error = new Error(`MCP tool ${toolName} call failed (${res.status}): ${text}`) as Error & { retryable?: boolean };
+    try {
+      if (JSON.parse(text).retryable === false) error.retryable = false;
+    } catch { /* Non-JSON upstream errors still retain their HTTP status. */ }
+    throw error;
   }
 
   const data = await parseMcpHttpResponse(res);
@@ -102,12 +125,13 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
         'Content-Type': 'application/json',
         Accept: 'application/json, text/event-stream',
         Authorization: `Bearer ${service.apiKey}`,
+        ...protocolHeaders(service.protocolVersion, 'tools/list'),
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
         id: 1,
         method: 'tools/list',
-        params: {},
+        params: protocolMeta(service.protocolVersion),
       }),
     });
 
@@ -140,7 +164,7 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
           try {
             const mcpResult = service.executeTool
               ? await service.executeTool(tool.name, params || {}, signal)
-              : await callMcpTool(service.endpoint, service.apiKey, tool.name, params || {}, signal);
+              : await callMcpTool(service.endpoint, service.apiKey, tool.name, params || {}, signal, service.protocolVersion);
             const serialized = typeof mcpResult === 'string' ? mcpResult : JSON.stringify(mcpResult, null, 2);
             return {
               content: [{ type: 'text', text: serialized }],

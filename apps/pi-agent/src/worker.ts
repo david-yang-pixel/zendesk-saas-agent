@@ -8,10 +8,11 @@ import {
   createOpenConnectorServiceConfig,
   discoverOpenConnectorTools,
 } from './openconnector.js';
-import { runPiSupportAgent, AgentAttachment } from './agent.js';
+import { runPiSupportAgent } from './agent.js';
 import { sendBrowserRelay } from './relay.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
-import { detectHumanHandoffIntent } from './intent.js';
+import { getTicketDetails } from './ticket-context.js';
+import { claimNextJob } from './job-queue.js';
 
 dotenv.config();
 
@@ -98,66 +99,6 @@ if (!DATABASE_URL) {
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
-async function claimNextJob(workerId: string): Promise<any | null> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-
-    // 1. Automatically dead-letter any jobs whose lease expired and max attempts (3) have been reached
-    await client.query(`
-      UPDATE case_jobs
-      SET status = 'failed',
-          dead_letter_reason = 'lease_expired_max_attempts_exceeded',
-          finished_at = NOW(),
-          updated_at = NOW()
-      WHERE status = 'running'
-        AND lease_expires_at IS NOT NULL
-        AND lease_expires_at <= NOW()
-        AND attempts >= 3
-    `);
-
-    // 2. Select next job: either standard queued job OR expired running lease with attempts < 3
-    const selectRes = await client.query(`
-      SELECT job_id, ticket_id, session_id, event_id, expected_event_id, generation, status as prev_status, attempts
-      FROM case_jobs
-      WHERE (
-        (status = 'queued' AND available_at <= NOW())
-        OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= NOW() AND attempts < 3)
-      )
-      ORDER BY (CASE WHEN status = 'running' THEN 0 ELSE 1 END), available_at ASC, created_at ASC
-      FOR UPDATE SKIP LOCKED
-      LIMIT 1
-    `);
-
-    if (selectRes.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return null;
-    }
-
-    const job = selectRes.rows[0];
-    if (job.prev_status === 'running') {
-      console.warn(`[Worker] 🔄 Lease Reclaim: Reclaiming expired running job ${job.job_id} for ticket #${job.ticket_id} (lease expired, retry attempt ${job.attempts + 1}/3)...`);
-    }
-
-    await client.query(`
-      UPDATE case_jobs
-      SET status = 'running',
-          lease_owner = $1,
-          lease_expires_at = NOW() + interval '180 seconds',
-          attempts = attempts + 1,
-          updated_at = NOW()
-      WHERE job_id = $2
-    `, [workerId, job.job_id]);
-
-    await client.query('COMMIT');
-    return job;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
-}
 
 async function getActiveModelConfig(): Promise<{
   baseUrl: string;
@@ -304,259 +245,6 @@ async function isTicketHumanCancelled(ticketId: number): Promise<boolean> {
   }
 }
 
-interface EventExtraction {
-  text: string;
-  attachments: AgentAttachment[];
-}
-
-function extractEventDetails(ev: any): EventExtraction {
-  let text = '';
-  const attachments: AgentAttachment[] = [];
-  if (!ev) return { text: '', attachments: [] };
-
-  if (typeof ev.content === 'string' && ev.content.trim()) {
-    text = ev.content.trim();
-  } else if (ev.content && typeof ev.content === 'object') {
-    if (typeof ev.content.text === 'string' && ev.content.text.trim()) text = ev.content.text.trim();
-    else if (typeof ev.content.body === 'string' && ev.content.body.trim()) text = ev.content.body.trim();
-    else if (typeof ev.content.text_fallback === 'string' && ev.content.text_fallback.trim()) text = ev.content.text_fallback.trim();
-
-    if (ev.content.media_url || ev.content.url) {
-      attachments.push({
-        id: String(ev.content.attachment_id || ev.id || `${Date.now()}`),
-        name: String(ev.content.alt_text || ev.content.file_name || ev.content.name || 'image_attachment'),
-        url: ev.content.media_url || ev.content.url,
-        contentType: ev.content.content_type || 'image/png',
-      });
-    }
-
-    if (Array.isArray(ev.content.attachments)) {
-      for (const a of ev.content.attachments) {
-        if (a && typeof a === 'object') {
-          attachments.push({
-            id: String(a.id || a.attachment_id || `${Date.now()}`),
-            name: String(a.file_name || a.name || 'attachment'),
-            url: a.content_url || a.url,
-            contentType: a.content_type,
-          });
-        }
-      }
-    }
-  }
-
-  if (!text) {
-    if (typeof ev.body === 'string' && ev.body.trim()) text = ev.body.trim();
-    else if (typeof ev.message === 'string' && ev.message.trim()) text = ev.message.trim();
-    else if (ev.body && typeof ev.body === 'object' && typeof ev.body.text === 'string' && ev.body.text.trim()) {
-      text = ev.body.text.trim();
-    } else if (ev.message && typeof ev.message === 'object' && typeof ev.message.text === 'string' && ev.message.text.trim()) {
-      text = ev.message.text.trim();
-    }
-  }
-
-  if (Array.isArray(ev.attachments)) {
-    for (const a of ev.attachments) {
-      if (a && typeof a === 'object') {
-        attachments.push({
-          id: String(a.id || a.attachment_id || `${Date.now()}`),
-          name: String(a.file_name || a.name || 'attachment'),
-          url: a.content_url || a.url,
-          contentType: a.content_type,
-        });
-      }
-    }
-  }
-
-  return { text, attachments };
-}
-
-function extractEventText(ev: any): string {
-  return extractEventDetails(ev).text;
-}
-
-interface TicketDetails {
-  message: string;
-  email?: string;
-  attachments: AgentAttachment[];
-  lastEventId?: string;
-  lastEventTime?: string;
-  customerEventsCount: number;
-  hasRequestedHuman: boolean;
-  isAlreadyAnswered: boolean;
-  unrepliedCount: number;
-}
-
-async function getTicketDetails(ticketId: number, openConnector: McpServiceConfig): Promise<TicketDetails> {
-  try {
-    let email = '';
-    let subject = '';
-
-    try {
-      const rawTicket = await callOpenConnectorCustomMcpTool(
-        openConnector,
-        'zendesk',
-        'get_ticket',
-        { ticket_id: ticketId }
-      );
-      if (rawTicket?.content?.[0]?.text) {
-        const parsed = JSON.parse(rawTicket.content[0].text);
-        email = parsed?.data?.ticket?.requester?.email || parsed?.data?.ticket?.email || '';
-        subject = parsed?.data?.ticket?.subject || '';
-      }
-    } catch (e: any) {
-      console.warn(`[Worker] Could not fetch ticket metadata:`, e.message);
-    }
-
-    const allEvents: any[] = [];
-    try {
-      let afterCursor: string | undefined = undefined;
-      let hasMore = true;
-      let pageCount = 0;
-
-      while (hasMore && pageCount < 10) {
-        pageCount++;
-        const args: any = {
-          ticket_id: ticketId,
-          force_refresh: true,
-          conversation_page_size: 25,
-        };
-        if (afterCursor) {
-          args.conversation_after = afterCursor;
-        }
-
-        const convLog = await callOpenConnectorCustomMcpTool(
-          openConnector,
-          'zendesk',
-          'get_ticket_conversation_log',
-          args
-        );
-
-        if (!convLog?.content?.[0]?.text) {
-          throw new Error('OpenConnector returned an empty Zendesk conversation response');
-        }
-        const parsed = JSON.parse(convLog.content[0].text);
-        const pageEvents = parsed?.data?.events;
-        if (!Array.isArray(pageEvents)) {
-          throw new Error('OpenConnector returned an invalid Zendesk conversation response');
-        }
-        allEvents.push(...pageEvents);
-        hasMore = Boolean(parsed?.data?.meta?.has_more);
-        afterCursor = parsed?.data?.meta?.after_cursor;
-        if (!hasMore || !afterCursor) break;
-      }
-    } catch (e: any) {
-      throw new Error(`Could not fetch Zendesk conversation log for ticket #${ticketId}: ${e.message}`);
-    }
-
-    // Collect unreplied customer messages since the last agent message
-    const unrepliedCustomerMessages: Array<{ id: string; text: string; time: string; attachments: AgentAttachment[] }> = [];
-    const allAttachments: AgentAttachment[] = [];
-    let hasRequestedHuman = false;
-    let isAlreadyAnswered = false;
-
-    // 1. Check if the customer EVER asked for human support in any message using refined intent detection
-    for (const ev of allEvents) {
-      const authorName = ev.author?.display_name || '';
-      const authorType = ev.author?.type || '';
-      const isAgent = authorType === 'agent' || authorName.includes('David Yang') || authorName.includes('AI Agent');
-      if (!isAgent) {
-        const { text } = extractEventDetails(ev);
-        if (detectHumanHandoffIntent(text)) {
-          hasRequestedHuman = true;
-          break;
-        }
-      }
-    }
-
-    // 2. Scan backwards from newest to oldest:
-    // If the latest event in the conversation is an agent reply, older customer messages have already been replied!
-    let foundAgentReply = false;
-    let latestEventId = '';
-    let latestEventTime = '';
-
-    for (let i = allEvents.length - 1; i >= 0; i--) {
-      const ev = allEvents[i];
-      const authorName = ev.author?.display_name || '';
-      const authorType = ev.author?.type || '';
-      const isAgent = authorType === 'agent' || authorName.includes('David Yang') || authorName.includes('AI Agent');
-      const { text, attachments } = extractEventDetails(ev);
-
-      if (!latestEventId) {
-        latestEventId = String(ev.id || ev.reference || '');
-        latestEventTime = String(ev.created_at || '');
-      }
-
-      if (isAgent) {
-        // Encountered the most recent agent reply! Stop collecting customer messages before this reply.
-        foundAgentReply = true;
-        break;
-      } else {
-        // Customer message sent after the latest agent reply
-        if (text || attachments.length > 0) {
-          unrepliedCustomerMessages.unshift({
-            id: String(ev.id || ev.reference || ''),
-            text: text,
-            time: String(ev.created_at || ''),
-            attachments: attachments,
-          });
-          allAttachments.push(...attachments);
-        }
-      }
-    }
-
-    // If there are no customer messages after the latest agent reply:
-    if (unrepliedCustomerMessages.length === 0 && foundAgentReply) {
-      isAlreadyAnswered = true;
-    }
-
-    // Combine all unreplied consecutive customer messages (separated by double newline)
-    let customerMessage = '';
-    if (unrepliedCustomerMessages.length > 0) {
-      customerMessage = unrepliedCustomerMessages
-        .map(m => {
-          let part = m.text;
-          if (m.attachments.length > 0) {
-            const attList = m.attachments
-              .map(a => `[Attachment: ${a.name} (${a.contentType || 'file'}), URL: ${a.url || 'N/A'}]`)
-              .join('\n');
-            part = part ? `${part}\n${attList}` : attList;
-          }
-          return part;
-        })
-        .filter(Boolean)
-        .join('\n\n');
-    }
-
-    if (!customerMessage) {
-      if (allAttachments.length > 0) {
-        customerMessage = `[Customer uploaded ${allAttachments.length} attachment(s)/screenshot(s) without text message]`;
-      } else {
-        customerMessage = subject || `Ticket #${ticketId}`;
-      }
-    }
-
-    const lastEventId = unrepliedCustomerMessages.length > 0
-      ? unrepliedCustomerMessages[unrepliedCustomerMessages.length - 1].id
-      : latestEventId;
-    const lastEventTime = unrepliedCustomerMessages.length > 0
-      ? unrepliedCustomerMessages[unrepliedCustomerMessages.length - 1].time
-      : latestEventTime;
-
-    return {
-      message: customerMessage,
-      email,
-      attachments: allAttachments,
-      lastEventId,
-      lastEventTime,
-      customerEventsCount: unrepliedCustomerMessages.length,
-      hasRequestedHuman,
-      isAlreadyAnswered,
-      unrepliedCount: unrepliedCustomerMessages.length,
-    };
-  } catch (err: any) {
-    throw new Error(`Unable to load complete ticket context for #${ticketId}: ${err.message}`);
-  }
-}
 
 // =========================================================================
 // Mention Poller: Scan for @David Yang internal notes
@@ -804,108 +492,104 @@ async function main() {
       job.expected_event_id?.startsWith('mention:')
     );
 
-    // Guard 1: Has this ticket already been transferred to human in database?
-    // NOTE: Mention jobs BYPASS this guard because an operator explicitly tagged @David Yang!
-    const isHumanInDb = await isTicketHumanCancelled(job.ticket_id);
-    if (isHumanInDb && !isMentionJob) {
-      const humanReason = `模式 B 人工优先保护：该工单此前已转人工客服，AI 坚决不介入。`;
-      console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
-      if (humanAlertTracker.shouldAlert(job.ticket_id)) {
-        const details = await getTicketDetails(job.ticket_id, openConnectorService);
-        await notifyHumanTakeover(job.ticket_id, details.message, humanReason);
-      }
-      await markJobCancelled(job.job_id, humanReason);
-      return;
-    }
-
-    const initialDetails = await getTicketDetails(job.ticket_id, openConnectorService);
-
-    // Guard 0: Has this ticket already been answered by an agent reply?
-    // (Prevent duplicate reply when customer sends consecutive messages and agent already replied!)
-    if (initialDetails.isAlreadyAnswered && !isMentionJob) {
-      const skipReason = `防重复回复保护：该工单最新消息已由座席/AI完成回复（无待回复客户新消息），自动跳过防止二次抢答。`;
-      console.log(`[Worker] ⏭️ SKIP: ${skipReason}`);
-      await markJobCancelled(job.job_id, skipReason);
-      return;
-    }
-
-    // Guard 2: Did the customer EVER ask for human in this conversation thread?
-    // NOTE: Mention jobs BYPASS this guard as well!
-    if (initialDetails.hasRequestedHuman && !isMentionJob) {
-      const humanReason = `模式 B 人工优先保护：对话历史中检测到客户曾请求人工客服，AI 保持静默。`;
-      console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
-      try {
-        await pool.query(
-          `INSERT INTO ticket_states (ticket_id, human_cancelled_at, updated_at)
-           VALUES ($1, NOW(), NOW())
-           ON CONFLICT (ticket_id) DO UPDATE SET human_cancelled_at = NOW(), updated_at = NOW()`,
-          [job.ticket_id]
-        );
-      } catch (e: any) {
-        console.warn('[Worker] Failed to update ticket_states for human cancellation:', e.message);
-      }
-      await notifyHumanTakeover(job.ticket_id, initialDetails.message, humanReason);
-      await markJobCancelled(job.job_id, humanReason);
-      return;
-    }
-
-    // If this is a mention job, extract the operator's note instructions
-    let effectiveCustomerMessage = initialDetails.message;
-    if (isMentionJob) {
-      try {
-        const evRes = await pool.query(
-          'SELECT payload FROM events WHERE event_id = $1 LIMIT 1',
-          [job.expected_event_id || job.event_id]
-        );
-        const operatorInstruction = evRes.rows[0]?.payload?.body;
-        if (operatorInstruction) {
-          effectiveCustomerMessage = `[来自人工座席内部备注 @David Yang 的直接指令]:\n"${operatorInstruction}"\n\n[工单客户最新消息]:\n"${initialDetails.message}"`;
-          console.log(`[Worker] 📌 Injected operator internal mention instruction for ticket #${job.ticket_id}: "${operatorInstruction.slice(0, 80)}"`);
-        }
-      } catch (e: any) {
-        console.warn(`[Worker] Could not read mention payload:`, e.message);
-      }
-    }
-
-    // Active in-flight monitor & heartbeat
-    let monitorTick = 0;
-    const monitorTimer = setInterval(async () => {
-      monitorTick++;
-      try {
-        // 1. Lease heartbeat every 60 seconds (every 12 ticks of 5s)
-        if (monitorTick % 12 === 0) {
-          await pool.query(`
-            UPDATE case_jobs
-            SET lease_expires_at = NOW() + interval '180 seconds',
-                heartbeat_at = NOW(),
-                updated_at = NOW()
-            WHERE job_id = $1 AND status = 'running'
-          `, [job.job_id]);
-        }
-
-        // 2. Real-time in-flight cancel check: detect human takeover or new incoming customer message
-        if (!isMentionJob && !abortController.signal.aborted) {
-          const checkRes = await pool.query(`
-            SELECT 
-              (SELECT human_cancelled_at FROM ticket_states WHERE ticket_id = $1 LIMIT 1) as human_cancelled_at,
-              (SELECT count(*) FROM events WHERE ticket_id = $1 AND customer_origin = 'customer' AND received_at > $2) as new_events_count
-          `, [job.ticket_id, new Date(startTime)]);
-
-          if (checkRes.rows[0]?.human_cancelled_at) {
-            console.warn(`[Worker] 🛑 In-flight abort: Human takeover detected in DB for ticket #${job.ticket_id}`);
-            abortController.abort();
-          } else if (parseInt(checkRes.rows[0]?.new_events_count || '0', 10) > 0) {
-            console.warn(`[Worker] 🛑 In-flight abort: New customer message detected in DB for ticket #${job.ticket_id}`);
-            abortController.abort();
-          }
-        }
-      } catch (e: any) {
-        console.warn(`[Worker] Error in in-flight monitor loop for job ${job.job_id}:`, e.message);
-      }
-    }, 5000);
-
     let activeTrace: any = null;
+    let monitorTimer: ReturnType<typeof setInterval> | undefined;
+    // Context loading is also leased work, and its failures must reach the same
+    // terminal-state handler as model and delivery failures.
+    const leaseTimer = setInterval(() => {
+      pool.query(`UPDATE case_jobs SET lease_expires_at = NOW() + interval '180 seconds',
+        heartbeat_at = NOW(), updated_at = NOW() WHERE job_id = $1 AND status = 'running'`, [job.job_id])
+        .catch((error: Error) => console.warn('[Worker] Lease heartbeat failed:', error.message));
+    }, 60_000);
     try {
+
+      // Guard 1: Has this ticket already been transferred to human in database?
+      // NOTE: Mention jobs BYPASS this guard because an operator explicitly tagged @David Yang!
+      const isHumanInDb = await isTicketHumanCancelled(job.ticket_id);
+      if (isHumanInDb && !isMentionJob) {
+        const humanReason = `模式 B 人工优先保护：该工单此前已转人工客服，AI 坚决不介入。`;
+        console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+        if (humanAlertTracker.shouldAlert(job.ticket_id)) {
+          const details = await getTicketDetails(job.ticket_id, openConnectorService);
+          await notifyHumanTakeover(job.ticket_id, details.message, humanReason);
+        }
+        await markJobCancelled(job.job_id, humanReason);
+        return;
+      }
+
+      const initialDetails = await getTicketDetails(job.ticket_id, openConnectorService, abortController.signal);
+
+      // Guard 0: Has this ticket already been answered by an agent reply?
+      // (Prevent duplicate reply when customer sends consecutive messages and agent already replied!)
+      if (initialDetails.isAlreadyAnswered && !isMentionJob) {
+        const skipReason = `防重复回复保护：该工单最新消息已由座席/AI完成回复（无待回复客户新消息），自动跳过防止二次抢答。`;
+        console.log(`[Worker] ⏭️ SKIP: ${skipReason}`);
+        await markJobCancelled(job.job_id, skipReason);
+        return;
+      }
+
+      // Guard 2: Did the customer EVER ask for human in this conversation thread?
+      // NOTE: Mention jobs BYPASS this guard as well!
+      if (initialDetails.hasRequestedHuman && !isMentionJob) {
+        const humanReason = `模式 B 人工优先保护：对话历史中检测到客户曾请求人工客服，AI 保持静默。`;
+        console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
+        try {
+          await pool.query(
+            `INSERT INTO ticket_states (ticket_id, human_cancelled_at, updated_at)
+             VALUES ($1, NOW(), NOW())
+             ON CONFLICT (ticket_id) DO UPDATE SET human_cancelled_at = NOW(), updated_at = NOW()`,
+            [job.ticket_id]
+          );
+        } catch (e: any) {
+          console.warn('[Worker] Failed to update ticket_states for human cancellation:', e.message);
+        }
+        await notifyHumanTakeover(job.ticket_id, initialDetails.message, humanReason);
+        await markJobCancelled(job.job_id, humanReason);
+        return;
+      }
+
+      // If this is a mention job, extract the operator's note instructions
+      let effectiveCustomerMessage = initialDetails.message;
+      if (isMentionJob) {
+        try {
+          const evRes = await pool.query(
+            'SELECT payload FROM events WHERE event_id = $1 LIMIT 1',
+            [job.expected_event_id || job.event_id]
+          );
+          const operatorInstruction = evRes.rows[0]?.payload?.body;
+          if (operatorInstruction) {
+            effectiveCustomerMessage = `[来自人工座席内部备注 @David Yang 的直接指令]:\n"${operatorInstruction}"\n\n[工单客户最新消息]:\n"${initialDetails.message}"`;
+            console.log(`[Worker] 📌 Injected operator internal mention instruction for ticket #${job.ticket_id}: "${operatorInstruction.slice(0, 80)}"`);
+          }
+        } catch (e: any) {
+          console.warn(`[Worker] Could not read mention payload:`, e.message);
+        }
+      }
+
+      // Active in-flight monitor & heartbeat
+      monitorTimer = setInterval(async () => {
+        try {
+          // 2. Real-time in-flight cancel check: detect human takeover or new incoming customer message
+          if (!isMentionJob && !abortController.signal.aborted) {
+            const checkRes = await pool.query(`
+              SELECT
+                (SELECT human_cancelled_at FROM ticket_states WHERE ticket_id = $1 LIMIT 1) as human_cancelled_at,
+                (SELECT count(*) FROM events WHERE ticket_id = $1 AND customer_origin = 'customer' AND received_at > $2) as new_events_count
+            `, [job.ticket_id, new Date(startTime)]);
+
+            if (checkRes.rows[0]?.human_cancelled_at) {
+              console.warn(`[Worker] 🛑 In-flight abort: Human takeover detected in DB for ticket #${job.ticket_id}`);
+              abortController.abort();
+            } else if (parseInt(checkRes.rows[0]?.new_events_count || '0', 10) > 0) {
+              console.warn(`[Worker] 🛑 In-flight abort: New customer message detected in DB for ticket #${job.ticket_id}`);
+              abortController.abort();
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[Worker] Error in in-flight monitor loop for job ${job.job_id}:`, e.message);
+        }
+      }, 5000);
+
       const modelConfig = await getActiveModelConfig();
       console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Customer: ${initialDetails.email || 'unknown'}, Model: ${modelConfig.model}${isMentionJob ? ', Trigger: @David Yang Mention' : ''}): "${effectiveCustomerMessage.slice(0, 80)}..."`);
 
@@ -1164,6 +848,7 @@ async function main() {
       });
     } finally {
       clearInterval(monitorTimer);
+      clearInterval(leaseTimer);
     }
   }
 
@@ -1174,7 +859,7 @@ async function main() {
         continue;
       }
 
-      const job = await claimNextJob(WORKER_ID);
+      const job = await claimNextJob(pool, WORKER_ID);
       if (!job) {
         await new Promise(r => setTimeout(r, 1500));
         continue;

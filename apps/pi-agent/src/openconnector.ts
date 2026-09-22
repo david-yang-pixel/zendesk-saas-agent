@@ -4,6 +4,33 @@ import {
   type CustomTool,
   type McpServiceConfig,
 } from './mcp.js';
+import { setTimeout as delay } from 'node:timers/promises';
+
+// Only used on controls and operations that have passed the read-only guard.
+async function readWithRetry<T>(read: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    const timeout = AbortSignal.timeout(45_000);
+    const boundedSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+    try {
+      return await read(boundedSignal);
+    } catch (error: any) {
+      if (signal?.aborted || error?.retryable === false) throw error;
+      const transient = error?.name === 'TimeoutError' ||
+        /MCP returned an empty response|fetch failed|call failed \((429|502|503|504)\)/.test(error?.message || '');
+      if (!transient || attempt >= 2) throw error;
+      await delay(500 * 2 ** attempt, undefined, { signal });
+    }
+  }
+}
+
+export function parseOpenConnectorResult(result: any): Record<string, any> {
+  const payload = parseJsonTextResult(result);
+  if (result?.isError || payload.ok === false || payload.success === false) {
+    throw new Error(`OpenConnector tool failed: ${payload.error?.message || payload.message || JSON.stringify(payload.error || payload)}`);
+  }
+  return payload;
+}
 
 export const OPENCONNECTOR_AGENT_TOOLS = [
   'list_connections',
@@ -107,13 +134,14 @@ async function callRawOpenConnectorAction(
   input: Record<string, any>,
   signal?: AbortSignal,
 ): Promise<any> {
-  return callMcpTool(
+  return readWithRetry(boundedSignal => callMcpTool(
     config.endpoint,
     config.apiKey,
     'execute_action',
     { actionId, connectionName, input },
-    signal,
-  );
+    boundedSignal,
+    config.protocolVersion,
+  ), signal);
 }
 
 async function assertNativeActionIsReadOnly(
@@ -122,13 +150,14 @@ async function assertNativeActionIsReadOnly(
   connectionName: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const guide = await callMcpTool(
+  const guide = await readWithRetry(boundedSignal => callMcpTool(
     config.endpoint,
     config.apiKey,
     'get_action_guide',
     { actionId, connectionName },
-    signal,
-  );
+    boundedSignal,
+    config.protocolVersion,
+  ), signal);
   const operationType = payloadData(guide).capability?.operationType;
   if (operationType !== 'read') {
     throw new Error(`OpenConnector action ${actionId} is ${String(operationType || 'unclassified')}; only read actions are allowed`);
@@ -207,7 +236,7 @@ export async function callOpenConnectorTool(
     }
   }
 
-  return callMcpTool(config.endpoint, config.apiKey, toolName, params, signal);
+  return readWithRetry(boundedSignal => callMcpTool(config.endpoint, config.apiKey, toolName, params, boundedSignal, config.protocolVersion), signal);
 }
 
 export function createOpenConnectorServiceConfig(endpoint: string, apiKey: string): McpServiceConfig {
@@ -216,6 +245,9 @@ export function createOpenConnectorServiceConfig(endpoint: string, apiKey: strin
     endpoint,
     apiKey,
     excludedTools: ['list_apps'],
+    // The legacy SSE fallback can close before its terminal result. Use the
+    // server's per-request JSON protocol, including its required metadata.
+    protocolVersion: '2026-07-28',
   };
   config.executeTool = (toolName, params, signal) => callOpenConnectorTool(config, toolName, params, signal);
   return config;
