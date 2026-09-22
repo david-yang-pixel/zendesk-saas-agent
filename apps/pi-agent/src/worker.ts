@@ -415,7 +415,11 @@ async function getTicketDetails(ticketId: number, openConnector: McpServiceConfi
 
       while (hasMore && pageCount < 10) {
         pageCount++;
-        const args: any = { ticket_id: ticketId, force_refresh: true };
+        const args: any = {
+          ticket_id: ticketId,
+          force_refresh: true,
+          conversation_page_size: 25,
+        };
         if (afterCursor) {
           args.conversation_after = afterCursor;
         }
@@ -597,18 +601,37 @@ async function scanInternalMentions(openConnector: McpServiceConfig) {
       if (ticketUpdateCache.get(tid) === updatedAt) {
         continue;
       }
-      ticketUpdateCache.set(tid, updatedAt);
-
-      // Fetch recent comments
-      const commRes = await callOpenConnectorCustomMcpTool(
+      // Fetch the comment count with a one-item page, then read only the final
+      // five comments. The remote default is 100 comments and can exceed
+      // OpenConnector's inline result limit for long-running tickets.
+      const firstCommentPage = await callOpenConnectorCustomMcpTool(
         openConnector,
         'zendesk',
         'get_ticket_comments',
-        { ticket_id: tid }
+        { ticket_id: tid, page: 1, per_page: 1 }
       );
-      if (!commRes?.content?.[0]?.text) continue;
-      const commParsed = JSON.parse(commRes.content[0].text);
-      const comments = commParsed?.data?.comments || [];
+      if (!firstCommentPage?.content?.[0]?.text) continue;
+      const firstParsed = JSON.parse(firstCommentPage.content[0].text);
+      const totalComments = Number(firstParsed?.data?.count || 0);
+      let comments = Array.isArray(firstParsed?.data?.comments)
+        ? firstParsed.data.comments
+        : [];
+
+      if (totalComments > 1) {
+        const commentPageSize = 5;
+        const lastPage = Math.ceil(totalComments / commentPageSize);
+        const lastCommentPage = await callOpenConnectorCustomMcpTool(
+          openConnector,
+          'zendesk',
+          'get_ticket_comments',
+          { ticket_id: tid, page: lastPage, per_page: commentPageSize }
+        );
+        if (!lastCommentPage?.content?.[0]?.text) continue;
+        const lastParsed = JSON.parse(lastCommentPage.content[0].text);
+        comments = Array.isArray(lastParsed?.data?.comments)
+          ? lastParsed.data.comments
+          : [];
+      }
 
       for (const c of comments.slice(-5)) {
         const cid = String(c.id);
@@ -694,6 +717,7 @@ async function scanInternalMentions(openConnector: McpServiceConfig) {
 
         console.log(`[Mention Poller] 🚀 Enqueued active mention job ${jobId} for ticket #${tid}. Human restriction unlocked!`);
       }
+      ticketUpdateCache.set(tid, updatedAt);
     }
   } catch (err: any) {
     console.warn(`[Mention Poller] Scan error:`, err.message);
