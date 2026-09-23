@@ -30,7 +30,9 @@ def _row(**overrides: object) -> dict[str, Any]:
                  "toolCallCount": 0},
             ],
         }),
-        "remote_run_id": None, "rounds_reported": 0, "pending_operation": None,
+        "remote_run_id": None, "rounds_reported": 0,
+        "round_remote_ids_json": "{}", "tool_calls_reported_json": "{}",
+        "pending_operation": None,
         "source_updated_at": now,
     }
     values.update(overrides)
@@ -83,6 +85,19 @@ def test_invalid_stored_rounds_fail_closed() -> None:
         )
 
 
+def test_tool_export_skips_incomplete_calls_and_rejects_unsafe_names() -> None:
+    outcome = {"rounds": [{"round": 1, "toolCallCount": 2, "toolCalls": [
+        {"toolCallId": "first", "toolName": "zendesk.get_ticket", "status": "unknown"},
+        {"toolCallId": "second", "toolName": "github.search_code", "status": "succeeded"},
+    ]}]}
+    assert [call["tool_name"] for call in sync_run_logs._safe_tool_calls(outcome)[0]] == [  # pyright: ignore[reportPrivateUsage]
+        "github.search_code"
+    ]
+    outcome["rounds"][0]["toolCalls"][1]["toolName"] = "private key with spaces"  # type: ignore[index]
+    with pytest.raises(ValueError, match="tool telemetry"):
+        sync_run_logs._safe_tool_calls(outcome)  # pyright: ignore[reportPrivateUsage]
+
+
 def test_credentials_require_https_origin(tmp_path: Path) -> None:
     credentials = tmp_path / "credentials.json"
     credentials.write_text(json.dumps({"base_url": "http://example.com", "api_key": "key"}))
@@ -118,14 +133,17 @@ class _Connection:
 
 
 class _Client:
-    def __init__(self, *, bad_round_ack: bool = False) -> None:
+    def __init__(self, *, bad_round_ack: bool = False, bad_tool_ack: bool = False) -> None:
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.bad_round_ack = bad_round_ack
+        self.bad_tool_ack = bad_tool_ack
 
     async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> _Response:
         assert headers == {"X-Agent-Key": "test-key"}
         self.requests.append(("POST", url, json))
-        return _Response(None if self.bad_round_ack and url.endswith("/rounds") else 42)
+        bad_ack = ((self.bad_round_ack and url.endswith("/rounds"))
+                   or (self.bad_tool_ack and url.endswith("/tool-calls")))
+        return _Response(None if bad_ack else 42)
 
     async def put(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> _Response:
         assert headers == {"X-Agent-Key": "test-key"}
@@ -149,15 +167,17 @@ async def test_create_rounds_finish_are_checkpointed_in_order() -> None:
     assert client.requests[-1][1].endswith("/42")
     assert [args for _, args in connection.checkpoints] == [
         ("job-1",), ("job-1", 42),
-        ("job-1", "round:1", 42), ("job-1", 1, 42, "round:1"),
-        ("job-1", "round:2", 42), ("job-1", 2, 42, "round:2"),
+        ("job-1", "round:1", 42), ("job-1", 1, 42, "round:1", 42),
+        ("job-1", "round:2", 42), ("job-1", 2, 42, "round:2", 42),
         ("job-1", connection.row["source_updated_at"], 42),
     ]
 
 
 @pytest.mark.asyncio
 async def test_resume_from_round_checkpoint_without_recreating_run() -> None:
-    connection = _Connection(_row(remote_run_id=42, rounds_reported=1))
+    connection = _Connection(_row(
+        remote_run_id=42, rounds_reported=1, round_remote_ids_json='{"1": 41}',
+    ))
     client = _Client()
     await sync_run_logs.export_row(
         connection,  # pyright: ignore[reportArgumentType]
@@ -166,6 +186,87 @@ async def test_resume_from_round_checkpoint_without_recreating_run() -> None:
     )
     assert [method for method, _, _ in client.requests] == ["POST", "PUT"]
     assert connection.checkpoints[0][1] == ("job-1", "round:2", 42)
+
+
+@pytest.mark.asyncio
+async def test_exports_tool_metadata_only_under_its_remote_round() -> None:
+    row = _row()
+    outcome = json.loads(row["outcome_json"])
+    outcome["rounds"][0]["toolCalls"] = [
+        {"toolCallId": "call-1", "toolName": "zendesk.get_ticket",
+         "status": "succeeded", "durationMs": 47,
+         "arguments": {"api_key": "secret-key"}, "result": "customer-private"},
+        {"toolCallId": "call-2", "toolName": "github.search_code",
+         "status": "failed", "durationMs": 18, "error": "private-error"},
+    ]
+    row["outcome_json"] = json.dumps(outcome)
+    connection = _Connection(row)
+    client = _Client()
+    result = await sync_run_logs.export_batch(
+        connection,  # pyright: ignore[reportArgumentType]
+        client,  # pyright: ignore[reportArgumentType]
+        sync_run_logs.ExportCredentials("https://example.com", "test-key"), limit=10,
+    )
+    assert result == (1, 0)
+    assert [method for method, _, _ in client.requests] == ["POST"] * 5 + ["PUT"]
+    tool_requests = [request for request in client.requests if request[1].endswith("/tool-calls")]
+    assert len(tool_requests) == 2
+    assert all(url.endswith("/42/rounds/42/tool-calls") for _, url, _ in tool_requests)
+    assert tool_requests[0][2] == {
+        "tool_name": "zendesk.get_ticket", "arguments": None, "result_preview": None,
+        "success": True, "error_message": None, "duration_ms": 47,
+    }
+    assert tool_requests[1][2]["success"] is False
+    exported = json.dumps(client.requests)
+    assert "secret-key" not in exported
+    assert "customer-private" not in exported
+    assert "private-error" not in exported
+    assert ("job-1", 1, 1, 42, "tool:1:1") in [args for _, args in connection.checkpoints]
+
+
+@pytest.mark.asyncio
+async def test_resume_tool_export_without_recreating_round() -> None:
+    row = _row(
+        remote_run_id=42, rounds_reported=2,
+        round_remote_ids_json='{"1": 51, "2": 52}',
+        tool_calls_reported_json='{"1": 1}',
+    )
+    outcome = json.loads(row["outcome_json"])
+    outcome["rounds"][0]["toolCalls"] = [
+        {"toolCallId": "call-1", "toolName": "zendesk.get_ticket", "status": "succeeded"},
+        {"toolCallId": "call-2", "toolName": "zendesk.list_attachments", "status": "succeeded"},
+    ]
+    row["outcome_json"] = json.dumps(outcome)
+    connection = _Connection(row)
+    client = _Client()
+    await sync_run_logs.export_row(
+        connection,  # pyright: ignore[reportArgumentType]
+        client,  # pyright: ignore[reportArgumentType]
+        sync_run_logs.ExportCredentials("https://example.com", "test-key"), row,
+    )
+    assert [method for method, _, _ in client.requests] == ["POST", "PUT"]
+    assert client.requests[0][1].endswith("/42/rounds/51/tool-calls")
+    assert client.requests[0][2]["tool_name"] == "zendesk.list_attachments"
+
+
+@pytest.mark.asyncio
+async def test_uncertain_tool_ack_is_held_for_manual_review() -> None:
+    row = _row(remote_run_id=42, rounds_reported=1, round_remote_ids_json='{"1": 51}')
+    outcome = json.loads(row["outcome_json"])
+    outcome["rounds"] = [outcome["rounds"][0]]
+    outcome["rounds"][0]["toolCalls"] = [
+        {"toolCallId": "call-1", "toolName": "zendesk.get_ticket", "status": "succeeded"},
+    ]
+    row["outcome_json"] = json.dumps(outcome)
+    connection = _Connection(row)
+    client = _Client(bad_tool_ack=True)
+    assert await sync_run_logs.export_batch(
+        connection,  # pyright: ignore[reportArgumentType]
+        client,  # pyright: ignore[reportArgumentType]
+        sync_run_logs.ExportCredentials("https://example.com", "test-key"), limit=10,
+    ) == (0, 1)
+    assert [method for method, _, _ in client.requests] == ["POST"]
+    assert connection.checkpoints[-1][1] == ("job-1", "tool:1:1", 42)
 
 
 @pytest.mark.asyncio

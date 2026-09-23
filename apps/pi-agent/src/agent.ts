@@ -12,7 +12,7 @@ import {
 import { CustomTool } from './mcp.js';
 import { inferOpenConnectorService } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
-import { captureAgentRound, sumRoundTokens, type AgentRoundTelemetry } from './round-telemetry.js';
+import { captureAgentRound, sumRoundTokens, updateAgentTool, type AgentRoundTelemetry, type CompletedToolTelemetry } from './round-telemetry.js';
 
 export interface AgentAttachment {
   id: string;
@@ -376,6 +376,11 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
 
   const liveExecutedTools = new Map<string, { toolCallId: string; toolName: string; service: string; arguments: any; result: any; status: string }>();
   const completedRounds: AgentRoundTelemetry[] = [];
+  const toolStartedAt = new Map<string, number>();
+  const completedTools = new Map<string, CompletedToolTelemetry>();
+  const emitRoundTelemetry = () => options.onRoundTelemetry?.(
+    completedRounds.map(round => ({ ...round, toolCalls: round.toolCalls.map(call => ({ ...call })) })),
+  );
   let turnStartedAt: number | null = null;
 
   session.subscribe((event: any) => {
@@ -386,14 +391,18 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
         event.message,
         completedRounds.length + 1,
         turnStartedAt === null ? null : Date.now() - turnStartedAt,
+        completedTools,
       );
       if (round) {
         completedRounds.push(round);
-        options.onRoundTelemetry?.(completedRounds);
+        completedTools.clear();
+        emitRoundTelemetry();
       }
       turnStartedAt = null;
     } else if (event.type === 'tool_execution_start') {
       const callId = event.toolCallId || `call-${liveExecutedTools.size + 1}`;
+      toolStartedAt.set(callId, Date.now());
+      if (updateAgentTool(completedRounds, callId, 'running', null)) emitRoundTelemetry();
       console.log(`\n[Agent Tool Call Start] ${event.toolName} (${callId})`);
       liveExecutedTools.set(callId, {
         toolCallId: callId,
@@ -406,10 +415,19 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     } else if (event.type === 'tool_execution_end') {
       const callId = event.toolCallId || `call-${liveExecutedTools.size}`;
       console.log(`\n[Agent Tool Result End] ${event.toolName} (${callId}): isError=${event.isError}`);
+      const started = toolStartedAt.get(callId);
+      toolStartedAt.delete(callId);
+      const toolStatus = normalizeToolResult(event.result, event.isError).status;
+      const toolDuration = started === undefined ? null : Date.now() - started;
+      completedTools.set(callId, { status: toolStatus, durationMs: toolDuration });
+      if (updateAgentTool(completedRounds, callId, toolStatus, toolDuration)) {
+        completedTools.delete(callId);
+        emitRoundTelemetry();
+      }
       const existing = liveExecutedTools.get(callId);
       if (existing) {
         existing.result = event.result;
-        existing.status = normalizeToolResult(event.result, event.isError).status;
+        existing.status = toolStatus;
       } else {
         liveExecutedTools.set(callId, {
           toolCallId: callId,
@@ -417,7 +435,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
           service: inferToolService(event.toolName, event.args),
           arguments: event.args ?? {},
           result: event.result,
-          status: normalizeToolResult(event.result, event.isError).status,
+          status: toolStatus,
         });
       }
     } else if (event.type === 'message_update') {

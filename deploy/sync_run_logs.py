@@ -1,4 +1,4 @@
-"""Export SaaS Agent runs and content-free round metrics through the existing log API.
+"""Export SaaS Agent runs, rounds, and content-free tool metrics through the log API.
 
 Dry-run is the default. Uncertain POSTs are held for manual reconciliation,
 because the manager's existing create endpoints have no idempotency keys.
@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,6 +23,7 @@ import asyncpg
 import httpx
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "awaiting_customer", "human_takeover")
+SAFE_TOOL_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_.-]{0,99}\Z")
 
 PENDING_SQL = """
 SELECT j.job_id, j.ticket_id, j.status, j.created_at,
@@ -30,6 +32,8 @@ SELECT j.job_id, j.ticket_id, j.status, j.created_at,
        r.active_question ->> 'model' AS model,
        r.outcome::text AS outcome_json,
        x.remote_run_id, COALESCE(x.rounds_reported, 0) AS rounds_reported,
+       x.round_remote_ids::text AS round_remote_ids_json,
+       x.tool_calls_reported::text AS tool_calls_reported_json,
        x.pending_operation,
        GREATEST(j.updated_at, COALESCE(r.updated_at, j.updated_at)) AS source_updated_at
 FROM case_jobs j
@@ -57,8 +61,16 @@ UPDATE run_log_exports SET pending_operation = $2
 WHERE job_id = $1 AND pending_operation IS NULL AND remote_run_id = $3
 """
 SAVE_ROUND_SQL = """
-UPDATE run_log_exports SET rounds_reported = $2, pending_operation = NULL, synced_at = NOW()
+UPDATE run_log_exports SET rounds_reported = $2,
+    round_remote_ids = jsonb_set(round_remote_ids, ARRAY[$2::text], to_jsonb($5::int), true),
+    pending_operation = NULL, synced_at = NOW()
 WHERE job_id = $1 AND remote_run_id = $3 AND pending_operation = $4
+"""
+SAVE_TOOL_SQL = """
+UPDATE run_log_exports SET
+    tool_calls_reported = jsonb_set(tool_calls_reported, ARRAY[$2::text], to_jsonb($3::int), true),
+    pending_operation = NULL, synced_at = NOW()
+WHERE job_id = $1 AND remote_run_id = $4 AND pending_operation = $5
 """
 CLEAR_PENDING_SQL = """
 UPDATE run_log_exports SET pending_operation = NULL
@@ -167,6 +179,65 @@ def _safe_rounds(outcome: dict[str, Any]) -> list[dict[str, object]] | None:
     return result
 
 
+def _safe_tool_calls(outcome: dict[str, Any]) -> list[list[dict[str, object]]]:
+    """Only export explicitly completed tool metadata, never arguments or results."""
+    raw = outcome.get("rounds")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > 500:
+        raise ValueError("Invalid stored round telemetry")
+    result: list[list[dict[str, object]]] = []
+    for round_item in raw:
+        if not isinstance(round_item, dict):
+            raise ValueError("Invalid stored round telemetry")
+        raw_calls = round_item.get("toolCalls", [])
+        if not isinstance(raw_calls, list) or len(raw_calls) > 100:
+            raise ValueError("Invalid stored tool telemetry")
+        calls: list[dict[str, object]] = []
+        seen_ids: set[str] = set()
+        for item in raw_calls:
+            if not isinstance(item, dict):
+                raise ValueError("Invalid stored tool telemetry")
+            call_id = item.get("toolCallId")
+            name = item.get("toolName")
+            status = item.get("status")
+            if (not isinstance(call_id, str) or not call_id or len(call_id) > 255
+                    or call_id in seen_ids or not isinstance(name, str)
+                    or SAFE_TOOL_NAME.fullmatch(name) is None
+                    or not isinstance(status, str)
+                    or status not in {"unknown", "running", "succeeded", "failed"}):
+                raise ValueError("Invalid stored tool telemetry")
+            seen_ids.add(call_id)
+            duration = item.get("durationMs")
+            if duration is not None and _bounded_int(duration) is None:
+                raise ValueError("Invalid stored tool duration")
+            if status not in {"succeeded", "failed"}:
+                continue
+            calls.append({
+                "tool_name": name, "arguments": None, "result_preview": None,
+                "success": status == "succeeded", "error_message": None,
+                "duration_ms": duration,
+            })
+        result.append(calls)
+    return result
+
+
+def _checkpoint_map(value: object, *, positive: bool) -> dict[int, int]:
+    raw = json.loads(value) if isinstance(value, str) else value
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("Invalid log export checkpoint")
+    result: dict[int, int] = {}
+    for key, item in raw.items():
+        if (not isinstance(key, str) or not key.isdecimal() or len(key) > 3
+                or not 1 <= int(key) <= 500
+                or _bounded_int(item) is None or (positive and item == 0)):
+            raise ValueError("Invalid log export checkpoint")
+        result[int(key)] = item
+    return result
+
+
 def _token_totals(rounds: list[dict[str, object]] | None) -> tuple[int | None, int | None]:
     if rounds is None:
         return None, None
@@ -260,6 +331,9 @@ async def export_row(
     headers = {"X-Agent-Key": credentials.api_key}
     outcome = _outcome(row)
     rounds = _safe_rounds(outcome)
+    tools_by_round = _safe_tool_calls(outcome)
+    round_ids = _checkpoint_map(row["round_remote_ids_json"], positive=True)
+    tool_counts = _checkpoint_map(row["tool_calls_reported_json"], positive=False)
     if row["pending_operation"] is not None:
         raise ValueError("Log export has an uncertain POST requiring manual review")
     remote_id = row["remote_run_id"]
@@ -273,15 +347,34 @@ async def export_row(
     if row["rounds_reported"] > len(rounds or []):
         raise ValueError("Stored round count is behind export checkpoint")
     for index, round_payload in enumerate(rounds or [], 1):
-        if index <= row["rounds_reported"]:
-            continue
-        operation = f"round:{index}"
-        await _claim(connection, CLAIM_ROUND_SQL, row["job_id"], operation, remote_id)
-        await _post_once(
-            connection, client, url=f"{base}/{remote_id}/rounds", headers=headers,
-            payload=round_payload, job_id=row["job_id"], operation=operation,
-        )
-        await _claim(connection, SAVE_ROUND_SQL, row["job_id"], index, remote_id, operation)
+        round_id = round_ids.get(index)
+        if index > row["rounds_reported"]:
+            operation = f"round:{index}"
+            await _claim(connection, CLAIM_ROUND_SQL, row["job_id"], operation, remote_id)
+            round_id = await _post_once(
+                connection, client, url=f"{base}/{remote_id}/rounds", headers=headers,
+                payload=round_payload, job_id=row["job_id"], operation=operation,
+            )
+            await _claim(connection, SAVE_ROUND_SQL, row["job_id"], index, remote_id, operation, round_id)
+            round_ids[index] = round_id
+        calls = tools_by_round[index - 1]
+        if tool_counts.get(index, 0) > len(calls):
+            raise ValueError("Stored tool count is behind export checkpoint")
+        if calls and round_id is None:
+            raise ValueError("Remote round ID is missing for tool export")
+        for tool_index, tool_payload in enumerate(calls, 1):
+            if tool_index <= tool_counts.get(index, 0):
+                continue
+            operation = f"tool:{index}:{tool_index}"
+            await _claim(connection, CLAIM_ROUND_SQL, row["job_id"], operation, remote_id)
+            await _post_once(
+                connection, client,
+                url=f"{base}/{remote_id}/rounds/{round_id}/tool-calls",
+                headers=headers, payload=tool_payload,
+                job_id=row["job_id"], operation=operation,
+            )
+            await _claim(connection, SAVE_TOOL_SQL, row["job_id"], index, tool_index, remote_id, operation)
+            tool_counts[index] = tool_index
     response = await client.put(
         f"{base}/{remote_id}", headers=headers, json=to_finish_payload(row, outcome, rounds)
     )

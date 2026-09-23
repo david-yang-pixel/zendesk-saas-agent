@@ -25,6 +25,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 ACTIVE_JOB_STATUSES = frozenset(
@@ -324,7 +325,7 @@ class RunEventRow(Base):
 
 
 class RunLogExportRow(Base):
-    """Durable checkpoint for the SaaS Agent run and round export."""
+    """Durable checkpoint for the SaaS Agent run, round, and tool export."""
 
     __tablename__ = "run_log_exports"
 
@@ -333,6 +334,12 @@ class RunLogExportRow(Base):
     )
     remote_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     rounds_reported: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    round_remote_ids: Mapped[dict[str, int]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False, server_default="{}"
+    )
+    tool_calls_reported: Mapped[dict[str, int]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False, server_default="{}"
+    )
     pending_operation: Mapped[str | None] = mapped_column(String(50), nullable=True)
     source_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

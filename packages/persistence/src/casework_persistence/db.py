@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-SCHEMA_HEAD = "0008_run_log_exports"
+SCHEMA_HEAD = "0009_run_log_tool_exports"
 
 
 def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:
