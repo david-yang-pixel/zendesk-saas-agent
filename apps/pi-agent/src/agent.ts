@@ -604,7 +604,7 @@ Reply Instructions:
   const { customerReply, internalNote } = extractDualTrackOutputs(finalAnswer);
 
   // Unified English footer for customer reply
-  const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours, 9:00 AM–6:00 PM Eastern Time (New York).';
+  const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours (New York time): Sunday–Thursday nights, 9:00 PM–6:00 AM EDT (daylight saving time) or 8:00 PM–5:00 AM EST (standard time).';
   const fullReply = customerReply.trim() + footer;
 
   const trace: AgentTracePayload = {
