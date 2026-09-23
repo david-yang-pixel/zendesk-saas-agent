@@ -31,6 +31,7 @@ export interface AgentRunOptions {
   contextPrepared?: boolean;
   publicReplyAllowed?: boolean;
   onRoundTelemetry?: (rounds: readonly AgentRoundTelemetry[]) => void;
+  onTrace?: (trace: AgentTracePayload) => void;
 }
 
 export interface AgentTraceStep {
@@ -234,6 +235,16 @@ export function validateCustomerDelivery(
     throw new Error('Customer delivery blocked: internal analysis leaked into public reply');
   }
 
+  const missing = getMissingCustomerEvidenceSources(customerMessage, toolCalls);
+  if (missing.length > 0) {
+    throw new Error(`Customer delivery blocked: missing successful evidence from ${missing.join(', ')}`);
+  }
+}
+
+export function getMissingCustomerEvidenceSources(
+  customerMessage: string,
+  toolCalls: Array<{ toolName: string; service: string; status?: string; arguments?: any }>,
+): string[] {
   const successfulEvidence = (service: string) => toolCalls.some(call =>
     call.service === service &&
     call.status === 'succeeded' &&
@@ -251,10 +262,7 @@ export function validateCustomerDelivery(
     if (accountSpecific) requiredSources.add('db-gateway');
   }
   if (productFeature) requiredSources.add('docs');
-  const missing = [...requiredSources].filter(service => !successfulEvidence(service));
-  if (missing.length > 0) {
-    throw new Error(`Customer delivery blocked: missing successful evidence from ${missing.join(', ')}`);
-  }
+  return [...requiredSources].filter(service => !successfulEvidence(service));
 }
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -420,6 +428,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     attachmentSection = '\nCustomer Uploaded Attachments / Screenshots:\n' +
       options.attachments.map(a => `- ${a.name} (type: ${a.contentType || 'unknown'}, URL: ${a.url || 'N/A'})`).join('\n') + '\n';
   }
+  const requiredSources = getMissingCustomerEvidenceSources(options.customerMessage, []);
 
   const prompt = `
 Customer Ticket #${options.ticketId}
@@ -430,6 +439,7 @@ ${options.customerMessage}
 """
 ${attachmentSection}
 ${options.contextPrepared ? 'The Worker already prepared the latest conversation and unreplied customer events above.' : ''}
+${requiredSources.length ? `Before drafting, verify these required read-only evidence categories: ${requiredSources.join(', ')}.` : ''}
 
 First read the dify-saas-support skill at ${projectSkills.find(skill => skill.name === 'dify-saas-support')!.filePath}. Follow it for investigation and final output; read other relevant skills only when needed.
 `.trim();
@@ -447,6 +457,17 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
       throw abortErr;
     }
     throw promptErr;
+  }
+
+  // One bounded recovery pass for source gaps. The delivery gate remains the
+  // final authority, but the model gets a chance to use omitted live sources
+  // before a safe internal draft is rejected.
+  if (!options.abortSignal?.aborted && !getTerminalAssistantError(session.messages)) {
+    const missingSources = getMissingCustomerEvidenceSources(options.customerMessage, [...liveExecutedTools.values()]);
+    if (missingSources.length > 0) {
+      console.log(`[Agent] Missing required source categories for ticket #${options.ticketId}: ${missingSources.join(', ')}; requesting one recovery pass`);
+      await session.prompt(`Your investigation has not yet completed the required read-only source checks: ${missingSources.join(', ')}. Use the dify-saas-support skill and OpenConnector to call each missing source now. For education credits, verify the current Feishu policy and official docs as well as account data; do not infer current policy from billing tables alone. Correct malformed SQL before retrying and stop repeating the same failing query. Then return the two required sections in English for the customer-facing draft. If a source is unavailable, state that uncertainty internally and do not invent a conclusion.`);
+    }
   }
 
   if (options.abortSignal?.aborted || (session as any).aborted) {
@@ -551,11 +572,6 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
     }
   }
 
-  const modelError = getTerminalAssistantError(messages);
-  if (modelError) {
-    throw new Error(`Pi Agent model request failed for ticket #${options.ticketId}: ${modelError}`);
-  }
-
   const mergedCalls = mergeToolCalls(toolCallsList, liveExecutedTools.values());
   toolCallsList.splice(0, toolCallsList.length, ...mergedCalls);
   const remainingCalls = new Map(mergedCalls.map(call => [call.toolCallId, call]));
@@ -586,6 +602,29 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
     }
   }
 
+  const trace: AgentTracePayload = {
+    ticketId: options.ticketId,
+    requesterEmail: options.requesterEmail,
+    customerMessage: options.customerMessage,
+    model: modelName,
+    startedAt,
+    finishedAt,
+    totalDurationMs,
+    rounds: completedRounds,
+    tokens: sumRoundTokens(completedRounds),
+    thinking: thinkingList,
+    toolCalls: toolCallsList,
+    steps,
+    finalReply: '',
+  };
+  // Keep the complete tool timeline even when model output or delivery
+  // validation fails. The Worker records this trace as a failed run.
+  options.onTrace?.(trace);
+
+  const modelError = getTerminalAssistantError(messages);
+  if (modelError) {
+    throw new Error(`Pi Agent model request failed for ticket #${options.ticketId}: ${modelError}`);
+  }
   if (!finalAnswer.trim()) {
     throw new Error(`Pi Agent finished but produced no text response for ticket #${options.ticketId}`);
   }
@@ -600,22 +639,7 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
   // Unified English footer for customer reply
   const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours (New York time): Sunday–Thursday nights, 9:00 PM–6:00 AM EDT (daylight saving time) or 8:00 PM–5:00 AM EST (standard time).';
   const fullReply = publicReplyAllowed ? customerReply.trim() + footer : '';
-
-  const trace: AgentTracePayload = {
-    ticketId: options.ticketId,
-    requesterEmail: options.requesterEmail,
-    customerMessage: options.customerMessage,
-    model: modelName,
-    startedAt,
-    finishedAt,
-    totalDurationMs,
-    rounds: completedRounds,
-    tokens: sumRoundTokens(completedRounds),
-    thinking: thinkingList,
-    toolCalls: toolCallsList,
-    steps,
-    finalReply: fullReply,
-  };
+  trace.finalReply = fullReply;
 
   return {
     reply: fullReply,

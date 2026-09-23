@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  assertDbGatewaySqlHasClosedStrings,
   callOpenConnectorTool,
   createOpenConnectorServiceConfig,
   discoverOpenConnectorTools,
@@ -36,6 +37,55 @@ afterEach(() => {
 });
 
 describe('OpenConnector hard read-only boundary', () => {
+  it('rejects an unterminated DB string without exposing SQL in the error', () => {
+    expect(() => assertDbGatewaySqlHasClosedStrings("SELECT 1 WHERE tenant_id IN ('first','second)"))
+      .toThrow(/unterminated quoted string/);
+    expect(() => assertDbGatewaySqlHasClosedStrings("SELECT 'O''Brien', E'escaped\\'quote', $$literal'$$ -- ' comment"))
+      .not.toThrow();
+  });
+
+  it('stops malformed DB SQL after read classification but before remote execution', async () => {
+    const fetchMock = vi.fn(async () => mcpResponse({ ok: true, data: {
+      tools: [{ name: 'db_gateway_query', operationType: 'read', confirmationRequired: false }],
+    } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    await expect(callOpenConnectorTool(config, 'execute_action', {
+      actionId: 'custom_mcp.call_tool', connectionName: 'dify-db',
+      input: { toolName: 'db_gateway_query', arguments: { database: 'prod', sql: "SELECT 1 WHERE tenant_id IN ('first','second)" } },
+    })).rejects.toThrow(/no database request was sent/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts Pi-qualified Custom MCP read names only after canonical read-policy verification', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mcpResponse({ ok: true, data: {
+        tools: [{ name: 'get_ticket', operationType: 'read', confirmationRequired: false }],
+      } }))
+      .mockResolvedValueOnce(mcpResponse({ ok: true, data: { ticket: { id: 3726 } } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    await expect(callOpenConnectorTool(config, 'execute_action', {
+      actionId: 'custom_mcp.call_tool', connectionName: 'zendesk',
+      input: { toolName: 'custom_mcp.remote.get_ticket', arguments: { ticket_id: 3726 } },
+    })).resolves.toBeDefined();
+    const executed = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(executed.params.arguments.input.toolName).toBe('get_ticket');
+  });
+
+  it('does not use qualified names to bypass a Custom MCP write classification', async () => {
+    const fetchMock = vi.fn(async () => mcpResponse({ ok: true, data: {
+      tools: [{ name: 'update_ticket_status', operationType: 'write', confirmationRequired: true }],
+    } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    await expect(callOpenConnectorTool(config, 'execute_action', {
+      actionId: 'custom_mcp.call_tool', connectionName: 'zendesk',
+      input: { toolName: 'custom_mcp.remote.update_ticket_status', arguments: { ticket_id: 3726 } },
+    })).rejects.toThrow(/only read tools are allowed/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('discovers controls from a streamable HTTP event response', async () => {
     const fetchMock = vi.fn(async () => sseMcpResponse({
       tools: [

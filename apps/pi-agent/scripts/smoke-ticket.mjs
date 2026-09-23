@@ -27,7 +27,7 @@ if (process.argv.includes('--model')) {
     model = (await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'")).rows[0]?.value;
   } finally { await pool.end(); }
   const tools = await discoverOpenConnectorTools(connector);
-  if (tools.length !== 4) throw new Error(`Expected four read-only controls, got ${tools.length}`);
+  if (tools.length !== 5) throw new Error(`Expected four read-only controls and the read-tool directory, got ${tools.length}`);
   const result = await runPiSupportAgent({
     ticketId, requesterEmail: details.email, attachments: details.attachments, contextPrepared: true,
     customerMessage: `内部只读诊断，不发送、不修改任何数据。请必须调用 execute_action，actionId=custom_mcp.call_tool，connectionName=zendesk，input={"toolName":"get_ticket","arguments":{"ticket_id":${ticketId}}} 核对当前工单，再根据以下最新客户消息给出简短未发送草稿：\n${details.message}`,

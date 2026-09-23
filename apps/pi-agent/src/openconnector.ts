@@ -258,6 +258,49 @@ export function validateCustomMcpPagination(input: Record<string, any>, rule?: R
   }
 }
 
+// Catch a common model-generated SQL typo before it becomes an opaque
+// provider_error. This is a syntax check, not a replacement for the DB
+// Gateway's read-only SQL validation.
+export function assertDbGatewaySqlHasClosedStrings(sql: unknown): void {
+  if (typeof sql !== 'string') return;
+  let state: 'normal' | 'string' | 'identifier' | 'line-comment' | 'block-comment' | 'dollar' = 'normal';
+  let dollarTag = '';
+  let escapedString = false;
+  for (let index = 0; index < sql.length; index++) {
+    const char = sql[index];
+    const next = sql[index + 1];
+    if (state === 'line-comment') {
+      if (char === '\n') state = 'normal';
+    } else if (state === 'block-comment') {
+      if (char === '*' && next === '/') { state = 'normal'; index++; }
+    } else if (state === 'dollar') {
+      if (sql.startsWith(dollarTag, index)) { state = 'normal'; index += dollarTag.length - 1; }
+    } else if (state === 'identifier') {
+      if (char === '"' && next === '"') index++;
+      else if (char === '"') state = 'normal';
+    } else if (state === 'string') {
+      if (escapedString && char === '\\' && next !== undefined) index++;
+      else if (char === "'" && next === "'") index++;
+      else if (char === "'") state = 'normal';
+    } else if (char === '-' && next === '-') {
+      state = 'line-comment'; index++;
+    } else if (char === '/' && next === '*') {
+      state = 'block-comment'; index++;
+    } else if (char === '"') {
+      state = 'identifier';
+    } else if (char === "'") {
+      escapedString = sql[index - 1]?.toLowerCase() === 'e' && !/[A-Za-z_0-9]/.test(sql[index - 2] ?? '');
+      state = 'string';
+    } else if (char === '$') {
+      const match = /^\$[A-Za-z_][A-Za-z_0-9]*\$|^\$\$/.exec(sql.slice(index));
+      if (match) { dollarTag = match[0]; state = 'dollar'; index += dollarTag.length - 1; }
+    }
+  }
+  if (state === 'string') {
+    throw new Error('db_gateway_query SQL has an unterminated quoted string. Correct the SQL and retry; no database request was sent.');
+  }
+}
+
 export async function callOpenConnectorTool(
   config: McpServiceConfig,
   toolName: string,
@@ -265,25 +308,38 @@ export async function callOpenConnectorTool(
   signal?: AbortSignal,
 ): Promise<any> {
   validateOpenConnectorControlCall(toolName, params);
+  let requestParams = params;
 
   if (toolName === 'execute_action') {
     const actionId = requiredString(params.actionId, 'actionId');
     const connectionName = requiredString(params.connectionName, 'connectionName');
-    const input = asRecord(params.input) ?? {};
+    let input = asRecord(params.input) ?? {};
 
     if (actionId === 'custom_mcp.call_tool') {
       if (Object.hasOwn(input, 'confirmOperation')) {
         throw new Error('OpenConnector confirmOperation is forbidden for Zendesk Agent investigations');
       }
-      const remoteToolName = requiredString(input.toolName, 'custom MCP toolName');
+      // Pi can echo the qualified MCP catalog name. OpenConnector expects the
+      // bare remote name; still re-check that exact tool's live read policy.
+      const suppliedToolName = requiredString(input.toolName, 'custom MCP toolName');
+      const remoteToolName = suppliedToolName.startsWith('custom_mcp.remote.')
+        ? suppliedToolName.slice('custom_mcp.remote.'.length)
+        : suppliedToolName;
+      if (remoteToolName !== suppliedToolName) {
+        input = { ...input, toolName: remoteToolName };
+        requestParams = { ...params, input };
+      }
       const descriptor = await assertCustomMcpToolIsReadOnly(config, connectionName, remoteToolName, signal);
       validateCustomMcpPagination(input, descriptor.pagination);
+      if (connectionName === 'dify-db' && remoteToolName === 'db_gateway_query') {
+        assertDbGatewaySqlHasClosedStrings(asRecord(input.arguments)?.sql);
+      }
     } else if (actionId !== 'custom_mcp.list_tools') {
       await assertNativeActionIsReadOnly(config, actionId, connectionName, signal);
     }
   }
 
-  const result = await readWithRetry(boundedSignal => callMcpTool(config.endpoint, config.apiKey, toolName, params, boundedSignal, config.protocolVersion), signal);
+  const result = await readWithRetry(boundedSignal => callMcpTool(config.endpoint, config.apiKey, toolName, requestParams, boundedSignal, config.protocolVersion), signal);
   if (toolName !== 'list_connections' || params.service !== undefined) return result;
   const payload = parseJsonTextResult(result);
   if (payload.ok !== true || !Array.isArray(payload.data)) return result;

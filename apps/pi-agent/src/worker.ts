@@ -441,6 +441,9 @@ async function main() {
               tokens: sumRoundTokens([...rounds]),
             };
           },
+          onTrace: (trace) => {
+            activeTrace = trace;
+          },
         });
         activeTrace = agentResult.trace;
         console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms (${agentResult.trace.toolCalls.length} tool calls).`);

@@ -7,6 +7,7 @@ import {
   getTerminalAssistantError,
   supportsExplicitReasoningEffort,
   DIFY_SUPPORT_SYSTEM_PROMPT,
+  getMissingCustomerEvidenceSources,
   validateCustomerDelivery,
 } from './agent.js';
 
@@ -221,6 +222,8 @@ describe('customer delivery safety gate', () => {
 
   it('requires policy, docs, and account evidence before claiming education credits behavior', () => {
     const message = '看下这个工单用户的教育优惠会员，以及为什么积分不刷新';
+    expect(getMissingCustomerEvidenceSources(message, [readCall('db-gateway')])).toEqual(['feishu', 'docs']);
+    expect(getMissingCustomerEvidenceSources(message, [readCall('db-gateway'), readCall('feishu'), readCall('docs')])).toEqual([]);
     expect(() => validateCustomerDelivery(dualTrack, 'We are checking your credits.', message, [readCall('db-gateway')]))
       .toThrow(/feishu, docs/);
     expect(() => validateCustomerDelivery(dualTrack, 'We are checking your credits.', message, [
