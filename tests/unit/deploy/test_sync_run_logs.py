@@ -114,7 +114,10 @@ def test_result_text_unwraps_nested_openconnector_text_without_truncation() -> N
         "content": [{"type": "text", "text": json.dumps(business, ensure_ascii=False)}],
         "isError": False, "resultType": "inline",
     }
-    pi_result = {"content": [{"type": "text", "text": json.dumps(connector, ensure_ascii=False)}]}
+    pi_result = {
+        "content": [{"type": "text", "text": json.dumps(connector, ensure_ascii=False)}],
+        "details": connector, "isError": False,
+    }
 
     displayed = sync_run_logs._result_text(pi_result)  # pyright: ignore[reportPrivateUsage]
     assert displayed is not None
@@ -137,6 +140,9 @@ def test_result_text_preserves_ambiguous_or_non_json_tool_content() -> None:
     structured = {"content": [{"type": "text", "text": '{"one": 1}'}], "structuredContent": {"two": 2}}
     structured_text = sync_run_logs._result_text(structured)  # pyright: ignore[reportPrivateUsage]
     assert structured_text is not None and json.loads(structured_text) == structured
+    distinct_details = {"content": [{"type": "text", "text": '{"one": 1}'}], "details": {"two": 2}}
+    details_text = sync_run_logs._result_text(distinct_details)  # pyright: ignore[reportPrivateUsage]
+    assert details_text is not None and json.loads(details_text) == distinct_details
     truncated = {"_meta": {"io.oomol.open-connector/result": {"truncated": True}},
                  "content": [{"type": "text", "text": '{"partial": true}'}]}
     truncated_text = sync_run_logs._result_text(truncated)  # pyright: ignore[reportPrivateUsage]
@@ -265,11 +271,13 @@ async def test_exports_tool_content_under_its_matching_remote_round() -> None:
     ]
     outcome["rounds"][1]["toolCallCount"] = 1
     row["outcome_json"] = json.dumps(outcome)
-    nested_result = {"content": [{"type": "text", "text": json.dumps({
+    inner_result = {
         "_meta": {"io.oomol.open-connector/result": {"truncated": False}},
         "content": [{"type": "text", "text": json.dumps({"data": "customer-private"})}],
         "isError": False, "resultType": "inline",
-    })}]}
+    }
+    nested_result = {"content": [{"type": "text", "text": json.dumps(inner_result)}],
+                     "details": inner_result, "isError": False}
     row["tool_call_records_json"] = json.dumps([
         {"type": "tool_call", "toolCallId": "call-1", "arguments": {"query": "private-query"},
          "result": nested_result},

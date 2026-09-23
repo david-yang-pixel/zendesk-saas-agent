@@ -24,7 +24,7 @@ import httpx
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "awaiting_customer", "human_takeover")
 SAFE_TOOL_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_.-]{0,99}\Z")
-TOOL_RESULT_ENVELOPE_KEYS = frozenset({"content", "structuredContent", "isError", "_meta", "resultType"})
+TOOL_RESULT_ENVELOPE_KEYS = frozenset({"content", "details", "structuredContent", "isError", "_meta", "resultType"})
 
 PENDING_SQL = """
 SELECT j.job_id, j.ticket_id, j.status, j.created_at,
@@ -178,13 +178,14 @@ def _single_transport_text(value: object) -> str | None:
     if not isinstance(text, str):
         return None
     structured = value.get("structuredContent")
-    if structured is not None:
+    details = value.get("details")
+    if structured is not None or details is not None:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
             return None
-        if parsed != structured:
-            return None  # Do not discard a distinct structured result.
+        if (structured is not None and parsed != structured) or (details is not None and parsed != details):
+            return None  # Do not discard a distinct structured or detailed result.
     return text
 
 
