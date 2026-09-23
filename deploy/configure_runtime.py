@@ -13,16 +13,16 @@ FOOTERS = {
     "en": (
         "This reply was sent by Dify AI Agent. If this does not resolve your "
         'issue, reply "human". A human support engineer will respond as soon '
-        "as possible during support hours, 9:00 AM-6:00 PM Beijing Time (UTC+8)."
+        "as possible during support hours, 9:00 AM-6:00 PM Eastern Time (New York)."
     ),
     "ja": (
         "この返信は Dify AI Agent によって送信されました。問題が解決しない場合は、"
-        "「human」と返信してください。サポート営業時間(北京時間 UTC+8, 9:00〜18:00)"
+        "「human」と返信してください。サポート営業時間(ニューヨーク時間、9:00〜18:00)"
         "に担当者ができるだけ早く対応します。"
     ),
     "zh": (
         "此回复由 Dify AI Agent 发送。如果问题仍未解决,请回复“human”。"
-        "人工支持工程师将在北京时间(UTC+8)9:00-18:00 的服务时间内尽快回复。"
+        "人工支持工程师将在纽约时间 9:00–18:00 的服务时间内尽快回复。"
     ),
 }
 
