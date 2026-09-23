@@ -24,6 +24,7 @@ import httpx
 
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "awaiting_customer", "human_takeover")
 SAFE_TOOL_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_.-]{0,99}\Z")
+TOOL_RESULT_ENVELOPE_KEYS = frozenset({"content", "structuredContent", "isError", "_meta", "resultType"})
 
 PENDING_SQL = """
 SELECT j.job_id, j.ticket_id, j.status, j.created_at,
@@ -157,10 +158,56 @@ def _tool_details(row: Any) -> dict[str, dict[str, Any]]:
     return details
 
 
+def _single_transport_text(value: object) -> str | None:
+    if not isinstance(value, dict) or "content" not in value:
+        return None
+    if set(value) - TOOL_RESULT_ENVELOPE_KEYS:
+        return None  # A business object with a content field is not a transport envelope.
+    metadata = value.get("_meta")
+    if isinstance(metadata, dict):
+        transfer = metadata.get("io.oomol.open-connector/result")
+        if isinstance(transfer, dict) and (transfer.get("truncated") is True or transfer.get("storedFiles")):
+            return None  # Keep truncation and offloaded-file metadata visible.
+    blocks = value["content"]
+    if not isinstance(blocks, list) or len(blocks) != 1:
+        return None  # Preserve multiple blocks and non-text data intact.
+    block = blocks[0]
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return None
+    text = block.get("text")
+    if not isinstance(text, str):
+        return None
+    structured = value.get("structuredContent")
+    if structured is not None:
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if parsed != structured:
+            return None  # Do not discard a distinct structured result.
+    return text
+
+
 def _result_text(value: object) -> str | None:
     if value is None:
         return None
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    # Pi and OpenConnector each wrap a single text block around the business
+    # result. Unwrap only known transport envelopes, with a depth bound.
+    for _ in range(8):
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                break
+            if not isinstance(parsed, (dict, list, str)) or parsed == value:
+                break
+            value = parsed
+            continue
+        text = _single_transport_text(value)
+        if text is None:
+            break
+        value = text
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
 
 
 def _safe_rounds(outcome: dict[str, Any]) -> list[dict[str, object]] | None:

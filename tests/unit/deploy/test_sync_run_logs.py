@@ -104,6 +104,47 @@ def test_tool_export_skips_incomplete_calls_and_rejects_unsafe_names() -> None:
         sync_run_logs._safe_tool_calls(outcome)  # pyright: ignore[reportPrivateUsage]
 
 
+def test_result_text_unwraps_nested_openconnector_text_without_truncation() -> None:
+    business = {
+        "success": True, "code": None, "row_count": 1,
+        "csv": "id,name\n1,测试" + "x" * 10000, "truncated": False,
+    }
+    connector = {
+        "_meta": {"io.oomol.open-connector/result": {"truncated": False}},
+        "content": [{"type": "text", "text": json.dumps(business, ensure_ascii=False)}],
+        "isError": False, "resultType": "inline",
+    }
+    pi_result = {"content": [{"type": "text", "text": json.dumps(connector, ensure_ascii=False)}]}
+
+    displayed = sync_run_logs._result_text(pi_result)  # pyright: ignore[reportPrivateUsage]
+    assert displayed is not None
+    assert json.loads(displayed) == business
+    assert "测试" in displayed
+    assert len(json.loads(displayed)["csv"]) == len(business["csv"])
+    assert "io.oomol.open-connector/result" not in displayed
+
+
+def test_result_text_preserves_ambiguous_or_non_json_tool_content() -> None:
+    multiple = {"content": [
+        {"type": "text", "text": '{"one": 1}'},
+        {"type": "text", "text": "second result"},
+    ]}
+    multiple_text = sync_run_logs._result_text(multiple)  # pyright: ignore[reportPrivateUsage]
+    assert multiple_text is not None and json.loads(multiple_text) == multiple
+    business_with_content = {"content": [{"type": "text", "text": "business"}], "id": 123}
+    business_text = sync_run_logs._result_text(business_with_content)  # pyright: ignore[reportPrivateUsage]
+    assert business_text is not None and json.loads(business_text) == business_with_content
+    structured = {"content": [{"type": "text", "text": '{"one": 1}'}], "structuredContent": {"two": 2}}
+    structured_text = sync_run_logs._result_text(structured)  # pyright: ignore[reportPrivateUsage]
+    assert structured_text is not None and json.loads(structured_text) == structured
+    truncated = {"_meta": {"io.oomol.open-connector/result": {"truncated": True}},
+                 "content": [{"type": "text", "text": '{"partial": true}'}]}
+    truncated_text = sync_run_logs._result_text(truncated)  # pyright: ignore[reportPrivateUsage]
+    assert truncated_text is not None and json.loads(truncated_text) == truncated
+    assert sync_run_logs._result_text({"content": [{"type": "text", "text": "plain text"}]}) == "plain text"  # pyright: ignore[reportPrivateUsage]
+    assert sync_run_logs._result_text("{incomplete json") == "{incomplete json"  # pyright: ignore[reportPrivateUsage]
+
+
 def test_credentials_require_https_origin(tmp_path: Path) -> None:
     credentials = tmp_path / "credentials.json"
     credentials.write_text(json.dumps({"base_url": "http://example.com", "api_key": "key"}))
@@ -224,9 +265,14 @@ async def test_exports_tool_content_under_its_matching_remote_round() -> None:
     ]
     outcome["rounds"][1]["toolCallCount"] = 1
     row["outcome_json"] = json.dumps(outcome)
+    nested_result = {"content": [{"type": "text", "text": json.dumps({
+        "_meta": {"io.oomol.open-connector/result": {"truncated": False}},
+        "content": [{"type": "text", "text": json.dumps({"data": "customer-private"})}],
+        "isError": False, "resultType": "inline",
+    })}]}
     row["tool_call_records_json"] = json.dumps([
         {"type": "tool_call", "toolCallId": "call-1", "arguments": {"query": "private-query"},
-         "result": {"data": "customer-private"}},
+         "result": nested_result},
         {"type": "tool_call", "toolCallId": "call-2", "arguments": [1, 2],
          "result": "private-error"},
         {"type": "tool_call", "toolCallId": "call-3", "arguments": {"query": "other-round"},
@@ -250,14 +296,14 @@ async def test_exports_tool_content_under_its_matching_remote_round() -> None:
     ]
     assert tool_requests[0][2] == {
         "tool_name": "zendesk.get_ticket", "arguments": {"query": "private-query"},
-        "result_preview": '{"data": "customer-private"}',
+        "result_preview": '{\n  "data": "customer-private"\n}',
         "success": True, "error_message": None, "duration_ms": 47,
     }
     assert tool_requests[1][2]["success"] is False
     assert tool_requests[1][2]["arguments"] == {"value": [1, 2]}
     assert tool_requests[1][2]["result_preview"] == "private-error"
     assert tool_requests[2][2]["arguments"] == {"query": "other-round"}
-    assert tool_requests[2][2]["result_preview"] == '{"tickets": [123]}'
+    assert tool_requests[2][2]["result_preview"] == '{\n  "tickets": [\n    123\n  ]\n}'
     assert tool_requests[2][2]["tool_name"] == "zendesk.search_tickets"
     assert all(request[2]["assistant_content"] is None for request in client.requests
                if request[1].endswith("/rounds"))
