@@ -25,7 +25,7 @@ import httpx
 TERMINAL_STATUSES = ("completed", "failed", "cancelled", "awaiting_customer", "human_takeover")
 SAFE_TOOL_NAME = re.compile(r"[a-zA-Z][a-zA-Z0-9_.-]{0,99}\Z")
 
-RUN_SELECT_SQL = """
+PENDING_SQL = """
 SELECT j.job_id, j.ticket_id, j.status, j.created_at,
        j.finished_at AS job_finished_at, e.event_type,
        r.started_at, r.finished_at AS run_finished_at,
@@ -42,19 +42,11 @@ FROM case_jobs j
 JOIN events e ON e.event_id = j.event_id
 LEFT JOIN run_records r ON r.job_id = j.job_id
 LEFT JOIN run_log_exports x ON x.job_id = j.job_id
-"""
-
-PENDING_SQL = RUN_SELECT_SQL + """
 WHERE j.status = ANY($1::text[])
   AND (x.source_updated_at IS NULL OR x.source_updated_at <
        GREATEST(j.updated_at, COALESCE(r.updated_at, j.updated_at)))
 ORDER BY j.created_at, j.job_id
 LIMIT $2
-"""
-
-BACKFILL_SQL = RUN_SELECT_SQL + """
-WHERE x.remote_run_id = $1::bigint AND j.status = ANY($2::text[])
-LIMIT 2
 """
 
 CLAIM_CREATE_SQL = """
@@ -196,9 +188,6 @@ def _safe_rounds(outcome: dict[str, Any]) -> list[dict[str, object]] | None:
         assistant_content = item.get("assistantContent")
         if assistant_content is not None and not isinstance(assistant_content, str):
             raise ValueError("Invalid stored assistant content")
-        prompt_content = item.get("promptContent")
-        if prompt_content is not None and not isinstance(prompt_content, str):
-            raise ValueError("Invalid stored round prompt")
         count = _bounded_int(item.get("toolCallCount"))
         if count is None:
             raise ValueError("Invalid stored tool count")
@@ -206,7 +195,6 @@ def _safe_rounds(outcome: dict[str, Any]) -> list[dict[str, object]] | None:
             "round": index, "model": model, "input_tokens": None,
             "output_tokens": None, "duration_ms": None,
             "assistant_content": assistant_content, "stop_reason": reason,
-            "prompt_content": prompt_content,
             "has_tool_calls": count > 0, "tool_call_count": count,
         }
         for source, target in (
@@ -439,60 +427,6 @@ async def export_row(
     await connection.execute(MARK_EXPORTED_SQL, row["job_id"], row["source_updated_at"], remote_id)
 
 
-def to_content_payload(row: Any) -> dict[str, object]:
-    """Build an idempotent content patch for an already-exported run."""
-    if row["remote_run_id"] is None or row["pending_operation"] is not None:
-        raise ValueError("Run export must be complete before content backfill")
-    outcome = _outcome(row)
-    rounds = _safe_rounds(outcome) or []
-    tools_by_round = _safe_tool_calls(outcome, _tool_details(row))
-    round_ids = _checkpoint_map(row["round_remote_ids_json"], positive=True)
-    tool_counts = _checkpoint_map(row["tool_calls_reported_json"], positive=False)
-    if row["rounds_reported"] != len(rounds) or len(round_ids) != len(rounds):
-        raise ValueError("Run rounds are not fully exported")
-    for index, calls in enumerate(tools_by_round, 1):
-        if tool_counts.get(index, 0) != len(calls):
-            raise ValueError("Run tool calls are not fully exported")
-    return {
-        "task_preview": to_create_payload(row)["task_preview"],
-        "rounds": [
-            {
-                "round": index,
-                "prompt_content": round_item["prompt_content"],
-                "assistant_content": round_item["assistant_content"],
-                "tool_calls": [
-                    {
-                        "tool_name": call["tool_name"],
-                        "arguments": call["arguments"],
-                        "result_preview": call["result_preview"],
-                    }
-                    for call in tools_by_round[index - 1]
-                ],
-            }
-            for index, round_item in enumerate(rounds, 1)
-        ],
-    }
-
-
-async def backfill_content(
-    connection: asyncpg.Connection,
-    credentials: ExportCredentials,
-    remote_run_id: int,
-) -> None:
-    rows = await connection.fetch(BACKFILL_SQL, remote_run_id, list(TERMINAL_STATUSES))
-    if len(rows) != 1:
-        raise ValueError("Exactly one exported terminal run must match the remote run ID")
-    payload = to_content_payload(rows[0])
-    async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
-        response = await client.put(
-            f"{credentials.base_url}/api/agent/logs/runs/{remote_run_id}/content",
-            headers={"X-Agent-Key": credentials.api_key},
-            json=payload,
-        )
-    if _acknowledged_id(response) != remote_run_id:
-        raise ValueError("Log content API acknowledged a different run")
-
-
 async def export_batch(
     connection: asyncpg.Connection,
     client: httpx.AsyncClient,
@@ -530,10 +464,7 @@ async def export_pending(
     return total_succeeded, total_failed
 
 
-async def run(
-    mode: str, *, credentials_file: Path | None, interval: int, limit: int,
-    remote_run_id: int | None,
-) -> None:
+async def run(mode: str, *, credentials_file: Path | None, interval: int, limit: int) -> None:
     credentials = load_credentials(credentials_file) if mode != "dry-run" and credentials_file else None
     if mode != "dry-run" and credentials is None:
         raise ValueError("--credentials-file is required for exports")
@@ -545,12 +476,6 @@ async def run(
                     await preview(connection)
                     return
                 assert credentials is not None
-                if mode == "backfill-content":
-                    if remote_run_id is None:
-                        raise ValueError("--remote-run-id is required for content backfill")
-                    await backfill_content(connection, credentials, remote_run_id)
-                    print(f"Log content backfill completed for run={remote_run_id}")
-                    return
                 succeeded, failed = await export_pending(connection, credentials, limit=limit)
                 print(f"Log export cycle: succeeded={succeeded} failed={failed}")
                 if mode == "once":
@@ -570,20 +495,14 @@ async def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("dry-run", "once", "watch", "backfill-content"), default="dry-run")
+    parser.add_argument("--mode", choices=("dry-run", "once", "watch"), default="dry-run")
     parser.add_argument("--credentials-file", type=Path)
     parser.add_argument("--interval", type=int, default=60)
     parser.add_argument("--limit", type=int, default=100)
-    parser.add_argument("--remote-run-id", type=int)
     args = parser.parse_args()
     if args.interval < 10 or not 1 <= args.limit <= 1000:
         parser.error("--interval must be >=10 and --limit must be 1..1000")
-    if args.mode == "backfill-content" and (args.remote_run_id is None or args.remote_run_id <= 0):
-        parser.error("--remote-run-id must be a positive integer for content backfill")
-    asyncio.run(run(
-        args.mode, credentials_file=args.credentials_file, interval=args.interval,
-        limit=args.limit, remote_run_id=args.remote_run_id,
-    ))
+    asyncio.run(run(args.mode, credentials_file=args.credentials_file, interval=args.interval, limit=args.limit))
 
 
 if __name__ == "__main__":

@@ -1,14 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { captureAgentRound, recordProviderPayload, sumRoundTokens, updateAgentTool } from './round-telemetry.js';
+import { captureAgentRound, sumRoundTokens, updateAgentTool } from './round-telemetry.js';
 
 describe('Pi round telemetry', () => {
-  it('records the provider payload for its round without interrupting on unserializable data', () => {
-    const captured = new Map<number, string>();
-    expect(recordProviderPayload({ input: 'full request' }, 1, captured)).toBe(true);
-    expect(captured.get(1)).toBe('{"input":"full request"}');
-    expect(recordProviderPayload({ invalid: 1n }, 2, captured)).toBe(false);
-    expect(captured.has(2)).toBe(false);
-  });
   it('counts cache tokens as input and keeps visible text without thinking or tool arguments', () => {
     const round = captureAgentRound({
       role: 'assistant', model: 'requested-model', responseModel: 'model-a', stopReason: 'toolUse',
@@ -18,7 +11,7 @@ describe('Pi round telemetry', () => {
     expect(round).toEqual({
       round: 1, model: 'model-a', inputTokens: 35, outputTokens: 4,
       cacheReadTokens: 20, cacheWriteTokens: 5, reasoningTokens: 2,
-      durationMs: 250, stopReason: 'toolUse', promptContent: null,
+      durationMs: 250, stopReason: 'toolUse',
       assistantContent: 'Model analysis', toolCallCount: 1,
       toolCalls: [{ toolCallId: 'call-1', toolName: 'get_ticket', status: 'unknown', durationMs: null }],
     });
@@ -32,13 +25,6 @@ describe('Pi round telemetry', () => {
     expect(sumRoundTokens([round!])).toEqual({ input: null, output: null });
   });
 
-  it('keeps the actual provider request body with its round', () => {
-    const payload = '{"instructions":"system","input":"customer message"}';
-    const round = captureAgentRound({ role: 'assistant', content: [{ type: 'text', text: 'Answer' }] },
-      2, 10, new Map(), payload);
-    expect(round?.promptContent).toBe(payload);
-    expect(round?.assistantContent).toBe('Answer');
-  });
 
   it('ignores non-assistant messages and sums only observed usage', () => {
     expect(captureAgentRound({ role: 'toolResult', usage: { input: 5 } }, 1, 4)).toBeNull();

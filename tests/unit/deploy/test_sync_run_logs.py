@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -45,7 +45,6 @@ def test_payloads_include_initial_prompt_and_assistant_text() -> None:
     row = _row()
     outcome = sync_run_logs._outcome(row)  # pyright: ignore[reportPrivateUsage]
     outcome["rounds"][0]["assistantContent"] = "Working through the request"
-    outcome["rounds"][0]["promptContent"] = '{"input":"Full model request"}'
     rounds = sync_run_logs._safe_rounds(outcome)  # pyright: ignore[reportPrivateUsage]
     create = sync_run_logs.to_create_payload(row)
     finish = sync_run_logs.to_finish_payload(row, outcome, rounds)
@@ -59,7 +58,7 @@ def test_payloads_include_initial_prompt_and_assistant_text() -> None:
     assert finish["total_output_tokens"] == 12
     assert rounds is not None
     assert rounds[0]["assistant_content"] == "Working through the request"
-    assert rounds[0]["prompt_content"] == '{"input":"Full model request"}'
+    assert "prompt_content" not in rounds[0]
     assert rounds[0]["tool_call_count"] == 1
     encoded = json.dumps([create, rounds, finish])
     assert "private customer reply" not in encoded
@@ -102,46 +101,6 @@ def test_tool_export_skips_incomplete_calls_and_rejects_unsafe_names() -> None:
     outcome["rounds"][0]["toolCalls"][1]["toolName"] = "private key with spaces"  # type: ignore[index]
     with pytest.raises(ValueError, match="tool telemetry"):
         sync_run_logs._safe_tool_calls(outcome)  # pyright: ignore[reportPrivateUsage]
-
-
-def test_content_backfill_targets_existing_rounds_and_matches_tool_ids() -> None:
-    row = _row(
-        remote_run_id=10267,
-        rounds_reported=2,
-        round_remote_ids_json='{"1": 100, "2": 101}',
-        tool_calls_reported_json='{"1": 1}',
-    )
-    outcome = json.loads(row["outcome_json"])
-    outcome["rounds"][0]["promptContent"] = '{"input":"provider request"}'
-    outcome["rounds"][0]["assistantContent"] = "Looking up the ticket"
-    outcome["rounds"][0]["toolCalls"] = [
-        {"toolCallId": "call-1", "toolName": "custom_mcp.list_tools", "status": "succeeded"}
-    ]
-    row["outcome_json"] = json.dumps(outcome)
-    row["tool_call_records_json"] = json.dumps([
-        {"type": "tool_call", "toolCallId": "other", "arguments": {"wrong": True},
-         "result": "wrong result"},
-        {"type": "tool_call", "toolCallId": "call-1", "arguments": {"scope": "all"},
-         "result": "complete result"},
-    ])
-
-    payload = sync_run_logs.to_content_payload(row)
-
-    assert payload["task_preview"] == "Full initial prompt"
-    rounds = cast(list[dict[str, Any]], payload["rounds"])
-    assert rounds[0]["prompt_content"] == '{"input":"provider request"}'
-    assert rounds[0]["assistant_content"] == "Looking up the ticket"
-    assert rounds[0]["tool_calls"] == [
-        {"tool_name": "custom_mcp.list_tools", "arguments": {"scope": "all"},
-         "result_preview": "complete result"}
-    ]
-    assert rounds[1]["tool_calls"] == []
-
-
-def test_content_backfill_rejects_partial_export() -> None:
-    row = _row(remote_run_id=10267, rounds_reported=1)
-    with pytest.raises(ValueError, match="not fully exported"):
-        sync_run_logs.to_content_payload(row)
 
 
 def test_credentials_require_https_origin(tmp_path: Path) -> None:

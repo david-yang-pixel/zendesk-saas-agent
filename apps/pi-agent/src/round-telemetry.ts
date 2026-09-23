@@ -18,27 +18,12 @@ export interface AgentRoundTelemetry {
   reasoningTokens: number | null;
   durationMs: number | null;
   stopReason: string | null;
-  promptContent: string | null;
   assistantContent: string | null;
   toolCallCount: number;
   toolCalls: AgentToolTelemetry[];
 }
 
 const SAFE_TOOL_NAME = /^[a-zA-Z][a-zA-Z0-9_.-]{0,99}$/;
-
-export function recordProviderPayload(
-  payload: unknown, round: number, target: Map<number, string>,
-): boolean {
-  if (round <= 0) return false;
-  try {
-    const serialized = JSON.stringify(payload);
-    if (typeof serialized !== 'string') return false;
-    target.set(round, serialized);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -71,7 +56,6 @@ function tokenCount(value: unknown): number | null {
 export function captureAgentRound(
   message: unknown, round: number, durationMs: number | null,
   completedTools: ReadonlyMap<string, CompletedToolTelemetry> = new Map(),
-  promptContent: string | null = null,
 ): AgentRoundTelemetry | null {
   if (!message || typeof message !== 'object' || (message as any).role !== 'assistant') return null;
   const assistant = message as Record<string, any>;
@@ -115,7 +99,6 @@ export function captureAgentRound(
     reasoningTokens: hasUsage ? tokenCount(usage?.reasoning) : null,
     durationMs: tokenCount(durationMs),
     stopReason: typeof assistant.stopReason === 'string' ? assistant.stopReason.slice(0, 50) : null,
-    promptContent,
     assistantContent: assistantContent || null,
     toolCallCount: toolParts.length,
     toolCalls,
