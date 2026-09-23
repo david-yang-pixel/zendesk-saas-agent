@@ -5,7 +5,7 @@ description: Route Zendesk Agent investigations through OpenConnector with live 
 
 # OpenConnector Investigation Routing
 
-OpenConnector is the only investigation gateway. The Agent receives four controls: `list_connections`, `search_actions`, `get_action_guide`, and `execute_action`. `list_apps` is intentionally not exposed.
+OpenConnector is the only investigation gateway. The Agent receives `list_read_tools`, `list_connections`, `search_actions`, `get_action_guide`, and `execute_action`. `list_read_tools` is a paginated directory of currently connected read-only actions; its entries are discovery candidates, not proof that execution succeeded. `list_apps` is intentionally not exposed because it includes unconnected catalog providers.
 
 ## Hard boundaries
 
@@ -18,8 +18,8 @@ OpenConnector is the only investigation gateway. The Agent receives four control
 
 For a native provider:
 
-1. Call `list_connections` with an explicit `service` filter.
-2. Call `search_actions` with the same explicit service and continue its cursor when needed.
+1. Use `list_read_tools` to find relevant connected sources and read actions. Scope by `service` or `connectionName` when known; use an unscoped inventory only if the evidence source is genuinely unknown. Continue `nextOffset` when needed. All connected read actions may be used, not just the examples below; do not inventory every provider on every ticket.
+2. Call `list_connections` for the selected service and `search_actions` for native action details; continue the action cursor when needed.
 3. Call `get_action_guide` with the selected `actionId` and explicit `connectionName` when the live schema is unclear.
 4. Call `execute_action` only for a live `read` action.
 
@@ -44,7 +44,7 @@ For Custom MCP:
 | Sanitized diagnostic experience | `notion / default` |
 | Edge/API evidence when relevant | `cloudflare_mcp / default` |
 
-The verified GitHub semantic reads are `github_search_prs`, `github_get_pr`, `github_search_issues`, `github_get_issue`, and `github_code_search`. They must be configured as `read` through the GitHub Custom MCP connection's trusted `toolOperationTypes`. If live discovery reports `write`, stop that route and report the configuration gap; do not bypass it with confirmation.
+GitHub tools, including `github_search_prs`, `github_get_pr`, `github_search_issues`, `github_get_issue`, and `github_code_search`, are examples rather than a fixed allowlist. Every selected remote tool must be classified as `read` by live discovery. If live discovery reports `write` or unclassified, stop that route and report the configuration gap; do not bypass it with confirmation.
 
 ## Complete reads
 

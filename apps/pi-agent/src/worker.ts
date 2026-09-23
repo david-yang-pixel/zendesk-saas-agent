@@ -10,6 +10,7 @@ import {
 import { runPiSupportAgent } from './agent.js';
 import { sumRoundTokens } from './round-telemetry.js';
 import { sendBrowserRelay } from './relay.js';
+import { operatorRequestedPublicReply } from './mention-delivery.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob } from './job-queue.js';
@@ -367,6 +368,7 @@ async function main() {
 
       // If this is a mention job, extract the operator's note instructions
       let effectiveCustomerMessage = initialDetails.message;
+      let publicReplyAllowed = !isMentionJob;
       if (isMentionJob) {
         try {
           const evRes = await pool.query(
@@ -378,6 +380,7 @@ async function main() {
             throw new Error('Missing operator instruction');
           }
           if (operatorInstruction) {
+            publicReplyAllowed = operatorRequestedPublicReply(operatorInstruction);
             effectiveCustomerMessage = `[来自人工座席内部备注 @David Yang 的直接指令]:\n"${operatorInstruction}"\n\n[工单客户最新消息]:\n"${initialDetails.message}"`;
             console.log(`[Worker] Injected operator instruction for ticket #${job.ticket_id}`);
           }
@@ -420,6 +423,7 @@ async function main() {
           ticketId: job.ticket_id,
           customerMessage: effectiveCustomerMessage,
           contextPrepared: true,
+          publicReplyAllowed,
           requesterEmail: initialDetails.email,
           tools: allTools,
           apiKey: modelConfig.apiKey,
@@ -500,6 +504,22 @@ async function main() {
           }
         }
         throw agentErr;
+      }
+
+      if (!publicReplyAllowed) {
+        console.log(`[Worker] Operator mention investigation completed for ticket #${job.ticket_id}; public delivery was not requested.`);
+        await recordJobOutcome({
+          jobId: job.job_id,
+          ticketId: job.ticket_id,
+          generation: job.generation,
+          status: 'completed',
+          startedAt: new Date(startTime),
+          finishedAt: new Date(),
+          trace: agentResult.trace,
+          delivery: null,
+        });
+        await markJobSucceeded(job.job_id);
+        return;
       }
 
       // Only customer-origin jobs use the freshness/human guards below.

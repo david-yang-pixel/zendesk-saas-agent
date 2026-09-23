@@ -40,11 +40,29 @@ export const OPENCONNECTOR_AGENT_TOOLS = [
 ] as const;
 
 const OPENCONNECTOR_TOOL_SET = new Set<string>(OPENCONNECTOR_AGENT_TOOLS);
+const READ_TOOL_DIRECTORY_NAME = 'list_read_tools';
 const BLOCKED_SERVICES = new Set(['gmail']);
 const CUSTOM_MCP_TOOL_CACHE_TTL_MS = 60_000;
+const READ_TOOL_DIRECTORY_TTL_MS = 5 * 60_000;
+const READ_TOOL_PAGE_SIZE = 50;
+// OpenConnector resolves live capabilities for every action in a search page;
+// keep each Worker request bounded while still following every page.
+const ACTION_SEARCH_PAGE_SIZE = 50;
 const customMcpToolCache = new WeakMap<
   McpServiceConfig,
   Map<string, { expiresAt: number; tools: Promise<any[]> }>
+>();
+type ReadToolEntry = {
+  service: string;
+  connectionName: string;
+  actionId: string;
+  toolName?: string;
+  description: string;
+  inputSummary?: unknown;
+};
+const readToolDirectoryCache = new WeakMap<
+  McpServiceConfig,
+  Map<string, { expiresAt: number; entries: Promise<ReadToolEntry[]> }>
 >();
 
 const CUSTOM_MCP_SERVICE_NAMES: Record<string, string> = {
@@ -80,6 +98,12 @@ function assertServiceAllowed(service: string): void {
   }
 }
 
+function assertConnectionAllowed(connectionName: string): void {
+  if (connectionName.toLowerCase().includes('gmail')) {
+    throw new Error(`OpenConnector connection ${connectionName} is disabled for Zendesk Agent investigations`);
+  }
+}
+
 export function validateOpenConnectorControlCall(
   toolName: string,
   params: Record<string, any>,
@@ -88,15 +112,18 @@ export function validateOpenConnectorControlCall(
     throw new Error(`OpenConnector tool ${toolName} is not exposed to the Zendesk Agent`);
   }
 
-  if (toolName === 'list_connections' || toolName === 'search_actions') {
-    const service = requiredString(params.service, 'service filter');
-    assertServiceAllowed(service);
+  if (toolName === 'list_connections') {
+    if (params.service !== undefined) assertServiceAllowed(requiredString(params.service, 'service filter'));
+    return;
+  }
+  if (toolName === 'search_actions') {
+    assertServiceAllowed(requiredString(params.service, 'service filter'));
     return;
   }
 
   const actionId = requiredString(params.actionId, 'actionId');
   assertServiceAllowed(actionService(actionId));
-  requiredString(params.connectionName, 'connectionName');
+  assertConnectionAllowed(requiredString(params.connectionName, 'connectionName'));
 }
 
 function parseJsonTextResult(result: any): Record<string, any> {
@@ -256,7 +283,24 @@ export async function callOpenConnectorTool(
     }
   }
 
-  return readWithRetry(boundedSignal => callMcpTool(config.endpoint, config.apiKey, toolName, params, boundedSignal, config.protocolVersion), signal);
+  const result = await readWithRetry(boundedSignal => callMcpTool(config.endpoint, config.apiKey, toolName, params, boundedSignal, config.protocolVersion), signal);
+  if (toolName !== 'list_connections' || params.service !== undefined) return result;
+  const payload = parseJsonTextResult(result);
+  if (payload.ok !== true || !Array.isArray(payload.data)) return result;
+  const safePayload = {
+    ...payload,
+    data: payload.data.filter((connection: any) =>
+      typeof connection?.service === 'string' &&
+      typeof connection?.connectionName === 'string' &&
+      !BLOCKED_SERVICES.has(connection.service.toLowerCase()) &&
+      !connection.connectionName.toLowerCase().includes('gmail'),
+    ),
+  };
+  return {
+    ...result,
+    structuredContent: safePayload,
+    content: [{ type: 'text', text: JSON.stringify(safePayload) }],
+  };
 }
 
 export function createOpenConnectorServiceConfig(endpoint: string, apiKey: string): McpServiceConfig {
@@ -275,10 +319,155 @@ export function createOpenConnectorServiceConfig(endpoint: string, apiKey: strin
 
 export async function discoverOpenConnectorTools(config: McpServiceConfig): Promise<CustomTool[]> {
   const tools = await discoverMcpTools(config);
-  return tools.filter((tool) => OPENCONNECTOR_TOOL_SET.has(tool.name)).map(tool => tool.name !== 'execute_action' ? tool : {
+  const controls = tools.filter((tool) => OPENCONNECTOR_TOOL_SET.has(tool.name)).map(tool => tool.name !== 'execute_action' ? tool : {
     ...tool,
     description: `${tool.description}\nFor custom_mcp.call_tool, continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
   });
+  if (!OPENCONNECTOR_AGENT_TOOLS.every(name => controls.some(tool => tool.name === name))) {
+    throw new Error('OpenConnector did not expose all required investigation controls');
+  }
+  return [...controls, createReadToolDirectoryTool(config)];
+}
+
+async function loadReadToolDirectory(
+  config: McpServiceConfig,
+  service?: string,
+  connectionName?: string,
+  signal?: AbortSignal,
+): Promise<ReadToolEntry[]> {
+  let cache = readToolDirectoryCache.get(config);
+  if (!cache) {
+    cache = new Map();
+    readToolDirectoryCache.set(config, cache);
+  }
+  const cacheKey = JSON.stringify([service ?? null, connectionName ?? null]);
+  const now = Date.now();
+  const cached = cache.get(cacheKey);
+  if (cached && cached.expiresAt > now) return cached.entries;
+
+  const entries = (async () => {
+    const connectionResult = await callOpenConnectorTool(config, 'list_connections', service ? { service } : {}, signal);
+    const connections = parseOpenConnectorResult(connectionResult).data;
+    if (!Array.isArray(connections)) throw new Error('OpenConnector did not return a connection list');
+    const allowedConnections = connections.filter((connection: any) =>
+      typeof connection?.service === 'string' &&
+      typeof connection?.connectionName === 'string' &&
+      (!connectionName || connection.connectionName === connectionName) &&
+      !connection.connectionName.toLowerCase().includes('gmail') &&
+      !BLOCKED_SERVICES.has(connection.service.toLowerCase()),
+    );
+    const entries: ReadToolEntry[] = [];
+    const nativeServices = new Map<string, string[]>();
+    for (const connection of allowedConnections) {
+      if (connection.service === 'custom_mcp') {
+        const result = await callOpenConnectorTool(config, 'execute_action', {
+          actionId: 'custom_mcp.list_tools',
+          connectionName: connection.connectionName,
+          input: {},
+        }, signal);
+        const descriptors = payloadData(result).tools;
+        if (!Array.isArray(descriptors)) throw new Error(`OpenConnector custom MCP ${connection.connectionName} did not return a tool list`);
+        for (const descriptor of descriptors) {
+          if (descriptor?.operationType !== 'read' || descriptor.confirmationRequired === true || typeof descriptor.name !== 'string') continue;
+          entries.push({
+            service: 'custom_mcp',
+            connectionName: connection.connectionName,
+            actionId: 'custom_mcp.call_tool',
+            toolName: descriptor.name,
+            description: typeof descriptor.description === 'string' ? descriptor.description : '',
+            inputSummary: descriptor.inputSchema,
+          });
+        }
+      } else {
+        const names = nativeServices.get(connection.service) ?? [];
+        names.push(connection.connectionName);
+        nativeServices.set(connection.service, names);
+      }
+    }
+    for (const [service, connectionNames] of nativeServices) {
+      let cursor: string | undefined;
+      const seenCursors = new Set<string>();
+      do {
+        const result = await callOpenConnectorTool(config, 'search_actions', {
+          service,
+          limit: ACTION_SEARCH_PAGE_SIZE,
+          ...(cursor ? { cursor } : {}),
+        }, signal);
+        const payload = parseOpenConnectorResult(result);
+        if (!Array.isArray(payload.data)) throw new Error(`OpenConnector ${service} did not return an action list`);
+        for (const action of payload.data) {
+          if (action?.operationType !== 'read' || action?.capability?.policy?.allowed === false || typeof action.id !== 'string') continue;
+          for (const connectionName of connectionNames) {
+            entries.push({
+              service,
+              connectionName,
+              actionId: action.id,
+              description: typeof action.description === 'string' ? action.description : '',
+              inputSummary: action.inputSummary,
+            });
+          }
+        }
+        const nextCursor = payload.page?.nextCursor;
+        if (nextCursor != null && (typeof nextCursor !== 'string' || seenCursors.has(nextCursor))) {
+          throw new Error(`OpenConnector ${service} returned an invalid action cursor`);
+        }
+        if (nextCursor) seenCursors.add(nextCursor);
+        cursor = nextCursor || undefined;
+      } while (cursor);
+    }
+    return entries.sort((a, b) =>
+      `${a.service}/${a.connectionName}/${a.toolName || a.actionId}`.localeCompare(`${b.service}/${b.connectionName}/${b.toolName || b.actionId}`),
+    );
+  })();
+  cache.set(cacheKey, { expiresAt: now + READ_TOOL_DIRECTORY_TTL_MS, entries });
+  entries.catch(() => {
+    if (cache?.get(cacheKey)?.entries === entries) cache.delete(cacheKey);
+  });
+  return entries;
+}
+
+function createReadToolDirectoryTool(config: McpServiceConfig): CustomTool {
+  return {
+    name: READ_TOOL_DIRECTORY_NAME,
+    label: READ_TOOL_DIRECTORY_NAME,
+    description: 'List every currently connected OpenConnector read-only business tool, including native provider actions and Custom MCP tools. Filter by service or connectionName, and page through the full directory. A listed tool is a discovery candidate; execution still checks live permissions and read-only classification.',
+    promptSnippet: 'Discover all connected read-only OpenConnector business tools.',
+    parameters: {
+      type: 'object',
+      properties: {
+        service: { type: 'string', description: 'Optional provider service, for example feishu or custom_mcp.' },
+        connectionName: { type: 'string', description: 'Optional connection name, for example dify-docs.' },
+        offset: { type: 'integer', minimum: 0, description: 'Offset from the previous page.' },
+      },
+    },
+    execute: async (_toolCallId, params, signal) => {
+      try {
+        const input = asRecord(params) ?? {};
+        const service = input.service === undefined ? undefined : requiredString(input.service, 'service filter');
+        if (service) assertServiceAllowed(service);
+        const connectionName = input.connectionName === undefined ? undefined : requiredString(input.connectionName, 'connectionName');
+        if (connectionName) assertConnectionAllowed(connectionName);
+        const offset = input.offset === undefined ? 0 : input.offset;
+        if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('OpenConnector directory offset must be a non-negative integer');
+        const allEntries = await loadReadToolDirectory(config, service, connectionName, signal);
+        const matching = allEntries.filter(entry =>
+          (!service || entry.service === service) && (!connectionName || entry.connectionName === connectionName),
+        );
+        const page = {
+          total: matching.length,
+          offset,
+          nextOffset: offset + READ_TOOL_PAGE_SIZE < matching.length ? offset + READ_TOOL_PAGE_SIZE : null,
+          tools: matching.slice(offset, offset + READ_TOOL_PAGE_SIZE),
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(page) }], details: page };
+      } catch (error: any) {
+        const message = error?.name === 'AbortError'
+          ? 'OpenConnector read-tool discovery was cancelled'
+          : 'OpenConnector read-tool discovery failed; retry with a service filter or use the scoped discovery controls';
+        return { content: [{ type: 'text', text: `Tool error: ${message}` }], isError: true };
+      }
+    },
+  };
 }
 
 export async function callOpenConnectorCustomMcpTool(
@@ -301,6 +490,10 @@ export async function callOpenConnectorCustomMcpTool(
 }
 
 export function inferOpenConnectorService(toolName: string, args?: unknown): string | undefined {
+  if (toolName === READ_TOOL_DIRECTORY_NAME) {
+    const service = asRecord(args)?.service;
+    return typeof service === 'string' ? service : 'openconnector';
+  }
   if (!OPENCONNECTOR_TOOL_SET.has(toolName)) return undefined;
   const input = asRecord(args) ?? {};
   if (toolName === 'list_connections' || toolName === 'search_actions') {

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
+import { operatorRequestedPublicReply } from './mention-delivery.js';
 
 // Exercise the actual worker closure without importing its process startup,
 // production DB connection, mention polling, or delivery services.
@@ -25,6 +26,7 @@ it('webhook UUID jobs load instructions by event ID and bypass customer-only gua
     getTicketDetails: async () => ({ isAlreadyAnswered: true, hasRequestedHuman: true, message: 'customer' }),
     getActiveModelConfig: async () => ({ model: 'test' }),
     openConnectorService: {}, allTools: [], runPiSupportAgent,
+    operatorRequestedPublicReply,
     recordJobOutcome: vi.fn(), markJobFailed: vi.fn(), markJobCancelled,
     sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
   });
@@ -91,6 +93,7 @@ it.each([
     isTicketHumanCancelled: async () => false, getTicketDetails,
     getActiveModelConfig: async () => ({ model: 'test' }),
     openConnectorService: {}, allTools: [],
+    operatorRequestedPublicReply,
     runPiSupportAgent: async () => ({
       reply: 'safe reply', trace: { toolCalls: [], rounds: [], totalDurationMs: 1 },
     }),
@@ -111,4 +114,33 @@ it.each([
   } finally {
     log.mockRestore();
   }
+});
+
+it('keeps a mention asking only for investigation off the public Browser Relay path', async () => {
+  vi.useFakeTimers();
+  const query = vi.fn(async (sql: string) => sql.startsWith('SELECT payload')
+    ? { rows: [{ payload: { body: '@David Yang 看下这个工单用户的教育积分情况' } }] }
+    : { rows: [], rowCount: 0 });
+  const sendBrowserRelay = vi.fn();
+  const recordJobOutcome = vi.fn();
+  const markJobSucceeded = vi.fn();
+  const runPiSupportAgent = vi.fn(async () => ({
+    reply: '', internalNote: 'private analysis',
+    trace: { toolCalls: [], rounds: [], totalDurationMs: 1, finalReply: '' },
+  }));
+  const process = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query },
+    isTicketHumanCancelled: async () => false,
+    getTicketDetails: async () => ({ isAlreadyAnswered: true, hasRequestedHuman: false, message: 'customer' }),
+    getActiveModelConfig: async () => ({ model: 'test' }),
+    openConnectorService: {}, allTools: [], runPiSupportAgent, operatorRequestedPublicReply,
+    sendBrowserRelay, recordJobOutcome, markJobSucceeded, markJobFailed: vi.fn(),
+    sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
+  });
+  await process({ job_id: 'test-job', ticket_id: 3726, generation: 1, event_id: 'mention:test' }, new AbortController());
+  expect(runPiSupportAgent).toHaveBeenCalledWith(expect.objectContaining({ publicReplyAllowed: false }));
+  expect(sendBrowserRelay).not.toHaveBeenCalled();
+  expect(recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed', delivery: null }));
+  expect(markJobSucceeded).toHaveBeenCalledOnce();
+  expect(vi.getTimerCount()).toBe(0);
 });

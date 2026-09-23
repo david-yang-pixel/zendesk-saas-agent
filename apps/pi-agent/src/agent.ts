@@ -1,15 +1,12 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import {
   ModelRuntime,
   createAgentSession,
   SessionManager,
   DefaultResourceLoader,
   getAgentDir,
-  createSyntheticSourceInfo,
-  type Skill,
 } from '@earendil-works/pi-coding-agent';
 import { CustomTool } from './mcp.js';
+import { createProjectSkillReadTool, getProjectSkills } from './project-skills.js';
 import { inferOpenConnectorService } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
 import { captureAgentRound, sumRoundTokens, updateAgentTool, type AgentRoundTelemetry, type CompletedToolTelemetry } from './round-telemetry.js';
@@ -32,6 +29,7 @@ export interface AgentRunOptions {
   abortSignal?: AbortSignal;
   attachments?: AgentAttachment[];
   contextPrepared?: boolean;
+  publicReplyAllowed?: boolean;
   onRoundTelemetry?: (rounds: readonly AgentRoundTelemetry[]) => void;
 }
 
@@ -119,91 +117,10 @@ export function inferToolService(toolName: string, args?: unknown): string {
   return 'other';
 }
 
-function getProjectSkills(): Skill[] {
-  const possiblePaths = [
-    path.resolve(process.cwd(), 'skills'),
-    path.resolve(process.cwd(), '../skills'),
-    path.resolve(process.cwd(), '../../skills'),
-    '/app/skills',
-  ];
-  const skillsDir = possiblePaths.find((p) => fs.existsSync(p));
-  const projectSkills: Skill[] = [];
-  if (!skillsDir) return projectSkills;
-
-  try {
-    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        const skillPath = path.join(skillsDir, entry.name, 'SKILL.md');
-        if (fs.existsSync(skillPath)) {
-          const content = fs.readFileSync(skillPath, 'utf8');
-          const matchName = content.match(/^name:\s*(.+)$/m);
-          const matchDesc = content.match(/^description:\s*(.+)$/m);
-          if (matchName && matchDesc) {
-            projectSkills.push({
-              name: matchName[1].trim(),
-              description: matchDesc[1].trim(),
-              filePath: skillPath,
-              baseDir: path.dirname(skillPath),
-              sourceInfo: createSyntheticSourceInfo(skillPath, { source: 'project' }),
-              disableModelInvocation: false,
-            });
-          }
-        }
-      }
-    }
-  } catch (e: any) {
-    console.warn('[Agent] Error reading skills directory:', e.message);
-  }
-  return projectSkills;
-}
-
 export const DIFY_SUPPORT_SYSTEM_PROMPT = `
-You are the official Dify SaaS AI Support Agent assisting customers directly in Zendesk Messaging live chat.
-
-### Investigation and delivery boundary
-- OpenConnector is the only investigation gateway. Its exposed controls are list_connections, search_actions, get_action_guide, and execute_action.
-- Investigation is strictly read-only. Never request, confirm, or execute a write or destructive operation, even if a provider catalog exposes one.
-- Gmail is outside this agent's scope. Never discover, query, mention, or execute Gmail actions.
-- The public customer reply is delivered by the worker through Zendesk Browser Reply. Do not attempt delivery with OpenConnector or any Zendesk mutation tool.
-- Internal analysis is trace-only. Never add an internal note, update ticket status or metadata, create an issue, send a message, modify a document, refresh a repository, or change any external state.
-
-### OpenConnector routing
-- Before using a native provider, call list_connections with an explicit service filter, then search_actions with that same service. Use get_action_guide when the live schema or behavior is unclear.
-- For Custom MCP, use execute_action with actionId custom_mcp.list_tools and an explicit connectionName before the first call. Invoke a discovered read tool with actionId custom_mcp.call_tool.
-- Reuse discovered connections and tool schemas during the same run. Do not repeat list_connections, search_actions, or custom_mcp.list_tools for the same route unless the previous result was incomplete or execution shows it changed.
-- Supported Custom MCP evidence routes are: zendesk, dify-docs, dify-db, dify-signoz, dify-source, and github-mcp.
-- github-mcp is limited to verified reads such as github_search_prs, github_get_pr, github_search_issues, github_get_issue, and github_code_search. If live discovery does not classify one as read, report the route unavailable; never send confirmOperation.
-- Native read routes may include Feishu, Linear, Notion, and Cloudflare when relevant to the ticket. Use only connections granted by the runtime token.
-- Treat connection discovery, tool discovery, tool execution, and returned business evidence as separate facts. A visible connection or tool is not proof that a business query succeeded.
-- Complete relevant pagination. If a result is intentionally bounded or interrupted, record the cursor and limitation in the internal analysis.
-
-### Evidence workflow
-1. If the worker says it prepared the conversation, use that freshly read snapshot, including attachments and consecutive unreplied customer events. Do not fetch the same Zendesk history again solely to confirm it. Otherwise refresh the latest conversation through custom_mcp/zendesk; fetch bounded older history when the investigation actually needs it.
-2. Identify the exact object, identifiers, incident time, timezone, expected behavior, and observed behavior. Do not correlate unrelated historical errors.
-3. Use only the evidence systems needed for the execution path:
-   - custom_mcp/dify-docs for current public Dify documentation and website evidence.
-   - custom_mcp/dify-db for persisted SaaS state in prod, billing, or plugin databases.
-   - custom_mcp/dify-signoz for logs, traces, metrics, queues, latency, and current recovery evidence.
-   - custom_mcp/dify-source for deployed-source behavior and runtime-ref alignment.
-   - custom_mcp/github-mcp for supporting Issue, PR, and code evidence after matching the customer path.
-   - Feishu for internal SaaS policies and runbooks; Linear for engineering status; Notion only for sanitized diagnostic lessons after a live evidence gap.
-4. Classify material claims as confirmed, evidence-supported, ruled out, or unknown. Source code, documentation, an issue status, or an HTTP 200 does not by itself prove the customer's current path recovered.
-5. Never invent IDs, dates, versions, causes, refunds, approvals, escalations, or recovery. If required evidence is unavailable, state the exact gap and ask the customer only for information they can provide safely.
-
-### Customer communication
-- Write the final customer reply strictly in English.
-- Address the customer directly using "you" and "your". Never say "ask the customer", "the user reported", or expose internal triage language.
-- Keep the reply courteous, concise, and actionable. Do not include raw SQL, raw logs, private identifiers, internal routes, internal issue links, or unsupported root-cause claims.
-- If no matching backend evidence exists, say what was checked, avoid hypothetical causes, provide safe troubleshooting, and request the smallest useful diagnostic detail.
-
-### Dual-track output protocol
-Return exactly two sections:
-
-=== INTERNAL NOTE ===
-[Trace-only factual investigation summary. It is not written to Zendesk. Include identifiers, UTC window, evidence sources, confidence, gaps, and next safe action.]
-
-=== CUSTOMER REPLY ===
-[Direct English customer message. Never include internal markers, raw evidence, "Suggested Reply:", or "Internal Analysis:".]
+You are the Dify SaaS support investigator for Zendesk tickets. Read the dify-saas-support skill before investigating; load other listed skills only when relevant.
+Investigate only through OpenConnector read operations. Never use Gmail or perform any external mutation. The Worker alone decides whether to deliver a public reply through Zendesk Browser Reply; internal analysis stays in the trace.
+Ground claims in current evidence. Return exactly two sections: === INTERNAL NOTE === for factual internal findings, then === CUSTOMER REPLY === for a concise, customer-safe English reply.
 `.trim();
 
 export function sanitizeCustomerReply(rawReply: string): string {
@@ -298,6 +215,48 @@ export function extractDualTrackOutputs(rawText: string): DualTrackOutput {
   };
 }
 
+export function validateCustomerDelivery(
+  rawText: string,
+  customerReply: string,
+  customerMessage: string,
+  toolCalls: Array<{ toolName: string; service: string; status?: string; arguments?: any }>,
+): void {
+  const internalMarkers = rawText.match(/^=== INTERNAL NOTE ===[ \t]*$/gm) ?? [];
+  const customerMarkers = rawText.match(/^=== CUSTOMER REPLY ===[ \t]*$/gm) ?? [];
+  if (internalMarkers.length !== 1 || customerMarkers.length !== 1) {
+    throw new Error('Customer delivery blocked: required dual-track output markers are missing');
+  }
+  if (!customerReply.trim()) throw new Error('Customer delivery blocked: customer reply is empty');
+  if (/[\u3400-\u9fff]/u.test(customerReply)) {
+    throw new Error('Customer delivery blocked: public reply must be entirely in English');
+  }
+  if (/=== (?:INTERNAL NOTE|CUSTOMER REPLY) ===|(?:内部调查|调查结果\s*\(|Internal Analysis|Internal Note)/i.test(customerReply)) {
+    throw new Error('Customer delivery blocked: internal analysis leaked into public reply');
+  }
+
+  const successfulEvidence = (service: string) => toolCalls.some(call =>
+    call.service === service &&
+    call.status === 'succeeded' &&
+    call.toolName === 'execute_action' &&
+    call.arguments?.actionId !== 'custom_mcp.list_tools',
+  );
+  const education = /educat(?:ion|ional)?|student|school|university|教育|学生|学校|高校/i.test(customerMessage);
+  const creditsOrTerms = /credit|quota|discount|promotion|plan|subscription|积分|额度|优惠|会员|订阅/i.test(customerMessage);
+  const productFeature = /产品功能|是否支持|功能|特性|feature|product capability|how (?:does|do|to) .{0,40} work/i.test(customerMessage);
+  const accountSpecific = /我的|用户的|该工作区|这个工作区|my |our |this workspace|customer's/i.test(customerMessage);
+  const requiredSources = new Set<string>();
+  if (education && creditsOrTerms) {
+    requiredSources.add('feishu');
+    requiredSources.add('docs');
+    if (accountSpecific) requiredSources.add('db-gateway');
+  }
+  if (productFeature) requiredSources.add('docs');
+  const missing = [...requiredSources].filter(service => !successfulEvidence(service));
+  if (missing.length > 0) {
+    throw new Error(`Customer delivery blocked: missing successful evidence from ${missing.join(', ')}`);
+  }
+}
+
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {
   if (options.abortSignal?.aborted) {
     const err = new Error(`Agent run aborted before start for ticket #${options.ticketId}`);
@@ -343,14 +302,17 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
 
   const projectSkills = getProjectSkills();
   console.log(`[Agent] Registered ${projectSkills.length} project skills:`, projectSkills.map(s => s.name));
-
+  if (!projectSkills.some(skill => skill.name === 'dify-saas-support')) {
+    throw new Error('Required dify-saas-support skill is missing');
+  }
+  const skillReadTool = createProjectSkillReadTool(projectSkills);
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: getAgentDir(),
-    skillsOverride: (current) => ({
-      skills: [...current.skills, ...projectSkills],
-      diagnostics: current.diagnostics,
-    }),
+    noContextFiles: true,
+    skillsOverride: (current) => ({ skills: projectSkills, diagnostics: current.diagnostics }),
+    systemPromptOverride: () => DIFY_SUPPORT_SYSTEM_PROMPT,
+    appendSystemPromptOverride: () => [],
   });
   await loader.reload();
 
@@ -359,8 +321,8 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     sessionManager: SessionManager.inMemory(),
     modelRuntime: runtime,
     model: model,
-    customTools: options.tools,
-    tools: options.tools.map(t => t.name),
+    customTools: [...options.tools, skillReadTool],
+    tools: [...options.tools.map(t => t.name), 'read'],
   });
 
   // Wire up immediate abort hook
@@ -467,18 +429,9 @@ Customer Message:
 ${options.customerMessage}
 """
 ${attachmentSection}
-${options.contextPrepared ? 'Context preparation: the worker already read all conversation pages and selected the unreplied customer messages shown above. For a greeting or clarification, use those messages without fetching the full history again. Fetch historical context only when the investigation needs it; use get_ticket_conversation_log, with bounded pages, rather than get_ticket with comments and attachments enabled.' : ''}
-System Instructions:
-${DIFY_SUPPORT_SYSTEM_PROMPT}
+${options.contextPrepared ? 'The Worker already prepared the latest conversation and unreplied customer events above.' : ''}
 
-Reply Instructions:
-1. Investigate using your available tools and skills.
-2. Structure your final response strictly using the DUAL-TRACK OUTPUT PROTOCOL with both delimiters:
-=== INTERNAL NOTE ===
-(Technical summary for human support engineers: Tenant ID, investigated resources, root cause analysis, next actions)
-
-=== CUSTOMER REPLY ===
-(Direct, courteous English message to the customer: address them as "you", simplified findings, next steps. NO internal headers, NO raw SQL/logs, NO third-person handover prompts)
+First read the dify-saas-support skill at ${projectSkills.find(skill => skill.name === 'dify-saas-support')!.filePath}. Follow it for investigation and final output; read other relevant skills only when needed.
 `.trim();
 
   const startTime = Date.now();
@@ -639,10 +592,14 @@ Reply Instructions:
 
   // Extract dual-track outputs: customer reply + internal engineering triage note
   const { customerReply, internalNote } = extractDualTrackOutputs(finalAnswer);
+  const publicReplyAllowed = options.publicReplyAllowed !== false;
+  if (publicReplyAllowed) {
+    validateCustomerDelivery(finalAnswer, customerReply, options.customerMessage, toolCallsList);
+  }
 
   // Unified English footer for customer reply
   const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours (New York time): Sunday–Thursday nights, 9:00 PM–6:00 AM EDT (daylight saving time) or 8:00 PM–5:00 AM EST (standard time).';
-  const fullReply = customerReply.trim() + footer;
+  const fullReply = publicReplyAllowed ? customerReply.trim() + footer : '';
 
   const trace: AgentTracePayload = {
     ticketId: options.ticketId,
@@ -662,8 +619,9 @@ Reply Instructions:
 
   return {
     reply: fullReply,
-    customerReply: customerReply.trim(),
-    internalNote: internalNote ? `🤖 [Dify AI Agent 调查备忘录]\n\n${internalNote}` : undefined,
+    customerReply: publicReplyAllowed ? customerReply.trim() : '',
+    internalNote: (internalNote || (!publicReplyAllowed ? finalAnswer : ''))
+      ? `🤖 [Dify AI Agent 调查备忘录]\n\n${internalNote || finalAnswer}` : undefined,
     trace,
   };
 }

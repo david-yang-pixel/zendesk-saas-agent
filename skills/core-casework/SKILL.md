@@ -5,7 +5,7 @@ description: Investigate Dify SaaS Zendesk cases from the latest customer thread
 
 # Core Casework Investigation
 
-1. Refresh the latest Zendesk conversation and relevant attachments before non-Zendesk investigation. Work from all consecutive unreplied customer events, not a stale summary.
+1. Use the latest Zendesk conversation and attachments already prepared by the Worker. If no fresh snapshot was supplied or a new event makes it stale, refresh the thread before non-Zendesk investigation. Work from all consecutive unreplied customer events, not a stale summary.
 2. Establish the exact object, identifiers, incident time and timezone, expected behavior, observed behavior, and the customer's current question. Do not reuse an older incident merely because the ticket number matches.
 3. Maintain a small evidence plan. Use a service only when it can prove or rule out a material hop, claim, recovery path, or current-state question.
 4. Label material findings as:

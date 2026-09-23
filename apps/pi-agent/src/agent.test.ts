@@ -7,6 +7,7 @@ import {
   getTerminalAssistantError,
   supportsExplicitReasoningEffort,
   DIFY_SUPPORT_SYSTEM_PROMPT,
+  validateCustomerDelivery,
 } from './agent.js';
 
 describe('Pi Support Agent Tool Format', () => {
@@ -182,18 +183,56 @@ Hello! Currently Dify does not provide this setting.
     expect(promptText).toContain('education_promotion_logs');
   });
 
-  it('routes all investigations through read-only OpenConnector and excludes Gmail', () => {
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('OpenConnector is the only investigation gateway');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('custom_mcp.list_tools');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('custom_mcp.call_tool');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('github-mcp');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Gmail is outside this agent\'s scope');
+  it('keeps the system prompt brief and leaves investigation routing to the skill', () => {
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Read the dify-saas-support skill');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('OpenConnector read operations');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).not.toContain('custom_mcp.list_tools');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).not.toContain('github-mcp');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Never use Gmail');
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Zendesk Browser Reply');
   });
 
-  it('preserves evidence confidence and trace-only internal analysis', () => {
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('confirmed, evidence-supported, ruled out, or unknown');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Trace-only factual investigation summary');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('never send confirmOperation');
+  it('keeps customer delivery and internal trace boundaries in the prompt', () => {
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('current evidence');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('internal analysis stays in the trace');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('=== CUSTOMER REPLY ===');
+  });
+});
+
+describe('customer delivery safety gate', () => {
+  const dualTrack = '=== INTERNAL NOTE ===\nEvidence checked.\n=== CUSTOMER REPLY ===\nHello, here is what we verified.';
+  const readCall = (service: string) => ({
+    toolName: 'execute_action', service, status: 'succeeded',
+    arguments: { actionId: service === 'feishu' ? 'feishu.search_docs' : 'custom_mcp.call_tool' },
+  });
+
+  it('blocks a markerless internal investigation instead of treating it as a customer reply', () => {
+    expect(() => validateCustomerDelivery('调查结果：已查到积分', '调查结果：已查到积分', 'credits', []))
+      .toThrow(/dual-track output markers/);
+  });
+
+  it('blocks Chinese public text and internal headings', () => {
+    expect(() => validateCustomerDelivery(dualTrack, '调查结果：积分不刷新', 'credits', []))
+      .toThrow(/entirely in English/);
+    expect(() => validateCustomerDelivery(dualTrack, 'Internal Analysis: customer facts', 'hello', []))
+      .toThrow(/internal analysis leaked/);
+  });
+
+  it('requires policy, docs, and account evidence before claiming education credits behavior', () => {
+    const message = '看下这个工单用户的教育优惠会员，以及为什么积分不刷新';
+    expect(() => validateCustomerDelivery(dualTrack, 'We are checking your credits.', message, [readCall('db-gateway')]))
+      .toThrow(/feishu, docs/);
+    expect(() => validateCustomerDelivery(dualTrack, 'We are checking your credits.', message, [
+      readCall('db-gateway'), readCall('feishu'), readCall('docs'),
+    ])).not.toThrow();
+  });
+
+  it('does not count discovery as business evidence for a product feature claim', () => {
+    const message = 'Does the product feature support this workflow?';
+    expect(() => validateCustomerDelivery(dualTrack, 'Please check the workflow setting.', message, [
+      { toolName: 'list_read_tools', service: 'docs', status: 'succeeded' },
+    ])).toThrow(/missing successful evidence from docs/);
+    expect(() => validateCustomerDelivery(dualTrack, 'Please check the workflow setting.', message, [readCall('docs')]))
+      .not.toThrow();
   });
 });

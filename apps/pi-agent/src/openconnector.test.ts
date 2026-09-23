@@ -39,7 +39,10 @@ describe('OpenConnector hard read-only boundary', () => {
   it('discovers controls from a streamable HTTP event response', async () => {
     const fetchMock = vi.fn(async () => sseMcpResponse({
       tools: [
+        { name: 'list_connections', description: 'List connections', inputSchema: { type: 'object' } },
         { name: 'search_actions', description: 'Search actions', inputSchema: { type: 'object' } },
+        { name: 'get_action_guide', description: 'Get guide', inputSchema: { type: 'object' } },
+        { name: 'execute_action', description: 'Execute', inputSchema: { type: 'object' } },
         { name: 'list_apps', description: 'List apps', inputSchema: { type: 'object' } },
       ],
     }));
@@ -48,7 +51,9 @@ describe('OpenConnector hard read-only boundary', () => {
 
     const tools = await discoverOpenConnectorTools(config);
 
-    expect(tools.map(tool => tool.name)).toEqual(['search_actions']);
+    expect(tools.map(tool => tool.name)).toEqual([
+      'list_connections', 'search_actions', 'get_action_guide', 'execute_action', 'list_read_tools',
+    ]);
   });
 
   it('reads tool results from a streamable HTTP event response', async () => {
@@ -65,10 +70,131 @@ describe('OpenConnector hard read-only boundary', () => {
     });
   });
 
-  it('requires scoped discovery and blocks Gmail', () => {
-    expect(() => validateOpenConnectorControlCall('list_connections', {})).toThrow(/service filter/);
+  it('allows discovery across every connected service but blocks Gmail execution', () => {
+    expect(() => validateOpenConnectorControlCall('list_connections', {})).not.toThrow();
+    expect(() => validateOpenConnectorControlCall('search_actions', {})).toThrow(/service filter/);
     expect(() => validateOpenConnectorControlCall('search_actions', { service: 'gmail' })).toThrow(/disabled/);
+    expect(() => validateOpenConnectorControlCall('execute_action', {
+      actionId: 'custom_mcp.list_tools', connectionName: 'gmail-mcp', input: {},
+    })).toThrow(/disabled/);
     expect(() => validateOpenConnectorControlCall('list_apps', {})).toThrow(/not exposed/);
+  });
+
+  it('hides Gmail from unscoped connected-service discovery', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => mcpResponse({ ok: true, data: [
+      { service: 'gmail', connectionName: 'default' },
+      { service: 'custom_mcp', connectionName: 'gmail-mcp' },
+      { service: 'feishu', connectionName: 'default' },
+    ] })));
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const result = await callOpenConnectorTool(config, 'list_connections', {});
+    expect(result.structuredContent.data).toEqual([{ service: 'feishu', connectionName: 'default' }]);
+  });
+
+  it('catalogs all read tools from connected native and Custom MCP services without listing Gmail', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      if (request.method === 'tools/list') return sseMcpResponse({ tools: [
+        { name: 'list_connections' }, { name: 'search_actions' },
+        { name: 'get_action_guide' }, { name: 'execute_action' },
+      ] });
+      const { name, arguments: args } = request.params;
+      if (name === 'list_connections') return mcpResponse({ ok: true, data: [
+        { service: 'feishu', connectionName: 'default' },
+        { service: 'custom_mcp', connectionName: 'dify-docs' },
+        { service: 'custom_mcp', connectionName: 'github-mcp' },
+        { service: 'gmail', connectionName: 'default' },
+      ] });
+      if (name === 'search_actions') return mcpResponse({ ok: true, data: [
+        { id: 'feishu.search_docs', operationType: 'read', description: 'Search Feishu docs' },
+        { id: 'feishu.update_doc', operationType: 'write', description: 'Modify a doc' },
+      ], page: { nextCursor: null } });
+      if (name === 'execute_action' && args.actionId === 'custom_mcp.list_tools') {
+        return mcpResponse({ ok: true, data: { tools: args.connectionName === 'dify-docs'
+          ? [
+            { name: 'official_docs_search', operationType: 'read', confirmationRequired: false },
+            { name: 'edit_article', operationType: 'write', confirmationRequired: true },
+          ]
+          : [
+            { name: 'github_code_search', operationType: 'read', confirmationRequired: false },
+            { name: 'github_create_issue', operationType: 'write', confirmationRequired: true },
+          ] } });
+      }
+      throw new Error(`Unexpected request: ${name}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const directory = (await discoverOpenConnectorTools(config)).find(tool => tool.name === 'list_read_tools');
+    const result = await directory!.execute('call-1', {});
+    expect(result.isError).not.toBe(true);
+    expect(result.details.tools.map((tool: any) => `${tool.connectionName}/${tool.toolName || tool.actionId}`)).toEqual([
+      'dify-docs/official_docs_search', 'github-mcp/github_code_search', 'default/feishu.search_docs',
+    ]);
+    expect(fetchMock.mock.calls.some(([, init]) => JSON.stringify(init?.body).includes('gmail.'))).toBe(false);
+  });
+
+  it('pages a service-scoped read directory and rejects a Gmail scope before network use', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      if (request.method === 'tools/list') return sseMcpResponse({ tools: [
+        { name: 'list_connections' }, { name: 'search_actions' },
+        { name: 'get_action_guide' }, { name: 'execute_action' },
+      ] });
+      if (request.params.name === 'list_connections') return mcpResponse({ ok: true, data: [
+        { service: 'custom_mcp', connectionName: 'dify-docs' },
+      ] });
+      if (request.params.name === 'execute_action') return mcpResponse({ ok: true, data: {
+        tools: Array.from({ length: 51 }, (_, index) => ({
+          name: `read_${index}`, operationType: 'read', confirmationRequired: false,
+        })),
+      } });
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const directory = (await discoverOpenConnectorTools(config)).find(tool => tool.name === 'list_read_tools')!;
+    const initialCalls = fetchMock.mock.calls.length;
+    const denied = await directory.execute('call-1', { service: 'gmail' });
+    expect(denied.isError).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(initialCalls);
+    const first = await directory.execute('call-2', { service: 'custom_mcp', connectionName: 'dify-docs' });
+    const second = await directory.execute('call-3', { service: 'custom_mcp', connectionName: 'dify-docs', offset: 50 });
+    expect(first.details).toMatchObject({ total: 51, nextOffset: 50 });
+    expect(second.details).toMatchObject({ total: 51, nextOffset: null });
+    expect(second.details.tools).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(initialCalls + 2);
+  });
+
+  it('continues native action pages so the directory does not silently omit later reads', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String(init.body));
+      if (request.method === 'tools/list') return sseMcpResponse({ tools: [
+        { name: 'list_connections' }, { name: 'search_actions' },
+        { name: 'get_action_guide' }, { name: 'execute_action' },
+      ] });
+      if (request.params.name === 'list_connections') return mcpResponse({ ok: true, data: [
+        { service: 'feishu', connectionName: 'default' },
+      ] });
+      if (request.params.name === 'search_actions') {
+        const cursor = request.params.arguments.cursor;
+        return mcpResponse(cursor
+          ? { ok: true, data: [{ id: 'feishu.search_policy', operationType: 'read' }], page: { nextCursor: null } }
+          : { ok: true, data: [
+            { id: 'feishu.search_docs', operationType: 'read' },
+            { id: 'feishu.edit_doc', operationType: 'write' },
+            { id: 'feishu.hidden_read', operationType: 'read', capability: { policy: { allowed: false } } },
+          ], page: { nextCursor: 'oas1.second-page' } });
+      }
+      throw new Error('Unexpected request');
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const directory = (await discoverOpenConnectorTools(config)).find(tool => tool.name === 'list_read_tools')!;
+    const result = await directory.execute('call-1', { service: 'feishu' });
+    expect(result.details.tools.map((tool: any) => tool.actionId)).toEqual([
+      'feishu.search_docs', 'feishu.search_policy',
+    ]);
+    expect(fetchMock.mock.calls.filter(([, init]) => JSON.parse(String(init?.body)).params?.name === 'search_actions')).toHaveLength(2);
   });
 
   it('blocks a dynamically classified custom MCP write before invoking it', async () => {
