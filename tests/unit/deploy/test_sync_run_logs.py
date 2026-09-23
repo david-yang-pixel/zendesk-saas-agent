@@ -108,6 +108,13 @@ def test_credentials_require_https_origin(tmp_path: Path) -> None:
         sync_run_logs.load_credentials(credentials)
 
 
+def test_checkpoint_sql_binds_round_index_as_integer_before_json_key() -> None:
+    # The index is passed as int by asyncpg. Casting it directly to text makes
+    # SAVE_ROUND_SQL infer conflicting types and SAVE_TOOL_SQL expect a str.
+    assert "ARRAY[($2::int)::text]" in sync_run_logs.SAVE_ROUND_SQL
+    assert "ARRAY[($2::int)::text]" in sync_run_logs.SAVE_TOOL_SQL
+
+
 class _Response:
     def __init__(self, result: object = 42) -> None:
         self.result = result

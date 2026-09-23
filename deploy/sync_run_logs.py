@@ -62,13 +62,13 @@ WHERE job_id = $1 AND pending_operation IS NULL AND remote_run_id = $3
 """
 SAVE_ROUND_SQL = """
 UPDATE run_log_exports SET rounds_reported = $2,
-    round_remote_ids = jsonb_set(round_remote_ids, ARRAY[$2::text], to_jsonb($5::int), true),
+    round_remote_ids = jsonb_set(round_remote_ids, ARRAY[($2::int)::text], to_jsonb($5::int), true),
     pending_operation = NULL, synced_at = NOW()
 WHERE job_id = $1 AND remote_run_id = $3 AND pending_operation = $4
 """
 SAVE_TOOL_SQL = """
 UPDATE run_log_exports SET
-    tool_calls_reported = jsonb_set(tool_calls_reported, ARRAY[$2::text], to_jsonb($3::int), true),
+    tool_calls_reported = jsonb_set(tool_calls_reported, ARRAY[($2::int)::text], to_jsonb($3::int), true),
     pending_operation = NULL, synced_at = NOW()
 WHERE job_id = $1 AND remote_run_id = $4 AND pending_operation = $5
 """
