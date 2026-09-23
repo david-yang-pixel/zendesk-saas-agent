@@ -187,6 +187,9 @@ jobs:
           DEPLOY_KNOWN_HOSTS: ${{ secrets.ZD_AGENT_DEPLOY_KNOWN_HOSTS }}
           OPENCONNECTOR_RUNTIME_TOKEN: ${{ secrets.OPENCONNECTOR_RUNTIME_TOKEN }}
           ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${{ secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET }}
+          HC_CLIENT_URL: ${{ vars.HC_CLIENT_URL }}
+          HC_CLIENT_API_KEY: ${{ secrets.HC_CLIENT_API_KEY }}
+          CASEWORK_LOG_SYNC_ENABLED: ${{ vars.CASEWORK_LOG_SYNC_ENABLED }}
           CASEWORK_REUSE_TOOL_CONFIG: ${{ vars.CASEWORK_REUSE_TOOL_CONFIG }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
@@ -202,6 +205,11 @@ jobs:
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required deployment input: ${name}" >&2; exit 1; }
           done
+          if [[ "${CASEWORK_LOG_SYNC_ENABLED:-false}" == "true" ]]; then
+            for name in HC_CLIENT_URL HC_CLIENT_API_KEY; do
+              test -n "${!name:-}" || { echo "Missing required log-sync input: ${name}" >&2; exit 1; }
+            done
+          fi
           DEPLOY_PORT="${DEPLOY_PORT:-22}"
           install -d -m 700 ~/.ssh
           key_file=~/.ssh/casework_deploy_key
@@ -214,6 +222,9 @@ jobs:
             printf 'export GHCR_PAT=%q\n' "$GHCR_PAT"
             printf 'export OPENCONNECTOR_RUNTIME_TOKEN=%q\n' "$OPENCONNECTOR_RUNTIME_TOKEN"
             printf 'export ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET=%q\n' "$ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"
+            printf 'export HC_CLIENT_URL=%q\n' "$HC_CLIENT_URL"
+            printf 'export HC_CLIENT_API_KEY=%q\n' "$HC_CLIENT_API_KEY"
+            printf 'export CASEWORK_LOG_SYNC_ENABLED=%q\n' "${CASEWORK_LOG_SYNC_ENABLED:-false}"
             printf 'export CASEWORK_REUSE_TOOL_CONFIG=%q\n' "${CASEWORK_REUSE_TOOL_CONFIG:-false}"
             printf 'export CASEWORK_INGRESS_IMAGE=%q\n' "${IMAGE_PREFIX}-ingress@${INGRESS_DIGEST}"
             printf 'export CASEWORK_HARNESS_IMAGE=%q\n' "${IMAGE_PREFIX}-harness@${HARNESS_DIGEST}"

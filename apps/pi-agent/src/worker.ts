@@ -8,6 +8,7 @@ import {
   discoverOpenConnectorTools,
 } from './openconnector.js';
 import { runPiSupportAgent } from './agent.js';
+import { sumRoundTokens } from './round-telemetry.js';
 import { sendBrowserRelay } from './relay.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
@@ -147,6 +148,8 @@ async function recordJobOutcome(opts: {
     delivery: opts.delivery ?? null,
     error: opts.errorReason ?? null,
     total_duration_ms: opts.trace?.totalDurationMs ?? (opts.finishedAt.getTime() - opts.startedAt.getTime()),
+    rounds: opts.trace?.rounds ?? null,
+    tokens: opts.trace?.tokens ?? null,
   };
 
   try {
@@ -424,6 +427,14 @@ async function main() {
           modelName: modelConfig.model,
           abortSignal: abortController.signal,
           attachments: initialDetails.attachments,
+          onRoundTelemetry: (rounds) => {
+            // Keep metrics if the run aborts or fails before a final trace exists.
+            activeTrace = {
+              model: modelConfig.model,
+              rounds: [...rounds],
+              tokens: sumRoundTokens([...rounds]),
+            };
+          },
         });
         activeTrace = agentResult.trace;
         console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms (${agentResult.trace.toolCalls.length} tool calls).`);

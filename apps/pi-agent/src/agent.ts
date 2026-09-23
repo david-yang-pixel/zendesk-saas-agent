@@ -12,6 +12,7 @@ import {
 import { CustomTool } from './mcp.js';
 import { inferOpenConnectorService } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
+import { captureAgentRound, sumRoundTokens, type AgentRoundTelemetry } from './round-telemetry.js';
 
 export interface AgentAttachment {
   id: string;
@@ -31,6 +32,7 @@ export interface AgentRunOptions {
   abortSignal?: AbortSignal;
   attachments?: AgentAttachment[];
   contextPrepared?: boolean;
+  onRoundTelemetry?: (rounds: readonly AgentRoundTelemetry[]) => void;
 }
 
 export interface AgentTraceStep {
@@ -62,9 +64,10 @@ export interface AgentTracePayload {
   }>;
   finalReply: string;
   totalDurationMs: number;
+  rounds: AgentRoundTelemetry[];
   tokens?: {
-    input?: number;
-    output?: number;
+    input: number | null;
+    output: number | null;
   };
   startedAt: string;
   finishedAt: string;
@@ -372,11 +375,26 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
   }
 
   const liveExecutedTools = new Map<string, { toolCallId: string; toolName: string; service: string; arguments: any; result: any; status: string }>();
+  const completedRounds: AgentRoundTelemetry[] = [];
+  let turnStartedAt: number | null = null;
 
   session.subscribe((event: any) => {
-    if (event.type === 'tool_execution_start') {
+    if (event.type === 'turn_start') {
+      turnStartedAt = Date.now();
+    } else if (event.type === 'turn_end') {
+      const round = captureAgentRound(
+        event.message,
+        completedRounds.length + 1,
+        turnStartedAt === null ? null : Date.now() - turnStartedAt,
+      );
+      if (round) {
+        completedRounds.push(round);
+        options.onRoundTelemetry?.(completedRounds);
+      }
+      turnStartedAt = null;
+    } else if (event.type === 'tool_execution_start') {
       const callId = event.toolCallId || `call-${liveExecutedTools.size + 1}`;
-      console.log(`\n[Agent Tool Call Start] ${event.toolName} (${callId}):`, JSON.stringify(event.args).slice(0, 200));
+      console.log(`\n[Agent Tool Call Start] ${event.toolName} (${callId})`);
       liveExecutedTools.set(callId, {
         toolCallId: callId,
         toolName: event.toolName,
@@ -387,7 +405,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
       });
     } else if (event.type === 'tool_execution_end') {
       const callId = event.toolCallId || `call-${liveExecutedTools.size}`;
-      console.log(`\n[Agent Tool Result End] ${event.toolName} (${callId}): isError=${event.isError}, result:`, JSON.stringify(event.result).slice(0, 200));
+      console.log(`\n[Agent Tool Result End] ${event.toolName} (${callId}): isError=${event.isError}`);
       const existing = liveExecutedTools.get(callId);
       if (existing) {
         existing.result = event.result;
@@ -407,7 +425,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
       if (sub?.type === 'text_delta') {
         process.stdout.write(sub.delta);
       } else if (sub?.type === 'toolCall' || sub?.type === 'tool_call') {
-        console.log(`\n[Agent Tool Call Update] ${sub.name}:`, JSON.stringify(sub.arguments).slice(0, 150));
+        console.log(`\n[Agent Tool Call Update] ${sub.name}`);
       }
     } else if (event.type === 'error') {
       console.error('\n[Agent Error Event]', event.error);
@@ -615,6 +633,8 @@ Reply Instructions:
     startedAt,
     finishedAt,
     totalDurationMs,
+    rounds: completedRounds,
+    tokens: sumRoundTokens(completedRounds),
     thinking: thinkingList,
     toolCalls: toolCallsList,
     steps,

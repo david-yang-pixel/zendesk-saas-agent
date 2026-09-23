@@ -98,5 +98,27 @@ services:
     mem_limit: 256m
     cpus: 0.25
 
+  log-sync:
+    profiles: [log-sync]
+    image: ${CASEWORK_ADMIN_IMAGE:?render a release manifest first}
+    user: "10001:10001"
+    command:
+      - /app/.venv/bin/python
+      - /app/deploy/sync_run_logs.py
+      - --mode
+      - watch
+      - --credentials-file
+      - /run/log-sync/credentials.json
+    environment:
+      <<: *common-environment
+    volumes:
+      - ${CASEWORK_LOG_SYNC_CREDENTIAL_DIR:-/opt/zd-agent/greenfield/log-sync}:/run/log-sync:ro
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.10
+
 volumes:
   casework-postgres:

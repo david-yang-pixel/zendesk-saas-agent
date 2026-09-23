@@ -97,6 +97,21 @@ def test_ticket_events_compose_and_ci_wiring():
     assert "vars.CASEWORK_REUSE_TOOL_CONFIG" in workflow
 
 
+def test_log_sync_is_opt_in_and_uses_private_credentials() -> None:
+    root = Path(__file__).resolve().parents[3]
+    compose = (root / "deploy/compose.release.yaml").read_text()
+    deploy = (root / "deploy/deploy-production.sh").read_text()
+    workflow = (root / ".github/workflows/docker-image.yml").read_text()
+    assert "profiles: [log-sync]" in compose
+    assert "/run/log-sync/credentials.json" in compose
+    assert "CASEWORK_LOG_SYNC_ENABLED" in deploy
+    assert "services+=(log-sync)" in deploy
+    assert "vars.CASEWORK_LOG_SYNC_ENABLED" in workflow
+    assert "vars.HC_CLIENT_URL" in workflow
+    assert "secrets.HC_CLIENT_API_KEY" in workflow
+    assert "Missing required log-sync input" in workflow
+
+
 def test_saved_tools_validate_and_reuse_without_discovery(tmp_path, monkeypatch):
     source = tmp_path / "source.env"
     socket = tmp_path / "socket"
@@ -233,6 +248,89 @@ def test_prepare_runtime_prefers_ci_openconnector_token(
         credentials["CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"]
         == "ci-openconnector-secret"
     )
+
+
+def test_prepare_runtime_isolates_log_sync_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_env = tmp_path / "source.env"
+    state_dir = tmp_path / "state"
+    socket = tmp_path / "docker.sock"
+    socket.touch()
+    _source_environment(source_env)
+    source_env.write_text(
+        source_env.read_text()
+        + 'HC_CLIENT_URL="https://manager.example.com"\n'
+        + 'HC_CLIENT_API_KEY="manager-secret"\n'
+    )
+    digest = "sha256:" + "a" * 64
+    for name in (
+        "CASEWORK_INGRESS_IMAGE",
+        "CASEWORK_HARNESS_IMAGE",
+        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_ADMIN_IMAGE",
+    ):
+        monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
+    monkeypatch.setenv("CASEWORK_LOG_SYNC_ENABLED", "true")
+    monkeypatch.setenv("HC_CLIENT_URL", "https://manager.example.com")
+    monkeypatch.setenv("HC_CLIENT_API_KEY", "manager-secret")
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
+
+    prepare_runtime.prepare(
+        source_env=source_env,
+        state_dir=state_dir,
+        revision="d" * 40,
+        docker_socket=socket,
+        legacy_auth_path=tmp_path / "missing-auth.json",
+    )
+
+    runtime = prepare_runtime._parse_dotenv(state_dir / "runtime.env")  # pyright: ignore[reportPrivateUsage]
+    credentials_file = state_dir / "log-sync" / "credentials.json"
+    assert runtime["CASEWORK_LOG_SYNC_ENABLED"] == "true"
+    assert "manager-secret" not in (state_dir / "runtime.env").read_text()
+    assert "manager-secret" not in (state_dir / "credentials" / "credentials.env").read_text()
+    assert json.loads(credentials_file.read_text()) == {
+        "base_url": "https://manager.example.com",
+        "api_key": "manager-secret",
+    }
+    assert os.stat(credentials_file).st_mode & 0o777 == 0o600
+
+
+def test_prepare_runtime_does_not_resurrect_legacy_log_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_env = tmp_path / "source.env"
+    state_dir = tmp_path / "state"
+    socket = tmp_path / "docker.sock"
+    socket.touch()
+    _source_environment(source_env)
+    source_env.write_text(
+        source_env.read_text()
+        + 'HC_CLIENT_URL="https://legacy.example.com"\n'
+        + 'HC_CLIENT_API_KEY="legacy-key"\n'
+    )
+    digest = "sha256:" + "a" * 64
+    for name in (
+        "CASEWORK_INGRESS_IMAGE", "CASEWORK_HARNESS_IMAGE",
+        "CASEWORK_SANDBOX_IMAGE", "CASEWORK_ADMIN_IMAGE",
+    ):
+        monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
+    monkeypatch.setenv("CASEWORK_LOG_SYNC_ENABLED", "true")
+    monkeypatch.delenv("HC_CLIENT_URL", raising=False)
+    monkeypatch.delenv("HC_CLIENT_API_KEY", raising=False)
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
+
+    with pytest.raises(RuntimeError, match="Log sync requires"):
+        prepare_runtime.prepare(
+            source_env=source_env,
+            state_dir=state_dir,
+            revision="d" * 40,
+            docker_socket=socket,
+            legacy_auth_path=tmp_path / "missing-auth.json",
+        )
+    assert not (state_dir / "log-sync" / "credentials.json").exists()
 
 
 def test_prepare_runtime_migrates_legacy_admin_password_hash_once(

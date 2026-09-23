@@ -336,6 +336,28 @@ def prepare(
     if os.geteuid() == 0:
         os.chown(credentials_path, 10_001, 10_001)
 
+    # GitHub production environment is the sole authority for log export.
+    # Never resurrect an old server-side setting during a redeploy.
+    log_sync_enabled = os.environ.get("CASEWORK_LOG_SYNC_ENABLED", "false").strip().lower()
+    if log_sync_enabled not in {"true", "false"}:
+        raise RuntimeError("CASEWORK_LOG_SYNC_ENABLED must be true or false")
+    log_sync_dir = state_dir / "log-sync"
+    log_sync_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    log_sync_dir.chmod(0o700)
+    log_sync_url = os.environ.get("HC_CLIENT_URL", "").strip()
+    log_sync_key = os.environ.get("HC_CLIENT_API_KEY", "").strip()
+    if log_sync_enabled == "true" and (not log_sync_url or not log_sync_key):
+        raise RuntimeError("Log sync requires HC_CLIENT_URL and HC_CLIENT_API_KEY")
+    if log_sync_enabled == "true":
+        _write_private_text(
+            log_sync_dir / "credentials.json",
+            json.dumps({"base_url": log_sync_url, "api_key": log_sync_key}),
+        )
+    if os.geteuid() == 0:
+        os.chown(log_sync_dir, 10_001, 10_001)
+        if (log_sync_dir / "credentials.json").exists():
+            os.chown(log_sync_dir / "credentials.json", 10_001, 10_001)
+
     admin_auth_dir = _prepare_admin_auth(
         state_dir=state_dir, legacy_auth_path=legacy_auth_path
     )
@@ -356,6 +378,8 @@ def prepare(
             f"postgresql+asyncpg://casework:{postgres_password}@postgres:5432/casework"
         ),
         "CASEWORK_CONFIG_REVISION": revision,
+        "CASEWORK_LOG_SYNC_ENABLED": log_sync_enabled,
+        "CASEWORK_LOG_SYNC_CREDENTIAL_DIR": str(log_sync_dir),
         **images,
         "ZENDESK_BASE_URL": f"https://{subdomain}.zendesk.com",
         "ZENDESK_EMAIL": _required(legacy, "ZENDESK_EMAIL"),

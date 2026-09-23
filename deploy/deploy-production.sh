@@ -73,6 +73,11 @@ trap cleanup EXIT
 printf '%s' "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin >/dev/null
 
 compose=(docker compose --project-name casework-greenfield --env-file "$RUNTIME_ENV" -f "$COMPOSE_FILE")
+services=(ingress pi-agent admin)
+if grep -Eq '^CASEWORK_LOG_SYNC_ENABLED="?true"?$' "$RUNTIME_ENV"; then
+  compose=(docker compose --profile log-sync --project-name casework-greenfield --env-file "$RUNTIME_ENV" -f "$COMPOSE_FILE")
+  services+=(log-sync)
+fi
 "${compose[@]}" config --quiet
 "${compose[@]}" pull postgres ingress pi-agent admin migration
 docker pull "$CASEWORK_SANDBOX_IMAGE" >/dev/null
@@ -80,7 +85,7 @@ docker pull "$CASEWORK_SANDBOX_IMAGE" >/dev/null
 "${compose[@]}" up -d postgres
 "${compose[@]}" run --rm migration
 docker rm -f casework-greenfield-ingress-1 casework-greenfield-pi-agent-1 casework-greenfield-admin-1 2>/dev/null || true
-"${compose[@]}" up -d --remove-orphans ingress pi-agent admin
+"${compose[@]}" up -d --remove-orphans "${services[@]}"
 
 wait_ready() {
   local name="$1"

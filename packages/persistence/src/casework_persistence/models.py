@@ -323,6 +323,25 @@ class RunEventRow(Base):
     )
 
 
+class RunLogExportRow(Base):
+    """Durable checkpoint for the SaaS Agent run and round export."""
+
+    __tablename__ = "run_log_exports"
+
+    job_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("case_jobs.job_id"), primary_key=True
+    )
+    remote_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    rounds_reported: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    pending_operation: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 __all__ = [
     "ACTIVE_JOB_STATUSES",
     "Base",
