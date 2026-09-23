@@ -12,7 +12,7 @@ import {
 import { CustomTool } from './mcp.js';
 import { inferOpenConnectorService } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
-import { captureAgentRound, sumRoundTokens, updateAgentTool, type AgentRoundTelemetry, type CompletedToolTelemetry } from './round-telemetry.js';
+import { captureAgentRound, recordProviderPayload, sumRoundTokens, updateAgentTool, type AgentRoundTelemetry, type CompletedToolTelemetry } from './round-telemetry.js';
 
 export interface AgentAttachment {
   id: string;
@@ -50,6 +50,7 @@ export interface AgentTracePayload {
   ticketId?: number;
   requesterEmail?: string;
   customerMessage?: string;
+  prompt?: string;
   model?: string;
   steps: AgentTraceStep[];
   thinking: string[];
@@ -316,6 +317,21 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
   console.log(`[Agent] Initializing ModelRuntime with baseUrl=${baseUrl}, model=${modelName}, apiKeyLen=${apiKey.length}`);
 
   const runtime = await ModelRuntime.create();
+  const roundPromptBodies = new Map<number, string>();
+  let activeRoundNumber = 0;
+  const streamSimple = runtime.streamSimple.bind(runtime);
+  runtime.streamSimple = (requestModel, context, options) => streamSimple(requestModel, context, {
+    ...options,
+    onPayload: async (payload, modelForPayload) => {
+      const replacement = await options?.onPayload?.(payload, modelForPayload);
+      const effectivePayload = replacement === undefined ? payload : replacement;
+      if (!recordProviderPayload(effectivePayload, activeRoundNumber, roundPromptBodies)) {
+        // A non-JSON provider payload should not interrupt the customer run.
+        console.warn('[Agent] Model request payload could not be recorded as JSON');
+      }
+      return replacement;
+    },
+  });
   runtime.registerProvider('openai', {
     baseUrl: baseUrl,
     apiKey: apiKey,
@@ -387,13 +403,18 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
   session.subscribe((event: any) => {
     if (event.type === 'turn_start') {
       turnStartedAt = Date.now();
+      activeRoundNumber = completedRounds.length + 1;
     } else if (event.type === 'turn_end') {
+      const roundNumber = completedRounds.length + 1;
       const round = captureAgentRound(
         event.message,
-        completedRounds.length + 1,
+        roundNumber,
         turnStartedAt === null ? null : Date.now() - turnStartedAt,
         completedTools,
+        roundPromptBodies.get(roundNumber) ?? null,
       );
+      roundPromptBodies.delete(roundNumber);
+      activeRoundNumber = 0;
       if (round) {
         completedRounds.push(round);
         completedTools.clear();
@@ -648,6 +669,7 @@ Reply Instructions:
     ticketId: options.ticketId,
     requesterEmail: options.requesterEmail,
     customerMessage: options.customerMessage,
+    prompt,
     model: modelName,
     startedAt,
     finishedAt,

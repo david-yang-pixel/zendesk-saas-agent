@@ -139,6 +139,7 @@ async function recordJobOutcome(opts: {
   const activeQuestion = {
     ticket_id: opts.ticketId,
     customer_message: opts.trace?.customerMessage ?? '',
+    prompt: opts.trace?.prompt ?? null,
     requester_email: opts.trace?.requesterEmail ?? '',
     model: opts.trace?.model ?? '',
   };
