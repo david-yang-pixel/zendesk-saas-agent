@@ -1,5 +1,19 @@
 import type pg from 'pg';
 
+// PostgreSQL BIGINT is returned as a string by node-postgres. Remote Zendesk
+// tools require an integer, so normalize once at the queue boundary.
+export function ticketIdFromDatabase(value: unknown): number {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw new Error('Invalid ticket_id returned by the job queue');
+  }
+  const ticketId = Number(value);
+  if (!Number.isSafeInteger(ticketId) || ticketId <= 0 ||
+      (typeof value === 'string' && !/^[1-9]\d*$/.test(value))) {
+    throw new Error('Invalid ticket_id returned by the job queue');
+  }
+  return ticketId;
+}
+
 export async function claimNextJob(pool: pg.Pool, workerId: string): Promise<any | null> {
   const client = await pool.connect();
   try {
@@ -40,6 +54,7 @@ export async function claimNextJob(pool: pg.Pool, workerId: string): Promise<any
     }
 
     const job = selectRes.rows[0];
+    job.ticket_id = ticketIdFromDatabase(job.ticket_id);
     if (job.prev_status === 'running') {
       console.warn(`[Worker] 🔄 Lease Reclaim: Reclaiming expired running job ${job.job_id} for ticket #${job.ticket_id} (lease expired, retry attempt ${job.attempts + 1}/3)...`);
     }
@@ -63,4 +78,3 @@ export async function claimNextJob(pool: pg.Pool, workerId: string): Promise<any
     client.release();
   }
 }
-
