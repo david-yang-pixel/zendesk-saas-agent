@@ -46,6 +46,13 @@ describe('Pi project Skill loading', () => {
     expect(registeredRead).toBeDefined();
     const result = await registeredRead.execute('read-skill', { path: supportSkill!.filePath });
     expect(result.content[0].text).toContain('# Dify SaaS Ticket Investigation and Reply');
+    const referencedPaths = [...result.content[0].text.matchAll(/\]\((references\/[^)]+\.md)\)/g)]
+      .map(match => path.resolve(supportSkill!.baseDir, match[1]));
+    expect(referencedPaths.length).toBeGreaterThan(0);
+    for (const referencePath of referencedPaths) {
+      const reference = await registeredRead.execute('read-reference', { path: referencePath });
+      expect(reference.content[0].text).toMatch(/^# /);
+    }
     await expect(registeredRead.execute('read-outside', { path: path.resolve(process.cwd(), 'package.json') }))
       .rejects.toThrow(/outside project Skill/);
   });
