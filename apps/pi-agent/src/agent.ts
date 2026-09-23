@@ -50,7 +50,6 @@ export interface AgentTracePayload {
   ticketId?: number;
   requesterEmail?: string;
   customerMessage?: string;
-  prompt?: string;
   model?: string;
   steps: AgentTraceStep[];
   thinking: string[];
@@ -649,7 +648,6 @@ Reply Instructions:
     ticketId: options.ticketId,
     requesterEmail: options.requesterEmail,
     customerMessage: options.customerMessage,
-    prompt,
     model: modelName,
     startedAt,
     finishedAt,

@@ -17,7 +17,6 @@ def _row(**overrides: object) -> dict[str, Any]:
         "created_at": now - timedelta(minutes=3), "job_finished_at": now,
         "event_type": "ticket.mention", "started_at": now - timedelta(minutes=2),
         "run_finished_at": now, "model": "gpt-5.6-terra",
-        "active_question_json": json.dumps({"prompt": "Full initial prompt"}),
         "tool_call_records_json": "[]",
         "outcome_json": json.dumps({
             "total_duration_ms": 120000,
@@ -41,8 +40,9 @@ def _row(**overrides: object) -> dict[str, Any]:
     return values
 
 
-def test_payloads_include_initial_prompt_and_assistant_text() -> None:
+def test_payloads_exclude_initial_prompt_and_assistant_text() -> None:
     row = _row()
+    row["active_question_json"] = json.dumps({"prompt": "Full initial prompt"})
     outcome = sync_run_logs._outcome(row)  # pyright: ignore[reportPrivateUsage]
     outcome["rounds"][0]["assistantContent"] = "Working through the request"
     rounds = sync_run_logs._safe_rounds(outcome)  # pyright: ignore[reportPrivateUsage]
@@ -52,16 +52,17 @@ def test_payloads_include_initial_prompt_and_assistant_text() -> None:
     assert create["source"] == "saas"
     assert create["trigger_type"] == "mention"
     assert len(str(create["session_id"])) == 32
-    assert create["task_preview"] == "Full initial prompt"
+    assert create["task_preview"] is None
     assert finish["total_rounds"] == 2
     assert finish["total_input_tokens"] == 75
     assert finish["total_output_tokens"] == 12
     assert rounds is not None
-    assert rounds[0]["assistant_content"] == "Working through the request"
+    assert rounds[0]["assistant_content"] is None
     assert "prompt_content" not in rounds[0]
     assert rounds[0]["tool_call_count"] == 1
     encoded = json.dumps([create, rounds, finish])
     assert "private customer reply" not in encoded
+    assert "Working through the request" not in encoded
     assert "must not leave source" not in encoded
 
 
@@ -145,17 +146,23 @@ class _Connection:
 
 
 class _Client:
-    def __init__(self, *, bad_round_ack: bool = False, bad_tool_ack: bool = False) -> None:
+    def __init__(self, *, bad_round_ack: bool = False, bad_tool_ack: bool = False,
+                 round_ids: list[int] | None = None) -> None:
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.bad_round_ack = bad_round_ack
         self.bad_tool_ack = bad_tool_ack
+        self.round_ids = list(round_ids) if round_ids is not None else None
 
     async def post(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> _Response:
         assert headers == {"X-Agent-Key": "test-key"}
         self.requests.append(("POST", url, json))
         bad_ack = ((self.bad_round_ack and url.endswith("/rounds"))
                    or (self.bad_tool_ack and url.endswith("/tool-calls")))
-        return _Response(None if bad_ack else 42)
+        if bad_ack:
+            return _Response(None)
+        if self.round_ids is not None and url.endswith("/rounds"):
+            return _Response(self.round_ids.pop(0))
+        return _Response()
 
     async def put(self, url: str, *, headers: dict[str, str], json: dict[str, Any]) -> _Response:
         assert headers == {"X-Agent-Key": "test-key"}
@@ -211,25 +218,36 @@ async def test_exports_tool_content_under_its_matching_remote_round() -> None:
         {"toolCallId": "call-2", "toolName": "github.search_code",
          "status": "failed", "durationMs": 18, "error": "private-error"},
     ]
+    outcome["rounds"][1]["toolCalls"] = [
+        {"toolCallId": "call-3", "toolName": "zendesk.search_tickets",
+         "status": "succeeded", "durationMs": 31},
+    ]
+    outcome["rounds"][1]["toolCallCount"] = 1
     row["outcome_json"] = json.dumps(outcome)
     row["tool_call_records_json"] = json.dumps([
         {"type": "tool_call", "toolCallId": "call-1", "arguments": {"query": "private-query"},
          "result": {"data": "customer-private"}},
         {"type": "tool_call", "toolCallId": "call-2", "arguments": [1, 2],
          "result": "private-error"},
+        {"type": "tool_call", "toolCallId": "call-3", "arguments": {"query": "other-round"},
+         "result": {"tickets": [123]}},
     ])
     connection = _Connection(row)
-    client = _Client()
+    client = _Client(round_ids=[51, 52])
     result = await sync_run_logs.export_batch(
         connection,  # pyright: ignore[reportArgumentType]
         client,  # pyright: ignore[reportArgumentType]
         sync_run_logs.ExportCredentials("https://example.com", "test-key"), limit=10,
     )
     assert result == (1, 0)
-    assert [method for method, _, _ in client.requests] == ["POST"] * 5 + ["PUT"]
+    assert [method for method, _, _ in client.requests] == ["POST"] * 6 + ["PUT"]
     tool_requests = [request for request in client.requests if request[1].endswith("/tool-calls")]
-    assert len(tool_requests) == 2
-    assert all(url.endswith("/42/rounds/42/tool-calls") for _, url, _ in tool_requests)
+    assert len(tool_requests) == 3
+    assert [url.rsplit("/", 1)[0] for _, url, _ in tool_requests] == [
+        "https://example.com/api/agent/logs/runs/42/rounds/51",
+        "https://example.com/api/agent/logs/runs/42/rounds/51",
+        "https://example.com/api/agent/logs/runs/42/rounds/52",
+    ]
     assert tool_requests[0][2] == {
         "tool_name": "zendesk.get_ticket", "arguments": {"query": "private-query"},
         "result_preview": '{"data": "customer-private"}',
@@ -238,7 +256,14 @@ async def test_exports_tool_content_under_its_matching_remote_round() -> None:
     assert tool_requests[1][2]["success"] is False
     assert tool_requests[1][2]["arguments"] == {"value": [1, 2]}
     assert tool_requests[1][2]["result_preview"] == "private-error"
+    assert tool_requests[2][2]["arguments"] == {"query": "other-round"}
+    assert tool_requests[2][2]["result_preview"] == '{"tickets": [123]}'
+    assert tool_requests[2][2]["tool_name"] == "zendesk.search_tickets"
+    assert all(request[2]["assistant_content"] is None for request in client.requests
+               if request[1].endswith("/rounds"))
+    assert client.requests[0][2]["task_preview"] is None
     assert ("job-1", 1, 1, 42, "tool:1:1") in [args for _, args in connection.checkpoints]
+    assert ("job-1", 2, 1, 42, "tool:2:1") in [args for _, args in connection.checkpoints]
 
 
 @pytest.mark.asyncio

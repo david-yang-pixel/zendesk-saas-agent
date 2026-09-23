@@ -1,4 +1,4 @@
-"""Export SaaS Agent runs, rounds, and recorded content through the log API.
+"""Export SaaS Agent runs, rounds, and per-round tool content through the log API.
 
 Dry-run is the default. Uncertain POSTs are held for manual reconciliation,
 because the manager's existing create endpoints have no idempotency keys.
@@ -30,7 +30,6 @@ SELECT j.job_id, j.ticket_id, j.status, j.created_at,
        j.finished_at AS job_finished_at, e.event_type,
        r.started_at, r.finished_at AS run_finished_at,
        r.active_question ->> 'model' AS model,
-       r.active_question::text AS active_question_json,
        r.outcome::text AS outcome_json,
        r.tool_call_records::text AS tool_call_records_json,
        x.remote_run_id, COALESCE(x.rounds_reported, 0) AS rounds_reported,
@@ -141,11 +140,6 @@ def _outcome(row: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _stored_object(raw: object) -> dict[str, Any]:
-    value = json.loads(raw) if isinstance(raw, str) else raw
-    return value if isinstance(value, dict) else {}
-
-
 def _tool_details(row: Any) -> dict[str, dict[str, Any]]:
     raw = row["tool_call_records_json"]
     value = json.loads(raw) if isinstance(raw, str) else raw
@@ -185,16 +179,13 @@ def _safe_rounds(outcome: dict[str, Any]) -> list[dict[str, object]] | None:
             raise ValueError("Invalid stored round model")
         if reason is not None and (not isinstance(reason, str) or len(reason) > 50):
             raise ValueError("Invalid stored round stop reason")
-        assistant_content = item.get("assistantContent")
-        if assistant_content is not None and not isinstance(assistant_content, str):
-            raise ValueError("Invalid stored assistant content")
         count = _bounded_int(item.get("toolCallCount"))
         if count is None:
             raise ValueError("Invalid stored tool count")
         metrics: dict[str, object] = {
             "round": index, "model": model, "input_tokens": None,
             "output_tokens": None, "duration_ms": None,
-            "assistant_content": assistant_content, "stop_reason": reason,
+            "assistant_content": None, "stop_reason": reason,
             "has_tool_calls": count > 0, "tool_call_count": count,
         }
         for source, target in (
@@ -294,10 +285,6 @@ def to_create_payload(row: Any) -> dict[str, object]:
     model = row["model"]
     if not isinstance(model, str) or not model or len(model) > 100:
         model = None
-    active_question = _stored_object(row["active_question_json"])
-    prompt = active_question.get("prompt")
-    if prompt is not None and not isinstance(prompt, str):
-        raise ValueError("Invalid stored agent prompt")
     return {
         "ticket_id": row["ticket_id"], "source": "saas",
         # Existing manager schema limits session_id to 32 characters.
@@ -305,7 +292,7 @@ def to_create_payload(row: Any) -> dict[str, object]:
         "trigger_type": "mention" if row["event_type"] == "ticket.mention" else "webhook",
         "model": model,
         "started_at": (row["started_at"] or row["created_at"]).isoformat(),
-        "task_preview": prompt,
+        "task_preview": None,
     }
 
 

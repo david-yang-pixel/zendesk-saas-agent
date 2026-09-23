@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { captureAgentRound, sumRoundTokens, updateAgentTool } from './round-telemetry.js';
 
 describe('Pi round telemetry', () => {
-  it('counts cache tokens as input and keeps visible text without thinking or tool arguments', () => {
+  it('counts cache tokens as input without copying model text or tool arguments', () => {
     const round = captureAgentRound({
       role: 'assistant', model: 'requested-model', responseModel: 'model-a', stopReason: 'toolUse',
       usage: { input: 10, output: 4, cacheRead: 20, cacheWrite: 5, reasoning: 2 },
@@ -12,10 +12,11 @@ describe('Pi round telemetry', () => {
       round: 1, model: 'model-a', inputTokens: 35, outputTokens: 4,
       cacheReadTokens: 20, cacheWriteTokens: 5, reasoningTokens: 2,
       durationMs: 250, stopReason: 'toolUse',
-      assistantContent: 'Model analysis', toolCallCount: 1,
+      toolCallCount: 1,
       toolCalls: [{ toolCallId: 'call-1', toolName: 'get_ticket', status: 'unknown', durationMs: null }],
     });
     expect(JSON.stringify(round)).not.toContain('private');
+    expect(JSON.stringify(round)).not.toContain('Model analysis');
   });
 
   it('keeps unavailable usage unknown rather than inventing zero tokens', () => {

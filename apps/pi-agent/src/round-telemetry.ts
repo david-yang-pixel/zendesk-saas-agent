@@ -1,4 +1,4 @@
-/** Telemetry and visible assistant text for one completed Pi assistant turn. */
+/** Bounded, content-free telemetry for one completed Pi assistant turn. */
 export interface AgentToolTelemetry {
   toolCallId: string;
   toolName: string;
@@ -18,7 +18,6 @@ export interface AgentRoundTelemetry {
   reasoningTokens: number | null;
   durationMs: number | null;
   stopReason: string | null;
-  assistantContent: string | null;
   toolCallCount: number;
   toolCalls: AgentToolTelemetry[];
 }
@@ -66,10 +65,6 @@ export function captureAgentRound(
   const cacheWrite = tokenCount(usage?.cacheWrite);
   const hasUsage = [input, output, cacheRead, cacheWrite].some(value => value !== null && value > 0);
   const content = Array.isArray(assistant.content) ? assistant.content : [];
-  const assistantContent = typeof assistant.content === 'string'
-    ? assistant.content
-    : content.filter(part => part?.type === 'text' && typeof part.text === 'string')
-      .map(part => part.text).join('\n');
   const toolParts = content.filter(part =>
     part?.type === 'toolCall' || part?.type === 'tool_call' || part?.type === 'toolUse' || part?.type === 'tool_use',
   );
@@ -99,7 +94,6 @@ export function captureAgentRound(
     reasoningTokens: hasUsage ? tokenCount(usage?.reasoning) : null,
     durationMs: tokenCount(durationMs),
     stopReason: typeof assistant.stopReason === 'string' ? assistant.stopReason.slice(0, 50) : null,
-    assistantContent: assistantContent || null,
     toolCallCount: toolParts.length,
     toolCalls,
   };
