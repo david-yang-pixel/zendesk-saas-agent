@@ -69,3 +69,46 @@ it('clears the heartbeat when a duplicate-reply guard cancels before analysis', 
   expect(markJobFailed).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([
+  { label: 'operator mention', expectedEventId: 'mention:1234', expectedReads: 1 },
+  { label: 'customer message', expectedEventId: 'customer:1234', expectedReads: 2 },
+])('uses $expectedReads context read(s) before delivering a $label', async ({ expectedEventId, expectedReads }) => {
+  vi.useFakeTimers();
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const getTicketDetails = vi.fn(async () => ({
+    isAlreadyAnswered: false, hasRequestedHuman: false,
+    message: 'hello', lastEventId: 'customer:1234', customerEventsCount: 1,
+  }));
+  const query = vi.fn(async (sql: string) => sql.startsWith('SELECT payload')
+    ? { rows: [{ payload: { body: '@agent reply to the customer' } }] }
+    : { rows: [], rowCount: 0 });
+  const sendBrowserRelay = vi.fn(async () => ({ status: 'sent', total_duration_ms: 5 }));
+  const markJobSucceeded = vi.fn();
+  const markJobFailed = vi.fn();
+  const process = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query },
+    isTicketHumanCancelled: async () => false, getTicketDetails,
+    getActiveModelConfig: async () => ({ model: 'test' }),
+    openConnectorService: {}, allTools: [],
+    runPiSupportAgent: async () => ({
+      reply: 'safe reply', trace: { toolCalls: [], rounds: [], totalDurationMs: 1 },
+    }),
+    sendBrowserRelay, BROWSER_RELAY_URL: 'test', BROWSER_RELAY_KEY: 'test',
+    recordJobOutcome: vi.fn(), markJobSucceeded, markJobFailed,
+    sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
+  });
+  try {
+    await process({
+      job_id: 'test-job', ticket_id: 3726, generation: 1,
+      event_id: 'webhook-uuid', expected_event_id: expectedEventId,
+    }, new AbortController());
+    expect(getTicketDetails).toHaveBeenCalledTimes(expectedReads);
+    expect(sendBrowserRelay).toHaveBeenCalledOnce();
+    expect(markJobSucceeded).toHaveBeenCalledOnce();
+    expect(markJobFailed).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    log.mockRestore();
+  }
+});

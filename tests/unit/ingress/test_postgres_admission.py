@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +131,10 @@ async def test_postgres_admission_atomically_enqueues_and_deduplicates(
     assert jobs[0].child_model_config_ids == ["logs"]
     assert jobs[0].event_id == "evt-1"
     assert jobs[0].expected_event_id == "messaging:customer-1"
+    # SQLite drops timezone information; production PostgreSQL retains it.
+    assert jobs[0].available_at.replace(tzinfo=UTC) == (
+        datetime(2026, 9, 1, tzinfo=UTC) + timedelta(seconds=20)
+    )
 
 
 @pytest.mark.asyncio
@@ -203,6 +207,7 @@ async def test_webhook_mention_uses_one_event_and_replay_preserves_later_human_l
         job = (await session.execute(select(CaseJobRow))).scalar_one()
         assert job.event_id == parsed.event_id
         assert job.expected_event_id == "mention:1234"
+        assert job.available_at.replace(tzinfo=UTC) == event.received_at
         state = (await session.execute(select(TicketState))).scalar_one()
         assert state.human_cancelled_at is not None
 

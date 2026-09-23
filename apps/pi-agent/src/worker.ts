@@ -502,9 +502,15 @@ async function main() {
         throw agentErr;
       }
 
-      // Pre-Delivery Freshness Check
-      console.log(`[Worker] Pre-delivery check: Fetching latest conversation for ticket #${job.ticket_id} to verify no new customer messages...`);
-      const freshDetails = await getTicketDetails(job.ticket_id, openConnectorService);
+      // Only customer-origin jobs use the freshness/human guards below.
+      // Mention jobs intentionally bypass both guards, so rereading the same
+      // conversation here adds latency without changing the delivery decision.
+      if (!isMentionJob) {
+        console.log(`[Worker] Pre-delivery check: Fetching latest conversation for ticket #${job.ticket_id} to verify no new customer messages...`);
+      }
+      const freshDetails = isMentionJob
+        ? initialDetails
+        : await getTicketDetails(job.ticket_id, openConnectorService);
 
       // Guard 3: Did customer request human during reasoning?
       if (freshDetails.hasRequestedHuman && !isMentionJob) {
@@ -595,7 +601,7 @@ async function main() {
       }
 
       // Deliver the public customer reply through the only authorized write path.
-      console.log(`[Worker] Pre-delivery check passed. Delivering via Browser Relay...`);
+      console.log(`[Worker] Delivery guards passed. Delivering via Browser Relay...`);
       const relayResult = await sendBrowserRelay(
         BROWSER_RELAY_URL,
         BROWSER_RELAY_KEY,
