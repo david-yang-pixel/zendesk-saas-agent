@@ -20,9 +20,12 @@ MENTION_TRIGGERS = (
     "@david yang", "@davidyang", "**david yang**", "@agent",
     "@ai agent", "@ai", "@dify-agent", "@saas-agent",
 )
+INTERNAL_DRAFT_MARKER = "[DIFY_AI_AGENT_DRAFT:"
 
 
 def has_operator_mention(text: str) -> bool:
+    if text.lstrip().startswith(INTERNAL_DRAFT_MARKER):
+        return False
     return any(trigger in text.lower() for trigger in MENTION_TRIGGERS)
 
 

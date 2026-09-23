@@ -10,7 +10,7 @@ import {
 import { runPiSupportAgent } from './agent.js';
 import { sumRoundTokens } from './round-telemetry.js';
 import { sendBrowserRelay } from './relay.js';
-import { operatorRequestedPublicReply } from './mention-delivery.js';
+import { deliverInternalDraft } from './internal-draft-delivery.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob } from './job-queue.js';
@@ -66,6 +66,9 @@ const rawDbUrl = cleanEnv(process.env.DATABASE_URL);
 const DATABASE_URL = rawDbUrl.replace(/^postgresql\+[a-zA-Z0-9_]+:\/\//, 'postgresql://');
 const BROWSER_RELAY_URL = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_URL) || 'https://zendesk.smlershou.top/zendesk-browser-relay';
 const BROWSER_RELAY_KEY = cleanEnv(process.env.CASEWORK_BROWSER_RELAY_API_KEY);
+const ZENDESK_BASE_URL = cleanEnv(process.env.ZENDESK_BASE_URL);
+const ZENDESK_EMAIL = cleanEnv(process.env.ZENDESK_EMAIL);
+const ZENDESK_API_TOKEN = cleanEnv(process.env.ZENDESK_API_TOKEN);
 const OPENCONNECTOR_MCP_URL = cleanEnv(process.env.CASEWORK_OPENCONNECTOR_MCP_URL) || 'https://open-connector.yyg066340.workers.dev/mcp';
 const OPENCONNECTOR_RUNTIME_TOKEN = cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME)
   || cleanEnv(process.env.OPENCONNECTOR_RUNTIME_TOKEN)
@@ -368,7 +371,7 @@ async function main() {
 
       // If this is a mention job, extract the operator's note instructions
       let effectiveCustomerMessage = initialDetails.message;
-      let publicReplyAllowed = !isMentionJob;
+      const publicReplyAllowed = !isMentionJob;
       if (isMentionJob) {
         try {
           const evRes = await pool.query(
@@ -380,7 +383,6 @@ async function main() {
             throw new Error('Missing operator instruction');
           }
           if (operatorInstruction) {
-            publicReplyAllowed = operatorRequestedPublicReply(operatorInstruction);
             effectiveCustomerMessage = `[来自人工座席内部备注 @David Yang 的直接指令]:\n"${operatorInstruction}"\n\n[工单客户最新消息]:\n"${initialDetails.message}"`;
             console.log(`[Worker] Injected operator instruction for ticket #${job.ticket_id}`);
           }
@@ -507,7 +509,16 @@ async function main() {
       }
 
       if (!publicReplyAllowed) {
-        console.log(`[Worker] Operator mention investigation completed for ticket #${job.ticket_id}; public delivery was not requested.`);
+        const delivery = await deliverInternalDraft({
+          pool,
+          jobId: job.job_id,
+          ticketId: job.ticket_id,
+          customerReply: agentResult.customerReply,
+          baseUrl: ZENDESK_BASE_URL,
+          email: ZENDESK_EMAIL,
+          apiToken: ZENDESK_API_TOKEN,
+        });
+        console.log(`[Worker] Operator mention draft delivered as an internal Zendesk note for ticket #${job.ticket_id}; status=${delivery.status}.`);
         await recordJobOutcome({
           jobId: job.job_id,
           ticketId: job.ticket_id,
@@ -516,7 +527,7 @@ async function main() {
           startedAt: new Date(startTime),
           finishedAt: new Date(),
           trace: agentResult.trace,
-          delivery: null,
+          delivery,
         });
         await markJobSucceeded(job.job_id);
         return;

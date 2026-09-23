@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
-import { operatorRequestedPublicReply } from './mention-delivery.js';
 
 // Exercise the actual worker closure without importing its process startup,
 // production DB connection, mention polling, or delivery services.
@@ -26,7 +25,6 @@ it('webhook UUID jobs load instructions by event ID and bypass customer-only gua
     getTicketDetails: async () => ({ isAlreadyAnswered: true, hasRequestedHuman: true, message: 'customer' }),
     getActiveModelConfig: async () => ({ model: 'test' }),
     openConnectorService: {}, allTools: [], runPiSupportAgent,
-    operatorRequestedPublicReply,
     recordJobOutcome: vi.fn(), markJobFailed: vi.fn(), markJobCancelled,
     sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
   });
@@ -72,10 +70,7 @@ it('clears the heartbeat when a duplicate-reply guard cancels before analysis', 
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it.each([
-  { label: 'operator mention', expectedEventId: 'mention:1234', expectedReads: 1 },
-  { label: 'customer message', expectedEventId: 'customer:1234', expectedReads: 2 },
-])('uses $expectedReads context read(s) before delivering a $label', async ({ expectedEventId, expectedReads }) => {
+it('uses two context reads before delivering a customer-origin public reply', async () => {
   vi.useFakeTimers();
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});
   const getTicketDetails = vi.fn(async () => ({
@@ -93,7 +88,6 @@ it.each([
     isTicketHumanCancelled: async () => false, getTicketDetails,
     getActiveModelConfig: async () => ({ model: 'test' }),
     openConnectorService: {}, allTools: [],
-    operatorRequestedPublicReply,
     runPiSupportAgent: async () => ({
       reply: 'safe reply', trace: { toolCalls: [], rounds: [], totalDurationMs: 1 },
     }),
@@ -104,9 +98,9 @@ it.each([
   try {
     await process({
       job_id: 'test-job', ticket_id: 3726, generation: 1,
-      event_id: 'webhook-uuid', expected_event_id: expectedEventId,
+      event_id: 'webhook-uuid', expected_event_id: 'customer:1234',
     }, new AbortController());
-    expect(getTicketDetails).toHaveBeenCalledTimes(expectedReads);
+    expect(getTicketDetails).toHaveBeenCalledTimes(2);
     expect(sendBrowserRelay).toHaveBeenCalledOnce();
     expect(markJobSucceeded).toHaveBeenCalledOnce();
     expect(markJobFailed).not.toHaveBeenCalled();
@@ -116,16 +110,17 @@ it.each([
   }
 });
 
-it('keeps a mention asking only for investigation off the public Browser Relay path', async () => {
+it('writes the English customer draft as an internal note for a mention, never as a public reply', async () => {
   vi.useFakeTimers();
   const query = vi.fn(async (sql: string) => sql.startsWith('SELECT payload')
     ? { rows: [{ payload: { body: '@David Yang 看下这个工单用户的教育积分情况' } }] }
     : { rows: [], rowCount: 0 });
   const sendBrowserRelay = vi.fn();
+  const deliverInternalDraft = vi.fn(async () => ({ channel: 'zendesk-internal-note', status: 'sent' }));
   const recordJobOutcome = vi.fn();
   const markJobSucceeded = vi.fn();
   const runPiSupportAgent = vi.fn(async () => ({
-    reply: '', internalNote: 'private analysis',
+    reply: '', customerReply: 'We are reviewing the current credits policy.', internalNote: 'private analysis',
     trace: { toolCalls: [], rounds: [], totalDurationMs: 1, finalReply: '' },
   }));
   const process = workerJob({
@@ -133,14 +128,47 @@ it('keeps a mention asking only for investigation off the public Browser Relay p
     isTicketHumanCancelled: async () => false,
     getTicketDetails: async () => ({ isAlreadyAnswered: true, hasRequestedHuman: false, message: 'customer' }),
     getActiveModelConfig: async () => ({ model: 'test' }),
-    openConnectorService: {}, allTools: [], runPiSupportAgent, operatorRequestedPublicReply,
-    sendBrowserRelay, recordJobOutcome, markJobSucceeded, markJobFailed: vi.fn(),
+    openConnectorService: {}, allTools: [], runPiSupportAgent,
+    sendBrowserRelay, deliverInternalDraft, recordJobOutcome, markJobSucceeded, markJobFailed: vi.fn(),
+    ZENDESK_BASE_URL: 'https://example.zendesk.com', ZENDESK_EMAIL: 'agent@example.com', ZENDESK_API_TOKEN: 'test-token',
     sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
   });
   await process({ job_id: 'test-job', ticket_id: 3726, generation: 1, event_id: 'mention:test' }, new AbortController());
   expect(runPiSupportAgent).toHaveBeenCalledWith(expect.objectContaining({ publicReplyAllowed: false }));
   expect(sendBrowserRelay).not.toHaveBeenCalled();
-  expect(recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed', delivery: null }));
+  expect(deliverInternalDraft).toHaveBeenCalledWith(expect.objectContaining({
+    jobId: 'test-job', ticketId: 3726,
+    customerReply: 'We are reviewing the current credits policy.',
+  }));
+  expect(recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({
+    status: 'completed', delivery: { channel: 'zendesk-internal-note', status: 'sent' },
+  }));
   expect(markJobSucceeded).toHaveBeenCalledOnce();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it('does not treat an explicit public-reply request inside an operator mention as public authorization', async () => {
+  vi.useFakeTimers();
+  const sendBrowserRelay = vi.fn();
+  const deliverInternalDraft = vi.fn(async () => ({ channel: 'zendesk-internal-note', status: 'sent' }));
+  const runPiSupportAgent = vi.fn(async () => ({
+    reply: '', customerReply: 'Hello, here is the draft.',
+    trace: { toolCalls: [], rounds: [], totalDurationMs: 1, finalReply: '' },
+  }));
+  const job = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2,
+    pool: { query: vi.fn(async () => ({ rows: [{ payload: { body: '@agent 请公开回复客户' } }] })) },
+    isTicketHumanCancelled: async () => false,
+    getTicketDetails: async () => ({ message: 'hello', isAlreadyAnswered: false, hasRequestedHuman: false }),
+    getActiveModelConfig: async () => ({ model: 'test' }), openConnectorService: {}, allTools: [],
+    runPiSupportAgent, sendBrowserRelay, deliverInternalDraft,
+    ZENDESK_BASE_URL: 'https://example.zendesk.com', ZENDESK_EMAIL: 'agent@example.com', ZENDESK_API_TOKEN: 'test-token',
+    recordJobOutcome: vi.fn(), markJobSucceeded: vi.fn(), markJobFailed: vi.fn(),
+    sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
+  });
+  await job({ job_id: 'test-job', ticket_id: 3726, event_id: 'mention:1234' }, new AbortController());
+  expect(runPiSupportAgent).toHaveBeenCalledWith(expect.objectContaining({ publicReplyAllowed: false }));
+  expect(deliverInternalDraft).toHaveBeenCalledOnce();
+  expect(sendBrowserRelay).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBe(0);
 });

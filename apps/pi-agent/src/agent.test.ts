@@ -194,7 +194,8 @@ Hello! Currently Dify does not provide this setting.
 
   it('keeps customer delivery and internal trace boundaries in the prompt', () => {
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('current evidence');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('internal analysis stays in the trace');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Internal analysis stays in the trace');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('operator mentions receive an internal customer-reply draft');
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('=== CUSTOMER REPLY ===');
   });
 });

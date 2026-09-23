@@ -8,8 +8,8 @@ description: Investigate Dify Cloud Zendesk tickets using current read-only evid
 ## Scope and authorization
 
 - Investigate through OpenConnector's complete connected read-only tool directory. The examples below are source-selection guidance, not a tool allowlist. Never execute an action that live discovery does not classify as `read`; Gmail and all mutations remain out of scope.
-- A customer-origin job may produce a public reply. An internal-note `@David Yang`/`@agent` mention asking to “看下” authorizes investigation only. A public reply requires an explicit operator instruction, and only the Worker may send it through Zendesk Browser Reply.
-- Keep the full investigation in the trace-only internal note. Do not add a Zendesk note, change a ticket, notify a customer, or claim an external action occurred unless the authorized delivery path actually completed.
+- A customer-origin job may produce a public reply. An internal-note `@David Yang`/`@agent` mention authorizes investigation and an English customer-reply draft posted as a Zendesk internal note, never a public reply. Only the Worker may deliver either channel.
+- Keep the investigation in the trace-only internal section. Do not include it in the Zendesk draft, change ticket fields, notify a customer from a mention, or claim an external action occurred unless the authorized delivery path actually completed.
 
 ## Evidence workflow
 
@@ -35,4 +35,4 @@ Return both exact markers, even for an internal-only mention:
 
 `=== INTERNAL NOTE ===` — factual evidence, source names, identifiers and UTC window, confidence, contradictions, gaps, and next safe action. This section is never a customer message.
 
-`=== CUSTOMER REPLY ===` — direct, concise English addressed to `you`; include only verified customer-safe findings and useful next steps. If a claim remains unverified, say so plainly. No Chinese body, internal investigation notes, raw SQL/logs, private IDs, internal links, invented approvals, or speculative root cause. The Worker may withhold this section when public delivery was not authorized.
+`=== CUSTOMER REPLY ===` — direct, concise English addressed to `you`; include only verified customer-safe findings and useful next steps. If a claim remains unverified, say so plainly. No Chinese body, internal investigation notes, raw SQL/logs, private IDs, internal links, invented approvals, or speculative root cause. The Worker posts this as an internal draft for operator mentions and never sends it publicly from a mention.

@@ -68,7 +68,7 @@ def test_signed_note_enqueues_and_duplicate_does_not(client, caplog):
     assert SECRET not in caplog.text
 
 
-@pytest.mark.parametrize("change", ["public", "customer", "ordinary", "other_type"])
+@pytest.mark.parametrize("change", ["public", "customer", "ordinary", "agent_draft", "other_type"])
 def test_ignored_events(client, change):
     data = payload()
     comment = data["event"]["comment"]
@@ -78,6 +78,8 @@ def test_ignored_events(client, change):
         comment["author"]["is_staff"] = False
     elif change == "ordinary":
         comment["body"] = "ordinary note"
+    elif change == "agent_draft":
+        comment["body"] = "[DIFY_AI_AGENT_DRAFT:test-job] Please ask @David Yang to review."
     else:
         data = {"type": "zen:event-type:ticket.status_changed"}
     response = signed(client, data)

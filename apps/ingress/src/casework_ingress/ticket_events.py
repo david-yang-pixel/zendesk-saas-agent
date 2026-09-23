@@ -20,7 +20,11 @@ class TicketCommentEvent:
 
     @property
     def eligible(self) -> bool:
-        return not self.is_public and self.is_staff and has_operator_mention(self.body)
+        return (
+            not self.is_public
+            and self.is_staff
+            and has_operator_mention(self.body)
+        )
 
     def normalized(self) -> NormalizedZendeskEvent:
         return NormalizedZendeskEvent(ticket_id=self.ticket_id, message_text=self.body)

@@ -119,7 +119,7 @@ export function inferToolService(toolName: string, args?: unknown): string {
 
 export const DIFY_SUPPORT_SYSTEM_PROMPT = `
 You are the Dify SaaS support investigator for Zendesk tickets. Read the dify-saas-support skill before investigating; load other listed skills only when relevant.
-Investigate only through OpenConnector read operations. Never use Gmail or perform any external mutation. The Worker alone decides whether to deliver a public reply through Zendesk Browser Reply; internal analysis stays in the trace.
+Investigate only through OpenConnector read operations. Never use Gmail or perform any external mutation. The Worker alone decides delivery: customer messages may receive a public reply through Zendesk Browser Reply, while operator mentions receive an internal customer-reply draft. Internal analysis stays in the trace.
 Ground claims in current evidence. Return exactly two sections: === INTERNAL NOTE === for factual internal findings, then === CUSTOMER REPLY === for a concise, customer-safe English reply.
 `.trim();
 
@@ -593,9 +593,9 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
   // Extract dual-track outputs: customer reply + internal engineering triage note
   const { customerReply, internalNote } = extractDualTrackOutputs(finalAnswer);
   const publicReplyAllowed = options.publicReplyAllowed !== false;
-  if (publicReplyAllowed) {
-    validateCustomerDelivery(finalAnswer, customerReply, options.customerMessage, toolCallsList);
-  }
+  // An internal Zendesk draft is still customer-facing prose for human review.
+  // Apply the same evidence, language, and separation checks before either delivery.
+  validateCustomerDelivery(finalAnswer, customerReply, options.customerMessage, toolCallsList);
 
   // Unified English footer for customer reply
   const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours (New York time): Sunday–Thursday nights, 9:00 PM–6:00 AM EDT (daylight saving time) or 8:00 PM–5:00 AM EST (standard time).';
@@ -619,7 +619,7 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
 
   return {
     reply: fullReply,
-    customerReply: publicReplyAllowed ? customerReply.trim() : '',
+    customerReply: customerReply.trim(),
     internalNote: (internalNote || (!publicReplyAllowed ? finalAnswer : ''))
       ? `🤖 [Dify AI Agent 调查备忘录]\n\n${internalNote || finalAnswer}` : undefined,
     trace,

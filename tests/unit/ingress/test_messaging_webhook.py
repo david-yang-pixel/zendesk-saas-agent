@@ -217,6 +217,27 @@ def test_agent_actor_is_ignored_without_ticket_api_or_admission() -> None:
     assert admission.events == []
 
 
+def test_generated_internal_draft_cannot_retrigger_via_messaging_webhook() -> None:
+    reader = _TicketReader(
+        ZendeskTicket(ticket_id=2757, tags=("saas",), group_id=123, status="open")
+    )
+    admission = _Admission()
+    client, _, _ = _client(reader=reader, admission=admission)
+
+    response = _signed_request(
+        client,
+        _payload(
+            actor_type="agent",
+            body="[DIFY_AI_AGENT_DRAFT:job-123] Please ask @David Yang to review.",
+        ),
+    )
+
+    assert response.status_code == 202
+    assert response.json()["action"] == "ignore"
+    assert reader.ticket_ids == []
+    assert admission.events == []
+
+
 def test_unknown_actor_shape_is_ignored_without_inspecting_message() -> None:
     reader = _TicketReader(
         ZendeskTicket(ticket_id=2757, tags=("saas",), group_id=123, status="open")

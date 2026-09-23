@@ -32,6 +32,7 @@ from .processing_rules import (
     ProcessingDecision,
     ProcessingRuleConfig,
     evaluate_processing_rules,
+    has_operator_mention,
 )
 from .zendesk import ZendeskTicketError, ZendeskTicketReader
 from .ticket_events import parse_ticket_event
@@ -297,19 +298,7 @@ def create_app(
         except MessagingPayloadError as error:
             raise HTTPException(status_code=400, detail="bad_payload") from error
 
-        mention_triggers = (
-            "@david yang",
-            "@davidyang",
-            "**david yang**",
-            "@agent",
-            "@ai agent",
-            "@ai",
-            "@dify-agent",
-            "@saas-agent",
-        )
-        is_operator_mention = any(
-            tr in (event.message_text or "").lower() for tr in mention_triggers
-        )
+        is_operator_mention = has_operator_mention(event.message_text or "")
         if not event.is_customer_message and not is_operator_mention:
             return respond(
                 action="ignore",

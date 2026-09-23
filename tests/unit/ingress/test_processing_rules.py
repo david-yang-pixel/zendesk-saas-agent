@@ -133,3 +133,15 @@ def test_human_text_in_non_customer_message_does_not_cancel() -> None:
 
     assert decision.action == "ignore"
     assert decision.reason == "not_customer_message"
+
+
+def test_agent_generated_draft_with_quoted_mention_does_not_retrigger() -> None:
+    decision = evaluate_processing_rules(
+        _event(
+            is_customer_message=False,
+            message_text="[DIFY_AI_AGENT_DRAFT:job-123] Please ask @David Yang to review.",
+        ),
+        config=ProcessingRuleConfig(saas_tag="saas", saas_assignee="saas-support"),
+    )
+    assert decision.action == "ignore"
+    assert decision.reason == "not_customer_message"

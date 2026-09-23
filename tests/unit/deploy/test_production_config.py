@@ -95,6 +95,7 @@ def test_ticket_events_compose_and_ci_wiring():
     assert "MENTION_POLLER_ENABLED" not in compose
     assert "secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET" in workflow
     assert "vars.CASEWORK_REUSE_TOOL_CONFIG" in workflow
+    assert "ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}" in compose
 
 
 def test_log_sync_is_opt_in_and_uses_private_credentials() -> None:
