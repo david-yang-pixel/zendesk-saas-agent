@@ -121,7 +121,7 @@ export function inferToolService(toolName: string, args?: unknown): string {
 export const DIFY_SUPPORT_SYSTEM_PROMPT = `
 You are the Dify SaaS support investigator for Zendesk tickets. Read the dify-saas-support skill before investigating; load other listed skills only when relevant.
 Investigate only through OpenConnector read operations. Never use Gmail or perform any external mutation. The Worker alone decides delivery: customer messages may receive a public reply through Zendesk Browser Reply, while operator mentions receive an internal customer-reply draft. Internal analysis stays in the trace.
-Ground claims in current evidence. Return exactly two sections: === INTERNAL NOTE === for factual internal findings, then === CUSTOMER REPLY === for a concise, customer-safe English reply.
+Ground claims in current evidence. If evidence is unavailable, still answer a customer-origin ticket in English: name what remains unverified and what the customer can provide or a human support engineer must check. Never invent a conclusion. Return exactly two sections: === INTERNAL NOTE === for factual internal findings, then === CUSTOMER REPLY === for a concise, customer-safe English reply.
 `.trim();
 
 export function sanitizeCustomerReply(rawReply: string): string {
@@ -219,8 +219,6 @@ export function extractDualTrackOutputs(rawText: string): DualTrackOutput {
 export function validateCustomerDelivery(
   rawText: string,
   customerReply: string,
-  customerMessage: string,
-  toolCalls: Array<{ toolName: string; service: string; status?: string; arguments?: any }>,
 ): void {
   const internalMarkers = rawText.match(/^=== INTERNAL NOTE ===[ \t]*$/gm) ?? [];
   const customerMarkers = rawText.match(/^=== CUSTOMER REPLY ===[ \t]*$/gm) ?? [];
@@ -234,11 +232,23 @@ export function validateCustomerDelivery(
   if (/=== (?:INTERNAL NOTE|CUSTOMER REPLY) ===|(?:内部调查|调查结果\s*\(|Internal Analysis|Internal Note)/i.test(customerReply)) {
     throw new Error('Customer delivery blocked: internal analysis leaked into public reply');
   }
+}
 
-  const missing = getMissingCustomerEvidenceSources(customerMessage, toolCalls);
-  if (missing.length > 0) {
-    throw new Error(`Customer delivery blocked: missing successful evidence from ${missing.join(', ')}`);
-  }
+export function buildEvidenceGapReply(missingSources: readonly string[]): string {
+  if (missingSources.length === 0) throw new Error('Evidence gap reply requires at least one missing source');
+  const descriptions: Record<string, string> = {
+    feishu: 'the current education or discount policy',
+    docs: 'the applicable product guidance',
+    'db-gateway': 'your workspace\'s billing or credit records',
+  };
+  const missing = missingSources.map(source => descriptions[source] ?? 'the relevant supporting information');
+  const details = missing.length === 1
+    ? missing[0]
+    : `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}`;
+  const accountDetail = missingSources.includes('db-gateway')
+    ? ' If the affected workspace ID and the time of the issue are not already in this ticket, please share them.'
+    : '';
+  return `I can't yet verify ${details}, so I don't want to give you an unsupported conclusion. A human support engineer needs to check this before confirming the answer.${accountDetail} You can reply “human” to request that review.`;
 }
 
 export function getMissingCustomerEvidenceSources(
@@ -439,7 +449,7 @@ ${options.customerMessage}
 """
 ${attachmentSection}
 ${options.contextPrepared ? 'The Worker already prepared the latest conversation and unreplied customer events above.' : ''}
-${requiredSources.length ? `Before drafting, verify these required read-only evidence categories: ${requiredSources.join(', ')}.` : ''}
+${requiredSources.length ? `Relevant read-only evidence sources to consider: ${requiredSources.join(', ')}. If any are unavailable or inconclusive, still provide a safe English reply that states what remains unverified and the next customer or human-support step.` : ''}
 
 First read the dify-saas-support skill at ${projectSkills.find(skill => skill.name === 'dify-saas-support')!.filePath}. Follow it for investigation and final output; read other relevant skills only when needed.
 `.trim();
@@ -459,14 +469,13 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
     throw promptErr;
   }
 
-  // One bounded recovery pass for source gaps. The delivery gate remains the
-  // final authority, but the model gets a chance to use omitted live sources
-  // before a safe internal draft is rejected.
+  // One bounded recovery pass gives the model a chance to check omitted sources.
+  // Missing sources must not prevent a safe customer response.
   if (!options.abortSignal?.aborted && !getTerminalAssistantError(session.messages)) {
     const missingSources = getMissingCustomerEvidenceSources(options.customerMessage, [...liveExecutedTools.values()]);
     if (missingSources.length > 0) {
-      console.log(`[Agent] Missing required source categories for ticket #${options.ticketId}: ${missingSources.join(', ')}; requesting one recovery pass`);
-      await session.prompt(`Your investigation has not yet completed the required read-only source checks: ${missingSources.join(', ')}. Use the dify-saas-support skill and OpenConnector to call each missing source now. For education credits, verify the current Feishu policy and official docs as well as account data; do not infer current policy from billing tables alone. Correct malformed SQL before retrying and stop repeating the same failing query. Then return the two required sections in English for the customer-facing draft. If a source is unavailable, state that uncertainty internally and do not invent a conclusion.`);
+      console.log(`[Agent] Evidence source gaps for ticket #${options.ticketId}: ${missingSources.join(', ')}; requesting one recovery pass`);
+      await session.prompt(`The following relevant read-only sources have not yielded evidence: ${missingSources.join(', ')}. Use the dify-saas-support skill and OpenConnector to check them when available. For education credits, verify current policy and official docs as well as account data before making a definitive claim. Correct malformed SQL before retrying and stop repeating the same failing query. Then return the two required sections in English. If evidence remains unavailable, explain the exact uncertainty and a customer or human-support next step; do not invent a conclusion.`);
     }
   }
 
@@ -633,17 +642,23 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
   const { customerReply, internalNote } = extractDualTrackOutputs(finalAnswer);
   const publicReplyAllowed = options.publicReplyAllowed !== false;
   // An internal Zendesk draft is still customer-facing prose for human review.
-  // Apply the same evidence, language, and separation checks before either delivery.
-  validateCustomerDelivery(finalAnswer, customerReply, options.customerMessage, toolCallsList);
+  // Keep language and separation checks, but never drop a ticket solely because
+  // a suggested source was unavailable. Do not deliver the model's unsupported
+  // claims in that case: use a deterministic uncertainty reply instead.
+  const missingSources = getMissingCustomerEvidenceSources(options.customerMessage, toolCallsList);
+  const safeCustomerReply = missingSources.length > 0
+    ? buildEvidenceGapReply(missingSources)
+    : customerReply.trim();
+  validateCustomerDelivery(finalAnswer, safeCustomerReply);
 
   // Unified English footer for customer reply
   const footer = '\n\n---\nThis reply was sent by Dify AI Agent. If this does not resolve your issue, reply “human”. A human support engineer will respond as soon as possible during support hours (New York time): Sunday–Thursday nights, 9:00 PM–6:00 AM EDT (daylight saving time) or 8:00 PM–5:00 AM EST (standard time).';
-  const fullReply = publicReplyAllowed ? customerReply.trim() + footer : '';
+  const fullReply = publicReplyAllowed ? safeCustomerReply + footer : '';
   trace.finalReply = fullReply;
 
   return {
     reply: fullReply,
-    customerReply: customerReply.trim(),
+    customerReply: safeCustomerReply,
     internalNote: (internalNote || (!publicReplyAllowed ? finalAnswer : ''))
       ? `🤖 [Dify AI Agent 调查备忘录]\n\n${internalNote || finalAnswer}` : undefined,
     trace,

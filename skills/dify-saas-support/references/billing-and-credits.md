@@ -24,3 +24,4 @@ payment/invoice -> billing event -> subscription/plan state -> allowance or quot
 ## Reply gate
 
 For every statement about this customer's membership, discount, grant, or credit refresh, cite the matching account records and dated policy in the internal note. In the English customer reply, state only confirmed status, what was observed at the relevant time, whether present recovery is verified, and a safe next step. Do not expose raw SQL, payment IDs, internal policy links, or unverified credit amounts.
+If those records or the current policy cannot be verified, do not fail silently or infer the answer from a plan label. Give the customer a concise English reply identifying the missing verification and the specific customer detail or human-support check needed. For an operator mention, write that same customer-sendable reply as the internal draft, never as a public comment.

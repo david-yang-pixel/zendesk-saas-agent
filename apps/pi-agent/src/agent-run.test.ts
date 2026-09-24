@@ -30,6 +30,7 @@ vi.mock('./project-skills.js', () => ({
 }));
 
 import { runPiSupportAgent, type AgentTracePayload } from './agent.js';
+import { buildInternalDraftBody } from './internal-draft-delivery.js';
 
 function toolEvidence(connectionName: string, actionId: string, callId: string) {
   const args = { actionId, connectionName, input: {} };
@@ -60,7 +61,7 @@ describe('Pi Agent recovery and failed-run trace', () => {
     expect(result.reply).toBe('');
   });
 
-  it('keeps failed tool calls when evidence validation blocks delivery', async () => {
+  it('keeps failed tool calls and returns an internal customer-sendable draft when evidence is missing', async () => {
     mocked.messages = []; mocked.prompts = []; mocked.subscriber = undefined;
     mocked.executeRecovery = () => {
       const args = { actionId: 'custom_mcp.call_tool', connectionName: 'dify-db', input: {} };
@@ -69,12 +70,37 @@ describe('Pi Agent recovery and failed-run trace', () => {
         result: { isError: true, content: [{ type: 'text', text: 'Tool error: malformed SQL' }] }, isError: true });
     };
     let captured: AgentTracePayload | undefined;
-    await expect(runPiSupportAgent({
+    const result = await runPiSupportAgent({
       ticketId: 3726, customerMessage: '看下这个工单用户的教育优惠会员，以及为什么积分不刷新',
       tools: [], apiKey: 'test-key', modelBaseUrl: 'https://example.test/v1',
       publicReplyAllowed: false, onTrace: trace => { captured = trace; },
-    })).rejects.toThrow(/missing successful evidence/);
+    });
     expect(mocked.prompts).toHaveLength(2);
     expect(captured?.toolCalls).toMatchObject([{ toolCallId: 'bad-sql', status: 'failed' }]);
+    expect(result.reply).toBe('');
+    expect(result.customerReply).toContain('human support engineer');
+    expect(result.customerReply).toContain('workspace\'s billing or credit records');
+    expect(result.customerReply).not.toContain('here is what we verified');
+    const internalDraft = buildInternalDraftBody('job-3726', result.customerReply);
+    expect(internalDraft).toContain('Not sent to the customer.');
+    expect(internalDraft).toContain(result.customerReply);
+    expect(internalDraft).not.toContain('Evidence checked.');
+  });
+
+  it('returns a public uncertainty reply rather than blocking a customer-origin ticket', async () => {
+    mocked.messages = []; mocked.prompts = []; mocked.subscriber = undefined;
+    mocked.executeRecovery = undefined;
+    const result = await runPiSupportAgent({
+      ticketId: 3726, customerMessage: 'Does the product feature support this workflow?',
+      tools: [], apiKey: 'test-key', modelBaseUrl: 'https://example.test/v1',
+      publicReplyAllowed: true,
+    });
+    expect(mocked.prompts).toHaveLength(2);
+    expect(result.customerReply).toContain('applicable product guidance');
+    expect(result.customerReply).toContain('human support engineer');
+    expect(result.customerReply).not.toContain('workspace ID');
+    expect(result.reply).toContain(result.customerReply);
+    expect(result.reply).toContain('This reply was sent by Dify AI Agent');
+    expect(result.reply).not.toContain('here is what we verified');
   });
 });

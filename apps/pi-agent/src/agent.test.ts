@@ -8,6 +8,7 @@ import {
   supportsExplicitReasoningEffort,
   DIFY_SUPPORT_SYSTEM_PROMPT,
   getMissingCustomerEvidenceSources,
+  buildEvidenceGapReply,
   validateCustomerDelivery,
 } from './agent.js';
 
@@ -209,34 +210,36 @@ describe('customer delivery safety gate', () => {
   });
 
   it('blocks a markerless internal investigation instead of treating it as a customer reply', () => {
-    expect(() => validateCustomerDelivery('调查结果：已查到积分', '调查结果：已查到积分', 'credits', []))
+    expect(() => validateCustomerDelivery('调查结果：已查到积分', '调查结果：已查到积分'))
       .toThrow(/dual-track output markers/);
   });
 
   it('blocks Chinese public text and internal headings', () => {
-    expect(() => validateCustomerDelivery(dualTrack, '调查结果：积分不刷新', 'credits', []))
+    expect(() => validateCustomerDelivery(dualTrack, '调查结果：积分不刷新'))
       .toThrow(/entirely in English/);
-    expect(() => validateCustomerDelivery(dualTrack, 'Internal Analysis: customer facts', 'hello', []))
+    expect(() => validateCustomerDelivery(dualTrack, 'Internal Analysis: customer facts'))
       .toThrow(/internal analysis leaked/);
   });
 
-  it('requires policy, docs, and account evidence before claiming education credits behavior', () => {
+  it('identifies missing education evidence without blocking an uncertainty reply', () => {
     const message = '看下这个工单用户的教育优惠会员，以及为什么积分不刷新';
     expect(getMissingCustomerEvidenceSources(message, [readCall('db-gateway')])).toEqual(['feishu', 'docs']);
     expect(getMissingCustomerEvidenceSources(message, [readCall('db-gateway'), readCall('feishu'), readCall('docs')])).toEqual([]);
-    expect(() => validateCustomerDelivery(dualTrack, 'We are checking your credits.', message, [readCall('db-gateway')]))
-      .toThrow(/feishu, docs/);
-    expect(() => validateCustomerDelivery(dualTrack, 'We are checking your credits.', message, [
-      readCall('db-gateway'), readCall('feishu'), readCall('docs'),
-    ])).not.toThrow();
+    const safeReply = buildEvidenceGapReply(getMissingCustomerEvidenceSources(message, [readCall('db-gateway')]));
+    expect(safeReply).toContain('current education or discount policy');
+    expect(safeReply).toContain('applicable product guidance');
+    expect(safeReply).toContain('human support engineer');
+    expect(() => validateCustomerDelivery(dualTrack, safeReply)).not.toThrow();
+    expect(() => validateCustomerDelivery(
+      '=== INTERNAL NOTE ===\n证据不足。\n=== CUSTOMER REPLY ===\n尚未核实。', safeReply,
+    )).not.toThrow();
   });
 
   it('does not count discovery as business evidence for a product feature claim', () => {
     const message = 'Does the product feature support this workflow?';
-    expect(() => validateCustomerDelivery(dualTrack, 'Please check the workflow setting.', message, [
+    expect(getMissingCustomerEvidenceSources(message, [
       { toolName: 'list_read_tools', service: 'docs', status: 'succeeded' },
-    ])).toThrow(/missing successful evidence from docs/);
-    expect(() => validateCustomerDelivery(dualTrack, 'Please check the workflow setting.', message, [readCall('docs')]))
-      .not.toThrow();
+    ])).toEqual(['docs']);
+    expect(getMissingCustomerEvidenceSources(message, [readCall('docs')])).toEqual([]);
   });
 });

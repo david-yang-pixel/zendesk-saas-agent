@@ -16,10 +16,12 @@ OpenConnector is the only investigation gateway. The Agent receives `list_read_t
 
 ## Discovery and execution
 
+Start each investigation with one unfiltered `list_connections` call to establish the current connection-instance count, distinct services, and available connection names. Compare them with the known routes below; only the live result establishes what is configured now. A connection listing does not prove its business tools work. If the listing fails, report the discovery gap and use only sources that can be verified independently.
+
 For a native provider:
 
-1. Use `list_read_tools` to find relevant connected sources and read actions. Scope by `service` or `connectionName` when known; use an unscoped inventory only if the evidence source is genuinely unknown. Continue `nextOffset` when needed. All connected read actions may be used, not just the examples below; do not inventory every provider on every ticket.
-2. Call `list_connections` for the selected service and `search_actions` for native action details; continue the action cursor when needed.
+1. Use `list_read_tools` to find relevant connected sources and read actions. Scope by `service` or `connectionName` when known; use an unscoped tool inventory only if the evidence source is genuinely unknown. Continue `nextOffset` when needed. All connected read actions may be used, not just the examples below; do not inventory every provider's tools on every ticket.
+2. Call `search_actions` for native action details; continue the action cursor when needed.
 3. Call `get_action_guide` with the selected `actionId` and explicit `connectionName` when the live schema is unclear.
 4. Call `execute_action` only for a live `read` action.
 
