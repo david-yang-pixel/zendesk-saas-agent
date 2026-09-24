@@ -21,6 +21,7 @@ function fixture() {
     pool: { query } as any,
     jobId: 'job-123', ticketId: 3726,
     customerReply: 'Hello, we are checking your subscription.',
+    internalNote: 'Checked account records; current policy still requires confirmation.',
     baseUrl: 'https://example.zendesk.com', email: 'agent@example.com', apiToken: 'test-token',
     fetchImpl,
   };
@@ -28,16 +29,17 @@ function fixture() {
 }
 
 describe('internal customer-reply draft delivery', () => {
-  it('posts only the customer draft as a private comment without changing ticket fields', async () => {
+  it('posts an operator summary and separate sendable draft as a private comment without changing ticket fields', async () => {
     const { options, fetchImpl } = fixture();
     expect(await deliverInternalDraft(options)).toEqual({ channel: 'zendesk-internal-note', status: 'sent' });
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://example.zendesk.com/api/v2/tickets/3726.json');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(String(init.body))).toEqual({ ticket: {
-      comment: { body: buildInternalDraftBody('job-123', options.customerReply), public: false },
+      comment: { body: buildInternalDraftBody('job-123', options.customerReply, options.internalNote), public: false },
     } });
-    expect(String(init.body)).not.toContain('private analysis');
+    expect(String(init.body)).toContain('Investigation summary (internal');
+    expect(String(init.body)).toContain('Customer-sendable reply draft (English)');
     expect(String(init.body)).toContain(INTERNAL_DRAFT_MARKER);
   });
 
@@ -70,5 +72,11 @@ describe('internal customer-reply draft delivery', () => {
     );
     expect(body).toContain('Hello, we are checking this.');
     expect(body).not.toContain('This reply was sent by Dify AI Agent');
+  });
+
+  it('redacts obvious credentials from the operator summary', () => {
+    const body = buildInternalDraftBody('job-123', 'We are reviewing this.', 'Authorization: Bearer abcdefghijklmnop');
+    expect(body).not.toContain('abcdefghijklmnop');
+    expect(body).toContain('[REDACTED]');
   });
 });

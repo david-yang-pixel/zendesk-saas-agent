@@ -7,8 +7,9 @@ import {
   getTerminalAssistantError,
   supportsExplicitReasoningEffort,
   DIFY_SUPPORT_SYSTEM_PROMPT,
-  getMissingCustomerEvidenceSources,
-  buildEvidenceGapReply,
+  isBusinessRead,
+  getDiscoveryOnlySources,
+  buildNoBusinessEvidenceReply,
   validateCustomerDelivery,
 } from './agent.js';
 
@@ -204,10 +205,6 @@ Hello! Currently Dify does not provide this setting.
 
 describe('customer delivery safety gate', () => {
   const dualTrack = '=== INTERNAL NOTE ===\nEvidence checked.\n=== CUSTOMER REPLY ===\nHello, here is what we verified.';
-  const readCall = (service: string) => ({
-    toolName: 'execute_action', service, status: 'succeeded',
-    arguments: { actionId: service === 'feishu' ? 'feishu.search_docs' : 'custom_mcp.call_tool' },
-  });
 
   it('blocks a markerless internal investigation instead of treating it as a customer reply', () => {
     expect(() => validateCustomerDelivery('调查结果：已查到积分', '调查结果：已查到积分'))
@@ -221,13 +218,8 @@ describe('customer delivery safety gate', () => {
       .toThrow(/internal analysis leaked/);
   });
 
-  it('identifies missing education evidence without blocking an uncertainty reply', () => {
-    const message = '看下这个工单用户的教育优惠会员，以及为什么积分不刷新';
-    expect(getMissingCustomerEvidenceSources(message, [readCall('db-gateway')])).toEqual(['feishu', 'docs']);
-    expect(getMissingCustomerEvidenceSources(message, [readCall('db-gateway'), readCall('feishu'), readCall('docs')])).toEqual([]);
-    const safeReply = buildEvidenceGapReply(getMissingCustomerEvidenceSources(message, [readCall('db-gateway')]));
-    expect(safeReply).toContain('current education or discount policy');
-    expect(safeReply).toContain('applicable product guidance');
+  it('keeps a safe uncertainty reply available for any issue type', () => {
+    const safeReply = buildNoBusinessEvidenceReply();
     expect(safeReply).toContain('human support engineer');
     expect(() => validateCustomerDelivery(dualTrack, safeReply)).not.toThrow();
     expect(() => validateCustomerDelivery(
@@ -235,11 +227,25 @@ describe('customer delivery safety gate', () => {
     )).not.toThrow();
   });
 
-  it('does not count discovery as business evidence for a product feature claim', () => {
-    const message = 'Does the product feature support this workflow?';
-    expect(getMissingCustomerEvidenceSources(message, [
-      { toolName: 'list_read_tools', service: 'docs', status: 'succeeded' },
-    ])).toEqual(['docs']);
-    expect(getMissingCustomerEvidenceSources(message, [readCall('docs')])).toEqual([]);
+  it('counts only an answered business read, never discovery or a failed action', () => {
+    expect(isBusinessRead({ toolName: 'list_read_tools', status: 'succeeded', result: { tools: [] } })).toBe(false);
+    expect(isBusinessRead({ toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'custom_mcp.list_tools' }, result: { tools: [] } })).toBe(false);
+    expect(isBusinessRead({ toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'custom_mcp.call_tool', input: {} }, result: {} })).toBe(false);
+    expect(isBusinessRead({ toolName: 'execute_action', status: 'failed', arguments: { actionId: 'linear.search_issues' }, result: {} })).toBe(false);
+    expect(isBusinessRead({ toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'linear.search_issues' }, result: { ok: true, data: { issues: [] } } })).toBe(true);
+    expect(isBusinessRead({ toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'custom_mcp.call_tool', input: { toolName: 'github_search_issues' } }, result: { ok: true, data: {} } })).toBe(true);
+  });
+
+  it('detects source-agnostic discovery-only gaps despite a successful read elsewhere', () => {
+    const calls = [
+      { toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'custom_mcp.call_tool', connectionName: 'dify-db', input: { toolName: 'db_gateway_query' } }, result: { ok: true, data: {} } },
+      { toolName: 'search_actions', status: 'succeeded', arguments: { service: 'feishu' }, result: { ok: true, data: [] } },
+      { toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'custom_mcp.list_tools', connectionName: 'dify-docs' }, result: { ok: true, data: { tools: [] } } },
+      { toolName: 'list_connections', status: 'succeeded', arguments: {}, result: { ok: true, data: [] } },
+    ];
+    expect(getDiscoveryOnlySources(calls)).toEqual(['feishu', 'dify-docs']);
+    expect(getDiscoveryOnlySources([...calls, {
+      toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'feishu.search_documents', connectionName: 'default' }, result: { ok: true, data: [] },
+    }])).toEqual(['dify-docs']);
   });
 });

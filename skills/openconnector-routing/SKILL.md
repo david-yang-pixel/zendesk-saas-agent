@@ -21,15 +21,16 @@ Start each investigation with one unfiltered `list_connections` call to establis
 For a native provider:
 
 1. Use `list_read_tools` to find relevant connected sources and read actions. Scope by `service` or `connectionName` when known; use an unscoped tool inventory only if the evidence source is genuinely unknown. Continue `nextOffset` when needed. All connected read actions may be used, not just the examples below; do not inventory every provider's tools on every ticket.
-2. Call `search_actions` for native action details; continue the action cursor when needed.
-3. Call `get_action_guide` with the selected `actionId` and explicit `connectionName` when the live schema is unclear.
+2. Use `search_actions` only when the scoped directory does not identify a suitable action; continue the action cursor when needed.
+3. Call `get_action_guide` with the selected `actionId` and explicit `connectionName` when the live schema is unclear. The directory omits full schemas to keep model context small.
 4. Call `execute_action` only for a live `read` action.
 
 For Custom MCP:
 
-1. Call `execute_action` with `actionId=custom_mcp.list_tools`, an explicit connection name, and empty input.
-2. Read the returned tool name, schema, `operationType`, confirmation requirement, and pagination contract.
-3. Call `execute_action` with `actionId=custom_mcp.call_tool` only when the selected remote tool is `read` and does not require confirmation.
+1. Start from a scoped `list_read_tools` entry. If the remote input schema is unclear, call `execute_action` with `actionId=custom_mcp.list_tools`, the selected connection name, and empty input once; inspect only the selected tool.
+2. Call `execute_action` with `actionId=custom_mcp.call_tool` and the exact selected remote tool name. The runtime re-fetches and verifies its live `read` classification and confirmation policy before allowing the call, even if the directory looked safe.
+
+Discovery is not execution. After choosing a source, use its actual read action, inspect the business result, and record the exact coverage or error. A successful `list_connections`, `search_actions`, `get_action_guide`, or `custom_mcp.list_tools` call proves only tool availability. If a focused business search has no match, refine its query once or check a second relevant source before declaring evidence unavailable. Do not run every connected tool merely to satisfy this step.
 
 ## Evidence routes
 

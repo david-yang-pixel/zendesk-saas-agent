@@ -234,45 +234,65 @@ export function validateCustomerDelivery(
   }
 }
 
-export function buildEvidenceGapReply(missingSources: readonly string[]): string {
-  if (missingSources.length === 0) throw new Error('Evidence gap reply requires at least one missing source');
-  const descriptions: Record<string, string> = {
-    feishu: 'the current education or discount policy',
-    docs: 'the applicable product guidance',
-    'db-gateway': 'your workspace\'s billing or credit records',
-  };
-  const missing = missingSources.map(source => descriptions[source] ?? 'the relevant supporting information');
-  const details = missing.length === 1
-    ? missing[0]
-    : `${missing.slice(0, -1).join(', ')} and ${missing[missing.length - 1]}`;
-  const accountDetail = missingSources.includes('db-gateway')
-    ? ' If the affected workspace ID and the time of the issue are not already in this ticket, please share them.'
-    : '';
-  return `I can't yet verify ${details}, so I don't want to give you an unsupported conclusion. A human support engineer needs to check this before confirming the answer.${accountDetail} You can reply “human” to request that review.`;
+export function isBusinessRead(call: {
+  toolName: string;
+  status?: string;
+  arguments?: any;
+  result?: any;
+}): boolean {
+  if (call.toolName !== 'execute_action' || call.status !== 'succeeded') return false;
+  const actionId = call.arguments?.actionId;
+  if (typeof actionId !== 'string' || actionId === 'custom_mcp.list_tools') return false;
+  if (actionId === 'custom_mcp.call_tool') {
+    const remoteName = call.arguments?.input?.toolName;
+    if (typeof remoteName !== 'string' || !remoteName || remoteName === 'list_tools') return false;
+  }
+  // A successful empty result is still a completed query, but a missing tool
+  // result is not evidence that any provider actually answered.
+  return call.result != null;
 }
 
-export function getMissingCustomerEvidenceSources(
-  customerMessage: string,
-  toolCalls: Array<{ toolName: string; service: string; status?: string; arguments?: any }>,
-): string[] {
-  const successfulEvidence = (service: string) => toolCalls.some(call =>
-    call.service === service &&
-    call.status === 'succeeded' &&
-    call.toolName === 'execute_action' &&
-    call.arguments?.actionId !== 'custom_mcp.list_tools',
-  );
-  const education = /educat(?:ion|ional)?|student|school|university|教育|学生|学校|高校/i.test(customerMessage);
-  const creditsOrTerms = /credit|quota|discount|promotion|plan|subscription|积分|额度|优惠|会员|订阅/i.test(customerMessage);
-  const productFeature = /产品功能|是否支持|功能|特性|feature|product capability|how (?:does|do|to) .{0,40} work/i.test(customerMessage);
-  const accountSpecific = /我的|用户的|该工作区|这个工作区|my |our |this workspace|customer's/i.test(customerMessage);
-  const requiredSources = new Set<string>();
-  if (education && creditsOrTerms) {
-    requiredSources.add('feishu');
-    requiredSources.add('docs');
-    if (accountSpecific) requiredSources.add('db-gateway');
+type EvidenceToolCall = {
+  toolName: string;
+  status?: string;
+  arguments?: any;
+  result?: any;
+};
+
+function sourceOfTargetedCall(call: EvidenceToolCall): string | undefined {
+  const args = call.arguments ?? {};
+  if (call.toolName === 'list_read_tools') {
+    if (args.service === 'custom_mcp') return typeof args.connectionName === 'string' ? args.connectionName : undefined;
+    return typeof args.service === 'string' ? args.service : undefined;
   }
-  if (productFeature) requiredSources.add('docs');
-  return [...requiredSources].filter(service => !successfulEvidence(service));
+  if (call.toolName === 'search_actions') return typeof args.service === 'string' ? args.service : undefined;
+  if (call.toolName !== 'get_action_guide' && call.toolName !== 'execute_action') return undefined;
+  const actionId = args.actionId;
+  if (typeof actionId !== 'string') return undefined;
+  if (actionId.startsWith('custom_mcp.')) {
+    return typeof args.connectionName === 'string' ? args.connectionName : undefined;
+  }
+  return actionId.split('.')[0] || undefined;
+}
+
+export function getDiscoveryOnlySources(calls: readonly EvidenceToolCall[]): string[] {
+  const discovered = new Set<string>();
+  const read = new Set<string>();
+  for (const call of calls) {
+    const source = sourceOfTargetedCall(call);
+    if (!source) continue;
+    if (isBusinessRead(call)) read.add(source);
+    else if (call.status === 'succeeded' && (
+      call.toolName === 'list_read_tools' || call.toolName === 'search_actions' ||
+      call.toolName === 'get_action_guide' ||
+      (call.toolName === 'execute_action' && call.arguments?.actionId === 'custom_mcp.list_tools')
+    )) discovered.add(source);
+  }
+  return [...discovered].filter(source => !read.has(source));
+}
+
+export function buildNoBusinessEvidenceReply(): string {
+  return 'I cannot verify the relevant records yet, so I do not want to give you an unsupported conclusion. If this concerns a specific workspace or request, please share its ID, the time of the issue, and any error ID not already in this ticket. A human support engineer can review the remaining evidence. You can reply “human” to request that review.';
 }
 
 export async function runPiSupportAgent(options: AgentRunOptions): Promise<AgentRunResult> {
@@ -438,8 +458,6 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     attachmentSection = '\nCustomer Uploaded Attachments / Screenshots:\n' +
       options.attachments.map(a => `- ${a.name} (type: ${a.contentType || 'unknown'}, URL: ${a.url || 'N/A'})`).join('\n') + '\n';
   }
-  const requiredSources = getMissingCustomerEvidenceSources(options.customerMessage, []);
-
   const prompt = `
 Customer Ticket #${options.ticketId}
 Requester Email: ${options.requesterEmail || 'Unknown'}
@@ -449,8 +467,6 @@ ${options.customerMessage}
 """
 ${attachmentSection}
 ${options.contextPrepared ? 'The Worker already prepared the latest conversation and unreplied customer events above.' : ''}
-${requiredSources.length ? `Relevant read-only evidence sources to consider: ${requiredSources.join(', ')}. If any are unavailable or inconclusive, still provide a safe English reply that states what remains unverified and the next customer or human-support step.` : ''}
-
 First read the dify-saas-support skill at ${projectSkills.find(skill => skill.name === 'dify-saas-support')!.filePath}. Follow it for investigation and final output; read other relevant skills only when needed.
 `.trim();
 
@@ -469,13 +485,14 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
     throw promptErr;
   }
 
-  // One bounded recovery pass gives the model a chance to check omitted sources.
-  // Missing sources must not prevent a safe customer response.
+  // Catalog/guide calls are not investigation. Give one bounded chance to
+  // execute an actual read before producing a customer-facing conclusion.
   if (!options.abortSignal?.aborted && !getTerminalAssistantError(session.messages)) {
-    const missingSources = getMissingCustomerEvidenceSources(options.customerMessage, [...liveExecutedTools.values()]);
-    if (missingSources.length > 0) {
-      console.log(`[Agent] Evidence source gaps for ticket #${options.ticketId}: ${missingSources.join(', ')}; requesting one recovery pass`);
-      await session.prompt(`The following relevant read-only sources have not yielded evidence: ${missingSources.join(', ')}. Use the dify-saas-support skill and OpenConnector to check them when available. For education credits, verify current policy and official docs as well as account data before making a definitive claim. Correct malformed SQL before retrying and stop repeating the same failing query. Then return the two required sections in English. If evidence remains unavailable, explain the exact uncertainty and a customer or human-support next step; do not invent a conclusion.`);
+    const observedCalls = [...liveExecutedTools.values()];
+    const discoveryOnly = getDiscoveryOnlySources(observedCalls);
+    if (!observedCalls.some(isBusinessRead) || discoveryOnly.length > 0) {
+      console.log(`[Agent] Business-read gap for ticket #${options.ticketId}; targeted discovery-only sources: ${discoveryOnly.join(', ') || 'none'}`);
+      await session.prompt(`Tool discovery is not evidence. ${discoveryOnly.length ? `These sources were inspected but no business read succeeded: ${discoveryOnly.join(', ')}.` : 'No connected business read has succeeded yet.'} For each still-relevant source, call execute_action with the discovered read-only action and actual schema; for Custom MCP use custom_mcp.call_tool rather than listing tools again. If a source is not relevant, state why in the internal note. If a focused business search is inconclusive, refine it once or try another relevant source; do not repeat broad catalogs or a failed query unchanged. Then return both required sections, distinguishing verified facts from unknowns. The customer-reply section must be concise English and must not invent findings.`);
     }
   }
 
@@ -641,13 +658,13 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
   // Extract dual-track outputs: customer reply + internal engineering triage note
   const { customerReply, internalNote } = extractDualTrackOutputs(finalAnswer);
   const publicReplyAllowed = options.publicReplyAllowed !== false;
-  // An internal Zendesk draft is still customer-facing prose for human review.
-  // Keep language and separation checks, but never drop a ticket solely because
-  // a suggested source was unavailable. Do not deliver the model's unsupported
-  // claims in that case: use a deterministic uncertainty reply instead.
-  const missingSources = getMissingCustomerEvidenceSources(options.customerMessage, toolCallsList);
-  const safeCustomerReply = missingSources.length > 0
-    ? buildEvidenceGapReply(missingSources)
+  // Never treat a catalog lookup as corroboration for customer-facing claims.
+  // Preserve the model's qualified partial answer after a real read; only use
+  // the deterministic uncertainty reply when no business read succeeded.
+  const hasBusinessEvidence = toolCallsList.some(isBusinessRead);
+  const discoveryOnly = getDiscoveryOnlySources(toolCallsList);
+  const safeCustomerReply = !hasBusinessEvidence
+    ? buildNoBusinessEvidenceReply()
     : customerReply.trim();
   validateCustomerDelivery(finalAnswer, safeCustomerReply);
 
@@ -659,8 +676,9 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
   return {
     reply: fullReply,
     customerReply: safeCustomerReply,
-    internalNote: (internalNote || (!publicReplyAllowed ? finalAnswer : ''))
-      ? `🤖 [Dify AI Agent 调查备忘录]\n\n${internalNote || finalAnswer}` : undefined,
+    internalNote: !hasBusinessEvidence
+      ? 'No connected business read succeeded. Discovery results and failed calls do not verify the answer; review the tool timeline and investigate before sending the draft.'
+      : `${internalNote || 'A connected business read succeeded; review the tool timeline for its scope.'}${discoveryOnly.length ? `\n\nUnfinished source checks: ${discoveryOnly.join(', ')} had discovery but no successful business read. Verify relevance and complete these checks before sending a claim that depends on them.` : ''}`,
     trace,
   };
 }

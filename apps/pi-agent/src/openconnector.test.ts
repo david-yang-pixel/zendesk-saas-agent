@@ -141,6 +141,49 @@ describe('OpenConnector hard read-only boundary', () => {
     expect(result.structuredContent.data).toEqual([{ service: 'feishu', connectionName: 'default' }]);
   });
 
+  it('keeps every native read action discoverable without returning repeated provider profiles', async () => {
+    const largeProfile = { grantedScopes: Array.from({ length: 1000 }, (_, index) => `scope-${index}`) };
+    vi.stubGlobal('fetch', vi.fn(async () => mcpResponse({ ok: true, data: [
+      { id: 'feishu.search_documents', operationType: 'read', description: 'Search documents', capability: { connection: { profile: largeProfile } } },
+      { id: 'feishu.search_messages', operationType: 'read', description: 'Search messages', capability: { connection: { profile: largeProfile } } },
+      { id: 'feishu.update_document', operationType: 'write', description: 'Update document', capability: { connection: { profile: largeProfile } } },
+    ], page: { nextCursor: null } })));
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const result = await callOpenConnectorTool(config, 'search_actions', { service: 'feishu' });
+    expect(result.structuredContent.data.map((action: any) => action.id)).toEqual([
+      'feishu.search_documents', 'feishu.search_messages', 'feishu.update_document',
+    ]);
+    expect(JSON.stringify(result).length).toBeLessThan(2000);
+    expect(JSON.stringify(result)).not.toContain('grantedScopes');
+  });
+
+  it('keeps a selected guide and read-only Custom MCP schema while omitting connection profiles and write tools', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mcpResponse({ ok: true, data: {
+        capability: { operationType: 'read', policy: { allowed: true }, connection: { profile: { grantedScopes: Array(1000).fill('scope') } } },
+        markdown: '## Input Parameters\nquery: string\n\n## Current Connection\nGranted scopes: many\n\n## Notes For Agents\nCall execute_action',
+      } }))
+      .mockResolvedValueOnce(mcpResponse({ ok: true, data: { tools: [
+        { name: 'search_docs', operationType: 'read', confirmationRequired: false, inputSchema: { required: ['query'] }, connection: { profile: 'large' } },
+        { name: 'write_doc', operationType: 'write', confirmationRequired: true },
+      ] } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const guide = await callOpenConnectorTool(config, 'get_action_guide', { actionId: 'feishu.search_documents', connectionName: 'default' });
+    expect(JSON.stringify(guide)).toContain('query: string');
+    expect(JSON.stringify(guide)).not.toContain('Granted scopes: many');
+    expect(JSON.stringify(guide)).not.toContain('grantedScopes');
+    const tools = await callOpenConnectorTool(config, 'execute_action', {
+      actionId: 'custom_mcp.list_tools', connectionName: 'dify-docs', input: {},
+    });
+    expect(tools.structuredContent.data.tools).toEqual([{
+      name: 'search_docs', description: '', operationType: 'read', confirmationRequired: false,
+      inputSchema: { required: ['query'] },
+    }]);
+    expect(JSON.stringify(tools)).not.toContain('write_doc');
+    expect(JSON.stringify(tools)).not.toContain('profile');
+  });
+
   it('catalogs all read tools from connected native and Custom MCP services without listing Gmail', async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
       const request = JSON.parse(String(init.body));

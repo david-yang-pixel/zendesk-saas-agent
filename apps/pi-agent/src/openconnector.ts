@@ -45,6 +45,7 @@ const BLOCKED_SERVICES = new Set(['gmail']);
 const CUSTOM_MCP_TOOL_CACHE_TTL_MS = 60_000;
 const READ_TOOL_DIRECTORY_TTL_MS = 5 * 60_000;
 const READ_TOOL_PAGE_SIZE = 50;
+const DISCOVERY_DESCRIPTION_LIMIT = 220;
 // OpenConnector resolves live capabilities for every action in a search page;
 // keep each Worker request bounded while still following every page.
 const ACTION_SEARCH_PAGE_SIZE = 50;
@@ -78,6 +79,20 @@ function asRecord(value: unknown): Record<string, any> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, any>
     : undefined;
+}
+
+function shortDescription(value: unknown): string {
+  return typeof value === 'string' ? value.slice(0, DISCOVERY_DESCRIPTION_LIMIT) : '';
+}
+
+function agentVisibleResult(result: any, payload: Record<string, any>): any {
+  // Replace both MCP representations: retaining the original content would
+  // still feed the large provider profile back into the model context.
+  return {
+    ...(result?.isError === true ? { isError: true } : {}),
+    structuredContent: payload,
+    content: [{ type: 'text', text: JSON.stringify(payload) }],
+  };
 }
 
 function requiredString(value: unknown, name: string): string {
@@ -340,23 +355,62 @@ export async function callOpenConnectorTool(
   }
 
   const result = await readWithRetry(boundedSignal => callMcpTool(config.endpoint, config.apiKey, toolName, requestParams, boundedSignal, config.protocolVersion), signal);
-  if (toolName !== 'list_connections' || params.service !== undefined) return result;
+  if (toolName === 'get_action_guide') {
+    const payload = parseJsonTextResult(result);
+    const data = asRecord(payload.data);
+    if (payload.ok !== true || !data) return result;
+    const capability = asRecord(data.capability) ?? {};
+    const markdown = typeof data.markdown === 'string'
+      ? data.markdown.replace(/## Current Connection[\s\S]*?(?=\n## Notes For Agents|$)/, '## Current Connection\nConnection and policy are checked at execution time.\n')
+      : undefined;
+    return agentVisibleResult(result, { ok: true, data: {
+      capability: { operationType: capability.operationType, policy: { allowed: capability.policy?.allowed } },
+      ...(markdown ? { markdown } : {}),
+    } });
+  }
+  if (toolName === 'execute_action' && params.actionId === 'custom_mcp.list_tools') {
+    const payload = parseJsonTextResult(result);
+    const data = asRecord(payload.data);
+    if (payload.ok !== true || !Array.isArray(data?.tools)) return result;
+    return agentVisibleResult(result, { ok: true, data: { tools: data.tools
+      .filter((tool: any) => tool?.operationType === 'read' && tool?.confirmationRequired !== true)
+      .map((tool: any) => ({
+        name: tool.name,
+        description: shortDescription(tool.description),
+        operationType: tool.operationType,
+        confirmationRequired: false,
+        inputSchema: tool.inputSchema,
+        pagination: tool.pagination,
+      })) } });
+  }
+  if (toolName !== 'list_connections' && toolName !== 'search_actions') return result;
   const payload = parseJsonTextResult(result);
   if (payload.ok !== true || !Array.isArray(payload.data)) return result;
-  const safePayload = {
-    ...payload,
-    data: payload.data.filter((connection: any) =>
-      typeof connection?.service === 'string' &&
-      typeof connection?.connectionName === 'string' &&
-      !BLOCKED_SERVICES.has(connection.service.toLowerCase()) &&
-      !connection.connectionName.toLowerCase().includes('gmail'),
-    ),
-  };
-  return {
-    ...result,
-    structuredContent: safePayload,
-    content: [{ type: 'text', text: JSON.stringify(safePayload) }],
-  };
+  if (toolName === 'list_connections') {
+    return agentVisibleResult(result, {
+      ok: true,
+      data: payload.data.filter((connection: any) =>
+        typeof connection?.service === 'string' &&
+        typeof connection?.connectionName === 'string' &&
+        !BLOCKED_SERVICES.has(connection.service.toLowerCase()) &&
+        !connection.connectionName.toLowerCase().includes('gmail'),
+      ).map((connection: any) => ({
+        service: connection.service,
+        connectionName: connection.connectionName,
+      })),
+    });
+  }
+  return agentVisibleResult(result, {
+    ok: true,
+    data: payload.data.map((action: any) => ({
+      id: action?.id,
+      name: action?.name,
+      description: shortDescription(action?.description),
+      operationType: action?.operationType,
+      ...(action?.capability?.policy?.allowed === false ? { allowed: false } : {}),
+    })),
+    page: payload.page,
+  });
 }
 
 export function createOpenConnectorServiceConfig(endpoint: string, apiKey: string): McpServiceConfig {
@@ -452,14 +506,13 @@ async function loadReadToolDirectory(
         const payload = parseOpenConnectorResult(result);
         if (!Array.isArray(payload.data)) throw new Error(`OpenConnector ${service} did not return an action list`);
         for (const action of payload.data) {
-          if (action?.operationType !== 'read' || action?.capability?.policy?.allowed === false || typeof action.id !== 'string') continue;
+          if (action?.operationType !== 'read' || action?.allowed === false || typeof action.id !== 'string') continue;
           for (const connectionName of connectionNames) {
             entries.push({
               service,
               connectionName,
               actionId: action.id,
-              description: typeof action.description === 'string' ? action.description : '',
-              inputSummary: action.inputSummary,
+              description: shortDescription(action.description),
             });
           }
         }
@@ -513,7 +566,13 @@ function createReadToolDirectoryTool(config: McpServiceConfig): CustomTool {
           total: matching.length,
           offset,
           nextOffset: offset + READ_TOOL_PAGE_SIZE < matching.length ? offset + READ_TOOL_PAGE_SIZE : null,
-          tools: matching.slice(offset, offset + READ_TOOL_PAGE_SIZE),
+          tools: matching.slice(offset, offset + READ_TOOL_PAGE_SIZE).map(entry => ({
+            service: entry.service,
+            connectionName: entry.connectionName,
+            actionId: entry.actionId,
+            ...(entry.toolName ? { toolName: entry.toolName } : {}),
+            description: shortDescription(entry.description),
+          })),
         };
         return { content: [{ type: 'text', text: JSON.stringify(page) }], details: page };
       } catch (error: any) {
