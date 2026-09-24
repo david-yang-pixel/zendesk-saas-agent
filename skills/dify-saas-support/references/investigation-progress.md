@@ -41,4 +41,4 @@ For `unresolved`, link an actual access/availability failure, a body read that d
 
 ## Final output
 
-Finish relevant pending checks within the bounded continuation budget. When evidence remains missing, still provide the required internal summary and customer-sendable English draft. Include verified useful findings, the precise unresolved point, and the minimum next step. Do not replace a partial investigation with a generic “contact support” message. The Worker controls delivery.
+Finish relevant pending checks within the bounded continuation budget. When evidence remains missing, still provide the required internal summary and customer-sendable English draft. The summary stays in the run trace, while an operator mention delivers only the English draft as an internal Zendesk note. Include verified useful findings, the precise unresolved point, and the minimum next step in the appropriate section. Do not replace a partial investigation with a generic “contact support” message. The Worker controls delivery.

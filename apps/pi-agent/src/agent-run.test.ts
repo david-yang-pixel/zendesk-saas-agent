@@ -90,7 +90,9 @@ describe('Pi Agent evidence continuation and delivery', () => {
     expect(mocked.prompts[1]).toContain('public (dify-docs, document): not_queried');
     expect(result.internalNote).not.toContain('Remaining investigation gaps');
     expect(result.customerReply).toBe('Hello, here is what we verified.');
-    expect(buildInternalDraftBody('job-3726', result.customerReply, result.internalNote)).toContain('Not sent to the customer.');
+    const draftBody = buildInternalDraftBody('job-3726', result.customerReply);
+    expect(draftBody).toContain('Not sent to the customer.');
+    expect(draftBody).not.toContain('Evidence coverage:');
   });
   it('keeps actual failures in the trace and still returns a useful draft', async () => {
     mocked.initial = async () => {

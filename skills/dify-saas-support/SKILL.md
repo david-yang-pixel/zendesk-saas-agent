@@ -9,7 +9,7 @@ description: Investigate Dify Cloud Zendesk tickets using current read-only evid
 
 - Investigate through OpenConnector's complete connected read-only tool directory. The examples below are source-selection guidance, not a tool allowlist. Never execute an action that live discovery does not classify as `read`; Gmail and all mutations remain out of scope.
 - A customer-origin job should receive a public reply even when evidence is incomplete, as long as the reply makes no unsupported claim: identify what remains unverified and what the customer can provide or a human support engineer must check. An internal-note `@David Yang`/`@agent` mention authorizes investigation and a customer-sendable English reply draft posted as a Zendesk internal note, never a public reply. Only the Worker may deliver either channel.
-- Keep raw tool payloads, secrets, and customer-sensitive data out of the draft. For operator mentions, provide a brief evidence summary and a separate sendable English draft in the internal note; never notify the customer or change ticket fields from a mention. Do not claim an external action occurred unless the authorized delivery path actually completed.
+- Keep raw tool payloads, secrets, and customer-sensitive data out of the draft. For operator mentions, keep the evidence summary in the run trace; the Zendesk internal note contains only the sendable English customer reply draft and a short not-sent label. Never notify the customer or change ticket fields from a mention. Do not claim an external action occurred unless the authorized delivery path actually completed.
 
 ## Evidence workflow
 
@@ -51,6 +51,6 @@ These are source-selection hints, not a tool allowlist. Other live connected rea
 
 Return both exact markers, even for an internal-only mention:
 
-`=== INTERNAL NOTE ===` — a concise operator summary of factual evidence, source names and relevant time window, confidence, contradictions, gaps, and next safe action. Do not paste raw SQL, tool JSON, credentials, or customer-sensitive identifiers. For operator mentions this summary is included in the private note above the customer-sendable draft; it is not itself a customer message.
+`=== INTERNAL NOTE ===` — a concise operator summary of factual evidence, source names and relevant time window, confidence, contradictions, gaps, and next safe action. Do not paste raw SQL, tool JSON, credentials, or customer-sensitive identifiers. This section stays in the run trace; the Worker must never include it in a Zendesk comment.
 
 `=== CUSTOMER REPLY ===` — direct, concise English addressed to `you`; include only verified customer-safe findings and useful next steps. If evidence is incomplete, still write a usable customer reply: specify what could not be verified and request only the missing customer detail or explain the human-support check needed. Do not present a guess as a finding or claim a human handoff already happened. No Chinese body, internal investigation notes, raw SQL/logs, private IDs, internal links, invented approvals, or speculative root cause. The Worker posts this as an internal customer-sendable draft for operator mentions and never sends it publicly from a mention.

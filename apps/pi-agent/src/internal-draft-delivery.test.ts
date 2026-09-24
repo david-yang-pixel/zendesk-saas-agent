@@ -21,7 +21,6 @@ function fixture() {
     pool: { query } as any,
     jobId: 'job-123', ticketId: 3726,
     customerReply: 'Hello, we are checking your subscription.',
-    internalNote: 'Checked account records; current policy still requires confirmation.',
     baseUrl: 'https://example.zendesk.com', email: 'agent@example.com', apiToken: 'test-token',
     fetchImpl,
   };
@@ -29,17 +28,20 @@ function fixture() {
 }
 
 describe('internal customer-reply draft delivery', () => {
-  it('posts an operator summary and separate sendable draft as a private comment without changing ticket fields', async () => {
+  it('posts only the sendable draft as a private comment without changing ticket fields', async () => {
     const { options, fetchImpl } = fixture();
     expect(await deliverInternalDraft(options)).toEqual({ channel: 'zendesk-internal-note', status: 'sent' });
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://example.zendesk.com/api/v2/tickets/3726.json');
     expect(init.method).toBe('PUT');
     expect(JSON.parse(String(init.body))).toEqual({ ticket: {
-      comment: { body: buildInternalDraftBody('job-123', options.customerReply, options.internalNote), public: false },
+      comment: {
+        body: '[DIFY_AI_AGENT_DRAFT:job-123]\nAI-generated customer reply draft for human review. Not sent to the customer.\n\nHello, we are checking your subscription.',
+        public: false,
+      },
     } });
-    expect(String(init.body)).toContain('Investigation summary (internal');
-    expect(String(init.body)).toContain('Customer-sendable reply draft (English)');
+    expect(String(init.body)).toContain('Hello, we are checking your subscription.');
+    expect(String(init.body)).not.toContain('Investigation summary');
     expect(String(init.body)).toContain(INTERNAL_DRAFT_MARKER);
   });
 
@@ -74,9 +76,15 @@ describe('internal customer-reply draft delivery', () => {
     expect(body).not.toContain('This reply was sent by Dify AI Agent');
   });
 
-  it('redacts obvious credentials from the operator summary', () => {
-    const body = buildInternalDraftBody('job-123', 'We are reviewing this.', 'Authorization: Bearer abcdefghijklmnop');
+  it('keeps internal investigation material out of the customer-sendable note', async () => {
+    const { options, fetchImpl } = fixture();
+    const internalNote = 'Investigation summary (internal): private DB result and Authorization: Bearer abcdefghijklmnop';
+    await deliverInternalDraft({ ...options, internalNote } as any);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(init.body)).ticket.comment.body as string;
+    expect(body).toContain(options.customerReply);
+    expect(body).not.toContain('Investigation summary');
+    expect(body).not.toContain('private DB result');
     expect(body).not.toContain('abcdefghijklmnop');
-    expect(body).toContain('[REDACTED]');
   });
 });

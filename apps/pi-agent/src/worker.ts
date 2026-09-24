@@ -517,7 +517,6 @@ async function main() {
           jobId: job.job_id,
           ticketId: job.ticket_id,
           customerReply: agentResult.customerReply,
-          internalNote: agentResult.internalNote,
           baseUrl: ZENDESK_BASE_URL,
           email: ZENDESK_EMAIL,
           apiToken: ZENDESK_API_TOKEN,
