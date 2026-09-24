@@ -186,6 +186,7 @@ jobs:
           DEPLOY_SSH_KEY: ${{ secrets.ZD_AGENT_DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.ZD_AGENT_DEPLOY_KNOWN_HOSTS }}
           OPENCONNECTOR_RUNTIME_TOKEN: ${{ secrets.OPENCONNECTOR_RUNTIME_TOKEN }}
+          CASEWORK_OPENCONNECTOR_MCP_URL: ${{ vars.CASEWORK_OPENCONNECTOR_MCP_URL }}
           ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${{ secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET }}
           HC_CLIENT_URL: ${{ vars.HC_CLIENT_URL }}
           HC_CLIENT_API_KEY: ${{ secrets.HC_CLIENT_API_KEY }}
@@ -221,6 +222,7 @@ jobs:
             printf 'export GHCR_USERNAME=%q\n' "$GHCR_USERNAME"
             printf 'export GHCR_PAT=%q\n' "$GHCR_PAT"
             printf 'export OPENCONNECTOR_RUNTIME_TOKEN=%q\n' "$OPENCONNECTOR_RUNTIME_TOKEN"
+            printf 'export CASEWORK_OPENCONNECTOR_MCP_URL=%q\n' "$CASEWORK_OPENCONNECTOR_MCP_URL"
             printf 'export ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET=%q\n' "$ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"
             printf 'export HC_CLIENT_URL=%q\n' "$HC_CLIENT_URL"
             printf 'export HC_CLIENT_API_KEY=%q\n' "$HC_CLIENT_API_KEY"

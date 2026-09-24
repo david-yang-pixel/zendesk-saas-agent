@@ -95,7 +95,63 @@ def test_ticket_events_compose_and_ci_wiring():
     assert "MENTION_POLLER_ENABLED" not in compose
     assert "secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET" in workflow
     assert "vars.CASEWORK_REUSE_TOOL_CONFIG" in workflow
+    assert "vars.CASEWORK_OPENCONNECTOR_MCP_URL" in workflow
+    assert "CASEWORK_OPENCONNECTOR_MCP_URL: ${CASEWORK_OPENCONNECTOR_MCP_URL:-" in compose
     assert "ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}" in compose
+
+
+def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
+    source = tmp_path / "source.env"
+    socket = tmp_path / "socket"
+    socket.touch()
+    _source_environment(source)
+    for name in (
+        "CASEWORK_INGRESS_IMAGE",
+        "CASEWORK_HARNESS_IMAGE",
+        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_ADMIN_IMAGE",
+    ):
+        monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
+
+    endpoint = "https://openconnector.smlershou.top/mcp"
+    monkeypatch.setenv("CASEWORK_OPENCONNECTOR_MCP_URL", endpoint)
+    seen: list[str] = []
+
+    def discover(service, _secret):
+        seen.append(service.endpoint)
+        return [
+            {
+                "name": "search_actions",
+                "remote_tool_name": "search_actions",
+                "description": "Search actions",
+                "input_schema": {"type": "object"},
+                "read_only": True,
+                "endpoint_url": service.endpoint,
+                "credential_ref": service.credential_ref,
+            }
+        ]
+
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", discover)
+    args: dict[str, Any] = dict(
+        source_env=source,
+        state_dir=tmp_path / "state",
+        revision="a" * 40,
+        docker_socket=socket,
+    )
+    prepare_runtime.prepare(**args)
+    monkeypatch.delenv("CASEWORK_OPENCONNECTOR_MCP_URL")
+    prepare_runtime.prepare(**args)
+
+    runtime = prepare_runtime._parse_dotenv(tmp_path / "state/runtime.env")
+    assert runtime["CASEWORK_OPENCONNECTOR_MCP_URL"] == endpoint
+    assert seen == [endpoint, endpoint]
+    assert json.loads(runtime["CASEWORK_TOOL_CONFIG"])[0]["endpoint_url"] == endpoint
+
+
+def test_openconnector_endpoint_rejects_credential_redirect(monkeypatch):
+    monkeypatch.setenv("CASEWORK_OPENCONNECTOR_MCP_URL", "https://attacker.example/mcp")
+    with pytest.raises(RuntimeError, match="approved MCP endpoint"):
+        prepare_runtime._configured_services({})
 
 
 def test_log_sync_is_opt_in_and_uses_private_credentials() -> None:

@@ -17,7 +17,7 @@ import stat
 import tempfile
 import urllib.request
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -40,6 +40,27 @@ READ_ONLY_SERVICES = (
         frozenset({"list_apps"}),
     ),
 )
+
+ALLOWED_OPENCONNECTOR_MCP_URLS = frozenset(
+    {
+        READ_ONLY_SERVICES[0].endpoint,
+        "https://openconnector.smlershou.top/mcp",
+    }
+)
+
+
+def _configured_services(existing: Mapping[str, str]) -> tuple[McpService, ...]:
+    endpoint = (
+        os.environ.get("CASEWORK_OPENCONNECTOR_MCP_URL", "").strip()
+        or existing.get("CASEWORK_OPENCONNECTOR_MCP_URL", "").strip()
+        or READ_ONLY_SERVICES[0].endpoint
+    )
+    # Tool discovery sends the runtime token to this URL. Do not allow an
+    # arbitrary deployment variable to redirect that credential elsewhere.
+    if endpoint not in ALLOWED_OPENCONNECTOR_MCP_URLS:
+        raise RuntimeError("CASEWORK_OPENCONNECTOR_MCP_URL is not an approved MCP endpoint")
+    return (replace(READ_ONLY_SERVICES[0], endpoint=endpoint),)
+
 
 LEGACY_INVESTIGATION_CREDENTIAL_KEYS = frozenset(
     {
@@ -232,7 +253,9 @@ def _discover_tools(service: McpService, secret: str) -> list[dict[str, object]]
     return tools
 
 
-def _saved_tools(existing: Mapping[str, str]) -> list[dict[str, object]]:
+def _saved_tools(
+    existing: Mapping[str, str], services: tuple[McpService, ...] = READ_ONLY_SERVICES
+) -> list[dict[str, object]]:
     """Explicit offline deploy using only previously saved, allowed contracts."""
     try:
         tools = json.loads(existing.get("CASEWORK_TOOL_CONFIG", ""))
@@ -240,11 +263,17 @@ def _saved_tools(existing: Mapping[str, str]) -> list[dict[str, object]]:
         raise RuntimeError("No valid saved tool configuration") from error
     if not isinstance(tools, list) or not tools:
         raise RuntimeError("No valid saved tool configuration")
-    allowed = {(s.endpoint, s.credential_ref): s for s in READ_ONLY_SERVICES}
+    allowed = {(s.endpoint, s.credential_ref): s for s in services}
     for tool in tools:
         if not isinstance(tool, dict):
             raise RuntimeError("Invalid saved tool contract")
-        service = allowed.get((tool.get("endpoint_url"), tool.get("credential_ref")))
+        endpoint_url = tool.get("endpoint_url")
+        credential_ref = tool.get("credential_ref")
+        service = (
+            allowed.get((endpoint_url, credential_ref))
+            if isinstance(endpoint_url, str) and isinstance(credential_ref, str)
+            else None
+        )
         if (
             service is None or tool.get("read_only") is not True
             or not isinstance(tool.get("name"), str) or not tool["name"]
@@ -280,6 +309,7 @@ def prepare(
     existing = (
         _parse_dotenv(existing_runtime_path) if existing_runtime_path.exists() else {}
     )
+    services = _configured_services(existing)
     postgres_password = existing.get("POSTGRES_PASSWORD") or secrets.token_hex(24)
     delivery_mode = existing.get("CASEWORK_DELIVERY_MODE", "dry_run")
     canary_ids = existing.get("CASEWORK_CANARY_TICKET_IDS", "")
@@ -302,9 +332,9 @@ def prepare(
         os.chown(credential_dir, 10_001, 10_001)
     all_tools: list[dict[str, object]] = []
     if reuse_tools == "true":
-        all_tools = _saved_tools(existing)
+        all_tools = _saved_tools(existing, services)
     service_credentials: dict[str, str] = {}
-    for service in READ_ONLY_SERVICES:
+    for service in services:
         secret = _required(legacy, service.secret_name)
         service_credentials[
             "CASEWORK_CREDENTIAL_" + service.credential_ref.replace("-", "_").upper()
@@ -389,7 +419,7 @@ def prepare(
         ),
         "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET": ticket_events_secret,
         "CASEWORK_MODEL_BASE_URL": "https://api.openai.com",
-        "CASEWORK_OPENCONNECTOR_MCP_URL": READ_ONLY_SERVICES[0].endpoint,
+        "CASEWORK_OPENCONNECTOR_MCP_URL": services[0].endpoint,
         "CASEWORK_TOOL_CONFIG": json.dumps(
             all_tools, ensure_ascii=False, separators=(",", ":")
         ),
