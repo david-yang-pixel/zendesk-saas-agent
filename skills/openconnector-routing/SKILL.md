@@ -20,7 +20,7 @@ Start each investigation with one unfiltered `list_connections` call to establis
 
 For a native provider:
 
-1. Use `list_read_tools` to find relevant connected sources and read actions. Scope by `service` or `connectionName` when known; use an unscoped tool inventory only if the evidence source is genuinely unknown. Continue `nextOffset` when needed. All connected read actions may be used, not just the examples below; do not inventory every provider's tools on every ticket.
+1. Use `list_read_tools` to find relevant connected sources and read actions. Scope by `service` or `connectionName` and use its capability `query` filter (for example `search wiki message document`) to search across all permitted entries before pagination. Continue `nextOffset` with the same filters when needed; the first 50 actions are not the entire provider. All connected read actions remain available. Do not inventory unrelated providers on every ticket.
 2. Use `search_actions` only when the scoped directory does not identify a suitable action; continue the action cursor when needed.
 3. Call `get_action_guide` with the selected `actionId` and explicit `connectionName` when the live schema is unclear. The directory omits full schemas to keep model context small.
 4. Call `execute_action` only for a live `read` action.

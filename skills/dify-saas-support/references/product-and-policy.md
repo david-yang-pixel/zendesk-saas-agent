@@ -2,6 +2,8 @@
 
 Read for Dify SaaS product capabilities, limits, UI/configuration behavior, current public guidance, or a policy statement that affects the customer reply. Do not treat an old ticket reply or a search snippet as current product truth.
 
+Use [Evidence search](evidence-search.md) for concrete Feishu/official-document entry points and query refinement. Record the relevant source checks before querying and review actual body reads with `investigation_check` before concluding.
+
 ## Fast route
 
 1. Confirm this is Dify SaaS and identify the exact feature, app mode, UI/API entry, customer expectation, and any version or rollout constraint. If the evidence instead points to Enterprise or a private deployment, mark that mismatch; do not transfer SaaS behavior to it.

@@ -44,6 +44,22 @@ docker build -f deploy/Dockerfile --target sandbox -t casework-sandbox:dev .
 docker compose -f deploy/compose.yaml up --build
 ```
 
+### Read-only investigation evaluation
+
+After building Pi Agent, run `pnpm --dir apps/pi-agent eval:investigation education`
+(or `product` / `bug`) with the runtime's existing mounted credentials and model
+configuration. This uses the real model and allowed read-only OpenConnector tools,
+so it consumes API quota. The education scenario only reads the approved test ticket
+`#3726`; product and bug scenarios use independent questions. The script does not
+load the Worker, enqueue jobs, send replies/notes, or sync evaluation runs.
+
+Output is metadata only: executed actions, reviewed evidence phases, failures,
+duration and acceptance. Passing requires an English unsent draft, actual relevant
+body reads, and no pending evidence reviews. Explicit unresolved evidence is allowed;
+it is not a verified fact. A pass tests retrieval behavior, not the semantic truth of
+every conclusion or parity with a human investigator. Use the recorded failures and
+latency to decide whether a change is ready for production.
+
 ## Production & Deployment (`deploy/`)
 
 - **Release Orchestration**: Production runs via `deploy/compose.release.yaml`, managing PostgreSQL, Ingress, Pi-Agent, and Admin.

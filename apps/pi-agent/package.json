@@ -6,7 +6,8 @@
     "build": "tsc",
     "start": "node dist/worker.js",
     "test": "vitest run",
-    "smoke:openconnector": "node scripts/smoke-openconnector.mjs"
+    "smoke:openconnector": "node scripts/smoke-openconnector.mjs",
+    "eval:investigation": "node scripts/evaluate-investigation.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.4",

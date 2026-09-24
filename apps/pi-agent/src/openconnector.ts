@@ -429,9 +429,21 @@ export function createOpenConnectorServiceConfig(endpoint: string, apiKey: strin
 
 export async function discoverOpenConnectorTools(config: McpServiceConfig): Promise<CustomTool[]> {
   const tools = await discoverMcpTools(config);
-  const controls = tools.filter((tool) => OPENCONNECTOR_TOOL_SET.has(tool.name)).map(tool => tool.name !== 'execute_action' ? tool : {
-    ...tool,
-    description: `${tool.description}\nFor custom_mcp.call_tool, continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
+  const controls = tools.filter((tool) => OPENCONNECTOR_TOOL_SET.has(tool.name)).map(tool => {
+    // The upstream API permits implicit defaults; this Agent deliberately
+    // requires an explicit source. Expose the same contract to the model.
+    const required = tool.name === 'search_actions' ? ['service'] :
+      ['get_action_guide', 'execute_action'].includes(tool.name) ? ['actionId', 'connectionName'] : [];
+    const properties = { ...tool.parameters.properties };
+    for (const field of required) properties[field] = {
+      ...properties[field], type: 'string', minLength: 1,
+      ...(field === 'connectionName' ? { description: 'Exact connectionName returned by list_connections/list_read_tools, including "default" when that is the selected connection. Required by this Agent.' } : {}),
+    };
+    return {
+      ...tool,
+      parameters: { ...tool.parameters, properties, required: [...new Set([...(tool.parameters.required ?? []), ...required])] },
+      description: tool.name !== 'execute_action' ? tool.description : `${tool.description}\nFor custom_mcp.call_tool, continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
+    };
   });
   if (!OPENCONNECTOR_AGENT_TOOLS.every(name => controls.some(tool => tool.name === name))) {
     throw new Error('OpenConnector did not expose all required investigation controls');
@@ -546,6 +558,7 @@ function createReadToolDirectoryTool(config: McpServiceConfig): CustomTool {
       properties: {
         service: { type: 'string', description: 'Optional provider service, for example feishu or custom_mcp.' },
         connectionName: { type: 'string', description: 'Optional connection name, for example dify-docs.' },
+        query: { type: 'string', description: 'Optional space-separated capability terms. Matches any term in action/tool name or description, e.g. "search wiki message document". Use focused discovery rather than paging through unrelated actions.' },
         offset: { type: 'integer', minimum: 0, description: 'Offset from the previous page.' },
       },
     },
@@ -556,11 +569,14 @@ function createReadToolDirectoryTool(config: McpServiceConfig): CustomTool {
         if (service) assertServiceAllowed(service);
         const connectionName = input.connectionName === undefined ? undefined : requiredString(input.connectionName, 'connectionName');
         if (connectionName) assertConnectionAllowed(connectionName);
+        const query = input.query === undefined ? '' : requiredString(input.query, 'query');
+        const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
         const offset = input.offset === undefined ? 0 : input.offset;
         if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('OpenConnector directory offset must be a non-negative integer');
         const allEntries = await loadReadToolDirectory(config, service, connectionName, signal);
         const matching = allEntries.filter(entry =>
-          (!service || entry.service === service) && (!connectionName || entry.connectionName === connectionName),
+          (!service || entry.service === service) && (!connectionName || entry.connectionName === connectionName) &&
+          (!terms.length || terms.some(term => `${entry.actionId} ${entry.toolName ?? ''} ${entry.description}`.toLowerCase().includes(term))),
         );
         const page = {
           total: matching.length,

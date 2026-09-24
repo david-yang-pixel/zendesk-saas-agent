@@ -10,6 +10,7 @@ import { createProjectSkillReadTool, getProjectSkills } from './project-skills.j
 import { inferOpenConnectorService } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
 import { captureAgentRound, sumRoundTokens, updateAgentTool, type AgentRoundTelemetry, type CompletedToolTelemetry } from './round-telemetry.js';
+import { InvestigationTracker, continueInvestigation } from './investigation.js';
 
 export interface AgentAttachment {
   id: string;
@@ -344,6 +345,8 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     throw new Error('Required dify-saas-support skill is missing');
   }
   const skillReadTool = createProjectSkillReadTool(projectSkills);
+  const investigation = new InvestigationTracker();
+  const investigationTools = options.tools.map(tool => investigation.wrap(tool));
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: getAgentDir(),
@@ -359,8 +362,8 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     sessionManager: SessionManager.inMemory(),
     modelRuntime: runtime,
     model: model,
-    customTools: [...options.tools, skillReadTool],
-    tools: [...options.tools.map(t => t.name), 'read'],
+    customTools: [...investigationTools, skillReadTool, investigation.tool()],
+    tools: [...investigationTools.map(t => t.name), 'read', 'investigation_check'],
   });
 
   // Wire up immediate abort hook
@@ -485,16 +488,13 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
     throw promptErr;
   }
 
-  // Catalog/guide calls are not investigation. Give one bounded chance to
-  // execute an actual read before producing a customer-facing conclusion.
-  if (!options.abortSignal?.aborted && !getTerminalAssistantError(session.messages)) {
-    const observedCalls = [...liveExecutedTools.values()];
-    const discoveryOnly = getDiscoveryOnlySources(observedCalls);
-    if (!observedCalls.some(isBusinessRead) || discoveryOnly.length > 0) {
-      console.log(`[Agent] Business-read gap for ticket #${options.ticketId}; targeted discovery-only sources: ${discoveryOnly.join(', ') || 'none'}`);
-      await session.prompt(`Tool discovery is not evidence. ${discoveryOnly.length ? `These sources were inspected but no business read succeeded: ${discoveryOnly.join(', ')}.` : 'No connected business read has succeeded yet.'} For each still-relevant source, call execute_action with the discovered read-only action and actual schema; for Custom MCP use custom_mcp.call_tool rather than listing tools again. If a source is not relevant, state why in the internal note. If a focused business search is inconclusive, refine it once or try another relevant source; do not repeat broad catalogs or a failed query unchanged. Then return both required sections, distinguishing verified facts from unknowns. The customer-reply section must be concise English and must not invent findings.`);
-    }
-  }
+  // Planned sources remain visible even when they were never discovered.
+  // Empty searches and unread candidates trigger bounded investigation, not
+  // a delivery failure; the final answer must still explain any remaining gap.
+  await continueInvestigation(investigation, message => session.prompt(message), {
+    signal: options.abortSignal,
+    hasTerminalError: () => Boolean(getTerminalAssistantError(session.messages)),
+  });
 
   if (options.abortSignal?.aborted || (session as any).aborted) {
     const abortErr = new Error(`Agent execution aborted for ticket #${options.ticketId}`);
@@ -663,6 +663,8 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
   // the deterministic uncertainty reply when no business read succeeded.
   const hasBusinessEvidence = toolCallsList.some(isBusinessRead);
   const discoveryOnly = getDiscoveryOnlySources(toolCallsList);
+  const evidenceCoverage = investigation.summary();
+  const evidenceGaps = investigation.gaps();
   const safeCustomerReply = !hasBusinessEvidence
     ? buildNoBusinessEvidenceReply()
     : customerReply.trim();
@@ -678,7 +680,7 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
     customerReply: safeCustomerReply,
     internalNote: !hasBusinessEvidence
       ? 'No connected business read succeeded. Discovery results and failed calls do not verify the answer; review the tool timeline and investigate before sending the draft.'
-      : `${internalNote || 'A connected business read succeeded; review the tool timeline for its scope.'}${discoveryOnly.length ? `\n\nUnfinished source checks: ${discoveryOnly.join(', ')} had discovery but no successful business read. Verify relevance and complete these checks before sending a claim that depends on them.` : ''}`,
+      : `${internalNote || 'A connected business read succeeded; review the tool timeline for its scope.'}${evidenceCoverage ? `\n\nEvidence coverage:\n${evidenceCoverage}` : ''}${evidenceGaps.length ? `\n\nRemaining investigation gaps after bounded follow-up:\n${evidenceGaps.join('\n')}` : ''}${discoveryOnly.length ? `\n\nDiscovery-only sources: ${discoveryOnly.join(', ')}. Their contents were not verified.` : ''}`,
     trace,
   };
 }

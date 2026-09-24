@@ -104,6 +104,9 @@ describe('OpenConnector hard read-only boundary', () => {
     expect(tools.map(tool => tool.name)).toEqual([
       'list_connections', 'search_actions', 'get_action_guide', 'execute_action', 'list_read_tools',
     ]);
+    expect(tools.find(tool => tool.name === 'get_action_guide')?.parameters.required).toEqual(['actionId', 'connectionName']);
+    expect(tools.find(tool => tool.name === 'execute_action')?.parameters.required).toEqual(['actionId', 'connectionName']);
+    expect(tools.find(tool => tool.name === 'search_actions')?.parameters.required).toEqual(['service']);
   });
 
   it('reads tool results from a streamable HTTP event response', async () => {
@@ -255,6 +258,11 @@ describe('OpenConnector hard read-only boundary', () => {
     expect(first.details).toMatchObject({ total: 51, nextOffset: 50 });
     expect(second.details).toMatchObject({ total: 51, nextOffset: null });
     expect(second.details.tools).toHaveLength(1);
+    const filtered = await directory.execute('call-filter', { service: 'custom_mcp', connectionName: 'dify-docs', query: 'read_9' });
+    expect(filtered.details).toMatchObject({ total: 1, nextOffset: null });
+    expect(filtered.details.tools[0].toolName).toBe('read_9');
+    const noMatch = await directory.execute('call-empty', { service: 'custom_mcp', connectionName: 'dify-docs', query: 'not-a-tool' });
+    expect(noMatch.details).toMatchObject({ total: 0, tools: [] });
     expect(fetchMock).toHaveBeenCalledTimes(initialCalls + 2);
   });
 
