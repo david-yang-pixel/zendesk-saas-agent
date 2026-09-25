@@ -40,6 +40,70 @@ def test_modern_model_settings_route():
     assert "base_url" in data
 
 
+def test_model_ping_uses_the_agent_responses_protocol(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://api.example.test/v1/responses"
+        assert request.headers["authorization"] == "Bearer test-key"
+        payload = json.loads(request.content)
+        assert payload["model"] == "gpt-6-sol"
+        assert payload["input"]
+        assert payload["max_output_tokens"] >= 128
+        assert "messages" not in payload
+        assert "max_tokens" not in payload
+        return httpx.Response(
+            200,
+            json={
+                "output": [
+                    {"type": "reasoning", "summary": []},
+                    {"type": "message", "content": [{"type": "output_text", "text": "pong"}]},
+                ]
+            },
+        )
+
+    monkeypatch.setattr(
+        api_v2.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    app = create_app()
+    register_modern_routes(app, dummy_scope)
+
+    response = TestClient(app).post(
+        "/api/settings/model/test",
+        json={"base_url": "https://api.example.test/v1", "model": "gpt-6-sol", "api_key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["sample_text"] == "pong"
+
+
+def test_model_ping_does_not_echo_upstream_error_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "secret upstream details"}})
+
+    monkeypatch.setattr(
+        api_v2.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    app = create_app()
+    register_modern_routes(app, dummy_scope)
+
+    response = TestClient(app).post(
+        "/api/settings/model/test",
+        json={"base_url": "https://api.example.test/v1", "model": "gpt-6-sol", "api_key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status_code"] == 400
+    assert "secret upstream details" not in response.text
+
+
 def test_mcp_mesh_reports_live_catalog_and_relay_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CASEWORK_OPENCONNECTOR_MCP_URL", "https://connector.example/mcp")
     monkeypatch.setenv("CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME", "test-key")

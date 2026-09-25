@@ -877,7 +877,8 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         if not url.endswith("/v1"):
             url += "/v1"
 
-        test_endpoint = f"{url}/chat/completions"
+        # Pi Agent uses the Responses API; the ping must exercise that same protocol.
+        test_endpoint = f"{url}/responses"
         start = time.perf_counter()
 
         headers = {
@@ -886,8 +887,8 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         }
         req_body = {
             "model": payload.model,
-            "messages": [{"role": "user", "content": "Respond with 'pong'"}],
-            "max_tokens": 10,
+            "input": "Respond with 'pong'",
+            "max_output_tokens": 256,
         }
 
         try:
@@ -897,33 +898,37 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
 
                 if res.status_code == 200:
                     data = res.json()
-                    sample = (
-                        data.get("choices", [{}])[0]
-                        .get("message", {})
-                        .get("content", "")
-                        .strip()
-                    )
+                    sample = data.get("output_text", "")
+                    if not isinstance(sample, str) or not sample.strip():
+                        sample = "\n".join(
+                            content.get("text", "")
+                            for item in data.get("output", [])
+                            if isinstance(item, dict) and item.get("type") == "message"
+                            for content in item.get("content", [])
+                            if isinstance(content, dict) and content.get("type") == "output_text"
+                            and isinstance(content.get("text"), str)
+                        )
                     return ModelTestResponse(
                         ok=True,
                         status_code=res.status_code,
                         latency_ms=latency,
                         message="Connection successful",
-                        sample_text=sample or "pong",
+                        sample_text=sample.strip()[:200],
                     )
                 else:
                     return ModelTestResponse(
                         ok=False,
                         status_code=res.status_code,
                         latency_ms=latency,
-                        message=f"Model endpoint error: {res.text[:200]}",
+                        message=f"Model endpoint returned HTTP {res.status_code}",
                     )
-        except Exception as exc:
+        except Exception:
             latency = int((time.perf_counter() - start) * 1000)
             return ModelTestResponse(
                 ok=False,
                 status_code=500,
                 latency_ms=latency,
-                message=f"Network error connecting to {url}: {exc!s}",
+                message="Could not connect to the model endpoint",
             )
 
     # -----------------------------------------------------------------------
