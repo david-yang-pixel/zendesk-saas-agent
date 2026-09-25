@@ -24,122 +24,37 @@ interface McpService {
   error?: string
 }
 
-const DEFAULT_SERVICES: McpService[] = [
-  {
-    id: 'openconnector',
-    name: 'openconnector',
-    label: 'OpenConnector Read-only Investigation Gateway',
-    service_type: 'query',
-    endpoint: 'https://open-connector.yyg066340.workers.dev/mcp',
-    online: true,
-    latency_ms: 15,
-    tool_count: 4,
-    tools: [
-      {
-        name: 'list_connections',
-        description: 'List configured provider connections using an explicit service filter.',
-        inputSchema: {
-          type: 'object',
-          properties: { service: { type: 'string' } },
-          required: ['service'],
-        },
-      },
-      {
-        name: 'search_actions',
-        description: 'Search read-capable provider actions through a scoped provider catalog.',
-        inputSchema: {
-          type: 'object',
-          properties: { service: { type: 'string' }, query: { type: 'string' } },
-          required: ['service'],
-        },
-      },
-      {
-        name: 'get_action_guide',
-        description: 'Read the live schema, connection and operation type before execution.',
-        inputSchema: {
-          type: 'object',
-          properties: { actionId: { type: 'string' }, connectionName: { type: 'string' } },
-          required: ['actionId', 'connectionName'],
-        },
-      },
-      {
-        name: 'execute_action',
-        description: 'Execute an action after the Zendesk Agent verifies its live operation type is read.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            actionId: { type: 'string' },
-            connectionName: { type: 'string' },
-            input: { type: 'object' },
-          },
-          required: ['actionId', 'connectionName', 'input'],
-        },
-      },
-    ],
-  },
-  {
-    id: 'zendesk-browser-relay',
-    name: 'zendesk-browser-relay',
-    label: 'Zendesk Browser Relay (Delivery)',
-    service_type: 'action',
-    endpoint: 'https://zendesk.smlershou.top/zendesk-browser-relay',
-    online: true,
-    latency_ms: 45,
-    tool_count: 1,
-    tools: [
-      {
-        name: 'send_zendesk_native_message',
-        description: 'Send a customer-visible Zendesk native messaging reply through server browser relay.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            ticket_id: { type: 'integer', description: 'Target Zendesk Ticket ID' },
-            body: { type: 'string', description: 'Reply text message (English only)' },
-          },
-          required: ['ticket_id', 'body'],
-        },
-      },
-    ],
-  },
-]
-
-const services = ref<McpService[]>([...DEFAULT_SERVICES])
-const totalTools = ref(DEFAULT_SERVICES.reduce((acc, s) => acc + s.tool_count, 0))
-const loading = ref(false)
+const services = ref<McpService[]>([])
+const loading = ref(true)
 const errorMessage = ref('')
-const selectedService = ref<McpService>(services.value[0])
-const selectedTool = ref<any>(services.value[0].tools[0])
+const selectedService = ref<McpService | null>(null)
+const selectedTool = ref<any | null>(null)
+
+function applyMesh(nextServices: McpService[]) {
+  const previousServiceId = selectedService.value?.id
+  const previousToolName = selectedTool.value?.name
+  services.value = nextServices
+  selectedService.value = nextServices.find(service => service.id === previousServiceId) || nextServices[0] || null
+  selectedTool.value = selectedService.value?.tools.find(tool => tool.name === previousToolName)
+    || selectedService.value?.tools[0]
+    || null
+}
 
 async function loadMesh() {
   loading.value = true
   errorMessage.value = ''
+  probeResult.value = null
   try {
     const res = await api.getMcpMesh()
-    if (res && res.services && res.services.length > 0) {
-      services.value = res.services
-      totalTools.value = res.total_tools || 0
-      // Retain or update selected service
-      const currentSelected = selectedService.value
-      const matched = services.value.find((s) => s.id === currentSelected.id)
-      if (matched) {
-        selectedService.value = matched
-        if (matched.tools.length > 0) {
-          selectedTool.value = matched.tools[0]
-        }
-      } else {
-        selectedService.value = services.value[0]
-        selectedTool.value = services.value[0].tools[0] || null
-      }
-    }
+    applyMesh(res.services || [])
   } catch (err: any) {
-    console.warn('Live MCP probe notice:', err)
-    // We already have DEFAULT_SERVICES rendered, so user is never blocked
+    applyMesh([])
+    errorMessage.value = err.message || '无法获取实时工具状态'
   } finally {
     loading.value = false
   }
 }
 
-const probeInput = ref('{\n  "query": "SELECT count(*) FROM apps LIMIT 1"\n}')
 const probing = ref(false)
 const probeResult = ref<{
   ok: boolean
@@ -148,75 +63,43 @@ const probeResult = ref<{
   detail: string
 } | null>(null)
 
-function generateSampleInput(tool: any): string {
-  if (!tool) return '{}'
-  if (tool.name?.includes('query') || tool.name?.includes('sql')) {
-    return '{\n  "query": "SELECT count(*) FROM apps LIMIT 1"\n}'
-  }
-  if (tool.name?.includes('ticket')) {
-    return '{\n  "ticket_id": 4308\n}'
-  }
-  if (tool.name?.includes('log')) {
-    return '{\n  "query": "level:error",\n  "service_name": "worker"\n}'
-  }
-  if (tool.name?.includes('search')) {
-    return '{\n  "query": "casework"\n}'
-  }
-  if (tool.inputSchema?.properties) {
-    const obj: Record<string, any> = {}
-    for (const [k, v] of Object.entries<any>(tool.inputSchema.properties)) {
-      obj[k] = v.type === 'integer' ? 1 : v.type === 'boolean' ? true : 'test'
-    }
-    return JSON.stringify(obj, null, 2)
-  }
-  return '{\n  "query": "test"\n}'
-}
-
 function selectService(s: McpService) {
   selectedService.value = s
   selectedTool.value = s.tools.length > 0 ? s.tools[0] : null
-  if (selectedTool.value) {
-    probeInput.value = generateSampleInput(selectedTool.value)
-  }
   probeResult.value = null
 }
 
 function selectTool(t: any) {
   selectedTool.value = t
-  probeInput.value = generateSampleInput(t)
   probeResult.value = null
 }
 
 async function runToolProbe() {
-  if (!selectedTool.value || !selectedService.value) return
+  if (!selectedService.value) return
+  const serviceId = selectedService.value.id
   probing.value = true
   probeResult.value = null
-  const start = performance.now()
+  errorMessage.value = ''
   try {
-    const res = await api.testTool(selectedService.value.id).catch(() => null)
-    const elapsed = Math.round(performance.now() - start)
-    if (res && res.status === 'connected') {
-      probeResult.value = {
-        ok: true,
-        latency_ms: res.latencyMs || elapsed,
-        status: '200 OK (Probe Connected)',
-        detail: res.detail || `工具 ${selectedTool.value.name} 连通性测试通过，Schema 校验通过。`,
-      }
-    } else {
-      probeResult.value = {
-        ok: true,
-        latency_ms: elapsed,
-        status: '200 OK (Verified)',
-        detail: `已向 ${selectedService.value.label} [${selectedTool.value.name}] 发送单测探针，服务在线响应正常。入参校验合法。`,
-      }
+    const res = await api.getMcpMesh()
+    applyMesh(res.services || [])
+    const current = services.value.find(service => service.id === serviceId)
+    probeResult.value = {
+      ok: current?.online === true,
+      latency_ms: current?.latency_ms || 0,
+      status: current?.online ? '连接可用' : '连接不可用',
+      detail: current?.online
+        ? `工具目录已返回 ${current.tool_count} 个工具；未执行选中工具。`
+        : current?.error || '无法获取该服务的工具目录。',
     }
   } catch (err: any) {
-    const elapsed = Math.round(performance.now() - start)
+    applyMesh([])
+    errorMessage.value = err.message || '连接探测失败'
     probeResult.value = {
       ok: false,
-      latency_ms: elapsed,
-      status: 'Probe Error',
-      detail: err.message || '调试探针调用异常',
+      latency_ms: 0,
+      status: '连接探测失败',
+      detail: errorMessage.value,
     }
   } finally {
     probing.value = false
@@ -243,7 +126,11 @@ onMounted(() => {
         </div>
       </header>
 
-      <!-- 7 Services Grid Cards -->
+      <div v-if="errorMessage" class="mesh-notice" role="alert">{{ errorMessage }}</div>
+      <div v-if="services.length === 0" class="mesh-empty">
+        {{ loading ? t('tools.empty.loading') : t('tools.empty.unavailable') }}
+      </div>
+
       <div class="services-grid">
         <div
           v-for="s in services"
@@ -267,7 +154,7 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Detail & Playground Area -->
+      <!-- Live tool directory and connection probe -->
       <div class="mesh-detail-split" v-if="selectedService">
         <!-- Left: Tool List of Selected Service -->
         <div class="tools-sidebar">
@@ -289,10 +176,10 @@ onMounted(() => {
         </div>
 
         <!-- Right: Tool Schema & Inspector -->
-        <div class="tool-inspector" v-if="selectedTool">
+        <div class="tool-inspector">
           <div class="inspector-header">
             <div class="inspector-title">
-              <h3>{{ selectedTool.name }}</h3>
+              <h3>{{ selectedTool?.name || selectedService.label }}</h3>
               <span :class="['type-pill', selectedService.service_type]">
                 {{ selectedService.id }}
               </span>
@@ -303,7 +190,11 @@ onMounted(() => {
             </div>
           </div>
 
-          <div class="inspector-body">
+          <div v-if="selectedService.error" class="mesh-notice" role="alert">
+            {{ selectedService.error }}
+          </div>
+
+          <div v-if="selectedTool" class="inspector-body">
             <div class="desc-card">
               <h4>{{ t('tools.desc.title') }}</h4>
               <p>{{ selectedTool.description }}</p>
@@ -313,33 +204,26 @@ onMounted(() => {
               <h4>{{ t('tools.schema.title') }}</h4>
               <pre class="schema-pre">{{ JSON.stringify(selectedTool.inputSchema || {}, null, 2) }}</pre>
             </div>
+          </div>
+          <p v-else class="mesh-empty">{{ t('tools.empty.no_tools') }}</p>
 
-            <!-- Interactive Tool Probe / Online Debugger -->
-            <div class="probe-card">
-              <div class="probe-header">
-                <div>
-                  <h4>{{ t('tools.probe.title') }}</h4>
-                  <small>{{ t('tools.probe.subtitle') }}</small>
-                </div>
-                <button class="btn-run-probe" :disabled="probing" @click="runToolProbe">
-                  <AppIcon name="play" :size="13" />
-                  <span>{{ probing ? t('tools.probe.running') : t('tools.probe.btn.run') }}</span>
-                </button>
+          <div class="probe-card">
+            <div class="probe-header">
+              <div>
+                <h4>{{ t('tools.probe.title') }}</h4>
+                <small>{{ t('tools.probe.subtitle') }}</small>
               </div>
-
-              <div class="probe-editor">
-                <div class="code-label">{{ t('tools.probe.input_label') }}</div>
-                <textarea v-model="probeInput" class="probe-textarea" rows="4"></textarea>
+              <button class="btn-run-probe" :disabled="probing" @click="runToolProbe">
+                <AppIcon name="refresh" :size="13" />
+                <span>{{ probing ? t('tools.probe.running') : t('tools.probe.btn.run') }}</span>
+              </button>
+            </div>
+            <div v-if="probeResult" :class="['probe-result-box', { success: probeResult.ok, error: !probeResult.ok }]">
+              <div class="probe-result-top">
+                <span class="status-badge">{{ probeResult.status }}</span>
+                <span class="latency-badge">{{ probeResult.latency_ms }} ms</span>
               </div>
-
-              <!-- Probe Output -->
-              <div v-if="probeResult" :class="['probe-result-box', { success: probeResult.ok, error: !probeResult.ok }]">
-                <div class="probe-result-top">
-                  <span class="status-badge">{{ probeResult.status }}</span>
-                  <span class="latency-badge">{{ probeResult.latency_ms }} ms</span>
-                </div>
-                <pre class="probe-detail">{{ probeResult.detail }}</pre>
-              </div>
+              <pre class="probe-detail">{{ probeResult.detail }}</pre>
             </div>
           </div>
         </div>
@@ -380,6 +264,22 @@ onMounted(() => {
   letter-spacing: -0.01em;
 }
 
+.mesh-notice {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 59, 48, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 59, 48, 0.08);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.mesh-empty {
+  padding: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .btn-refresh {
   display: inline-flex;
   align-items: center;
@@ -398,7 +298,7 @@ onMounted(() => {
 .btn-refresh:hover { opacity: 0.88; }
 .btn-refresh:disabled { opacity: 0.5; cursor: wait; }
 
-/* 7 Services Grid */
+/* Live service grid */
 .services-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -635,7 +535,7 @@ onMounted(() => {
   overflow-x: auto;
 }
 
-/* Tool Probe & Debugger */
+/* Connection probe */
 .probe-card {
   margin-top: 20px;
   background: var(--surface-soft);
@@ -685,32 +585,6 @@ onMounted(() => {
 .btn-run-probe:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-}
-
-.code-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--muted);
-  margin-bottom: 6px;
-}
-
-.probe-textarea {
-  width: 100%;
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 10px;
-  color: var(--ink);
-  resize: vertical;
-  box-sizing: border-box;
-}
-
-.probe-textarea:focus {
-  border-color: var(--primary);
-  outline: none;
 }
 
 .probe-result-box {

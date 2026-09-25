@@ -183,6 +183,82 @@ def _get_skills_dir() -> Path:
     return candidates[0]
 
 
+_MCP_PROTOCOL_VERSION = "2026-07-28"
+
+
+class _McpProbeError(ValueError):
+    """A safe, user-visible MCP probe failure without upstream body content."""
+
+
+def _mcp_tools_from_response(body: str) -> list[dict[str, Any]]:
+    """Read the final JSON-RPC result from JSON or streamable HTTP SSE."""
+    stripped = body.strip()
+    if stripped.startswith("{"):
+        try:
+            message = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise _McpProbeError("Invalid MCP response") from exc
+    else:
+        message = None
+        for frame in body.replace("\r\n", "\n").split("\n\n"):
+            data = "\n".join(
+                line[5:].lstrip() for line in frame.split("\n") if line.startswith("data:")
+            ).strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                candidate = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and ("result" in candidate or "error" in candidate):
+                message = candidate
+
+    if not isinstance(message, dict):
+        raise _McpProbeError("Invalid MCP response")
+    if message.get("error") is not None:
+        raise _McpProbeError("MCP protocol error")
+    result = message.get("result")
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if not isinstance(tools, list) or any(
+        not isinstance(tool, dict) or not isinstance(tool.get("name"), str)
+        for tool in tools
+    ):
+        raise _McpProbeError("Invalid MCP tool list")
+    return tools
+
+
+async def _probe_mcp_tools(
+    client: httpx.AsyncClient, endpoint: str, credential: str
+) -> list[dict[str, Any]]:
+    if not credential:
+        raise _McpProbeError("Credential not configured")
+    response = await client.post(
+        endpoint,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {credential}",
+            "MCP-Protocol-Version": _MCP_PROTOCOL_VERSION,
+            "MCP-Method": "tools/list",
+        },
+        json={
+            "jsonrpc": "2.0",
+            "id": "mesh-probe",
+            "method": "tools/list",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": _MCP_PROTOCOL_VERSION,
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                }
+            },
+        },
+        timeout=5.0,
+    )
+    if response.status_code != 200:
+        raise _McpProbeError(f"HTTP {response.status_code}")
+    return _mcp_tools_from_response(response.text)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints: Traces & Runs
 # ---------------------------------------------------------------------------
@@ -905,50 +981,37 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                         timeout=5.0,
                     )
                     latency = int((time.perf_counter() - start) * 1000)
-                    online = res.status_code in (200, 429)
-                    tools = [
-                        {
-                            "name": "send_zendesk_native_message",
-                            "description": "Send a customer-visible Zendesk native messaging reply through server browser relay.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "ticket_id": {"type": "integer"},
-                                    "body": {"type": "string"},
+                    online = res.status_code == 200
+                    if online:
+                        tools = [
+                            {
+                                "name": "send_zendesk_native_message",
+                                "description": "Send a customer-visible Zendesk native messaging reply through server browser relay.",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "ticket_id": {"type": "integer"},
+                                        "body": {"type": "string"},
+                                    },
+                                    "required": ["ticket_id", "body"],
                                 },
-                                "required": ["ticket_id", "body"],
-                            },
-                        }
-                    ]
-                else:
-                    rpc_payload = {
-                        "jsonrpc": "2.0",
-                        "id": "mesh-probe",
-                        "method": "tools/list",
-                        "params": {},
-                    }
-                    headers = {
-                        "Content-Type": "application/json",
-                        **auth_headers,
-                    }
-                    res = await client.post(
-                        spec["url"],
-                        headers=headers,
-                        json=rpc_payload,
-                        timeout=5.0,
-                    )
-                    latency = int((time.perf_counter() - start) * 1000)
-                    if res.status_code == 200:
-                        online = True
-                        data = res.json()
-                        tools = data.get("result", {}).get("tools", [])
+                            }
+                        ]
                     else:
-                        online = False
                         err_msg = f"HTTP {res.status_code}"
-            except Exception as exc:
+                else:
+                    tools = await _probe_mcp_tools(client, spec["url"], key)
+                    latency = int((time.perf_counter() - start) * 1000)
+                    online = True
+            except _McpProbeError as exc:
                 latency = int((time.perf_counter() - start) * 1000)
-                online = False
                 err_msg = str(exc)
+            except httpx.TimeoutException:
+                latency = int((time.perf_counter() - start) * 1000)
+                err_msg = "Probe timed out"
+            except Exception:
+                latency = int((time.perf_counter() - start) * 1000)
+                err_msg = "Connection probe failed"
 
             return McpServiceStatus(
                 id=spec["id"],
