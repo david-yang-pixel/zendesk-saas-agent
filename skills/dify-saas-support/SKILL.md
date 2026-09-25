@@ -36,7 +36,8 @@ These are source-selection hints, not a tool allowlist. Other live connected rea
    | Case | Route to read before investigating |
    | --- | --- |
    | Stable product feature, limit, configuration, UI behavior, or public guidance | [Product and policy](references/product-and-policy.md) |
-   | Education discount, credits, subscription, billing, quota, or entitlement | [Billing and credits](references/billing-and-credits.md); also read Product and policy when the public product promise is material |
+   | A claim that depends on a customer's persisted account, app/run, billing, credit, or plugin records | [Database routing](references/database-routing.md): choose the relevant database and records before querying; also read the applicable topic reference below |
+   | Education discount, credits, subscription, billing, quota, or entitlement | [Billing and credits](references/billing-and-credits.md) and [Database routing](references/database-routing.md); also read Product and policy when the public product promise is material |
    | Runtime failure, intermittent error, slowness, plugin/provider issue, or recovery claim | [Runtime and recovery](references/runtime-and-recovery.md) |
    | Policy, product knowledge, documentation, or a failed internal search | [Evidence search](references/evidence-search.md): knowledge-base entry, short search terms, conversations, full-page reads, empty-result recovery |
    | Known bug, fix progress, previous discussion, or a remaining diagnostic gap | [Engineering and history](references/engineering-and-history.md): issue bodies, dated discussions, releases, and applicable Notion lessons |
