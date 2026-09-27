@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol, cast
 
 import httpx
@@ -22,6 +23,7 @@ class ZendeskTicket:
     group_id: str | int | None
     status: str
     assignee_id: int | None = None
+    created_at: datetime | None = None
 
 
 class ZendeskTicketReader(Protocol):
@@ -133,12 +135,29 @@ class ZendeskApiTicketReader:
             if raw_assignee_id is None
             else self._positive_integer(raw_assignee_id)
         )
+        raw_created_at = raw_ticket.get("created_at")
+        created_at = None
+        if raw_created_at is not None:
+            if not isinstance(raw_created_at, str):
+                raise ZendeskTicketError("Zendesk ticket creation time was invalid")
+            try:
+                created_at = datetime.fromisoformat(
+                    raw_created_at.replace("Z", "+00:00")
+                )
+            except ValueError as error:
+                raise ZendeskTicketError(
+                    "Zendesk ticket creation time was invalid"
+                ) from error
+            if created_at.tzinfo is None or created_at.utcoffset() is None:
+                raise ZendeskTicketError("Zendesk ticket creation time was invalid")
+            created_at = created_at.astimezone(UTC)
         return ZendeskTicket(
             ticket_id=ticket_id,
             tags=tuple(tags),
             group_id=group_id,
             status=status,
             assignee_id=assignee_id,
+            created_at=created_at,
         )
 
     async def close(self) -> None:

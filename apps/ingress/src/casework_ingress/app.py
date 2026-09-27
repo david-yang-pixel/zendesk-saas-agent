@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
+import asyncio
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
 from fastapi import FastAPI, HTTPException, Request
@@ -34,10 +35,32 @@ from .processing_rules import (
     evaluate_processing_rules,
     has_operator_mention,
 )
-from .zendesk import ZendeskTicketError, ZendeskTicketReader
+from .zendesk import ZendeskTicket, ZendeskTicketError, ZendeskTicketReader
 from .ticket_events import parse_ticket_event
 
 WEBHOOK_PATH = "/webhook/zendesk"
+_TICKET_SYNC_WINDOW = timedelta(minutes=2)
+_TICKET_SYNC_RECHECK_SECONDS = 4
+_TICKET_LOOKUP_DEADLINE_SECONDS = 10
+
+
+def _needs_ticket_sync_recheck(
+    ticket: ZendeskTicket, *, now: datetime, saas_tag: str
+) -> bool:
+    """A just-created ticket may receive its SaaS routing fields after its message."""
+
+    if ticket.created_at is None:
+        return False
+    age = now - ticket.created_at
+    # Zendesk can stamp ticket creation slightly after its first Messaging
+    # events, so a small negative age is still part of the creation window.
+    if not -_TICKET_SYNC_WINDOW <= age <= _TICKET_SYNC_WINDOW:
+        return False
+    return (
+        ticket.assignee_id is not None
+        or ticket.group_id is None
+        or saas_tag not in {tag.strip().casefold() for tag in ticket.tags}
+    )
 
 
 class ZendeskWebhookPayload(BaseModel):
@@ -178,6 +201,7 @@ def create_app(
     messaging_secret: str | None = None,
     messaging_signature_max_age_seconds: float = 300.0,
     messaging_clock: Callable[[], float] | None = None,
+    ticket_sync_sleep: Callable[[float], Awaitable[None]] | None = None,
     ticket_events_signing_secret: str = "",
 ) -> FastAPI:
     """Build the ingress app with injected side-effect destinations.
@@ -310,10 +334,22 @@ def create_app(
                 status_code=503, detail="zendesk_ticket_reader_not_configured"
             )
         try:
-            ticket = await ticket_reader.fetch_ticket(event.ticket_id)
-        except (ZendeskTicketError, OSError) as error:
+            async with asyncio.timeout(_TICKET_LOOKUP_DEADLINE_SECONDS):
+                ticket = await ticket_reader.fetch_ticket(event.ticket_id)
+                if event.is_customer_message and _needs_ticket_sync_recheck(
+                    ticket,
+                    now=datetime.now(UTC),
+                    saas_tag=processing_config.saas_tag or "",
+                ):
+                    await (ticket_sync_sleep or asyncio.sleep)(
+                        _TICKET_SYNC_RECHECK_SECONDS
+                    )
+                    ticket = await ticket_reader.fetch_ticket(event.ticket_id)
+        except (ZendeskTicketError, OSError, TimeoutError) as error:
             raise HTTPException(
-                status_code=503, detail="zendesk_unavailable"
+                status_code=503,
+                detail="zendesk_unavailable",
+                headers={"Retry-After": "5"},
             ) from error
 
         try:

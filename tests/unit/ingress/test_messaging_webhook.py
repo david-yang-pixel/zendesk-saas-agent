@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
 import httpx
@@ -19,7 +20,11 @@ from casework_ingress.messaging import (
 )
 from casework_ingress.ports import AdmissionAction, AdmissionEvent, AdmissionResult
 from casework_ingress.processing_rules import ProcessingRuleConfig
-from casework_ingress.zendesk import ZendeskApiTicketReader, ZendeskTicket
+from casework_ingress.zendesk import (
+    ZendeskApiTicketReader,
+    ZendeskTicket,
+    ZendeskTicketError,
+)
 
 
 class _TypedTestClient(Protocol):
@@ -40,6 +45,16 @@ class _TicketReader:
     async def fetch_ticket(self, ticket_id: int) -> ZendeskTicket:
         self.ticket_ids.append(ticket_id)
         return self.ticket
+
+
+class _SequencedTicketReader(_TicketReader):
+    def __init__(self, tickets: list[ZendeskTicket]) -> None:
+        super().__init__(tickets[0])
+        self.tickets = iter(tickets)
+
+    async def fetch_ticket(self, ticket_id: int) -> ZendeskTicket:
+        self.ticket_ids.append(ticket_id)
+        return next(self.tickets)
 
 
 class _Admission:
@@ -334,7 +349,157 @@ def test_raw_matching_message_submits_only_ticket_id_to_job_sink() -> None:
     assert cancellations.cancelled == []
 
 
-def test_bad_signature_and_ticket_api_failure_do_not_admit() -> None:
+def test_new_ticket_rechecks_routing_after_message_arrives_before_tag_sync() -> None:
+    # #4658's ticket API timestamp was two seconds later than its form event.
+    created_at = datetime.now(UTC) + timedelta(seconds=2)
+    reader = _SequencedTicketReader(
+        [
+            ZendeskTicket(
+                ticket_id=2757,
+                tags=("production", "professional-plan"),
+                group_id=None,
+                assignee_id=46493567999892,
+                status="open",
+                created_at=created_at,
+            ),
+            ZendeskTicket(
+                ticket_id=2757,
+                tags=("production", "professional-plan", "saas"),
+                group_id=40685275477140,
+                assignee_id=None,
+                status="new",
+                created_at=created_at,
+            ),
+        ]
+    )
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    jobs = InMemoryJobSink()
+    app = create_app(
+        config=ProcessingRuleConfig(
+            saas_tag="saas", saas_assignee=40685275477140
+        ),
+        ticket_reader=reader,
+        job_sink=jobs,
+        messaging_signing_secret=SECRET,
+        messaging_clock=lambda: 1780460000.0,
+        ticket_sync_sleep=sleep,
+    )
+
+    response = _signed_request(cast(_TypedTestClient, TestClient(app)), _payload())
+
+    assert response.status_code == 202
+    assert response.json()["action"] == "enqueue"
+    assert reader.ticket_ids == [2757, 2757]
+    assert sleeps == [4]
+    assert len(jobs.submitted) == 1
+
+
+def test_new_ticket_still_assigned_to_person_remains_ignored_after_recheck() -> None:
+    ticket = ZendeskTicket(
+        ticket_id=2757,
+        tags=("saas",),
+        group_id=40685275477140,
+        assignee_id=46493567999892,
+        status="new",
+        created_at=datetime.now(UTC),
+    )
+    reader = _SequencedTicketReader([ticket, ticket])
+
+    async def sleep(_seconds: float) -> None:
+        return None
+
+    jobs = InMemoryJobSink()
+    app = create_app(
+        config=ProcessingRuleConfig(
+            saas_tag="saas", saas_assignee=40685275477140
+        ),
+        ticket_reader=reader,
+        job_sink=jobs,
+        messaging_signing_secret=SECRET,
+        messaging_clock=lambda: 1780460000.0,
+        ticket_sync_sleep=sleep,
+    )
+
+    response = _signed_request(cast(_TypedTestClient, TestClient(app)), _payload())
+
+    assert response.json()["reason"] == "already_assigned_to_human"
+    assert reader.ticket_ids == [2757, 2757]
+    assert jobs.submitted == []
+
+
+def test_new_ticket_with_complete_routing_does_not_wait() -> None:
+    reader = _TicketReader(
+        ZendeskTicket(
+            ticket_id=2757,
+            tags=("saas",),
+            group_id=40685275477140,
+            assignee_id=None,
+            status="new",
+            created_at=datetime.now(UTC),
+        )
+    )
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    jobs = InMemoryJobSink()
+    app = create_app(
+        config=ProcessingRuleConfig(
+            saas_tag="saas", saas_assignee=40685275477140
+        ),
+        ticket_reader=reader,
+        job_sink=jobs,
+        messaging_signing_secret=SECRET,
+        messaging_clock=lambda: 1780460000.0,
+        ticket_sync_sleep=sleep,
+    )
+
+    response = _signed_request(cast(_TypedTestClient, TestClient(app)), _payload())
+
+    assert response.json()["action"] == "enqueue"
+    assert reader.ticket_ids == [2757]
+    assert sleeps == []
+    assert len(jobs.submitted) == 1
+
+
+def test_existing_ticket_does_not_wait_for_routing_fields() -> None:
+    ticket = ZendeskTicket(
+        ticket_id=2757,
+        tags=("saas",),
+        group_id=40685275477140,
+        assignee_id=46493567999892,
+        status="open",
+        created_at=datetime.now(UTC) - timedelta(minutes=3),
+    )
+    reader = _TicketReader(ticket)
+    sleeps: list[float] = []
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    app = create_app(
+        config=ProcessingRuleConfig(
+            saas_tag="saas", saas_assignee=40685275477140
+        ),
+        ticket_reader=reader,
+        messaging_signing_secret=SECRET,
+        messaging_clock=lambda: 1780460000.0,
+        ticket_sync_sleep=sleep,
+    )
+
+    response = _signed_request(cast(_TypedTestClient, TestClient(app)), _payload())
+
+    assert response.json()["reason"] == "already_assigned_to_human"
+    assert reader.ticket_ids == [2757]
+    assert sleeps == []
+
+
+def test_bad_signature_does_not_admit() -> None:
     reader = _TicketReader(
         ZendeskTicket(ticket_id=2757, tags=("saas",), group_id=123, status="open")
     )
@@ -354,6 +519,46 @@ def test_bad_signature_and_ticket_api_failure_do_not_admit() -> None:
 
     assert bad.status_code == 401
     assert reader.ticket_ids == []
+    assert admission.events == []
+
+
+def test_ticket_recheck_failure_requests_webhook_retry_without_admission() -> None:
+    class _FailingRecheckReader(_TicketReader):
+        async def fetch_ticket(self, ticket_id: int) -> ZendeskTicket:
+            self.ticket_ids.append(ticket_id)
+            if len(self.ticket_ids) == 2:
+                raise ZendeskTicketError("transient Zendesk failure")
+            return self.ticket
+
+    reader = _FailingRecheckReader(
+        ZendeskTicket(
+            ticket_id=2757,
+            tags=(),
+            group_id=None,
+            assignee_id=46493567999892,
+            status="open",
+            created_at=datetime.now(UTC),
+        )
+    )
+    admission = _Admission()
+
+    async def sleep(_seconds: float) -> None:
+        return None
+
+    app = create_app(
+        ticket_reader=reader,
+        admission=admission,
+        messaging_signing_secret=SECRET,
+        messaging_clock=lambda: 1780460000.0,
+        ticket_sync_sleep=sleep,
+    )
+
+    response = _signed_request(cast(_TypedTestClient, TestClient(app)), _payload())
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"
+    assert response.json()["detail"] == "zendesk_unavailable"
+    assert reader.ticket_ids == [2757, 2757]
     assert admission.events == []
 
 
@@ -418,6 +623,7 @@ async def test_zendesk_ticket_reader_uses_read_only_projection() -> None:
                     "group_id": 40685275477140,
                     "assignee_id": None,
                     "status": "open",
+                    "created_at": "2026-09-25T10:29:06Z",
                     "description": "sensitive content is not projected",
                 }
             },
@@ -441,6 +647,7 @@ async def test_zendesk_ticket_reader_uses_read_only_projection() -> None:
         group_id=40685275477140,
         status="open",
         assignee_id=None,
+        created_at=datetime(2026, 9, 25, 10, 29, 6, tzinfo=UTC),
     )
     assert len(requests) == 1
     assert requests[0].method == "GET"
