@@ -26,7 +26,9 @@ function extractEventDetails(ev: any): EventExtraction {
         id: String(ev.content.attachment_id || ev.id || `${Date.now()}`),
         name: String(ev.content.alt_text || ev.content.file_name || ev.content.name || 'image_attachment'),
         url: ev.content.media_url || ev.content.url,
-        contentType: ev.content.content_type || 'image/png',
+        contentType: ev.content.media_type || ev.content.content_type ||
+          (/\.pdf(?:$|\?)/i.test(ev.content.media_url || ev.content.url) ? 'application/pdf' :
+            ev.content.type === 'image' ? 'image/png' : undefined),
       });
     }
 
@@ -72,6 +74,7 @@ function extractEventDetails(ev: any): EventExtraction {
 
 interface TicketDetails {
   message: string;
+  conversationContext: string;
   email?: string;
   attachments: AgentAttachment[];
   lastEventId?: string;
@@ -114,8 +117,42 @@ export async function getTicketDetails(ticketId: number, openConnector: McpServi
     // Collect unreplied customer messages since the last agent message
     const unrepliedCustomerMessages: Array<{ id: string; text: string; time: string; attachments: AgentAttachment[] }> = [];
     const allAttachments: AgentAttachment[] = [];
+    const history: string[] = [];
     let hasRequestedHuman = false;
     let isAlreadyAnswered = false;
+
+    // Give each fresh model session the public thread, including prior answers
+    // and attachment metadata. Internal operator notes stay out of this context.
+    for (const ev of allEvents) {
+      if (ev.public === false || ev.metadata?.is_public === false || ev.author?.type === 'system') continue;
+      const { text, attachments } = extractEventDetails(ev);
+      const isAgent = ev.author?.type === 'agent' || /David Yang|AI Agent/.test(ev.author?.display_name || '');
+      if (!isAgent) {
+        allAttachments.push(...attachments);
+        if (!email) {
+          const fields = ev.content?.fields;
+          if (Array.isArray(fields)) email = fields.find((field: any) => field.type === 'EMAIL')?.email || '';
+        }
+      }
+      if (text || attachments.length) history.push(
+        `${isAgent ? 'Support' : 'Customer'} [${ev.created_at || 'time unknown'}]:\n${text.slice(0, 4000)}${text.length > 4000 ? '\n[Message truncated; fetch this event if needed.]' : ''}` +
+        attachments.map(a => `\n[Attachment: ${a.name} (${a.contentType || 'file'}), URL: ${a.url || 'N/A'}]`).join(''),
+      );
+    }
+    // Retain initial identity/question plus recent turns, and disclose omissions.
+    const selected = history.length > 25
+      ? [...history.slice(0, 2), `[${history.length - 25} older public messages omitted; fetch older history if material.]`, ...history.slice(-23)]
+      : history;
+    const boundedHistory: string[] = [];
+    let remaining = 36_000;
+    for (let i = selected.length - 1; i >= 0; i--) {
+      if (selected[i].length > remaining) {
+        boundedHistory.unshift('[Earlier public context omitted due to size; fetch it if material.]');
+        break;
+      }
+      boundedHistory.unshift(selected[i]);
+      remaining -= selected[i].length;
+    }
 
     // 1. Check if the customer EVER asked for human support in any message using refined intent detection
     for (const ev of allEvents) {
@@ -141,7 +178,7 @@ export async function getTicketDetails(ticketId: number, openConnector: McpServi
     for (let i = allEvents.length - 1; i >= 0; i--) {
       const ev = allEvents[i];
       // An operator's @ internal note is a trigger, not a customer-visible reply.
-      if (ev.public === false || ev.metadata?.is_public === false) continue;
+      if (ev.public === false || ev.metadata?.is_public === false || ev.author?.type === 'system') continue;
       const authorName = ev.author?.display_name || '';
       const authorType = ev.author?.type || '';
       const isAgent = authorType === 'agent' || authorName.includes('David Yang') || authorName.includes('AI Agent');
@@ -165,7 +202,6 @@ export async function getTicketDetails(ticketId: number, openConnector: McpServi
             time: String(ev.created_at || ''),
             attachments: attachments,
           });
-          allAttachments.push(...attachments);
         }
       }
     }
@@ -194,11 +230,7 @@ export async function getTicketDetails(ticketId: number, openConnector: McpServi
     }
 
     if (!customerMessage) {
-      if (allAttachments.length > 0) {
-        customerMessage = `[Customer uploaded ${allAttachments.length} attachment(s)/screenshot(s) without text message]`;
-      } else {
-        customerMessage = subject || `Ticket #${ticketId}`;
-      }
+      customerMessage = subject || `Ticket #${ticketId}`;
     }
 
     const lastEventId = unrepliedCustomerMessages.length > 0
@@ -210,8 +242,9 @@ export async function getTicketDetails(ticketId: number, openConnector: McpServi
 
     return {
       message: customerMessage,
+      conversationContext: boundedHistory.join('\n\n'),
       email,
-      attachments: allAttachments,
+      attachments: [...new Map(allAttachments.map(attachment => [attachment.id, attachment])).values()].slice(-8),
       lastEventId,
       lastEventTime,
       customerEventsCount: unrepliedCustomerMessages.length,

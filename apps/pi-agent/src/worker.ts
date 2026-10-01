@@ -424,6 +424,7 @@ async function main() {
         agentResult = await runPiSupportAgent({
           ticketId: job.ticket_id,
           customerMessage: effectiveCustomerMessage,
+          conversationContext: initialDetails.conversationContext,
           contextPrepared: true,
           publicReplyAllowed,
           requesterEmail: initialDetails.email,

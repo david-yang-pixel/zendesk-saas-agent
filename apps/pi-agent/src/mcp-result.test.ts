@@ -15,3 +15,13 @@ it('marks transport exceptions as failed without losing their message', async ()
   });
   expect(await tool.execute('test-call', {})).toMatchObject({ isError: true, details: { error: 'HTTP 503' } });
 });
+it('keeps screenshot pixels available at the actual Pi tool boundary', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ result: { tools: [{ name: 'execute_action' }] } }))));
+  const image = { type: 'image', data: 'c2NyZWVuc2hvdA==', mimeType: 'image/png' };
+  const [tool] = await discoverMcpTools({ name: 'test', endpoint: 'https://example.test', apiKey: 'test',
+    executeTool: async () => ({ structuredContent: { ok: true, data: { content: [image] } } }),
+  });
+  const result = await tool.execute('image-call', {});
+  expect(result.content).toContainEqual(image);
+  expect(result.isError).toBe(false);
+});

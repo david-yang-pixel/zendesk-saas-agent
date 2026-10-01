@@ -1,4 +1,5 @@
 import { normalizeToolResult } from './tool-result.js';
+import { modelToolContent } from './tool-content.js';
 
 export interface McpServiceConfig {
   name: string;
@@ -167,11 +168,12 @@ export async function discoverMcpTools(service: McpServiceConfig): Promise<Custo
             const mcpResult = service.executeTool
               ? await service.executeTool(tool.name, params || {}, signal)
               : await callMcpTool(service.endpoint, service.apiKey, tool.name, params || {}, signal, service.protocolVersion);
-            const serialized = typeof mcpResult === 'string' ? mcpResult : JSON.stringify(mcpResult, null, 2);
+            const prepared = await modelToolContent(mcpResult, signal);
             return {
-              content: [{ type: 'text', text: serialized }],
-              details: mcpResult,
-              isError: normalizeToolResult(mcpResult).status === 'failed',
+              content: prepared.content,
+              modelFiles: prepared.modelFiles,
+              details: prepared.details,
+              isError: prepared.attachmentErrors || normalizeToolResult(mcpResult).status === 'failed',
             };
           } catch (err: any) {
             return {

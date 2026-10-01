@@ -9,7 +9,6 @@ import {
   DIFY_SUPPORT_SYSTEM_PROMPT,
   isBusinessRead,
   getDiscoveryOnlySources,
-  buildNoBusinessEvidenceReply,
   validateCustomerDelivery,
 } from './agent.js';
 
@@ -211,20 +210,17 @@ describe('customer delivery safety gate', () => {
       .toThrow(/dual-track output markers/);
   });
 
-  it('blocks Chinese public text and internal headings', () => {
-    expect(() => validateCustomerDelivery(dualTrack, '调查结果：积分不刷新'))
+  it('keeps operator drafts English and rejects internal headings in any public reply', () => {
+    expect(() => validateCustomerDelivery(dualTrack, '调查结果：积分不刷新', true))
       .toThrow(/entirely in English/);
     expect(() => validateCustomerDelivery(dualTrack, 'Internal Analysis: customer facts'))
       .toThrow(/internal analysis leaked/);
   });
 
-  it('keeps a safe uncertainty reply available for any issue type', () => {
-    const safeReply = buildNoBusinessEvidenceReply();
-    expect(safeReply).toContain('human support engineer');
-    expect(() => validateCustomerDelivery(dualTrack, safeReply)).not.toThrow();
-    expect(() => validateCustomerDelivery(
-      '=== INTERNAL NOTE ===\n证据不足。\n=== CUSTOMER REPLY ===\n尚未核实。', safeReply,
-    )).not.toThrow();
+  it('allows customer-language replies while preserving the internal separation', () => {
+    expect(() => validateCustomerDelivery(dualTrack, 'はい、日本語でお問い合わせください。')).not.toThrow();
+    expect(() => validateCustomerDelivery(dualTrack, '请告诉我们您遇到的问题。')).not.toThrow();
+    expect(() => validateCustomerDelivery(dualTrack, 'はい、日本語でお問い合わせください。', true)).toThrow(/English/);
   });
 
   it('counts only an answered business read, never discovery or a failed action', () => {

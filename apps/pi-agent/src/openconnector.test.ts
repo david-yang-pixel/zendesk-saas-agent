@@ -37,6 +37,12 @@ afterEach(() => {
 });
 
 describe('OpenConnector hard read-only boundary', () => {
+  it.each(['', '  ', null])('omits an empty optional service filter (%s) before discovery', async service => {
+    const fetchMock = vi.fn(async () => mcpResponse({ ok: true, data: [] }));
+    vi.stubGlobal('fetch', fetchMock);
+    await callOpenConnectorTool(createOpenConnectorServiceConfig('https://example.test/mcp', 'test'), 'list_connections', { service });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).params.arguments).toEqual({});
+  });
   it('rejects an unterminated DB string without exposing SQL in the error', () => {
     expect(() => assertDbGatewaySqlHasClosedStrings("SELECT 1 WHERE tenant_id IN ('first','second)"))
       .toThrow(/unterminated quoted string/);

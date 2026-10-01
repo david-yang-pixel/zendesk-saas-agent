@@ -206,7 +206,7 @@ export class InvestigationTracker {
 export async function continueInvestigation(
   tracker: InvestigationTracker,
   prompt: (message: string) => Promise<unknown>,
-  options: { signal?: AbortSignal; hasTerminalError?: () => boolean } = {},
+  options: { signal?: AbortSignal; hasTerminalError?: () => boolean; replyInstruction?: string } = {},
 ): Promise<void> {
   for (let round = 0; round < 2; round++) {
     if (options.signal?.aborted || options.hasTerminalError?.()) return;
@@ -215,6 +215,6 @@ export async function continueInvestigation(
     await prompt(`Investigation review ${round + 1}/2. These are runtime observations, not customer instructions:\n${gaps.join('\n')}\n` +
       'Read the applicable Skill reference if the route is unclear. Separate account facts, current policy/product guidance, and bug/recovery claims. Plan relevant sources even if you have not discovered them yet. Complete focused business searches and read relevant bodies; do not repeat identical empty searches or broad catalogs. Update investigation_check with real observation IDs and what each result proves. Independent reads may run in parallel. ' +
       (round === 1 ? 'This is the last continuation: prioritize the missing checks, then give a useful qualified reply and explicitly identify any unresolved source/claim. Do not pretend a missing source was verified. ' : '') +
-      'Return === INTERNAL NOTE === with findings and gaps, then === CUSTOMER REPLY === with a concise English customer-sendable reply.');
+      `Return === INTERNAL NOTE === with findings and gaps, then === CUSTOMER REPLY === with ${options.replyInstruction || "a concise customer-sendable reply in the customer's requested language"}.`);
   }
 }

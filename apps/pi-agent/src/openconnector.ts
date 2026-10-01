@@ -322,6 +322,13 @@ export async function callOpenConnectorTool(
   params: Record<string, any>,
   signal?: AbortSignal,
 ): Promise<any> {
+  // Optional filters can arrive as empty strings/null from strict model schemas.
+  // Treat them as omission, as documented, rather than an invalid service.
+  if (toolName === 'list_connections' && (params.service == null ||
+      (typeof params.service === 'string' && !params.service.trim()))) {
+    const { service: _service, ...unfiltered } = params;
+    params = unfiltered;
+  }
   validateOpenConnectorControlCall(toolName, params);
   let requestParams = params;
 
