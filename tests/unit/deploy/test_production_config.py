@@ -542,6 +542,36 @@ def test_prepare_runtime_preserves_admin_replaced_model_credential(
     assert "CASEWORK_BROWSER_RELAY_API_KEY" not in credentials
 
 
+def test_prepare_runtime_ignores_the_retired_state_dir_credential_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    # Pre-Greenfield location, deleted from production on 2026-10-03.
+    (state_dir / "credentials.env").write_text('CASEWORK_CREDENTIAL_OLD="retired"\n')
+    _deployment_environment(monkeypatch)
+    for name in (
+        "CASEWORK_INGRESS_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
+        "CASEWORK_ADMIN_IMAGE",
+    ):
+        monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
+
+    prepare_runtime.prepare(
+        state_dir=state_dir,
+        revision="e" * 40,
+        legacy_auth_path=tmp_path / "missing-auth.json",
+    )
+
+    credentials = prepare_runtime._parse_dotenv(  # pyright: ignore[reportPrivateUsage]
+        state_dir / "credentials" / "credentials.env"
+    )
+    assert "CASEWORK_CREDENTIAL_OLD" not in credentials
+    assert credentials["CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"] == "openconnector-secret"
+
+
 def test_configure_runtime_sets_rules_models_skills_and_tools(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
