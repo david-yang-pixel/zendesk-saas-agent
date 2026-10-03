@@ -60,6 +60,7 @@ latency to decide whether a change is ready for production.
 ## Production & Deployment (`deploy/`)
 
 - **Release Orchestration**: Production runs via `deploy/compose.release.yaml`, managing PostgreSQL, Ingress, Pi-Agent, and Admin. CI deploys the three application images by digest; Compose refuses to start without them, and every container runs the code baked into its image. `deploy/rollback-production.sh` restores the images recorded in `previous-release.env`.
+- **Deploy Tags**: Every successful production deploy tags its commit `deploy-YYYY-MM-DD-<short sha>` (Beijing date), so `git checkout deploy-2026-10-03-7bd1bc4` shows exactly what ran. Tags are not moved or reused.
 - **Worker Reasoning**: `apps/pi-agent` operates as the primary concurrency worker, consuming admissions from PostgreSQL, executing tool calls via the MCP Mesh, and delivering replies through the Zendesk Browser Relay.
 - **Tool Boundary**: OpenConnector is the sole read-only investigation gateway (including Zendesk, Dify DB, SigNoz, source, docs, GitHub MCP, and approved native providers). Zendesk Browser Relay is the separate and only public-reply write path; Gmail is excluded.
 - **Zero-Secret Boundary**: Production credentials are mount-injected via `/run/casework-credentials/credentials.env` and never committed to the repository. The Admin console allows hot-updating model endpoints and tokens without container rebuilds.

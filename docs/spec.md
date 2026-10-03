@@ -149,6 +149,9 @@ internal token used by deployment scripts.
   `previous-release.env`.
 - `deploy/rollback-production.sh` redeploys the images recorded in
   `previous-release.env`. It never downgrades the database.
+- After a successful deploy, CI tags the deployed commit
+  `deploy-YYYY-MM-DD-<short sha>` (Beijing date). The tag job is the only
+  job with repository write access.
 - `deploy/compose.release.yaml` refuses to start without the digest-pinned
   images. Every container runs the code baked into its image; no source files
   are mounted from the host.
