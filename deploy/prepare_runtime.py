@@ -332,7 +332,6 @@ def prepare(
     credential_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     credential_dir.chmod(0o700)
     credentials_path = credential_dir / "credentials.env"
-    legacy_credentials_path = state_dir / "credentials.env"
     if os.geteuid() == 0:
         os.chown(credential_dir, 10_001, 10_001)
     saved_credentials = (
@@ -359,12 +358,9 @@ def prepare(
         if os.geteuid() == 0:
             os.chown(lock_path, 10_001, 10_001)
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if credentials_path.exists():
-            credentials = _parse_dotenv(credentials_path)
-        elif legacy_credentials_path.exists():
-            credentials = _parse_dotenv(legacy_credentials_path)
-        else:
-            credentials = {}
+        credentials = (
+            _parse_dotenv(credentials_path) if credentials_path.exists() else {}
+        )
         # Model keys belong to the Admin console; keep whatever it saved.
         for legacy_key in LEGACY_INVESTIGATION_CREDENTIAL_KEYS:
             credentials.pop(legacy_key, None)
