@@ -99,6 +99,24 @@ def test_ticket_events_compose_and_ci_wiring():
     assert "ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}" in compose
 
 
+def test_release_compose_runs_only_digest_pinned_image_code():
+    root = Path(__file__).resolve().parents[3]
+    compose = (root / "deploy/compose.release.yaml").read_text()
+    workflow = (root / ".github/workflows/docker-image.yml").read_text()
+    deploy = (root / "deploy/deploy-production.sh").read_text()
+    rollback = (root / "deploy/rollback-production.sh").read_text()
+    assert "image: ${CASEWORK_PI_AGENT_IMAGE:?" in compose
+    assert compose.count("image: ${CASEWORK_ADMIN_IMAGE:?") == 3
+    assert ":latest" not in compose
+    # Admin must serve the code baked into its image, not host checkout files.
+    assert "/opt/zd-agent/code/apps" not in compose
+    for text in (compose, workflow, deploy, rollback):
+        assert "HARNESS" not in text
+        assert "SANDBOX" not in text
+        assert "feishu-mcp" not in text
+    assert "CASEWORK_PI_AGENT_IMAGE" in rollback
+
+
 def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
     source = tmp_path / "source.env"
     socket = tmp_path / "socket"

@@ -19,7 +19,7 @@ services:
     cpus: 0.35
 
   migration:
-    image: ${CASEWORK_ADMIN_IMAGE:-ghcr.io/david-yang-pixel/zendesk-saas-agent-casework-admin:latest}
+    image: ${CASEWORK_ADMIN_IMAGE:?render a release manifest first}
     command: ["/app/.venv/bin/python", "/app/deploy/migrate.py"]
     environment: &common-environment
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
@@ -48,7 +48,7 @@ services:
     cpus: 0.25
 
   pi-agent:
-    image: ${CASEWORK_PI_AGENT_IMAGE:-pi-agent:v1}
+    image: ${CASEWORK_PI_AGENT_IMAGE:?render a release manifest first}
     environment:
       <<: *common-environment
       CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://api.tokener.dev/v1}
@@ -92,8 +92,6 @@ services:
     volumes:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}:/run/casework-credentials
       - ${CASEWORK_ADMIN_AUTH_DIR:?set CASEWORK_ADMIN_AUTH_DIR}:/run/casework-admin-auth
-      - /opt/zd-agent/code/apps/admin-web/dist:/app/apps/admin-web/dist:ro
-      - /opt/zd-agent/code/apps/admin-api/src/casework_admin/api_v2.py:/app/apps/admin-api/src/casework_admin/api_v2.py:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       migration:
