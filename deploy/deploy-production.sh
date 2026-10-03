@@ -25,9 +25,7 @@ LOCK_FILE="${ZD_AGENT_DEPLOY_LOCK_FILE:-/run/lock/zd-agent-deploy.lock}"
 
 required=(
   GHCR_USERNAME GHCR_PAT CASEWORK_RELEASE_REVISION
-  CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE
-  CASEWORK_SANDBOX_IMAGE CASEWORK_ADMIN_IMAGE
-  CASEWORK_PI_AGENT_IMAGE
+  CASEWORK_INGRESS_IMAGE CASEWORK_ADMIN_IMAGE CASEWORK_PI_AGENT_IMAGE
 )
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -40,7 +38,7 @@ if [[ ! "$CASEWORK_RELEASE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
   echo "CASEWORK_RELEASE_REVISION must be a full Git commit SHA" >&2
   exit 1
 fi
-for image_name in CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE CASEWORK_SANDBOX_IMAGE CASEWORK_ADMIN_IMAGE CASEWORK_PI_AGENT_IMAGE; do
+for image_name in CASEWORK_INGRESS_IMAGE CASEWORK_ADMIN_IMAGE CASEWORK_PI_AGENT_IMAGE; do
   if [[ ! "${!image_name}" =~ @sha256:[0-9a-f]{64}$ ]]; then
     echo "${image_name} must be digest-pinned" >&2
     exit 1
@@ -80,7 +78,6 @@ if grep -Eq '^CASEWORK_LOG_SYNC_ENABLED="?true"?$' "$RUNTIME_ENV"; then
 fi
 "${compose[@]}" config --quiet
 "${compose[@]}" pull postgres ingress pi-agent admin migration
-docker pull "$CASEWORK_SANDBOX_IMAGE" >/dev/null
 
 "${compose[@]}" up -d postgres
 "${compose[@]}" run --rm migration
@@ -119,8 +116,6 @@ python3 "$DEPLOY_DIR/configure_runtime.py" \
 cat >"$RELEASE_ENV" <<EOF
 CASEWORK_RELEASE_REVISION=$CASEWORK_RELEASE_REVISION
 CASEWORK_INGRESS_IMAGE=$CASEWORK_INGRESS_IMAGE
-CASEWORK_HARNESS_IMAGE=$CASEWORK_HARNESS_IMAGE
-CASEWORK_SANDBOX_IMAGE=$CASEWORK_SANDBOX_IMAGE
 CASEWORK_ADMIN_IMAGE=$CASEWORK_ADMIN_IMAGE
 CASEWORK_PI_AGENT_IMAGE=$CASEWORK_PI_AGENT_IMAGE
 EOF

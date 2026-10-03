@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: Deploy the digest-pinned four-image bundle to production
+        description: Deploy the digest-pinned image bundle to production
         required: true
         type: boolean
         default: false
@@ -56,10 +56,6 @@ jobs:
         run: |
           pnpm --filter pi-agent test
           pnpm --filter pi-agent build
-      - name: Test and build Feishu MCP
-        run: |
-          pnpm --filter feishu-mcp test
-          pnpm --filter feishu-mcp build
 
   build:
     needs: quality
@@ -70,11 +66,8 @@ jobs:
       packages: write
     outputs:
       ingress_digest: ${{ steps.ingress.outputs.digest }}
-      harness_digest: ${{ steps.harness.outputs.digest }}
-      sandbox_digest: ${{ steps.sandbox.outputs.digest }}
       admin_digest: ${{ steps.admin.outputs.digest }}
       pi_agent_digest: ${{ steps.pi_agent.outputs.digest }}
-      feishu_mcp_digest: ${{ steps.feishu_mcp.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -94,34 +87,6 @@ jobs:
           tags: |
             ${{ env.IMAGE_PREFIX }}-ingress:sha-${{ github.sha }}
             ${{ env.IMAGE_PREFIX }}-ingress:main
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-      - name: Build and push Harness
-        id: harness
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile
-          target: harness
-          push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}-harness:sha-${{ github.sha }}
-            ${{ env.IMAGE_PREFIX }}-harness:main
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-      - name: Build and push Sandbox
-        id: sandbox
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile
-          target: sandbox
-          push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}-sandbox:sha-${{ github.sha }}
-            ${{ env.IMAGE_PREFIX }}-sandbox:main
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -153,20 +118,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-      - name: Build and push Feishu MCP
-        id: feishu_mcp
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: deploy/Dockerfile
-          target: feishu-mcp
-          push: true
-          tags: |
-            ${{ env.IMAGE_PREFIX }}-feishu-mcp:sha-${{ github.sha }}
-            ${{ env.IMAGE_PREFIX }}-feishu-mcp:main
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
 
   deploy:
     needs: build
@@ -188,6 +139,7 @@ jobs:
           OPENCONNECTOR_RUNTIME_TOKEN: ${{ secrets.OPENCONNECTOR_RUNTIME_TOKEN }}
           CASEWORK_OPENCONNECTOR_MCP_URL: ${{ vars.CASEWORK_OPENCONNECTOR_MCP_URL }}
           ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${{ secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           HC_CLIENT_URL: ${{ vars.HC_CLIENT_URL }}
           HC_CLIENT_API_KEY: ${{ secrets.HC_CLIENT_API_KEY }}
           CASEWORK_LOG_SYNC_ENABLED: ${{ vars.CASEWORK_LOG_SYNC_ENABLED }}
@@ -195,14 +147,11 @@ jobs:
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
           INGRESS_DIGEST: ${{ needs.build.outputs.ingress_digest }}
-          HARNESS_DIGEST: ${{ needs.build.outputs.harness_digest }}
-          SANDBOX_DIGEST: ${{ needs.build.outputs.sandbox_digest }}
           ADMIN_DIGEST: ${{ needs.build.outputs.admin_digest }}
           PI_AGENT_DIGEST: ${{ needs.build.outputs.pi_agent_digest }}
-          FEISHU_MCP_DIGEST: ${{ needs.build.outputs.feishu_mcp_digest }}
         run: |
           set -euo pipefail
-          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS OPENCONNECTOR_RUNTIME_TOKEN GHCR_PAT INGRESS_DIGEST HARNESS_DIGEST SANDBOX_DIGEST ADMIN_DIGEST PI_AGENT_DIGEST FEISHU_MCP_DIGEST)
+          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS OPENCONNECTOR_RUNTIME_TOKEN GHCR_PAT INGRESS_DIGEST ADMIN_DIGEST PI_AGENT_DIGEST)
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required deployment input: ${name}" >&2; exit 1; }
           done
@@ -224,16 +173,18 @@ jobs:
             printf 'export OPENCONNECTOR_RUNTIME_TOKEN=%q\n' "$OPENCONNECTOR_RUNTIME_TOKEN"
             printf 'export CASEWORK_OPENCONNECTOR_MCP_URL=%q\n' "$CASEWORK_OPENCONNECTOR_MCP_URL"
             printf 'export ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET=%q\n' "$ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"
+            # Optional rotation input. An exported empty value would override
+            # the URL already saved in runtime.env, so export only when set.
+            if [[ -n "${FEISHU_WEBHOOK_URL:-}" ]]; then
+              printf 'export FEISHU_WEBHOOK_URL=%q\n' "$FEISHU_WEBHOOK_URL"
+            fi
             printf 'export HC_CLIENT_URL=%q\n' "$HC_CLIENT_URL"
             printf 'export HC_CLIENT_API_KEY=%q\n' "$HC_CLIENT_API_KEY"
             printf 'export CASEWORK_LOG_SYNC_ENABLED=%q\n' "${CASEWORK_LOG_SYNC_ENABLED:-false}"
             printf 'export CASEWORK_REUSE_TOOL_CONFIG=%q\n' "${CASEWORK_REUSE_TOOL_CONFIG:-false}"
             printf 'export CASEWORK_INGRESS_IMAGE=%q\n' "${IMAGE_PREFIX}-ingress@${INGRESS_DIGEST}"
-            printf 'export CASEWORK_HARNESS_IMAGE=%q\n' "${IMAGE_PREFIX}-harness@${HARNESS_DIGEST}"
-            printf 'export CASEWORK_SANDBOX_IMAGE=%q\n' "${IMAGE_PREFIX}-sandbox@${SANDBOX_DIGEST}"
             printf 'export CASEWORK_ADMIN_IMAGE=%q\n' "${IMAGE_PREFIX}-admin@${ADMIN_DIGEST}"
             printf 'export CASEWORK_PI_AGENT_IMAGE=%q\n' "${IMAGE_PREFIX}-pi-agent@${PI_AGENT_DIGEST}"
-            printf 'export CASEWORK_FEISHU_MCP_IMAGE=%q\n' "${IMAGE_PREFIX}-feishu-mcp@${FEISHU_MCP_DIGEST}"
             printf 'export CASEWORK_RELEASE_REVISION=%q\n' "$GITHUB_SHA"
             cat <<'REMOTE'
           set -euo pipefail

@@ -1,4 +1,4 @@
-"""Validate immutable four-image manifests and render deployment inputs.
+"""Validate immutable release image manifests and render deployment inputs.
 
 This tool deliberately never invokes Docker, Compose, a registry, or Zendesk.
 Operators can inspect its deterministic output before a separate deployment
@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import yaml
 
-IMAGE_NAMES = ("ingress", "harness", "sandbox", "admin")
+IMAGE_NAMES = ("ingress", "pi-agent", "admin")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _GIT_REVISION = re.compile(r"[0-9a-f]{40}")
 
@@ -60,7 +60,10 @@ def load_release_manifest(path: Path) -> ReleaseManifest:
     spec = _mapping(raw.get("spec"), field="spec")
     images_raw = _mapping(spec.get("images"), field="spec.images")
     if set(images_raw) != set(IMAGE_NAMES):
-        raise ValueError("release manifest must contain exactly four images")
+        raise ValueError(
+            "release manifest must contain exactly the images: "
+            + ", ".join(IMAGE_NAMES)
+        )
 
     images: dict[str, ReleaseImage] = {}
     for name in IMAGE_NAMES:
@@ -92,7 +95,7 @@ def load_release_manifest(path: Path) -> ReleaseManifest:
 
 def render_environment(manifest: ReleaseManifest) -> dict[str, str]:
     environment = {
-        f"CASEWORK_{name.upper()}_IMAGE": image.immutable_reference
+        f"CASEWORK_{name.upper().replace('-', '_')}_IMAGE": image.immutable_reference
         for name, image in manifest.images.items()
     }
     environment["CASEWORK_RELEASE_REVISION"] = manifest.git_revision

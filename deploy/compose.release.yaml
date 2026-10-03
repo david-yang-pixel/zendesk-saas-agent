@@ -19,12 +19,12 @@ services:
     cpus: 0.35
 
   migration:
-    image: ${CASEWORK_ADMIN_IMAGE:-ghcr.io/david-yang-pixel/zendesk-saas-agent-casework-admin:latest}
+    image: ${CASEWORK_ADMIN_IMAGE:?render a release manifest first}
     command: ["/app/.venv/bin/python", "/app/deploy/migrate.py"]
     environment: &common-environment
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       CASEWORK_CONFIG_REVISION: ${CASEWORK_CONFIG_REVISION:?set CASEWORK_CONFIG_REVISION}
-      PYTHONPATH: /app/apps/admin-api/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src
+      PYTHONPATH: /app/apps/admin-api/src:/app/apps/ingress/src:/app/packages/contracts/src:/app/packages/persistence/src
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,7 +48,7 @@ services:
     cpus: 0.25
 
   pi-agent:
-    image: ${CASEWORK_PI_AGENT_IMAGE:-pi-agent:v1}
+    image: ${CASEWORK_PI_AGENT_IMAGE:?render a release manifest first}
     environment:
       <<: *common-environment
       CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://api.tokener.dev/v1}
@@ -59,10 +59,10 @@ services:
       ZENDESK_BASE_URL: ${ZENDESK_BASE_URL:?set ZENDESK_BASE_URL}
       ZENDESK_EMAIL: ${ZENDESK_EMAIL:?set ZENDESK_EMAIL}
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}
-      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0}
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
       NODE_OPTIONS: "--max-old-space-size=768"
       CASEWORK_WORKER_CONCURRENCY: ${CASEWORK_WORKER_CONCURRENCY:-2}
-    ports: ["127.0.0.1:${CASEWORK_HARNESS_PORT:-18102}:8102"]
+    ports: ["127.0.0.1:${CASEWORK_PI_AGENT_PORT:-18102}:8102"]
     volumes:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}/credentials.env:/app/credentials.env:ro
     group_add:
@@ -92,8 +92,6 @@ services:
     volumes:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}:/run/casework-credentials
       - ${CASEWORK_ADMIN_AUTH_DIR:?set CASEWORK_ADMIN_AUTH_DIR}:/run/casework-admin-auth
-      - /opt/zd-agent/code/apps/admin-web/dist:/app/apps/admin-web/dist:ro
-      - /opt/zd-agent/code/apps/admin-api/src/casework_admin/api_v2.py:/app/apps/admin-api/src/casework_admin/api_v2.py:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       migration:

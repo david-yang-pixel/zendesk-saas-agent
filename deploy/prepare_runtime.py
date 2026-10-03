@@ -2,8 +2,8 @@
 
 The script never prints secret values.  It writes a dedicated runtime file and
 credential file with mode 0600, and discovers the current read-only MCP tool
-schemas so the Sandbox receives typed definitions rather than a hard-coded
-copy that can drift from the deployed services.
+schemas so the Admin configuration lists the deployed tools rather than a
+hard-coded copy that can drift from the deployed services.
 """
 
 from __future__ import annotations
@@ -396,8 +396,7 @@ def prepare(
         name: _required(os.environ, name)
         for name in (
             "CASEWORK_INGRESS_IMAGE",
-            "CASEWORK_HARNESS_IMAGE",
-            "CASEWORK_SANDBOX_IMAGE",
+            "CASEWORK_PI_AGENT_IMAGE",
             "CASEWORK_ADMIN_IMAGE",
         )
     }
@@ -443,14 +442,17 @@ def prepare(
             or legacy.get("RELAY_API_KEY")
             or ""
         ),
+        # The bot URL is a bearer credential. A CI secret rotates it; otherwise
+        # keep the value already deployed. Alerts are disabled when it is unset.
         "FEISHU_WEBHOOK_URL": (
-            existing.get("FEISHU_WEBHOOK_URL")
+            os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
+            or existing.get("FEISHU_WEBHOOK_URL")
             or legacy.get("FEISHU_WEBHOOK_URL")
-            or "https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0"
+            or ""
         ),
         "DOCKER_GID": str(docker_socket.stat().st_gid),
         "CASEWORK_INGRESS_PORT": "18101",
-        "CASEWORK_HARNESS_PORT": "18102",
+        "CASEWORK_PI_AGENT_PORT": "18102",
         "CASEWORK_ADMIN_PORT": "18104",
         "CASEWORK_SAAS_GROUP_ID": "40685275477140",
         "CASEWORK_ROOT_MODEL": "gpt-5.5",

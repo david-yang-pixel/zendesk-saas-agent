@@ -73,7 +73,7 @@ const OPENCONNECTOR_MCP_URL = cleanEnv(process.env.CASEWORK_OPENCONNECTOR_MCP_UR
 const OPENCONNECTOR_RUNTIME_TOKEN = cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME)
   || cleanEnv(process.env.OPENCONNECTOR_RUNTIME_TOKEN)
   || cleanEnv(process.env.OOMOL_CONNECT_RUNTIME_TOKEN);
-const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL) || 'https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0';
+const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL);
 const humanAlertTracker = new HumanAlertTracker(30 * 60 * 1000);
 
 async function notifyHumanTakeover(ticketId: number, customerMessage: string, reason: string): Promise<void> {
@@ -266,6 +266,9 @@ async function main() {
 
   if (!OPENCONNECTOR_RUNTIME_TOKEN) {
     throw new Error('CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME is required');
+  }
+  if (!FEISHU_WEBHOOK_URL) {
+    console.warn('[Worker] FEISHU_WEBHOOK_URL is not configured; human takeover and failure alerts are disabled.');
   }
   const openConnectorService = createOpenConnectorServiceConfig(
     OPENCONNECTOR_MCP_URL,

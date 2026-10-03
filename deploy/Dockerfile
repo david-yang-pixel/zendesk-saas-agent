@@ -2,7 +2,7 @@ FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONPATH=/app/apps/admin-api/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src
+    PYTHONPATH=/app/apps/admin-api/src:/app/apps/ingress/src:/app/packages/contracts/src:/app/packages/persistence/src
 
 RUN groupadd --system --gid 10001 casework \
     && useradd --system --uid 10001 --gid 10001 --home-dir /app casework \
@@ -51,29 +51,6 @@ COPY --chown=casework:casework apps/ingress ./apps/ingress
 EXPOSE 8101
 CMD ["/app/.venv/bin/uvicorn", "casework_ingress.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8101"]
 
-FROM base AS harness
-
-WORKDIR /app
-COPY --from=builder --chown=casework:casework /app/.venv /app/.venv
-COPY --chown=casework:casework pyproject.toml uv.lock ./
-COPY --chown=casework:casework packages ./packages
-COPY --chown=casework:casework deploy ./deploy
-COPY --chown=casework:casework apps/harness ./apps/harness
-EXPOSE 8102
-CMD ["/app/.venv/bin/python", "-m", "casework_harness.worker"]
-
-FROM base AS sandbox
-
-USER casework
-WORKDIR /app
-COPY --from=builder --chown=casework:casework /app/.venv /app/.venv
-COPY --chown=casework:casework pyproject.toml uv.lock ./
-COPY --chown=casework:casework packages ./packages
-COPY --chown=casework:casework deploy ./deploy
-COPY --chown=casework:casework apps/sandbox ./apps/sandbox
-EXPOSE 8103
-CMD ["/app/.venv/bin/uvicorn", "casework_sandbox.composition:create_app", "--factory", "--host", "0.0.0.0", "--port", "8103"]
-
 FROM base AS admin
 
 WORKDIR /app
@@ -104,19 +81,3 @@ RUN pnpm --dir apps/pi-agent build
 
 EXPOSE 8102
 CMD ["node", "apps/pi-agent/dist/worker.js"]
-
-FROM node:22-alpine AS feishu-mcp
-
-ENV NODE_ENV=production \
-    FEISHU_MCP_PORT=8115
-
-WORKDIR /app
-RUN apk add --no-cache ca-certificates curl && corepack enable && npm install -g @larksuite/cli
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-COPY apps/feishu-mcp/package.json ./apps/feishu-mcp/
-RUN pnpm --dir apps/feishu-mcp install --frozen-lockfile
-COPY apps/feishu-mcp ./apps/feishu-mcp
-RUN pnpm --dir apps/feishu-mcp build
-
-EXPOSE 8115
-CMD ["node", "apps/feishu-mcp/dist/server.js"]

@@ -20,11 +20,10 @@ def test_release_manifest_renders_only_digest_pinned_images() -> None:
     assert set(environment) == {
         "CASEWORK_ADMIN_IMAGE",
         "CASEWORK_CONFIG_REVISION",
-        "CASEWORK_HARNESS_IMAGE",
         "CASEWORK_INGRESS_IMAGE",
         "CASEWORK_MIGRATION_REVISION",
+        "CASEWORK_PI_AGENT_IMAGE",
         "CASEWORK_RELEASE_REVISION",
-        "CASEWORK_SANDBOX_IMAGE",
     }
     for name, value in environment.items():
         if name.endswith("_IMAGE"):
@@ -43,7 +42,7 @@ def test_release_manifest_rejects_mutable_or_missing_image_digest(
             "tag": "v1",
             "digest": valid_digest,
         }
-        for name in ("ingress", "harness", "sandbox", "admin")
+        for name in ("ingress", "pi-agent", "admin")
     }
     images["ingress"] = {
         "repository": "repo/ingress",
