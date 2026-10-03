@@ -59,11 +59,8 @@ services:
       ZENDESK_BASE_URL: ${ZENDESK_BASE_URL:-https://example.invalid}
       ZENDESK_EMAIL: ${ZENDESK_EMAIL:-unconfigured@example.invalid}
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:-unconfigured}
-      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://example.invalid}
-      CASEWORK_MODEL_NAME: ${CASEWORK_MODEL_NAME:-unconfigured}
       CASEWORK_OPENCONNECTOR_MCP_URL: ${CASEWORK_OPENCONNECTOR_MCP_URL:-https://example.invalid/mcp}
       CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME: ${OPENCONNECTOR_RUNTIME_TOKEN:-}
-      CASEWORK_CREDENTIAL_OPENAI_PRIMARY: ${OPENAI_API_KEY:-}
       CASEWORK_BROWSER_RELAY_URL: ${CASEWORK_BROWSER_RELAY_URL:-https://example.invalid/relay}
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
     ports:
@@ -80,7 +77,6 @@ services:
     environment:
       <<: *common-environment
       ADMIN_API_BASE_URL: http://admin:8104
-      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://api.openai.com}
       CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
     ports:
       - "8104:8104"

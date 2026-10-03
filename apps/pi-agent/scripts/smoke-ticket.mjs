@@ -4,6 +4,7 @@ import pg from 'pg';
 import { getTicketDetails } from '../dist/ticket-context.js';
 import { createOpenConnectorServiceConfig, discoverOpenConnectorTools } from '../dist/openconnector.js';
 import { runPiSupportAgent } from '../dist/agent.js';
+import { parseModelConfig } from '../dist/model-config.js';
 
 const ticketId = Number(process.argv[2]);
 if (!Number.isSafeInteger(ticketId) || ticketId <= 0) throw new Error('Usage: node scripts/smoke-ticket.mjs <ticket-id> [--model]');
@@ -24,16 +25,14 @@ if (process.argv.includes('--model')) {
   const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL.replace(/^postgresql\+[a-zA-Z0-9_]+:\/\//, 'postgresql://') });
   let model;
   try {
-    model = (await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'")).rows[0]?.value;
+    model = parseModelConfig((await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'")).rows[0]?.value);
   } finally { await pool.end(); }
   const tools = await discoverOpenConnectorTools(connector);
   if (tools.length !== 5) throw new Error(`Expected four read-only controls and the read-tool directory, got ${tools.length}`);
   const result = await runPiSupportAgent({
     ticketId, requesterEmail: details.email, attachments: details.attachments, contextPrepared: true,
     customerMessage: `内部只读诊断，不发送、不修改任何数据。请必须调用 execute_action，actionId=custom_mcp.call_tool，connectionName=zendesk，input={"toolName":"get_ticket","arguments":{"ticket_id":${ticketId}}} 核对当前工单，再根据以下最新客户消息给出简短未发送草稿：\n${details.message}`,
-    tools, apiKey: model?.api_key || process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY,
-    modelBaseUrl: model?.base_url || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.tokener.dev/v1',
-    modelName: model?.model || process.env.CASEWORK_MODEL_NAME || 'gpt-5.6-terra', abortSignal: signal,
+    tools, apiKey: model.apiKey, modelBaseUrl: model.baseUrl, modelName: model.model, abortSignal: signal,
   });
   const calls = result.trace.toolCalls;
   if (!calls.length || !result.trace.finalReply?.trim()) throw new Error('Smoke requires actual tool execution and a nonempty final reply');

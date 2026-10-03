@@ -28,9 +28,10 @@ export interface AgentRunOptions {
   conversationContext?: string;
   requesterEmail?: string;
   tools: CustomTool[];
-  modelName?: string;
-  modelBaseUrl?: string;
-  apiKey?: string;
+  /** From the Admin 模型配置 page; there is no built-in default. */
+  modelName: string;
+  modelBaseUrl: string;
+  apiKey: string;
   abortSignal?: AbortSignal;
   attachments?: AgentAttachment[];
   contextPrepared?: boolean;
@@ -319,13 +320,11 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     return { reply, customerReply: acknowledgement, internalNote: 'Conversational acknowledgement; no account or product claims and no business evidence required.', trace };
   }
 
-  const modelName = options.modelName || process.env.CASEWORK_MODEL_NAME || 'gpt-5.6-terra';
-  const rawBaseUrl = options.modelBaseUrl || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.tokener.dev';
-  let baseUrl = rawBaseUrl.replace(/\/+$/, '');
+  const { modelName, apiKey } = options;
+  let baseUrl = options.modelBaseUrl.replace(/\/+$/, '');
   if (!baseUrl.endsWith('/v1')) {
     baseUrl += '/v1';
   }
-  const apiKey = options.apiKey || process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY || process.env.OPENAI_API_KEY || '';
 
   console.log(`[Agent] Initializing ModelRuntime with baseUrl=${baseUrl}, model=${modelName}, apiKeyLen=${apiKey.length}`);
 

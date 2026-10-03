@@ -11,8 +11,8 @@ Official payload: https://developer.zendesk.com/api-reference/webhooks/event-typ
 
 - Store this webhook's own signing secret in GitHub Actions Secret
   `ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET`, never the Messaging secret.
-- Alternatively, configure it in the deployment source env on the server.
-  Precedence: nonempty deployment environment, source env, saved runtime env.
+- Without the secret, a deployment keeps the value saved in `runtime.env`
+  (a rollback always does).
 - `prepare_runtime.py` writes the private `runtime.env` (0600); Compose injects
   the secret into ingress only. It is not baked into an image.
 - Mention Poller and its configuration have been removed by explicit approval.

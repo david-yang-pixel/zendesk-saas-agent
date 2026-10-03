@@ -1,4 +1,10 @@
-"""Prepare a least-privilege production environment from the legacy secret file.
+"""Prepare a least-privilege production environment.
+
+The GitHub production environment is the only source of deployment settings and
+secrets; the deploy workflow exports them to this process. A rollback runs
+without GitHub, so each setting falls back to the value the previous deployment
+saved. Model settings are not deployment settings: they live in the Admin
+console.
 
 The script never prints secret values.  It writes a dedicated runtime file and
 credential file with mode 0600, and discovers the current read-only MCP tool
@@ -101,7 +107,19 @@ def _parse_dotenv(path: Path) -> dict[str, str]:
 def _required(values: Mapping[str, str], name: str) -> str:
     value = values.get(name, "").strip()
     if not value:
-        raise RuntimeError(f"legacy environment is missing required {name}")
+        raise RuntimeError(f"deployment environment is missing required {name}")
+    return value
+
+
+def _setting(name: str, saved: str | None) -> str:
+    """Return the GitHub value, or the value saved by the previous deployment."""
+    return os.environ.get(name, "").strip() or (saved or "").strip()
+
+
+def _required_setting(name: str, saved: str | None) -> str:
+    value = _setting(name, saved)
+    if not value:
+        raise RuntimeError(f"deployment environment is missing required {name}")
     return value
 
 
@@ -288,19 +306,10 @@ def _saved_tools(
 
 def prepare(
     *,
-    source_env: Path,
     state_dir: Path,
     revision: str,
     legacy_auth_path: Path = Path("/opt/zd-agent/resources/.state/admin_auth.json"),
 ) -> None:
-    legacy = _parse_dotenv(source_env)
-    # GitHub Actions injects this production secret into the remote deploy
-    # process. Prefer it over the host dotenv so rotations have one authority.
-    openconnector_runtime_token = os.environ.get(
-        "OPENCONNECTOR_RUNTIME_TOKEN", ""
-    ).strip()
-    if openconnector_runtime_token:
-        legacy["OPENCONNECTOR_RUNTIME_TOKEN"] = openconnector_runtime_token
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_dir.chmod(0o700)
 
@@ -311,10 +320,9 @@ def prepare(
     services = _configured_services(existing)
     postgres_password = existing.get("POSTGRES_PASSWORD") or secrets.token_hex(24)
     # Optional during staged rollout. Never reuse the Messaging signing key.
-    ticket_events_secret = (
-        os.environ.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "").strip()
-        or legacy.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "")
-        or existing.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "")
+    ticket_events_secret = _setting(
+        "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET",
+        existing.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"),
     )
     reuse_tools = os.environ.get("CASEWORK_REUSE_TOOL_CONFIG", "false").strip().lower()
     if reuse_tools not in {"true", "false"}:
@@ -327,15 +335,21 @@ def prepare(
     legacy_credentials_path = state_dir / "credentials.env"
     if os.geteuid() == 0:
         os.chown(credential_dir, 10_001, 10_001)
+    saved_credentials = (
+        _parse_dotenv(credentials_path) if credentials_path.exists() else {}
+    )
     all_tools: list[dict[str, object]] = []
     if reuse_tools == "true":
         all_tools = _saved_tools(existing, services)
     service_credentials: dict[str, str] = {}
     for service in services:
-        secret = _required(legacy, service.secret_name)
-        service_credentials[
+        credential_key = (
             "CASEWORK_CREDENTIAL_" + service.credential_ref.replace("-", "_").upper()
-        ] = secret
+        )
+        secret = _required_setting(
+            service.secret_name, saved_credentials.get(credential_key)
+        )
+        service_credentials[credential_key] = secret
         if reuse_tools != "true":
             all_tools.extend(_discover_tools(service, secret))
 
@@ -351,13 +365,13 @@ def prepare(
             credentials = _parse_dotenv(legacy_credentials_path)
         else:
             credentials = {}
-        # Admin replacements are authoritative and must survive later deploys.
-        credentials.setdefault(
-            "CASEWORK_CREDENTIAL_OPENAI_PRIMARY",
-            _required(legacy, "OPENAI_API_KEY"),
-        )
+        # Model keys belong to the Admin console; keep whatever it saved.
         for legacy_key in LEGACY_INVESTIGATION_CREDENTIAL_KEYS:
             credentials.pop(legacy_key, None)
+        # The relay key is a deployment setting delivered through runtime.env.
+        # Pi Agent lets this file override its environment, so a stale copy
+        # here would silently undo a rotation made in GitHub.
+        credentials.pop("CASEWORK_BROWSER_RELAY_API_KEY", None)
         credentials.update(service_credentials)
         _write_dotenv(credentials_path, credentials)
     if os.geteuid() == 0:
@@ -397,7 +411,12 @@ def prepare(
             "CASEWORK_ADMIN_IMAGE",
         )
     }
-    subdomain = _required(legacy, "ZENDESK_SUBDOMAIN")
+    subdomain = os.environ.get("ZENDESK_SUBDOMAIN", "").strip()
+    zendesk_base_url = (
+        f"https://{subdomain}.zendesk.com"
+        if subdomain
+        else _required_setting("ZENDESK_BASE_URL", existing.get("ZENDESK_BASE_URL"))
+    )
     runtime = {
         "POSTGRES_PASSWORD": postgres_password,
         "DATABASE_URL": (
@@ -407,14 +426,16 @@ def prepare(
         "CASEWORK_LOG_SYNC_ENABLED": log_sync_enabled,
         "CASEWORK_LOG_SYNC_CREDENTIAL_DIR": str(log_sync_dir),
         **images,
-        "ZENDESK_BASE_URL": f"https://{subdomain}.zendesk.com",
-        "ZENDESK_EMAIL": _required(legacy, "ZENDESK_EMAIL"),
-        "ZENDESK_API_TOKEN": _required(legacy, "ZENDESK_API_TOKEN"),
-        "ZENDESK_MESSAGING_WEBHOOK_SECRET": _required(
-            legacy, "ZENDESK_MESSAGING_WEBHOOK_SECRET"
-        ),
+        "ZENDESK_BASE_URL": zendesk_base_url,
+        **{
+            name: _required_setting(name, existing.get(name))
+            for name in (
+                "ZENDESK_EMAIL",
+                "ZENDESK_API_TOKEN",
+                "ZENDESK_MESSAGING_WEBHOOK_SECRET",
+            )
+        },
         "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET": ticket_events_secret,
-        "CASEWORK_MODEL_BASE_URL": "https://api.openai.com",
         "CASEWORK_OPENCONNECTOR_MCP_URL": services[0].endpoint,
         "CASEWORK_TOOL_CONFIG": json.dumps(
             all_tools, ensure_ascii=False, separators=(",", ":")
@@ -430,19 +451,13 @@ def prepare(
             existing.get("CASEWORK_BROWSER_RELAY_URL")
             or "https://zendesk.smlershou.top/zendesk-browser-relay"
         ),
-        "CASEWORK_BROWSER_RELAY_API_KEY": (
-            existing.get("CASEWORK_BROWSER_RELAY_API_KEY")
-            or legacy.get("ZENDESK_BROWSER_RELAY_API_KEY")
-            or legacy.get("RELAY_API_KEY")
-            or ""
+        "CASEWORK_BROWSER_RELAY_API_KEY": _required_setting(
+            "ZENDESK_BROWSER_RELAY_API_KEY",
+            existing.get("CASEWORK_BROWSER_RELAY_API_KEY"),
         ),
-        # The bot URL is a bearer credential. A CI secret rotates it; otherwise
-        # keep the value already deployed. Alerts are disabled when it is unset.
-        "FEISHU_WEBHOOK_URL": (
-            os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
-            or existing.get("FEISHU_WEBHOOK_URL")
-            or legacy.get("FEISHU_WEBHOOK_URL")
-            or ""
+        # Optional bearer credential. Alerts are disabled when it is unset.
+        "FEISHU_WEBHOOK_URL": _setting(
+            "FEISHU_WEBHOOK_URL", existing.get("FEISHU_WEBHOOK_URL")
         ),
         "CASEWORK_INGRESS_PORT": "18101",
         "CASEWORK_PI_AGENT_PORT": "18102",
@@ -458,7 +473,6 @@ def prepare(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source-env", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--revision", required=True)
     parser.add_argument(
@@ -468,7 +482,6 @@ def main() -> None:
     )
     args = parser.parse_args()
     prepare(
-        source_env=args.source_env,
         state_dir=args.state_dir,
         revision=args.revision,
         legacy_auth_path=args.legacy_auth_path,

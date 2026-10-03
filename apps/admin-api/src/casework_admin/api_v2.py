@@ -480,7 +480,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                     customer_msg = f"工单 #{job.ticket_id} (已接收)"
 
             email = active_q.get("requester_email") or ""
-            model_used = active_q.get("model") or "gpt-5.6-terra"
+            model_used = active_q.get("model") or ""
             reply = (
                 outcome.get("final_reply")
                 or outcome.get("answer")
@@ -576,7 +576,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             customer_message = meta.get("message") or meta.get("subject") or f"Zendesk 工单 #{ticket_id}"
 
         requester_email = active_q.get("requester_email") or ""
-        model_used = active_q.get("model") or "gpt-5.6-terra"
+        model_used = active_q.get("model") or ""
 
         final_reply = (
             outcome.get("final_reply")
@@ -788,12 +788,14 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
 
     @router.get("/settings/model")
     async def get_model_settings() -> dict[str, Any]:
+        # This page is the only source of model settings. Until it is saved,
+        # report an empty configuration rather than a built-in model.
         config = {
             "provider": "openai",
-            "base_url": os.environ.get("CASEWORK_MODEL_BASE_URL", "https://api.tokener.dev/v1"),
-            "model": os.environ.get("CASEWORK_MODEL_NAME", "gpt-5.6-terra"),
-            "api_key_masked": _mask_key(os.environ.get("CASEWORK_CREDENTIAL_OPENAI_PRIMARY", "")),
-            "has_key": bool(os.environ.get("CASEWORK_CREDENTIAL_OPENAI_PRIMARY")),
+            "base_url": "",
+            "model": "",
+            "api_key_masked": "",
+            "has_key": False,
             "reasoning": True,
             "timeout_seconds": 120,
         }
@@ -808,7 +810,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                     config["provider"] = val.get("provider", config["provider"])
                     config["base_url"] = val.get("base_url", config["base_url"])
                     config["model"] = val.get("model", config["model"])
-                    key = val.get("api_key") or os.environ.get("CASEWORK_CREDENTIAL_OPENAI_PRIMARY", "")
+                    key = val.get("api_key") or ""
                     config["api_key_masked"] = _mask_key(key)
                     config["has_key"] = bool(key)
                     config["reasoning"] = val.get("reasoning", True)
@@ -870,8 +872,8 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                         key = row[0].get("api_key")
             except Exception:
                 pass
-            if not key:
-                key = os.environ.get("CASEWORK_CREDENTIAL_OPENAI_PRIMARY", "")
+        if not key:
+            return ModelTestResponse(ok=False, status_code=400, latency_ms=0, message="未配置 API Key")
 
         url = payload.base_url.rstrip("/")
         if not url.endswith("/v1"):
@@ -1209,10 +1211,13 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         except Exception as e:
             items.append(MeshHealthItem(name="postgres", label="PostgreSQL 持久队列", status="error", latency_ms=0, detail=str(e)[:100]))
 
-        # 2. Primary LLM
-        model_url = os.environ.get("CASEWORK_MODEL_BASE_URL", "https://api.tokener.dev/v1")
-        model_name = os.environ.get("CASEWORK_MODEL_NAME", "gpt-5.6-terra")
-        items.append(MeshHealthItem(name="llm", label=f"LLM 推理网关 ({model_name})", status="healthy", latency_ms=68, endpoint=model_url, detail="网关就绪"))
+        # 2. Primary LLM, as configured on the model settings page
+        model_settings = await get_model_settings()
+        model_name = model_settings["model"]
+        if model_name and model_settings["base_url"] and model_settings["has_key"]:
+            items.append(MeshHealthItem(name="llm", label=f"LLM 推理网关 ({model_name})", status="healthy", latency_ms=68, endpoint=model_settings["base_url"], detail="网关就绪"))
+        else:
+            items.append(MeshHealthItem(name="llm", label="LLM 推理网关", status="error", latency_ms=0, detail="未配置模型，请在「模型配置」页设置"))
 
         # 3. Zendesk
         zd_url = os.environ.get("ZENDESK_BASE_URL", "https://dify.zendesk.com")

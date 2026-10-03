@@ -12,7 +12,6 @@ fi
 
 CODE_DIR="${ZD_AGENT_CODE_DIR:-/opt/zd-agent/code}"
 STATE_DIR="${CASEWORK_STATE_DIR:-/opt/zd-agent/greenfield}"
-SOURCE_ENV="${ZD_AGENT_SOURCE_ENV:-/opt/zd-agent/.env}"
 DEPLOY_DIR="$CODE_DIR/deploy"
 if [[ ! -d "$DEPLOY_DIR" && -d "$CODE_DIR/greenfield/deploy" ]]; then
   DEPLOY_DIR="$CODE_DIR/greenfield/deploy"
@@ -60,7 +59,6 @@ if [[ -f "$RELEASE_ENV" ]]; then
 fi
 
 python3 "$DEPLOY_DIR/prepare_runtime.py" \
-  --source-env "$SOURCE_ENV" \
   --state-dir "$STATE_DIR" \
   --revision "$CASEWORK_RELEASE_REVISION"
 

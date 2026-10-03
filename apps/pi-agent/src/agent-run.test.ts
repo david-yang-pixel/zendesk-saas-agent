@@ -73,7 +73,7 @@ const check = (id: string, source: string, kind = 'document') => ({ id, question
 const read = (id: string, source: string, tool: string) => execute('execute_action', id, source.startsWith('dify-')
   ? { connectionName: source, actionId: 'custom_mcp.call_tool', input: { toolName: tool, arguments: {} } }
   : { connectionName: 'default', actionId: source + '.' + tool, input: {} });
-const options = { ticketId: 3726, customerMessage: 'Check the education offer and credit refresh.', tools: [external], apiKey: 'test-key', modelBaseUrl: 'https://example.test/v1', publicReplyAllowed: false };
+const options = { ticketId: 3726, customerMessage: 'Check the education offer and credit refresh.', tools: [external], apiKey: 'test-key', modelBaseUrl: 'https://example.test/v1', modelName: 'test-model', publicReplyAllowed: false };
 beforeEach(() => {
   mocked.messages = []; mocked.prompts = []; mocked.tools = []; mocked.results.clear();
   mocked.subscriber = undefined; mocked.initial = undefined; mocked.recovery = undefined;

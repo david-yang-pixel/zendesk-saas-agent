@@ -37,7 +37,7 @@ pnpm --dir apps/admin-web build
 pnpm --filter pi-agent test
 pnpm --dir apps/pi-agent build
 
-# Local stack: export OPENCONNECTOR_RUNTIME_TOKEN and OPENAI_API_KEY first.
+# Local stack: export OPENCONNECTOR_RUNTIME_TOKEN first, then set the model on the Admin 模型配置 page.
 docker compose -f deploy/compose.yaml up --build
 ```
 
@@ -64,6 +64,7 @@ latency to decide whether a change is ready for production.
 - **Worker Reasoning**: `apps/pi-agent` operates as the primary concurrency worker, consuming admissions from PostgreSQL, executing tool calls via the MCP Mesh, and delivering replies through the Zendesk Browser Relay.
 - **Tool Boundary**: OpenConnector is the sole read-only investigation gateway (including Zendesk, Dify DB, SigNoz, source, docs, GitHub MCP, and approved native providers). Zendesk Browser Relay is the separate and only public-reply write path; Gmail is excluded.
 - **Zero-Secret Boundary**: Production credentials are mount-injected via `/run/casework-credentials/credentials.env` and never committed to the repository. The Admin console allows hot-updating model endpoints and tokens without container rebuilds.
-- **Feishu Alerts**: Human-takeover and failure alerts go to the Feishu bot in `FEISHU_WEBHOOK_URL`. Set or rotate it with the GitHub production secret `FEISHU_WEBHOOK_URL`; without that secret, the value already saved in `runtime.env` is kept (the server source env only seeds a first deployment). Alerts are disabled when it is unset.
+- **Configuration**: Deployment settings and secrets live only in the GitHub `production` environment (variables `ZENDESK_SUBDOMAIN`, `ZENDESK_EMAIL`, `CASEWORK_OPENCONNECTOR_MCP_URL`, `CASEWORK_LOG_SYNC_ENABLED`, `CASEWORK_REUSE_TOOL_CONFIG`, `HC_CLIENT_URL`; secrets `OPENCONNECTOR_RUNTIME_TOKEN`, `ZENDESK_API_TOKEN`, `ZENDESK_MESSAGING_WEBHOOK_SECRET`, `ZENDESK_BROWSER_RELAY_API_KEY`, `ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET`, `FEISHU_WEBHOOK_URL`, `HC_CLIENT_API_KEY`). The model, its endpoint and API key are set only on the Admin 模型配置 page; there is no default model in code. `runtime.env` and `credentials.env` on the server are generated, and a rollback reuses them.
+- **Feishu Alerts**: Human-takeover and failure alerts go to the Feishu bot in `FEISHU_WEBHOOK_URL`. Alerts are disabled when it is unset.
 
-The production source environment must provide `OPENCONNECTOR_RUNTIME_TOKEN`. `prepare_runtime.py` stores it as `CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME` and removes legacy per-MCP credentials from the mounted Pi Agent credential file. Configure the OpenConnector token and every granted connection as read-only. The five GitHub semantic read tools must also be classified as `read` in the `github-mcp` connection's trusted `toolOperationTypes`; the Agent refuses them if live discovery reports `write`.
+`prepare_runtime.py` stores `OPENCONNECTOR_RUNTIME_TOKEN` as `CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME` and removes legacy per-MCP credentials from the mounted Pi Agent credential file. Configure the OpenConnector token and every granted connection as read-only. The five GitHub semantic read tools must also be classified as `read` in the `github-mcp` connection's trusted `toolOperationTypes`; the Agent refuses them if live discovery reports `write`.

@@ -10,16 +10,20 @@ import pytest
 from deploy import configure_runtime, migrate_legacy_model_config, prepare_runtime
 
 
-def _source_environment(path: Path) -> None:
-    values = {
-        "OPENAI_API_KEY": "openai-secret",
-        "OPENCONNECTOR_RUNTIME_TOKEN": "openconnector-secret",
-        "ZENDESK_SUBDOMAIN": "example",
-        "ZENDESK_EMAIL": "support@example.com",
-        "ZENDESK_API_TOKEN": "zendesk-secret",
-        "ZENDESK_MESSAGING_WEBHOOK_SECRET": "webhook-secret",
-    }
-    path.write_text("".join(f'{key}="{value}"\n' for key, value in values.items()))
+DEPLOYMENT_ENVIRONMENT = {
+    "OPENCONNECTOR_RUNTIME_TOKEN": "openconnector-secret",
+    "ZENDESK_SUBDOMAIN": "example",
+    "ZENDESK_EMAIL": "support@example.com",
+    "ZENDESK_API_TOKEN": "zendesk-secret",
+    "ZENDESK_MESSAGING_WEBHOOK_SECRET": "webhook-secret",
+    "ZENDESK_BROWSER_RELAY_API_KEY": "relay-secret",
+}
+
+
+def _deployment_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """What the deploy workflow exports from the GitHub production environment."""
+    for name, value in DEPLOYMENT_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
 
 
 def test_discover_tools_uses_cloudflare_safe_user_agent(
@@ -68,13 +72,12 @@ def test_discover_tools_uses_cloudflare_safe_user_agent(
 
 
 def test_ticket_events_runtime_settings_survive_redeploy(tmp_path, monkeypatch):
-    source = tmp_path / "source.env"
-    _source_environment(source)
+    _deployment_environment(monkeypatch)
     for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
     monkeypatch.setenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "independent-secret")
-    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40)
+    args: dict[str, Any] = dict(state_dir=tmp_path / "state", revision="a" * 40)
     prepare_runtime.prepare(**args)
     monkeypatch.delenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET")
     prepare_runtime.prepare(**args)
@@ -110,6 +113,8 @@ def test_release_compose_runs_only_digest_pinned_image_code():
     assert "/opt/zd-agent/code/apps" not in compose
     # Pi Agent runs as root and has no Docker socket, so it needs no extra group.
     assert "DOCKER_GID" not in compose
+    # Pi Agent delivers and Admin probes with the relay key from runtime.env.
+    assert compose.count("CASEWORK_BROWSER_RELAY_API_KEY: ${CASEWORK_BROWSER_RELAY_API_KEY:-}") == 2
     for text in (compose, workflow, deploy, rollback):
         assert "HARNESS" not in text
         assert "SANDBOX" not in text
@@ -129,13 +134,12 @@ def test_feishu_webhook_url_is_a_deployment_secret(tmp_path, monkeypatch):
     assert "secrets.FEISHU_WEBHOOK_URL" in workflow
     assert 'if [[ -n "${FEISHU_WEBHOOK_URL:-}" ]]; then' in workflow
 
-    source = tmp_path / "source.env"
-    _source_environment(source)
+    _deployment_environment(monkeypatch)
     for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
     monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
-    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40)
+    args: dict[str, Any] = dict(state_dir=tmp_path / "state", revision="a" * 40)
 
     prepare_runtime.prepare(**args)
     runtime_path = tmp_path / "state/runtime.env"
@@ -149,8 +153,7 @@ def test_feishu_webhook_url_is_a_deployment_secret(tmp_path, monkeypatch):
 
 
 def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
-    source = tmp_path / "source.env"
-    _source_environment(source)
+    _deployment_environment(monkeypatch)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
         "CASEWORK_PI_AGENT_IMAGE",
@@ -178,7 +181,6 @@ def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
 
     monkeypatch.setattr(prepare_runtime, "_discover_tools", discover)
     args: dict[str, Any] = dict(
-        source_env=source,
         state_dir=tmp_path / "state",
         revision="a" * 40,
     )
@@ -214,8 +216,7 @@ def test_log_sync_is_opt_in_and_uses_private_credentials() -> None:
 
 
 def test_saved_tools_validate_and_reuse_without_discovery(tmp_path, monkeypatch):
-    source = tmp_path / "source.env"
-    _source_environment(source)
+    _deployment_environment(monkeypatch)
     for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     service = prepare_runtime.READ_ONLY_SERVICES[0]
@@ -229,7 +230,7 @@ def test_saved_tools_validate_and_reuse_without_discovery(tmp_path, monkeypatch)
     def no_discovery(*_):
         raise AssertionError("must not discover")
     monkeypatch.setattr(prepare_runtime, "_discover_tools", no_discovery)
-    prepare_runtime.prepare(source_env=source, state_dir=state, revision="a" * 40)
+    prepare_runtime.prepare(state_dir=state, revision="a" * 40)
     saved = prepare_runtime._parse_dotenv(state / "runtime.env")
     assert json.loads(saved["CASEWORK_TOOL_CONFIG"]) == [tool]
     for invalid in ([], [{**tool, "read_only": False}], [{**tool, "endpoint_url": "https://invalid"}]):
@@ -243,9 +244,8 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_env = tmp_path / "legacy.env"
     state_dir = tmp_path / "state"
-    _source_environment(source_env)
+    _deployment_environment(monkeypatch)
     digest = "sha256:" + ("a" * 64)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
@@ -272,7 +272,6 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
 
     monkeypatch.setattr(prepare_runtime, "_discover_tools", _discover)
     prepare_runtime.prepare(
-        source_env=source_env,
         state_dir=state_dir,
         revision="b" * 40,
     )
@@ -313,8 +312,11 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert "CASEWORK_HARNESS_IMAGE" not in runtime
     assert "CASEWORK_SANDBOX_IMAGE" not in runtime
     assert runtime["FEISHU_WEBHOOK_URL"] == ""
-    assert credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] == "openai-secret"
     assert credentials["CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"] == "openconnector-secret"
+    assert runtime["CASEWORK_BROWSER_RELAY_API_KEY"] == "relay-secret"
+    # Model settings and keys live in the Admin console, not the deployment.
+    assert "CASEWORK_CREDENTIAL_OPENAI_PRIMARY" not in credentials
+    assert "CASEWORK_MODEL_BASE_URL" not in runtime
     assert "OPENAI_API_KEY" not in runtime
     assert os.stat(state_dir / "runtime.env").st_mode & 0o777 == 0o600
     assert (
@@ -323,14 +325,11 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert os.stat(state_dir / "admin-auth" / "internal-token").st_mode & 0o777 == 0o600
 
 
-def test_prepare_runtime_prefers_ci_openconnector_token(
+def test_rollback_reuses_the_settings_of_the_previous_deployment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_env = tmp_path / "source.env"
     state_dir = tmp_path / "state"
-    _source_environment(source_env)
-    monkeypatch.setenv("OPENCONNECTOR_RUNTIME_TOKEN", "ci-openconnector-secret")
     digest = "sha256:" + ("a" * 64)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
@@ -339,35 +338,65 @@ def test_prepare_runtime_prefers_ci_openconnector_token(
     ):
         monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
-
-    prepare_runtime.prepare(
-        source_env=source_env,
+    args: dict[str, Any] = dict(
         state_dir=state_dir,
         revision="c" * 40,
         legacy_auth_path=tmp_path / "missing-auth.json",
     )
 
+    # A first deployment cannot start without the GitHub settings.
+    with pytest.raises(RuntimeError, match="missing required OPENCONNECTOR_RUNTIME_TOKEN"):
+        prepare_runtime.prepare(**args)
+
+    _deployment_environment(monkeypatch)
+    monkeypatch.setenv("ZENDESK_API_TOKEN", "rotated-zendesk-secret")
+    prepare_runtime.prepare(**args)
+    deployed = prepare_runtime._parse_dotenv(state_dir / "runtime.env")  # pyright: ignore[reportPrivateUsage]
+
+    # rollback-production.sh runs on the server without GitHub.
+    for name in DEPLOYMENT_ENVIRONMENT:
+        monkeypatch.delenv(name)
+    prepare_runtime.prepare(**args)
+
+    runtime = prepare_runtime._parse_dotenv(state_dir / "runtime.env")  # pyright: ignore[reportPrivateUsage]
     credentials = prepare_runtime._parse_dotenv(  # pyright: ignore[reportPrivateUsage]
         state_dir / "credentials" / "credentials.env"
     )
-    assert (
-        credentials["CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"]
-        == "ci-openconnector-secret"
-    )
+    assert runtime == deployed
+    assert runtime["ZENDESK_API_TOKEN"] == "rotated-zendesk-secret"
+    assert runtime["ZENDESK_BASE_URL"] == "https://example.zendesk.com"
+    assert credentials["CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"] == "openconnector-secret"
+
+
+def test_deployment_settings_come_only_from_github() -> None:
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/docker-image.yml").read_text()
+    for reference in (
+        "secrets.OPENCONNECTOR_RUNTIME_TOKEN",
+        "vars.ZENDESK_SUBDOMAIN",
+        "vars.ZENDESK_EMAIL",
+        "secrets.ZENDESK_API_TOKEN",
+        "secrets.ZENDESK_MESSAGING_WEBHOOK_SECRET",
+        "secrets.ZENDESK_BROWSER_RELAY_API_KEY",
+    ):
+        assert reference in workflow
+    for script in ("deploy-production.sh", "rollback-production.sh", "prepare_runtime.py"):
+        text = (root / "deploy" / script).read_text()
+        assert "/opt/zd-agent/.env" not in text
+        assert "source-env" not in text
+    # The model is chosen on the Admin page, never by the deployment.
+    for compose in ("compose.release.yaml", "compose.yaml"):
+        text = (root / "deploy" / compose).read_text()
+        assert "CASEWORK_MODEL_" not in text
+        assert "OPENAI_API_KEY" not in text
 
 
 def test_prepare_runtime_isolates_log_sync_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_env = tmp_path / "source.env"
     state_dir = tmp_path / "state"
-    _source_environment(source_env)
-    source_env.write_text(
-        source_env.read_text()
-        + 'HC_CLIENT_URL="https://manager.example.com"\n'
-        + 'HC_CLIENT_API_KEY="manager-secret"\n'
-    )
+    _deployment_environment(monkeypatch)
     digest = "sha256:" + "a" * 64
     for name in (
         "CASEWORK_INGRESS_IMAGE",
@@ -381,7 +410,6 @@ def test_prepare_runtime_isolates_log_sync_credentials(
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
 
     prepare_runtime.prepare(
-        source_env=source_env,
         state_dir=state_dir,
         revision="d" * 40,
         legacy_auth_path=tmp_path / "missing-auth.json",
@@ -403,14 +431,8 @@ def test_prepare_runtime_does_not_resurrect_legacy_log_credentials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_env = tmp_path / "source.env"
     state_dir = tmp_path / "state"
-    _source_environment(source_env)
-    source_env.write_text(
-        source_env.read_text()
-        + 'HC_CLIENT_URL="https://legacy.example.com"\n'
-        + 'HC_CLIENT_API_KEY="legacy-key"\n'
-    )
+    _deployment_environment(monkeypatch)
     digest = "sha256:" + "a" * 64
     for name in (
         "CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE",
@@ -424,7 +446,6 @@ def test_prepare_runtime_does_not_resurrect_legacy_log_credentials(
 
     with pytest.raises(RuntimeError, match="Log sync requires"):
         prepare_runtime.prepare(
-            source_env=source_env,
             state_dir=state_dir,
             revision="d" * 40,
             legacy_auth_path=tmp_path / "missing-auth.json",
@@ -436,10 +457,9 @@ def test_prepare_runtime_migrates_legacy_admin_password_hash_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_env = tmp_path / "legacy.env"
     state_dir = tmp_path / "state"
     legacy_auth = tmp_path / "admin_auth.json"
-    _source_environment(source_env)
+    _deployment_environment(monkeypatch)
     legacy_auth.write_text(
         json.dumps(
             {
@@ -468,7 +488,6 @@ def test_prepare_runtime_migrates_legacy_admin_password_hash_once(
     monkeypatch.setattr(prepare_runtime, "_discover_tools", _discover_empty)
 
     prepare_runtime.prepare(
-        source_env=source_env,
         state_dir=state_dir,
         revision="b" * 40,
         legacy_auth_path=legacy_auth,
@@ -482,15 +501,15 @@ def test_prepare_runtime_preserves_admin_replaced_model_credential(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source_env = tmp_path / "legacy.env"
     state_dir = tmp_path / "state"
     credential_dir = state_dir / "credentials"
     credential_dir.mkdir(parents=True)
-    _source_environment(source_env)
+    _deployment_environment(monkeypatch)
     (credential_dir / "credentials.env").write_text(
         'CASEWORK_CREDENTIAL_OPENAI_PRIMARY="admin-replaced"\n'
         'CASEWORK_CREDENTIAL_ZENDESK_MCP="legacy-zendesk"\n'
         'CASEWORK_CREDENTIAL_FEISHU_MCP="legacy-feishu"\n'
+        'CASEWORK_BROWSER_RELAY_API_KEY="stale-relay-copy"\n'
     )
     digest = "sha256:" + ("a" * 64)
     for name in (
@@ -508,7 +527,6 @@ def test_prepare_runtime_preserves_admin_replaced_model_credential(
     monkeypatch.setattr(prepare_runtime, "_discover_tools", _discover)
 
     prepare_runtime.prepare(
-        source_env=source_env,
         state_dir=state_dir,
         revision="b" * 40,
     )
@@ -519,6 +537,9 @@ def test_prepare_runtime_preserves_admin_replaced_model_credential(
     assert credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] == "admin-replaced"
     assert "CASEWORK_CREDENTIAL_ZENDESK_MCP" not in credentials
     assert "CASEWORK_CREDENTIAL_FEISHU_MCP" not in credentials
+    # Pi Agent lets credentials.env override its environment; the relay key
+    # must come only from runtime.env so a GitHub rotation takes effect.
+    assert "CASEWORK_BROWSER_RELAY_API_KEY" not in credentials
 
 
 def test_configure_runtime_sets_rules_models_skills_and_tools(

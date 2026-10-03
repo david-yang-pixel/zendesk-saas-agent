@@ -407,7 +407,7 @@ onMounted(() => {
               <div class="hero-sub">
                 <span>{{ t('runs.hero.customer') }}: <strong>{{ selectedDetail.requester_email || '未知客户' }}</strong></span>
                 <span class="divider">·</span>
-                <span>{{ t('runs.hero.model') }}: <strong>{{ selectedDetail.model || 'gpt-5.6-terra' }}</strong></span>
+                <span>{{ t('runs.hero.model') }}: <strong>{{ selectedDetail.model || '-' }}</strong></span>
                 <span class="divider">·</span>
                 <span>{{ t('runs.hero.duration') }}: <strong>{{ selectedDetail.duration }}</strong></span>
               </div>
