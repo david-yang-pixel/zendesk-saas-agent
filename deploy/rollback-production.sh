@@ -11,7 +11,6 @@ fi
 
 CODE_DIR="${ZD_AGENT_CODE_DIR:-/opt/zd-agent/code}"
 STATE_DIR="${CASEWORK_STATE_DIR:-/opt/zd-agent/greenfield}"
-SOURCE_ENV="${ZD_AGENT_SOURCE_ENV:-/opt/zd-agent/.env}"
 RUNTIME_ENV="$STATE_DIR/runtime.env"
 DEPLOY_DIR="$CODE_DIR/deploy"
 if [[ ! -d "$DEPLOY_DIR" && -d "$CODE_DIR/greenfield/deploy" ]]; then
@@ -59,7 +58,6 @@ compose=(docker compose --project-name casework-greenfield --env-file "$RUNTIME_
 export CASEWORK_INGRESS_IMAGE CASEWORK_PI_AGENT_IMAGE CASEWORK_ADMIN_IMAGE
 export CASEWORK_RELEASE_REVISION
 python3 "$DEPLOY_DIR/prepare_runtime.py" \
-  --source-env "$SOURCE_ENV" \
   --state-dir "$STATE_DIR" \
   --revision "$CASEWORK_RELEASE_REVISION"
 "${compose[@]}" up -d postgres

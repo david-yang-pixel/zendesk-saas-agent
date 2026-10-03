@@ -51,8 +51,6 @@ services:
     image: ${CASEWORK_PI_AGENT_IMAGE:?render a release manifest first}
     environment:
       <<: *common-environment
-      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://api.tokener.dev/v1}
-      CASEWORK_MODEL_NAME: ${CASEWORK_MODEL_NAME:-gpt-5.6-terra}
       CASEWORK_OPENCONNECTOR_MCP_URL: ${CASEWORK_OPENCONNECTOR_MCP_URL:-https://open-connector.yyg066340.workers.dev/mcp}
       CASEWORK_BROWSER_RELAY_URL: ${CASEWORK_BROWSER_RELAY_URL:-https://zendesk.smlershou.top/zendesk-browser-relay}
       CASEWORK_BROWSER_RELAY_API_KEY: ${CASEWORK_BROWSER_RELAY_API_KEY:-}
@@ -79,7 +77,8 @@ services:
     environment:
       <<: *common-environment
       CASEWORK_TOOL_PROBE_ENDPOINTS: ${CASEWORK_TOOL_PROBE_ENDPOINTS:-}
-      CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:?set CASEWORK_MODEL_BASE_URL}
+      # The Tools page probes the relay with the same key Pi Agent delivers with.
+      CASEWORK_BROWSER_RELAY_API_KEY: ${CASEWORK_BROWSER_RELAY_API_KEY:-}
       CASEWORK_OPENCONNECTOR_MCP_URL: ${CASEWORK_OPENCONNECTOR_MCP_URL:-https://open-connector.yyg066340.workers.dev/mcp}
       CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
       CASEWORK_ADMIN_AUTH_FILE: ${CASEWORK_ADMIN_AUTH_FILE:?set CASEWORK_ADMIN_AUTH_FILE}

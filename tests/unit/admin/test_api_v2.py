@@ -27,7 +27,12 @@ def test_modern_skills_route():
     assert any(s["name"] == "core-casework" for s in skills)
 
 
-def test_modern_model_settings_route():
+def test_modern_model_settings_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The model page is the only source of model settings; the environment
+    # must not supply a fallback model, endpoint or key.
+    monkeypatch.setenv("CASEWORK_MODEL_NAME", "env-model")
+    monkeypatch.setenv("CASEWORK_MODEL_BASE_URL", "https://env.example.test/v1")
+    monkeypatch.setenv("CASEWORK_CREDENTIAL_OPENAI_PRIMARY", "env-secret-key")
     app = create_app()
     register_modern_routes(app, dummy_scope)
     client = TestClient(app)
@@ -35,9 +40,15 @@ def test_modern_model_settings_route():
     res = client.get("/api/settings/model")
     assert res.status_code == 200
     data = res.json()
-    assert "provider" in data
-    assert "model" in data
-    assert "base_url" in data
+    assert data["provider"] == "openai"
+    assert data["model"] == ""
+    assert data["base_url"] == ""
+    assert data["has_key"] is False
+
+    health = client.get("/api/system/mesh-health").json()
+    llm = next(item for item in health["items"] if item["name"] == "llm")
+    assert llm["status"] == "error"
+    assert "env-model" not in llm["label"]
 
 
 def test_model_ping_uses_the_agent_responses_protocol(monkeypatch: pytest.MonkeyPatch) -> None:

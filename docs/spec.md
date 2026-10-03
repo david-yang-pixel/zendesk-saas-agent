@@ -83,9 +83,10 @@ Per job:
    OpenConnector's Zendesk connection. Attachments are passed to the model as
    native image/file inputs. For a mention job the operator's note is injected
    as the instruction and the draft must be in English.
-3. **Model**: `system_settings.model_config` (set from Admin) overrides the
-   `CASEWORK_MODEL_*` environment defaults. The API key comes from the
-   mounted credential file.
+3. **Model**: the model, base URL and API key come only from
+   `system_settings.model_config`, saved on the Admin 模型配置 page. There is
+   no built-in default: if any of them is missing the job fails with an alert
+   instead of running a different model.
 4. **Investigation**: the agent loop (`@earendil-works/pi-coding-agent`) uses
    only tools discovered live from OpenConnector whose operation type is
    `read`. Gmail and every mutation are excluded. Skills are loaded on demand
@@ -152,11 +153,15 @@ internal token used by deployment scripts.
 - `deploy/compose.release.yaml` refuses to start without the digest-pinned
   images. Every container runs the code baked into its image; no source files
   are mounted from the host.
-- Secrets are never committed. CI secrets (`OPENCONNECTOR_RUNTIME_TOKEN`,
-  `ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET`, optional `FEISHU_WEBHOOK_URL`) take
-  precedence over values on the server. Without the CI secret,
-  `FEISHU_WEBHOOK_URL` keeps the value saved in `runtime.env`; the server
-  source env only seeds a first deployment.
+- Secrets are never committed. Settings have exactly two homes:
+  - **GitHub `production` environment**: every deployment setting and secret
+    (OpenConnector token, Zendesk account and webhook secrets, Browser Relay
+    key, Feishu URL, log export). The workflow exports them to
+    `prepare_runtime.py`. A rollback runs without GitHub and reuses the values
+    the previous deployment saved in `runtime.env` / `credentials.env`.
+  - **Admin console**: everything changed at run time, including the model,
+    its endpoint and API key, operating mode and safety rules.
+  `runtime.env` and `credentials.env` are generated; never edit them by hand.
 
 ## Boundaries
 

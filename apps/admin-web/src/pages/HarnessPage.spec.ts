@@ -80,4 +80,18 @@ describe('HarnessPage Model Studio', () => {
     expect(wrapper.text()).toContain('模型连通测试通过')
     expect(wrapper.text()).toContain('125 ms')
   })
+
+  it('leaves an unconfigured model empty instead of prefilling a default', async () => {
+    const api = {
+      ...apiFixture(),
+      getModelSettings: async () => ({
+        provider: 'openai', base_url: '', model: '', api_key_masked: '', has_key: false, reasoning: true, timeout_seconds: 120,
+      }),
+    }
+    const wrapper = mount(HarnessPage, { global: { provide: { [ADMIN_API_KEY as symbol]: api } } })
+    await flushPromises()
+
+    const values = wrapper.findAll('input.studio-input[type="text"]').map(input => (input.element as HTMLInputElement).value)
+    expect(values).toEqual(['', ''])
+  })
 })

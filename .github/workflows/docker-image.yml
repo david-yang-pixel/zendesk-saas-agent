@@ -136,7 +136,14 @@ jobs:
           DEPLOY_PORT: ${{ secrets.ZD_AGENT_DEPLOY_PORT }}
           DEPLOY_SSH_KEY: ${{ secrets.ZD_AGENT_DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.ZD_AGENT_DEPLOY_KNOWN_HOSTS }}
+          # The production environment is the only source of deployment
+          # settings. Model settings live in the Admin console instead.
           OPENCONNECTOR_RUNTIME_TOKEN: ${{ secrets.OPENCONNECTOR_RUNTIME_TOKEN }}
+          ZENDESK_SUBDOMAIN: ${{ vars.ZENDESK_SUBDOMAIN }}
+          ZENDESK_EMAIL: ${{ vars.ZENDESK_EMAIL }}
+          ZENDESK_API_TOKEN: ${{ secrets.ZENDESK_API_TOKEN }}
+          ZENDESK_MESSAGING_WEBHOOK_SECRET: ${{ secrets.ZENDESK_MESSAGING_WEBHOOK_SECRET }}
+          ZENDESK_BROWSER_RELAY_API_KEY: ${{ secrets.ZENDESK_BROWSER_RELAY_API_KEY }}
           CASEWORK_OPENCONNECTOR_MCP_URL: ${{ vars.CASEWORK_OPENCONNECTOR_MCP_URL }}
           ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${{ secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET }}
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
@@ -151,7 +158,9 @@ jobs:
           PI_AGENT_DIGEST: ${{ needs.build.outputs.pi_agent_digest }}
         run: |
           set -euo pipefail
-          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS OPENCONNECTOR_RUNTIME_TOKEN GHCR_PAT INGRESS_DIGEST ADMIN_DIGEST PI_AGENT_DIGEST)
+          required=(DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS OPENCONNECTOR_RUNTIME_TOKEN
+            ZENDESK_SUBDOMAIN ZENDESK_EMAIL ZENDESK_API_TOKEN ZENDESK_MESSAGING_WEBHOOK_SECRET ZENDESK_BROWSER_RELAY_API_KEY
+            GHCR_PAT INGRESS_DIGEST ADMIN_DIGEST PI_AGENT_DIGEST)
           for name in "${required[@]}"; do
             test -n "${!name:-}" || { echo "Missing required deployment input: ${name}" >&2; exit 1; }
           done
@@ -171,6 +180,9 @@ jobs:
             printf 'export GHCR_USERNAME=%q\n' "$GHCR_USERNAME"
             printf 'export GHCR_PAT=%q\n' "$GHCR_PAT"
             printf 'export OPENCONNECTOR_RUNTIME_TOKEN=%q\n' "$OPENCONNECTOR_RUNTIME_TOKEN"
+            for name in ZENDESK_SUBDOMAIN ZENDESK_EMAIL ZENDESK_API_TOKEN ZENDESK_MESSAGING_WEBHOOK_SECRET ZENDESK_BROWSER_RELAY_API_KEY; do
+              printf 'export %s=%q\n' "$name" "${!name}"
+            done
             printf 'export CASEWORK_OPENCONNECTOR_MCP_URL=%q\n' "$CASEWORK_OPENCONNECTOR_MCP_URL"
             printf 'export ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET=%q\n' "$ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"
             # Optional rotation input. An exported empty value would override

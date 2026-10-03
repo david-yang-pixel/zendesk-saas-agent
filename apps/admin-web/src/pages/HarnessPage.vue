@@ -11,8 +11,9 @@ const api: AdminApiClient = injectedApi
 const { t, locale } = useI18n()
 
 const provider = ref('openai')
-const baseUrl = ref('https://api.tokener.dev/v1')
-const model = ref('gpt-5.6-terra')
+// Never prefill a model: saving the form must only store what the operator chose.
+const baseUrl = ref('')
+const model = ref('')
 const apiKey = ref('')
 const apiKeyMasked = ref('********')
 const hasKey = ref(false)
@@ -38,8 +39,8 @@ async function loadSettings() {
   try {
     const data = await api.getModelSettings()
     provider.value = data.provider || 'openai'
-    baseUrl.value = data.base_url || 'https://api.tokener.dev/v1'
-    model.value = data.model || 'gpt-5.6-terra'
+    baseUrl.value = data.base_url || ''
+    model.value = data.model || ''
     apiKeyMasked.value = data.api_key_masked || '********'
     hasKey.value = data.has_key || false
     reasoning.value = data.reasoning ?? true

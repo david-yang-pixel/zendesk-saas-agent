@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import pg from 'pg';
 import { createOpenConnectorServiceConfig, discoverOpenConnectorTools } from '../dist/openconnector.js';
 import { runPiSupportAgent } from '../dist/agent.js';
+import { parseModelConfig } from '../dist/model-config.js';
 import { getTicketDetails } from '../dist/ticket-context.js';
 import { normalizeToolResult } from '../dist/tool-result.js';
 
@@ -29,12 +30,11 @@ const connector = createOpenConnectorServiceConfig(
   process.env.CASEWORK_OPENCONNECTOR_MCP_URL || 'https://open-connector.yyg066340.workers.dev/mcp', token,
 );
 const signal = AbortSignal.timeout(360_000);
-let model = {};
-if (process.env.DATABASE_URL) {
-  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL.replace(/^postgresql\+\w+:\/\//, 'postgresql://') });
-  try { model = (await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'")).rows[0]?.value ?? {}; }
-  finally { await pool.end(); }
-}
+if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required to read the Admin model settings');
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL.replace(/^postgresql\+\w+:\/\//, 'postgresql://') });
+let model;
+try { model = parseModelConfig((await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'")).rows[0]?.value); }
+finally { await pool.end(); }
 const tools = await discoverOpenConnectorTools(connector);
 let details;
 if (scenario === 'education') details = await getTicketDetails(ticketId, connector, signal);
@@ -45,9 +45,9 @@ try {
     ticketId, tools, publicReplyAllowed: false, contextPrepared: Boolean(details),
     customerMessage: `${cases[scenario]}\nThis is an isolated read-only evaluation. Return an unsent draft; no external delivery is available.${details ? `\nLatest ticket context:\n${details.message}` : '\nThis product/engineering evaluation question is independent of the test ticket history.'}`,
     requesterEmail: details?.email, attachments: details?.attachments,
-    apiKey: model.api_key || process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY || process.env.OPENAI_API_KEY,
-    modelName: model.model || process.env.CASEWORK_MODEL_NAME || 'gpt-5.6-terra',
-    modelBaseUrl: model.base_url || process.env.CASEWORK_MODEL_BASE_URL || 'https://api.tokener.dev/v1',
+    apiKey: model.apiKey,
+    modelName: model.model,
+    modelBaseUrl: model.baseUrl,
     abortSignal: signal,
     onTrace: trace => { capturedTrace = trace; },
     onRoundTelemetry: rounds => {

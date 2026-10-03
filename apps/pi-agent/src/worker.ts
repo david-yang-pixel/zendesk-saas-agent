@@ -8,6 +8,7 @@ import {
   discoverOpenConnectorTools,
 } from './openconnector.js';
 import { runPiSupportAgent } from './agent.js';
+import { ModelConfig, parseModelConfig } from './model-config.js';
 import { sumRoundTokens } from './round-telemetry.js';
 import { sendBrowserRelay } from './relay.js';
 import { deliverInternalDraft } from './internal-draft-delivery.js';
@@ -99,31 +100,9 @@ if (!DATABASE_URL) {
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
 
-async function getActiveModelConfig(): Promise<{
-  baseUrl: string;
-  model: string;
-  apiKey: string;
-}> {
-  try {
-    const res = await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'");
-    if (res.rows.length > 0) {
-      const cfg = res.rows[0].value;
-      if (cfg?.model && cfg?.base_url) {
-        return {
-          baseUrl: cfg.base_url,
-          model: cfg.model,
-          apiKey: cfg.api_key || cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY),
-        };
-      }
-    }
-  } catch (err: any) {
-    console.warn('[Worker] Could not read model_config from system_settings, using env:', err.message);
-  }
-  return {
-    baseUrl: cleanEnv(process.env.CASEWORK_MODEL_BASE_URL) || 'https://api.tokener.dev/v1',
-    model: cleanEnv(process.env.CASEWORK_MODEL_NAME) || 'gpt-5.6-terra',
-    apiKey: cleanEnv(process.env.CASEWORK_CREDENTIAL_OPENAI_PRIMARY),
-  };
+async function getActiveModelConfig(): Promise<ModelConfig> {
+  const res = await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'");
+  return parseModelConfig(res.rows[0]?.value);
 }
 
 async function recordJobOutcome(opts: {
@@ -494,7 +473,7 @@ async function main() {
               VALUES (
                 $1, $2, $3, $4, $5, $6,
                 'queued', 0, NOW() + INTERVAL '10 seconds', NOW(), NOW(),
-                'rev-1', 'gpt-5.6-terra', '[]', 'digest-model', 'digest-skill', 'digest-tool'
+                'rev-1', 'root', '[]', 'digest-model', 'digest-skill', 'digest-tool'
               )
               ON CONFLICT (ticket_id) WHERE status = 'queued'
               DO UPDATE SET
@@ -614,7 +593,7 @@ async function main() {
           VALUES (
             $1, $2, $3, $4, $5, $6,
             'queued', 0, NOW() + INTERVAL '10 seconds', NOW(), NOW(),
-            'rev-1', 'gpt-5.6-terra', '[]', 'digest-model', 'digest-skill', 'digest-tool'
+            'rev-1', 'root', '[]', 'digest-model', 'digest-skill', 'digest-tool'
           )
           ON CONFLICT (ticket_id) WHERE status = 'queued'
           DO UPDATE SET
