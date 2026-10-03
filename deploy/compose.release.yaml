@@ -65,8 +65,6 @@ services:
     ports: ["127.0.0.1:${CASEWORK_PI_AGENT_PORT:-18102}:8102"]
     volumes:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}/credentials.env:/app/credentials.env:ro
-    group_add:
-      - "${DOCKER_GID:-0}"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
