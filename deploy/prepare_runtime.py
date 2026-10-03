@@ -442,10 +442,13 @@ def prepare(
             or legacy.get("RELAY_API_KEY")
             or ""
         ),
+        # The bot URL is a bearer credential. A CI secret rotates it; otherwise
+        # keep the value already deployed. Alerts are disabled when it is unset.
         "FEISHU_WEBHOOK_URL": (
-            existing.get("FEISHU_WEBHOOK_URL")
+            os.environ.get("FEISHU_WEBHOOK_URL", "").strip()
+            or existing.get("FEISHU_WEBHOOK_URL")
             or legacy.get("FEISHU_WEBHOOK_URL")
-            or "https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0"
+            or ""
         ),
         "DOCKER_GID": str(docker_socket.stat().st_gid),
         "CASEWORK_INGRESS_PORT": "18101",

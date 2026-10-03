@@ -139,6 +139,7 @@ jobs:
           OPENCONNECTOR_RUNTIME_TOKEN: ${{ secrets.OPENCONNECTOR_RUNTIME_TOKEN }}
           CASEWORK_OPENCONNECTOR_MCP_URL: ${{ vars.CASEWORK_OPENCONNECTOR_MCP_URL }}
           ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${{ secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           HC_CLIENT_URL: ${{ vars.HC_CLIENT_URL }}
           HC_CLIENT_API_KEY: ${{ secrets.HC_CLIENT_API_KEY }}
           CASEWORK_LOG_SYNC_ENABLED: ${{ vars.CASEWORK_LOG_SYNC_ENABLED }}
@@ -172,6 +173,11 @@ jobs:
             printf 'export OPENCONNECTOR_RUNTIME_TOKEN=%q\n' "$OPENCONNECTOR_RUNTIME_TOKEN"
             printf 'export CASEWORK_OPENCONNECTOR_MCP_URL=%q\n' "$CASEWORK_OPENCONNECTOR_MCP_URL"
             printf 'export ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET=%q\n' "$ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"
+            # Optional rotation input. An exported empty value would override
+            # the URL already saved in runtime.env, so export only when set.
+            if [[ -n "${FEISHU_WEBHOOK_URL:-}" ]]; then
+              printf 'export FEISHU_WEBHOOK_URL=%q\n' "$FEISHU_WEBHOOK_URL"
+            fi
             printf 'export HC_CLIENT_URL=%q\n' "$HC_CLIENT_URL"
             printf 'export HC_CLIENT_API_KEY=%q\n' "$HC_CLIENT_API_KEY"
             printf 'export CASEWORK_LOG_SYNC_ENABLED=%q\n' "${CASEWORK_LOG_SYNC_ENABLED:-false}"

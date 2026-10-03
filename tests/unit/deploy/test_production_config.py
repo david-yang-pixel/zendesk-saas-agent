@@ -117,6 +117,39 @@ def test_release_compose_runs_only_digest_pinned_image_code():
     assert "CASEWORK_PI_AGENT_IMAGE" in rollback
 
 
+def test_feishu_webhook_url_is_a_deployment_secret(tmp_path, monkeypatch):
+    root = Path(__file__).resolve().parents[3]
+    for relative in (
+        "deploy/compose.release.yaml",
+        "deploy/prepare_runtime.py",
+        "apps/pi-agent/src/worker.ts",
+    ):
+        assert "open-apis/bot/v2/hook/" not in (root / relative).read_text()
+    workflow = (root / ".github/workflows/docker-image.yml").read_text()
+    assert "secrets.FEISHU_WEBHOOK_URL" in workflow
+    assert 'if [[ -n "${FEISHU_WEBHOOK_URL:-}" ]]; then' in workflow
+
+    source = tmp_path / "source.env"
+    socket = tmp_path / "socket"
+    socket.touch()
+    _source_environment(source)
+    for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
+        monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
+    monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
+    monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
+    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40, docker_socket=socket)
+
+    prepare_runtime.prepare(**args)
+    runtime_path = tmp_path / "state/runtime.env"
+    assert prepare_runtime._parse_dotenv(runtime_path)["FEISHU_WEBHOOK_URL"] == ""
+
+    monkeypatch.setenv("FEISHU_WEBHOOK_URL", "https://hooks.example/rotated")
+    prepare_runtime.prepare(**args)
+    monkeypatch.delenv("FEISHU_WEBHOOK_URL")
+    prepare_runtime.prepare(**args)
+    assert prepare_runtime._parse_dotenv(runtime_path)["FEISHU_WEBHOOK_URL"] == "https://hooks.example/rotated"
+
+
 def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
     source = tmp_path / "source.env"
     socket = tmp_path / "socket"
@@ -281,6 +314,7 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
         assert runtime[name] == f"ghcr.io/example/{name.lower()}@{digest}"
     assert "CASEWORK_HARNESS_IMAGE" not in runtime
     assert "CASEWORK_SANDBOX_IMAGE" not in runtime
+    assert runtime["FEISHU_WEBHOOK_URL"] == ""
     assert credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] == "openai-secret"
     assert credentials["CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"] == "openconnector-secret"
     assert "OPENAI_API_KEY" not in runtime
