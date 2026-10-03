@@ -69,14 +69,12 @@ def test_discover_tools_uses_cloudflare_safe_user_agent(
 
 def test_ticket_events_runtime_settings_survive_redeploy(tmp_path, monkeypatch):
     source = tmp_path / "source.env"
-    socket = tmp_path / "socket"
-    socket.touch()
     _source_environment(source)
     for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
     monkeypatch.setenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "independent-secret")
-    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40, docker_socket=socket)
+    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40)
     prepare_runtime.prepare(**args)
     monkeypatch.delenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET")
     prepare_runtime.prepare(**args)
@@ -110,6 +108,8 @@ def test_release_compose_runs_only_digest_pinned_image_code():
     assert ":latest" not in compose
     # Admin must serve the code baked into its image, not host checkout files.
     assert "/opt/zd-agent/code/apps" not in compose
+    # Pi Agent runs as root and has no Docker socket, so it needs no extra group.
+    assert "DOCKER_GID" not in compose
     for text in (compose, workflow, deploy, rollback):
         assert "HARNESS" not in text
         assert "SANDBOX" not in text
@@ -130,14 +130,12 @@ def test_feishu_webhook_url_is_a_deployment_secret(tmp_path, monkeypatch):
     assert 'if [[ -n "${FEISHU_WEBHOOK_URL:-}" ]]; then' in workflow
 
     source = tmp_path / "source.env"
-    socket = tmp_path / "socket"
-    socket.touch()
     _source_environment(source)
     for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
     monkeypatch.delenv("FEISHU_WEBHOOK_URL", raising=False)
-    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40, docker_socket=socket)
+    args: dict[str, Any] = dict(source_env=source, state_dir=tmp_path / "state", revision="a" * 40)
 
     prepare_runtime.prepare(**args)
     runtime_path = tmp_path / "state/runtime.env"
@@ -152,8 +150,6 @@ def test_feishu_webhook_url_is_a_deployment_secret(tmp_path, monkeypatch):
 
 def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
     source = tmp_path / "source.env"
-    socket = tmp_path / "socket"
-    socket.touch()
     _source_environment(source)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
@@ -185,7 +181,6 @@ def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
         source_env=source,
         state_dir=tmp_path / "state",
         revision="a" * 40,
-        docker_socket=socket,
     )
     prepare_runtime.prepare(**args)
     monkeypatch.delenv("CASEWORK_OPENCONNECTOR_MCP_URL")
@@ -220,8 +215,6 @@ def test_log_sync_is_opt_in_and_uses_private_credentials() -> None:
 
 def test_saved_tools_validate_and_reuse_without_discovery(tmp_path, monkeypatch):
     source = tmp_path / "source.env"
-    socket = tmp_path / "socket"
-    socket.touch()
     _source_environment(source)
     for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
@@ -236,7 +229,7 @@ def test_saved_tools_validate_and_reuse_without_discovery(tmp_path, monkeypatch)
     def no_discovery(*_):
         raise AssertionError("must not discover")
     monkeypatch.setattr(prepare_runtime, "_discover_tools", no_discovery)
-    prepare_runtime.prepare(source_env=source, state_dir=state, revision="a" * 40, docker_socket=socket)
+    prepare_runtime.prepare(source_env=source, state_dir=state, revision="a" * 40)
     saved = prepare_runtime._parse_dotenv(state / "runtime.env")
     assert json.loads(saved["CASEWORK_TOOL_CONFIG"]) == [tool]
     for invalid in ([], [{**tool, "read_only": False}], [{**tool, "endpoint_url": "https://invalid"}]):
@@ -252,8 +245,6 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
 ) -> None:
     source_env = tmp_path / "legacy.env"
     state_dir = tmp_path / "state"
-    socket = tmp_path / "docker.sock"
-    socket.touch()
     _source_environment(source_env)
     digest = "sha256:" + ("a" * 64)
     for name in (
@@ -284,7 +275,6 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
         source_env=source_env,
         state_dir=state_dir,
         revision="b" * 40,
-        docker_socket=socket,
     )
 
     runtime = prepare_runtime._parse_dotenv(  # pyright: ignore[reportPrivateUsage]
@@ -297,14 +287,22 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert runtime["CASEWORK_CONFIG_REVISION"] == "b" * 40
     assert runtime["CASEWORK_OPENCONNECTOR_MCP_URL"].endswith("/mcp")
     assert runtime["ZENDESK_BASE_URL"] == "https://example.zendesk.com"
-    assert runtime["CASEWORK_DELIVERY_MODE"] == "dry_run"
-    assert "MENTION_POLLER_ENABLED" not in runtime
     assert runtime["ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"] == ""
-    assert runtime["DOCKER_GID"] == str(socket.stat().st_gid)
     assert runtime["CASEWORK_ADMIN_AUTH_DIR"] == str(state_dir / "admin-auth")
     assert runtime["CASEWORK_ADMIN_PUBLIC_ORIGIN"] == "https://zendesk.smlershou.top"
-    assert runtime["CASEWORK_SAAS_GROUP_ID"] == "40685275477140"
-    assert "CASEWORK_SAAS_ASSIGNEE" not in runtime
+    # Nothing reads these, so a deployment must not keep regenerating them.
+    for name in (
+        "MENTION_POLLER_ENABLED",
+        "CASEWORK_DELIVERY_MODE",
+        "CASEWORK_CANARY_TICKET_IDS",
+        "CASEWORK_CREDENTIAL_ENV_FILE",
+        "DOCKER_GID",
+        "CASEWORK_SAAS_GROUP_ID",
+        "CASEWORK_SAAS_ASSIGNEE",
+        "CASEWORK_ROOT_MODEL",
+        "CASEWORK_ROOT_MODEL_BASE_URL",
+    ):
+        assert name not in runtime
     assert len(tools) == len(prepare_runtime.READ_ONLY_SERVICES)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
@@ -331,8 +329,6 @@ def test_prepare_runtime_prefers_ci_openconnector_token(
 ) -> None:
     source_env = tmp_path / "source.env"
     state_dir = tmp_path / "state"
-    socket = tmp_path / "docker.sock"
-    socket.touch()
     _source_environment(source_env)
     monkeypatch.setenv("OPENCONNECTOR_RUNTIME_TOKEN", "ci-openconnector-secret")
     digest = "sha256:" + ("a" * 64)
@@ -348,7 +344,6 @@ def test_prepare_runtime_prefers_ci_openconnector_token(
         source_env=source_env,
         state_dir=state_dir,
         revision="c" * 40,
-        docker_socket=socket,
         legacy_auth_path=tmp_path / "missing-auth.json",
     )
 
@@ -367,8 +362,6 @@ def test_prepare_runtime_isolates_log_sync_credentials(
 ) -> None:
     source_env = tmp_path / "source.env"
     state_dir = tmp_path / "state"
-    socket = tmp_path / "docker.sock"
-    socket.touch()
     _source_environment(source_env)
     source_env.write_text(
         source_env.read_text()
@@ -391,7 +384,6 @@ def test_prepare_runtime_isolates_log_sync_credentials(
         source_env=source_env,
         state_dir=state_dir,
         revision="d" * 40,
-        docker_socket=socket,
         legacy_auth_path=tmp_path / "missing-auth.json",
     )
 
@@ -413,8 +405,6 @@ def test_prepare_runtime_does_not_resurrect_legacy_log_credentials(
 ) -> None:
     source_env = tmp_path / "source.env"
     state_dir = tmp_path / "state"
-    socket = tmp_path / "docker.sock"
-    socket.touch()
     _source_environment(source_env)
     source_env.write_text(
         source_env.read_text()
@@ -437,7 +427,6 @@ def test_prepare_runtime_does_not_resurrect_legacy_log_credentials(
             source_env=source_env,
             state_dir=state_dir,
             revision="d" * 40,
-            docker_socket=socket,
             legacy_auth_path=tmp_path / "missing-auth.json",
         )
     assert not (state_dir / "log-sync" / "credentials.json").exists()
@@ -449,9 +438,7 @@ def test_prepare_runtime_migrates_legacy_admin_password_hash_once(
 ) -> None:
     source_env = tmp_path / "legacy.env"
     state_dir = tmp_path / "state"
-    socket = tmp_path / "docker.sock"
     legacy_auth = tmp_path / "admin_auth.json"
-    socket.touch()
     _source_environment(source_env)
     legacy_auth.write_text(
         json.dumps(
@@ -484,7 +471,6 @@ def test_prepare_runtime_migrates_legacy_admin_password_hash_once(
         source_env=source_env,
         state_dir=state_dir,
         revision="b" * 40,
-        docker_socket=socket,
         legacy_auth_path=legacy_auth,
     )
 
@@ -500,8 +486,6 @@ def test_prepare_runtime_preserves_admin_replaced_model_credential(
     state_dir = tmp_path / "state"
     credential_dir = state_dir / "credentials"
     credential_dir.mkdir(parents=True)
-    socket = tmp_path / "docker.sock"
-    socket.touch()
     _source_environment(source_env)
     (credential_dir / "credentials.env").write_text(
         'CASEWORK_CREDENTIAL_OPENAI_PRIMARY="admin-replaced"\n'
@@ -527,7 +511,6 @@ def test_prepare_runtime_preserves_admin_replaced_model_credential(
         source_env=source_env,
         state_dir=state_dir,
         revision="b" * 40,
-        docker_socket=socket,
     )
 
     credentials = prepare_runtime._parse_dotenv(  # pyright: ignore[reportPrivateUsage]

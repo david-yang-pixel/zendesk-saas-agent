@@ -291,7 +291,6 @@ def prepare(
     source_env: Path,
     state_dir: Path,
     revision: str,
-    docker_socket: Path = Path("/var/run/docker.sock"),
     legacy_auth_path: Path = Path("/opt/zd-agent/resources/.state/admin_auth.json"),
 ) -> None:
     legacy = _parse_dotenv(source_env)
@@ -311,8 +310,6 @@ def prepare(
     )
     services = _configured_services(existing)
     postgres_password = existing.get("POSTGRES_PASSWORD") or secrets.token_hex(24)
-    delivery_mode = existing.get("CASEWORK_DELIVERY_MODE", "dry_run")
-    canary_ids = existing.get("CASEWORK_CANARY_TICKET_IDS", "")
     # Optional during staged rollout. Never reuse the Messaging signing key.
     ticket_events_secret = (
         os.environ.get("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "").strip()
@@ -422,7 +419,6 @@ def prepare(
         "CASEWORK_TOOL_CONFIG": json.dumps(
             all_tools, ensure_ascii=False, separators=(",", ":")
         ),
-        "CASEWORK_CREDENTIAL_ENV_FILE": str(credentials_path),
         "CASEWORK_CREDENTIAL_DIR": str(credential_dir),
         "CASEWORK_ADMIN_AUTH_DIR": str(admin_auth_dir),
         "CASEWORK_ADMIN_AUTH_FILE": "/run/casework-admin-auth/admin_auth.json",
@@ -430,8 +426,6 @@ def prepare(
             "/run/casework-admin-auth/internal-token"
         ),
         "CASEWORK_ADMIN_PUBLIC_ORIGIN": "https://zendesk.smlershou.top",
-        "CASEWORK_DELIVERY_MODE": delivery_mode,
-        "CASEWORK_CANARY_TICKET_IDS": canary_ids,
         "CASEWORK_BROWSER_RELAY_URL": (
             existing.get("CASEWORK_BROWSER_RELAY_URL")
             or "https://zendesk.smlershou.top/zendesk-browser-relay"
@@ -450,13 +444,9 @@ def prepare(
             or legacy.get("FEISHU_WEBHOOK_URL")
             or ""
         ),
-        "DOCKER_GID": str(docker_socket.stat().st_gid),
         "CASEWORK_INGRESS_PORT": "18101",
         "CASEWORK_PI_AGENT_PORT": "18102",
         "CASEWORK_ADMIN_PORT": "18104",
-        "CASEWORK_SAAS_GROUP_ID": "40685275477140",
-        "CASEWORK_ROOT_MODEL": "gpt-5.5",
-        "CASEWORK_ROOT_MODEL_BASE_URL": "https://api.openai.com",
     }
     _write_dotenv(existing_runtime_path, runtime)
     (state_dir / "tool-names.json").write_text(
