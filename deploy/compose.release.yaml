@@ -24,7 +24,7 @@ services:
     environment: &common-environment
       DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
       CASEWORK_CONFIG_REVISION: ${CASEWORK_CONFIG_REVISION:?set CASEWORK_CONFIG_REVISION}
-      PYTHONPATH: /app/apps/admin-api/src:/app/apps/ingress/src:/app/apps/harness/src:/app/apps/sandbox/src:/app/packages/contracts/src:/app/packages/persistence/src:/app/packages/agent-core/src:/app/packages/tool-sdk/src
+      PYTHONPATH: /app/apps/admin-api/src:/app/apps/ingress/src:/app/packages/contracts/src:/app/packages/persistence/src
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,7 +62,7 @@ services:
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-https://open.feishu.cn/open-apis/bot/v2/hook/a45917d4-4ca4-4aa8-bf70-a267c8e41de0}
       NODE_OPTIONS: "--max-old-space-size=768"
       CASEWORK_WORKER_CONCURRENCY: ${CASEWORK_WORKER_CONCURRENCY:-2}
-    ports: ["127.0.0.1:${CASEWORK_HARNESS_PORT:-18102}:8102"]
+    ports: ["127.0.0.1:${CASEWORK_PI_AGENT_PORT:-18102}:8102"]
     volumes:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}/credentials.env:/app/credentials.env:ro
     group_add:

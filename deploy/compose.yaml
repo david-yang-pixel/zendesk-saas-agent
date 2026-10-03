@@ -1,6 +1,6 @@
 name: casework-greenfield
 
-x-python-build: &python-build
+x-image-build: &image-build
   context: ..
   dockerfile: deploy/Dockerfile
 
@@ -24,10 +24,10 @@ services:
       retries: 20
 
   migration:
-    image: casework-harness:dev
+    image: casework-admin:dev
     build:
-      <<: *python-build
-      target: harness
+      <<: *image-build
+      target: admin
     command: ["/app/.venv/bin/python", "/app/deploy/migrate.py"]
     environment:
       <<: *common-environment
@@ -39,7 +39,7 @@ services:
   ingress:
     image: casework-ingress:dev
     build:
-      <<: *python-build
+      <<: *image-build
       target: ingress
     environment:
       <<: *common-environment
@@ -49,44 +49,33 @@ services:
       migration:
         condition: service_completed_successfully
 
-  harness:
-    image: casework-harness:dev
+  pi-agent:
+    image: casework-pi-agent:dev
     build:
-      <<: *python-build
-      target: harness
+      <<: *image-build
+      target: pi-agent
     environment:
       <<: *common-environment
-      SANDBOX_IMAGE: casework-sandbox:dev
       ZENDESK_BASE_URL: ${ZENDESK_BASE_URL:-https://example.invalid}
       ZENDESK_EMAIL: ${ZENDESK_EMAIL:-unconfigured@example.invalid}
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:-unconfigured}
       CASEWORK_MODEL_BASE_URL: ${CASEWORK_MODEL_BASE_URL:-https://example.invalid}
-      CASEWORK_TOOL_CONFIG: ${CASEWORK_TOOL_CONFIG:-[]}
-      CASEWORK_CREDENTIAL_FILE: /run/casework-credentials/credentials.env
+      CASEWORK_MODEL_NAME: ${CASEWORK_MODEL_NAME:-unconfigured}
+      CASEWORK_OPENCONNECTOR_MCP_URL: ${CASEWORK_OPENCONNECTOR_MCP_URL:-https://example.invalid/mcp}
+      CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME: ${OPENCONNECTOR_RUNTIME_TOKEN:-}
+      CASEWORK_CREDENTIAL_OPENAI_PRIMARY: ${OPENAI_API_KEY:-}
+      CASEWORK_BROWSER_RELAY_URL: ${CASEWORK_BROWSER_RELAY_URL:-https://example.invalid/relay}
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
     ports:
       - "8102:8102"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${CASEWORK_CREDENTIAL_DIR:-./credentials}:/run/casework-credentials:ro
-    group_add:
-      - "${DOCKER_GID:-0}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
       migration:
         condition: service_completed_successfully
 
-  sandbox-image:
-    image: casework-sandbox:dev
-    build:
-      <<: *python-build
-      target: sandbox
-    profiles: ["image-build-only"]
-
   admin:
     image: casework-admin:dev
     build:
-      <<: *python-build
+      <<: *image-build
       target: admin
     environment:
       <<: *common-environment

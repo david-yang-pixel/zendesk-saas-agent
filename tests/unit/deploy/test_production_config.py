@@ -7,7 +7,6 @@ from typing import Any, cast
 
 import pytest
 
-from casework_sandbox.composition import SandboxRuntimeConfig
 from deploy import configure_runtime, migrate_legacy_model_config, prepare_runtime
 
 
@@ -73,7 +72,7 @@ def test_ticket_events_runtime_settings_survive_redeploy(tmp_path, monkeypatch):
     socket = tmp_path / "socket"
     socket.touch()
     _source_environment(source)
-    for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_HARNESS_IMAGE", "CASEWORK_SANDBOX_IMAGE", "CASEWORK_ADMIN_IMAGE"):
+    for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     monkeypatch.setattr(prepare_runtime, "_discover_tools", lambda *_: [])
     monkeypatch.setenv("ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET", "independent-secret")
@@ -107,8 +106,7 @@ def test_openconnector_endpoint_switch_survives_redeploy(tmp_path, monkeypatch):
     _source_environment(source)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
-        "CASEWORK_HARNESS_IMAGE",
-        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
         "CASEWORK_ADMIN_IMAGE",
     ):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
@@ -174,7 +172,7 @@ def test_saved_tools_validate_and_reuse_without_discovery(tmp_path, monkeypatch)
     socket = tmp_path / "socket"
     socket.touch()
     _source_environment(source)
-    for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_HARNESS_IMAGE", "CASEWORK_SANDBOX_IMAGE", "CASEWORK_ADMIN_IMAGE"):
+    for name in ("CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE", "CASEWORK_ADMIN_IMAGE"):
         monkeypatch.setenv(name, "image@sha256:" + "a" * 64)
     service = prepare_runtime.READ_ONLY_SERVICES[0]
     tool = {"name": "search_actions", "remote_tool_name": "search_actions",
@@ -209,8 +207,7 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     digest = "sha256:" + ("a" * 64)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
-        "CASEWORK_HARNESS_IMAGE",
-        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
         "CASEWORK_ADMIN_IMAGE",
     ):
         monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
@@ -258,8 +255,14 @@ def test_prepare_runtime_writes_digest_pinned_isolated_configuration(
     assert runtime["CASEWORK_SAAS_GROUP_ID"] == "40685275477140"
     assert "CASEWORK_SAAS_ASSIGNEE" not in runtime
     assert len(tools) == len(prepare_runtime.READ_ONLY_SERVICES)
-    parsed = SandboxRuntimeConfig.from_env(runtime)
-    assert len(parsed.tool_configs) == len(prepare_runtime.READ_ONLY_SERVICES)
+    for name in (
+        "CASEWORK_INGRESS_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
+        "CASEWORK_ADMIN_IMAGE",
+    ):
+        assert runtime[name] == f"ghcr.io/example/{name.lower()}@{digest}"
+    assert "CASEWORK_HARNESS_IMAGE" not in runtime
+    assert "CASEWORK_SANDBOX_IMAGE" not in runtime
     assert credentials["CASEWORK_CREDENTIAL_OPENAI_PRIMARY"] == "openai-secret"
     assert credentials["CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME"] == "openconnector-secret"
     assert "OPENAI_API_KEY" not in runtime
@@ -283,8 +286,7 @@ def test_prepare_runtime_prefers_ci_openconnector_token(
     digest = "sha256:" + ("a" * 64)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
-        "CASEWORK_HARNESS_IMAGE",
-        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
         "CASEWORK_ADMIN_IMAGE",
     ):
         monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
@@ -324,8 +326,7 @@ def test_prepare_runtime_isolates_log_sync_credentials(
     digest = "sha256:" + "a" * 64
     for name in (
         "CASEWORK_INGRESS_IMAGE",
-        "CASEWORK_HARNESS_IMAGE",
-        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
         "CASEWORK_ADMIN_IMAGE",
     ):
         monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
@@ -370,8 +371,8 @@ def test_prepare_runtime_does_not_resurrect_legacy_log_credentials(
     )
     digest = "sha256:" + "a" * 64
     for name in (
-        "CASEWORK_INGRESS_IMAGE", "CASEWORK_HARNESS_IMAGE",
-        "CASEWORK_SANDBOX_IMAGE", "CASEWORK_ADMIN_IMAGE",
+        "CASEWORK_INGRESS_IMAGE", "CASEWORK_PI_AGENT_IMAGE",
+        "CASEWORK_ADMIN_IMAGE",
     ):
         monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
     monkeypatch.setenv("CASEWORK_LOG_SYNC_ENABLED", "true")
@@ -415,8 +416,7 @@ def test_prepare_runtime_migrates_legacy_admin_password_hash_once(
     digest = "sha256:" + ("a" * 64)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
-        "CASEWORK_HARNESS_IMAGE",
-        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
         "CASEWORK_ADMIN_IMAGE",
     ):
         monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")
@@ -459,8 +459,7 @@ def test_prepare_runtime_preserves_admin_replaced_model_credential(
     digest = "sha256:" + ("a" * 64)
     for name in (
         "CASEWORK_INGRESS_IMAGE",
-        "CASEWORK_HARNESS_IMAGE",
-        "CASEWORK_SANDBOX_IMAGE",
+        "CASEWORK_PI_AGENT_IMAGE",
         "CASEWORK_ADMIN_IMAGE",
     ):
         monkeypatch.setenv(name, f"ghcr.io/example/{name.lower()}@{digest}")

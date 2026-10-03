@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Roll back to the previous immutable Greenfield four-image release.
+# Roll back to the previous immutable Greenfield release (ingress, pi-agent, admin).
 
 set -euo pipefail
 umask 077
@@ -23,6 +23,7 @@ NGINX_CONFIG="${CASEWORK_NGINX_CONFIG:-/etc/nginx/sites-enabled/zd-agent.conf}"
 RELEASE_ENV="$STATE_DIR/release.env"
 PREVIOUS_RELEASE_ENV="$STATE_DIR/previous-release.env"
 FAILED_RELEASE_ENV="$STATE_DIR/failed-release.env"
+SERVICES=(ingress pi-agent admin)
 
 exec 9>"$LOCK_FILE"
 flock -w 120 9
@@ -42,7 +43,7 @@ if [[ ! "${CASEWORK_RELEASE_REVISION:-}" =~ ^[0-9a-f]{40}$ ]]; then
   echo "Previous release revision is invalid" >&2
   exit 1
 fi
-for image_name in CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE CASEWORK_SANDBOX_IMAGE CASEWORK_ADMIN_IMAGE; do
+for image_name in CASEWORK_INGRESS_IMAGE CASEWORK_PI_AGENT_IMAGE CASEWORK_ADMIN_IMAGE; do
   if [[ ! "${!image_name:-}" =~ @sha256:[0-9a-f]{64}$ ]]; then
     echo "Previous ${image_name} is not digest-pinned" >&2
     exit 1
@@ -51,26 +52,20 @@ for image_name in CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE CASEWORK_SANDBOX
 done
 
 compose=(docker compose --project-name casework-greenfield --env-file "$RUNTIME_ENV" -f "$COMPOSE_FILE")
+"${compose[@]}" stop "${SERVICES[@]}"
 
-# Quiesce the current release before replacing containers on the same ports.
-sed -i 's/^CASEWORK_DELIVERY_MODE=.*/CASEWORK_DELIVERY_MODE="dry_run"/' "$RUNTIME_ENV"
-python3 "$DEPLOY_DIR/configure_runtime.py" \
-  --base-url http://127.0.0.1:18104 \
-  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
-  --tool-names "$STATE_DIR/tool-names.json"
-"${compose[@]}" stop ingress harness admin
-
-export CASEWORK_INGRESS_IMAGE CASEWORK_HARNESS_IMAGE
-export CASEWORK_SANDBOX_IMAGE CASEWORK_ADMIN_IMAGE CASEWORK_RELEASE_REVISION
+# prepare_runtime.py writes these image references into runtime.env, so every
+# later Compose command keeps using the rolled-back digests.
+export CASEWORK_INGRESS_IMAGE CASEWORK_PI_AGENT_IMAGE CASEWORK_ADMIN_IMAGE
+export CASEWORK_RELEASE_REVISION
 python3 "$DEPLOY_DIR/prepare_runtime.py" \
   --source-env "$SOURCE_ENV" \
   --state-dir "$STATE_DIR" \
   --revision "$CASEWORK_RELEASE_REVISION"
-compose=(docker compose --project-name casework-greenfield --env-file "$RUNTIME_ENV" -f "$COMPOSE_FILE")
 "${compose[@]}" up -d postgres
 # Keep the current schema. Greenfield rollbacks never run an automatic
 # destructive database downgrade.
-"${compose[@]}" up -d --no-deps ingress harness admin
+"${compose[@]}" up -d --no-deps "${SERVICES[@]}"
 
 for url in \
   http://127.0.0.1:18101/readyz \
@@ -84,29 +79,17 @@ for url in \
     fi
     sleep 3
   done
-  test "$ready" = "1"
+  if [[ "$ready" != "1" ]]; then
+    echo "${url} did not become ready" >&2
+    exit 1
+  fi
 done
 
+# Preserve the Agent's running/paused state, exactly as a deployment does.
 python3 "$DEPLOY_DIR/configure_runtime.py" \
   --base-url http://127.0.0.1:18104 \
   --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
   --tool-names "$STATE_DIR/tool-names.json"
-sed -i 's/^CASEWORK_DELIVERY_MODE=.*/CASEWORK_DELIVERY_MODE="live"/' "$RUNTIME_ENV"
-"${compose[@]}" up -d --force-recreate harness
-harness_ready=0
-for _ in $(seq 1 60); do
-  if curl -fsS --max-time 3 http://127.0.0.1:18102/readyz >/dev/null; then
-    harness_ready=1
-    break
-  fi
-  sleep 3
-done
-test "$harness_ready" = "1"
-python3 "$DEPLOY_DIR/configure_runtime.py" \
-  --base-url http://127.0.0.1:18104 \
-  --internal-token-file "$STATE_DIR/admin-auth/internal-token" \
-  --tool-names "$STATE_DIR/tool-names.json" \
-  --activate
 
 python3 "$DEPLOY_DIR/nginx_switch.py" \
   --config "$NGINX_CONFIG" --backup "$STATE_DIR/nginx.rollback.tmp"

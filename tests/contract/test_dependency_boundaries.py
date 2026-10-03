@@ -1,6 +1,6 @@
 """Static checks for the Greenfield process boundaries.
 
-The four application images communicate through versioned JSON contracts and
+The Python application images communicate through versioned JSON contracts and
 HTTP/queue adapters.  An application must not import another application's
 runtime package, and the new tree must never reach into the legacy agent.
 """
@@ -13,8 +13,6 @@ from pathlib import Path
 GREENFIELD_ROOT = Path(__file__).parents[2]
 APPLICATION_ROOTS = {
     "casework_ingress": GREENFIELD_ROOT / "apps" / "ingress",
-    "casework_harness": GREENFIELD_ROOT / "apps" / "harness",
-    "casework_sandbox": GREENFIELD_ROOT / "apps" / "sandbox",
     "casework_admin": GREENFIELD_ROOT / "apps" / "admin-api",
 }
 
@@ -75,23 +73,3 @@ def test_all_runtime_apps_have_isolated_source_roots() -> None:
     for package, app_root in APPLICATION_ROOTS.items():
         source_root = app_root / "src" / package
         assert source_root.is_dir(), f"missing isolated source root: {source_root}"
-
-
-def test_sandbox_is_an_ephemeral_image_not_a_compose_runtime_service() -> None:
-    compose = (GREENFIELD_ROOT / "deploy" / "compose.yaml").read_text(
-        encoding="utf-8"
-    )
-
-    assert "  sandbox-image:" in compose
-    assert 'profiles: ["image-build-only"]' in compose
-    assert "  sandbox:\n" not in compose
-    assert "SANDBOX_IMAGE: casework-sandbox:dev" in compose
-
-
-def test_harness_compose_has_socket_group_and_linux_host_gateway() -> None:
-    for name in ("compose.yaml", "compose.release.yaml"):
-        compose = (GREENFIELD_ROOT / "deploy" / name).read_text(encoding="utf-8")
-
-        assert "group_add:" in compose
-        assert "DOCKER_GID" in compose
-        assert '"host.docker.internal:host-gateway"' in compose

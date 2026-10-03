@@ -14,14 +14,10 @@ spec:
       repository: registry.example.invalid/casework-ingress
       tag: 2026.09.01-e9d4958
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000001
-    harness:
-      repository: registry.example.invalid/casework-harness
+    pi-agent:
+      repository: registry.example.invalid/casework-pi-agent
       tag: 2026.09.01-e9d4958
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000002
-    sandbox:
-      repository: registry.example.invalid/casework-sandbox
-      tag: 2026.09.01-e9d4958
-      digest: sha256:0000000000000000000000000000000000000000000000000000000000000003
     admin:
       repository: registry.example.invalid/casework-admin
       tag: 2026.09.01-e9d4958
