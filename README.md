@@ -1,7 +1,8 @@
 # ZD Agent (Zendesk SaaS Agent)
 
-Modern event-driven, sandbox-isolated Zendesk AI Agent system.
-Provides automated ticket analysis, multi-source evidence investigation, and customer inquiry response generation.
+Event-driven Zendesk AI Agent for Dify Cloud support.
+Provides automated ticket analysis, read-only multi-source evidence investigation, and customer reply generation.
+See [docs/spec.md](docs/spec.md) for the end-to-end design.
 
 ## Architecture & Services
 
@@ -12,15 +13,10 @@ The project is structured as a modern Polyglot Monorepo:
 - `apps/pi-agent`: AI casework reasoning engine worker (TypeScript / Node.js).
 - `apps/admin-api`: Management & observability API, MCP service mesh probe (FastAPI / Python).
 - `apps/admin-web`: Management console UI with live trace player & MCP mesh monitor (Vue 3 / Vite).
-- `apps/feishu-mcp`: Legacy Feishu MCP adapter retained for compatibility; it is not part of the production investigation path.
-- `apps/harness`: Durable queue consumer, sandbox controller and delivery engine (Python).
-- `apps/sandbox`: Ephemeral per-run sandbox runtime for isolated tool executions (Python).
 
 ### Shared Packages (`packages/`)
 - `packages/contracts`: Versioned schemas and JSON message contracts across all services.
 - `packages/persistence`: PostgreSQL SQLAlchemy models and repository layer.
-- `packages/agent-core`: State machine, context budget, and core casework reasoning domain.
-- `packages/tool-sdk`: MCP tool interfaces, evidence extraction, and loop adapters.
 
 ### Skills (`skills/`)
 - Agent persona definitions, OpenConnector routing, and specialized investigation instructions (`core-casework`, `openconnector-routing`, `dify-saas-support`, `dify-db-investigation`, `app-run-investigation`).
@@ -38,9 +34,10 @@ corepack enable
 pnpm install
 pnpm --dir apps/admin-web test
 pnpm --dir apps/admin-web build
+pnpm --filter pi-agent test
 pnpm --dir apps/pi-agent build
 
-docker build -f deploy/Dockerfile --target sandbox -t casework-sandbox:dev .
+# Local stack: export OPENCONNECTOR_RUNTIME_TOKEN and OPENAI_API_KEY first.
 docker compose -f deploy/compose.yaml up --build
 ```
 
@@ -62,9 +59,10 @@ latency to decide whether a change is ready for production.
 
 ## Production & Deployment (`deploy/`)
 
-- **Release Orchestration**: Production runs via `deploy/compose.release.yaml`, managing PostgreSQL, Ingress, Pi-Agent, and Admin.
+- **Release Orchestration**: Production runs via `deploy/compose.release.yaml`, managing PostgreSQL, Ingress, Pi-Agent, and Admin. CI deploys the three application images by digest; Compose refuses to start without them, and every container runs the code baked into its image. `deploy/rollback-production.sh` restores the images recorded in `previous-release.env`.
 - **Worker Reasoning**: `apps/pi-agent` operates as the primary concurrency worker, consuming admissions from PostgreSQL, executing tool calls via the MCP Mesh, and delivering replies through the Zendesk Browser Relay.
 - **Tool Boundary**: OpenConnector is the sole read-only investigation gateway (including Zendesk, Dify DB, SigNoz, source, docs, GitHub MCP, and approved native providers). Zendesk Browser Relay is the separate and only public-reply write path; Gmail is excluded.
 - **Zero-Secret Boundary**: Production credentials are mount-injected via `/run/casework-credentials/credentials.env` and never committed to the repository. The Admin console allows hot-updating model endpoints and tokens without container rebuilds.
+- **Feishu Alerts**: Human-takeover and failure alerts go to the Feishu bot in `FEISHU_WEBHOOK_URL`. Set or rotate it with the GitHub production secret `FEISHU_WEBHOOK_URL`; without that secret, the value already saved in `runtime.env` is kept (the server source env only seeds a first deployment). Alerts are disabled when it is unset.
 
 The production source environment must provide `OPENCONNECTOR_RUNTIME_TOKEN`. `prepare_runtime.py` stores it as `CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME` and removes legacy per-MCP credentials from the mounted Pi Agent credential file. Configure the OpenConnector token and every granted connection as read-only. The five GitHub semantic read tools must also be classified as `read` in the `github-mcp` connection's trusted `toolOperationTypes`; the Agent refuses them if live discovery reports `write`.

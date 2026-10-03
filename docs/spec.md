@@ -1,454 +1,192 @@
-# Spec: ZendeskCasework Greenfield Harness
+# Spec: Zendesk SaaS Agent (ZD Agent)
+
+This document describes the system as it runs in production. The original
+Greenfield design (a Python Harness that launched one Docker sandbox per run)
+was replaced by `apps/pi-agent` and has been removed from the repository; see
+Git history before this revision for that design.
 
 ## Objective
 
-Build a new Zendesk support-agent system without importing or depending on the
-legacy `zd_agent` implementation. The system has three business layers:
+Answer Dify Cloud (SaaS) Zendesk tickets automatically and safely:
 
-1. Webhook ingress receives Zendesk events.
-2. Processing-rule filtering checks the configured SaaS tag, SaaS assignee,
-   `new`/`open` status, customer-message origin, and the `human` keyword. A
-   matching event submits only `ticket_id` to the durable job queue.
-3. ZendeskCasework Harness creates one ephemeral sandbox per processing run.
-   The sandbox fetches the complete current ticket, resolves the active
-   question, creates and executes a dynamic Todo plan through Tool Loops,
-   optionally runs independently configured Subagents, governs and compacts
-   context, loads Skills progressively, records evidence, and returns a
-   structured outcome. The controller refreshes the ticket, appends the
-   configured language footer once, delivers idempotently, persists the
-   compact result, and destroys the sandbox.
+1. Ingress receives signed Zendesk webhooks and applies deterministic admission
+   rules. A matching event queues only the `ticket_id`.
+2. Pi Agent claims the job, rereads the ticket, investigates through read-only
+   OpenConnector tools guided by on-demand Skills, and drafts a reply.
+3. Deterministic guards decide whether the draft may be delivered. A customer
+   job is answered publicly through the Zendesk Browser Relay; an operator
+   mention produces an internal-note draft that is never sent to the customer.
+4. Every run is recorded for the Admin console and optional log export.
 
-The management console must expose only practical operational controls. It is
-not a deployment or filesystem editor.
-
-## Fixed Decisions
-
-- This is a Greenfield implementation under `greenfield/`; it must not import
-  from `src/zd_agent` or migrate legacy live sessions/state.
-- Application images: `casework-ingress`, `casework-harness`,
-  `casework-sandbox`, and `casework-admin`.
-- PostgreSQL is the durable source of truth and queue. Redis is not required.
-- Every processing run gets a new sandbox. Every terminal path destroys it.
-- Default sandbox limit: `0.5` CPU and `1 GiB` memory, 30-minute timeout.
-- One resource retry may use `1` CPU and `1 GiB` memory.
-- Root Agent and Subagents share the ticket sandbox but use separate working
-  directories, sessions, model loops, context windows, and explicit model
-  configurations.
-- The system has one business Agent type: `ZendeskCasework`. All registered
-  investigation tools are available to root and child Agents. Harness
-  orchestration and final delivery are controller operations, not model tools.
-- System instructions are minimal. Investigation procedures live in
-  progressively loaded Skills.
-- `human` is deterministic ingress behavior, not a model decision.
-- The final customer footer is deterministic delivery behavior, not model text.
-
-## Tech Stack
-
-- Python 3.12
-- FastAPI and Pydantic v2
-- SQLAlchemy 2 async + Alembic
-- PostgreSQL 16
-- pytest, pytest-asyncio, Ruff, Pyright
-- Vue 3, TypeScript, Vite, Vitest, Playwright
-- Docker/BuildKit with four independently tagged image targets
-- Docker Engine API for ephemeral sandbox lifecycle in the initial single-host
-  deployment
-
-## Commands
-
-From `greenfield/`:
-
-```bash
-uv sync --frozen --dev
-uv run pytest -q
-uv run ruff check .
-uv run pyright
-uv run alembic upgrade head
-uv run uvicorn casework_ingress.app:create_app --factory --reload --port 8101
-uv run uvicorn casework_admin.app:create_app --factory --reload --port 8102
-uv run python -m casework_harness.worker
-
-corepack enable
-pnpm --dir apps/admin-web install --frozen-lockfile
-pnpm --dir apps/admin-web test
-pnpm --dir apps/admin-web build
-pnpm --dir apps/admin-web e2e
-
-docker build -f deploy/Dockerfile --target ingress -t casework-ingress:dev .
-docker build -f deploy/Dockerfile --target harness -t casework-harness:dev .
-docker build -f deploy/Dockerfile --target sandbox -t casework-sandbox:dev .
-docker build -f deploy/Dockerfile --target admin -t casework-admin:dev .
-docker compose -f deploy/compose.yaml up --build
-```
-
-## Project Structure
+## Architecture
 
 ```text
-greenfield/
-  apps/
-    ingress/          Webhook API and deterministic processing rules
-    harness/          Job consumer, sandbox controller, delivery/outbox
-    sandbox/          Ephemeral ZendeskCasework runtime
-    admin-api/        Configuration and run-query API
-    admin-web/        Vue management console
-  packages/
-    contracts/        Pydantic and JSON contracts shared across processes
-    persistence/      PostgreSQL models, repositories, migrations
-    agent-core/       Todo, Tool Loop, Skills, context, evidence, memory
-    tool-sdk/         Tool definition/execution/result contract
-  skills/             Versioned built-in ZendeskCasework Skills
-  migrations/         Alembic revisions
-  tests/
-    unit/
-    integration/
-    contract/
-    e2e/
-    fixtures/
-  deploy/
-    compose.yaml
-    Dockerfile
-  docs/
-    spec.md
-    tasks.md
+Zendesk webhooks
+  │ /webhook/zendesk, /webhook/zendesk-messaging, /webhook/zendesk-ticket-events
+  ▼
+ingress (FastAPI) ── admission rules ──► PostgreSQL: events, case_jobs, ticket_states
+                                              │ lease + heartbeat
+                                              ▼
+                                         pi-agent (Node/TypeScript worker)
+                                           ├─ tools: OpenConnector MCP (read-only)
+                                           ├─ skills: skills/*/SKILL.md (on demand)
+                                           ├─ public reply  ─► Zendesk Browser Relay
+                                           ├─ mention draft ─► Zendesk internal note
+                                           └─ alerts        ─► Feishu bot (optional)
+                                              │
+                                              ▼
+                                         run_records ◄── admin-api (FastAPI) + admin-web (Vue 3)
+                                              └────────► log-sync (optional export)
 ```
 
-## Core Contracts
+| Component | Source | Image | Role |
+| --- | --- | --- | --- |
+| Ingress | `apps/ingress` | `casework-ingress` | Webhook verification, normalization, admission, `human` cancellation |
+| Pi Agent | `apps/pi-agent` | `casework-pi-agent` | Queue consumer, investigation, guards, delivery, alerts |
+| Admin | `apps/admin-api`, `apps/admin-web` | `casework-admin` | Console, model settings, run traces, migrations job, log-sync job |
+| Shared Python | `packages/contracts`, `packages/persistence` | (in Python images) | Pydantic contracts, SQLAlchemy models and repositories |
+| Skills | `skills/` | (copied into Pi Agent) | Investigation procedures and provider routing |
+| Migrations | `migrations/` | (run from Admin image) | Alembic schema history |
 
-### Processing job
+## Ingress admission
 
-The ingress-to-harness business payload is intentionally minimal:
+- `/webhook/zendesk` and `/webhook/zendesk-messaging` accept customer events,
+  verified with the Zendesk webhook signature and
+  `ZENDESK_MESSAGING_WEBHOOK_SECRET`.
+- `/webhook/zendesk-ticket-events` accepts `ticket.comment_added` events signed
+  with its own `ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET`. Only a private staff
+  comment that mentions the operator trigger (for example `@agent`) is
+  admitted, as a mention job. Comments that start with the Agent's internal
+  draft marker are ignored. See `deploy/TICKET_EVENTS_WEBHOOK.md`.
+- Processing rules (`processing_rules.py`) are pure: the configured SaaS tag
+  and assignee, `new`/`open` status, and a public customer-origin message are
+  required. A whole-message `human` (NFKC-normalized, punctuation-trimmed)
+  records a takeover in `ticket_states` and cancels active work instead of
+  queueing a job.
+- Admission is atomic in PostgreSQL. It deduplicates by `event_id`, keeps at
+  most one queued job per ticket, and rejects new work with `agent_paused` when
+  the Admin desired state is `paused`.
 
-```json
-{"ticket_id": 3726}
-```
+## Job processing (Pi Agent)
 
-Queue metadata such as `job_id`, `event_id`, timestamps, attempts, and config
-revision is infrastructure metadata and does not expand the Agent input.
+The worker polls `case_jobs` with `CASEWORK_WORKER_CONCURRENCY` slots
+(default 2). A claim takes a 180-second lease renewed every 60 seconds. Expired
+running jobs are reclaimed for up to 3 attempts.
 
-Every job freezes a required configuration snapshot: `config_revision`, root
-and child model configuration identifiers, plus model, Skill, and tool registry
-digests. Missing snapshot metadata fails closed before sandbox creation.
+Per job:
 
-### Normalized webhook event
+1. **Pre-run guards** (customer jobs only; mention jobs bypass them): skip if
+   the ticket was already handed to a human, if the latest message has already
+   been answered, or if the conversation contains a request for a human. A
+   takeover is persisted and announced to the Feishu bot.
+2. **Context**: read the full ticket conversation and attachments through
+   OpenConnector's Zendesk connection. Attachments are passed to the model as
+   native image/file inputs. For a mention job the operator's note is injected
+   as the instruction and the draft must be in English.
+3. **Model**: `system_settings.model_config` (set from Admin) overrides the
+   `CASEWORK_MODEL_*` environment defaults. The API key comes from the
+   mounted credential file.
+4. **Investigation**: the agent loop (`@earendil-works/pi-coding-agent`) uses
+   only tools discovered live from OpenConnector whose operation type is
+   `read`. Gmail and every mutation are excluded. Skills are loaded on demand
+   through a read tool. `investigation_check` records the material questions,
+   sources and observation IDs, and the runtime allows at most two continuation
+   reviews before returning qualified partial findings.
+5. **Reply review gate**: the model must return `=== INTERNAL NOTE ===` and
+   `=== CUSTOMER REPLY ===` with a JSON review decision.
+   `validateReplyReview` blocks delivery when the review fails, or when a
+   `verified` claim has no successful business evidence. The internal note
+   stays in run telemetry and is never written to Zendesk.
+6. **Footer**: a localized footer (en/ja/zh, New York support hours) is
+   appended in code, never by the model.
+7. **In-flight monitor** (every 5 seconds): a human takeover or a new customer
+   message aborts the run. A new message requeues the ticket with a 10-second
+   debounce.
+8. **Pre-delivery freshness check**: reread the ticket. If anything changed,
+   discard the draft and requeue (or hand over to a human).
+9. **Delivery**:
+   - Customer job: POST to the Browser Relay `/send`, the only public-reply
+     write path. A relay failure fails the job and sends the draft to the
+     Feishu bot. On success, redundant queued jobs for the ticket are
+     cancelled.
+   - Mention job: an idempotent internal note through the Zendesk API, marked
+     `[DIFY_AI_AGENT_DRAFT:<job_id>]` and recorded in
+     `internal_draft_deliveries`.
+10. **Outcome**: upsert `run_records` with the trace, rounds, tokens, tool calls
+    and delivery result, and mark the job `completed`, `cancelled` or `failed`.
 
-The webhook adapter supplies `event_id`, `ticket_id`, status, assignee, tags,
-message visibility, actor origin, and message text to the pure rule layer. If a
-required field is missing or actor origin is unknown, the event is ignored with
-a typed reason; the rule layer never fetches Zendesk. Repeated `event_id` values
-are idempotent.
+`FEISHU_WEBHOOK_URL` is optional. When it is unset, alerts are disabled and
+the worker logs a warning at startup.
 
-Only a public, customer-origin message can trigger processing or `human`.
-Human aliases use Unicode NFKC normalization, trim surrounding whitespace,
-casefold, and exact comparison after removing surrounding Unicode punctuation.
-Agent replies and deterministic footers can never trigger it. `human` creates a
-cancellation command and never a CaseJob. Applying the command atomically
-advances the ticket generation, cancels queued/running work, and fences unsent
-outbox entries for older generations.
+## Persistence
 
-### Ticket snapshot and active question
+PostgreSQL is the queue and the source of truth. Alembic owns these tables:
+`events`, `ticket_states`, `config_revisions`, `config_head`, `case_jobs`,
+`outbox_messages`, `run_records`, `run_events`, `run_log_exports` and
+`internal_draft_deliveries`.
 
-The sandbox fetches an immutable `TicketSnapshot` containing ticket metadata,
-requester, assignee, tags, form fields, all paginated public/internal comments,
-Messaging events, attachment metadata, locale, and latest customer-event
-cursor. An incomplete page, attachment listing, or cursor is a typed fetch
-failure rather than a partial answer.
+`system_settings` (model, mode and safety settings written by Admin) is read
+and written by `admin-api` and `pi-agent`, but no migration creates it.
 
-`ActiveQuestion` binds the original unresolved customer request to later
-clarifications and their event IDs. A clarification changes facts and
-constraints without replacing the original question.
+## Admin console
 
-### Todo
+`admin-api` serves the built `admin-web` from its own image together with
+`/api/v2`: run traces (retry, skip, escalate), model settings and connection
+test, operating mode, safety and Feishu test, the MCP mesh and tool probes,
+Skills, and live logs. Authentication uses the mounted admin auth file and an
+internal token used by deployment scripts.
 
-```json
-{
-  "task_id": "task-01",
-  "goal": "Locate the affected app",
-  "status": "ready",
-  "assigned_to": "root",
-  "dependencies": [],
-  "skill": "app-run-investigation",
-  "suggested_tools": ["sql_query"],
-  "required_evidence": ["app_id", "workspace_id"],
-  "attempts": 0,
-  "completion_condition": "One exact app is found or ambiguity is proven"
-}
-```
+## Deployment
 
-### Sandbox protocol and outcome
-
-Harness and sandbox communicate only through versioned JSON contracts for
-`StartRun`, `Heartbeat`, `CancelRun`, and `RunResult`; neither application
-imports the other's runtime modules. `StartRun` includes job/session/generation,
-ticket ID, attempt number, frozen config/digests, and deadline.
-
-`RunResult` includes terminal disposition (`answer`, `ask_customer`,
-`human_takeover`, `failed`, or `cancelled`), reply locale/body when applicable,
-snapshot cursor, Todo summary, evidence and artifact references, checkpoint
-reference, retry classification, and delivery eligibility. Hidden model
-reasoning is never included or persisted.
-
-### Tool result
-
-```json
-{
-  "status": "success",
-  "summary": "Found one matching app",
-  "data": {},
-  "evidence_id": "ev-01",
-  "observed_at": "2026-09-01T00:00:00Z",
-  "targets": [],
-  "artifacts": [],
-  "truncated": false,
-  "retryable": false
-}
-```
-
-## Runtime State Machines
-
-Case job:
-
-```text
-queued -> claimed -> sandbox_creating -> running -> finalizing
-       -> completed | awaiting_customer | human_takeover | failed | cancelled
-```
-
-The PostgreSQL queue enforces one active generation per ticket and uniqueness
-by `event_id`. Claims use a lease and heartbeat; expired claims are reclaimable.
-Retry count, bounded backoff, terminal dead-letter reason, ticket generation,
-and cancellation generation are durable. A worker acknowledges a job only
-after its terminal record and eligible outbox row commit atomically.
-
-Sandbox:
-
-```text
-creating -> ready -> running -> destroying -> destroyed
-```
-
-Attempt `1` always uses `0.5 CPU / 1 GiB`, no extra swap, and a 30-minute
-deadline. Only a typed CPU/memory resource-exhaustion result may create attempt
-`2`, with a new sandbox ID, `1 CPU / 1 GiB`, no extra swap, and a second
-30-minute deadline. All other failures are not resource retries.
-
-The controller creates the container, waits for readiness, monitors heartbeat,
-propagates cancellation, and requests destruction on success, ask, takeover,
-failure, timeout, cancellation, worker crash, and retry. A label-scoped orphan
-sweeper removes only expired casework sandboxes carrying this installation's
-controller/session/job/attempt labels. Destruction failure is durable and
-alertable; it never makes a failed run look successful.
-
-Todo:
-
-```text
-pending -> ready -> running -> completed | failed | blocked | cancelled
-```
-
-Subagent:
-
-```text
-queued -> running -> completed | failed | timed_out | cancelled
-```
-
-## Agent Runtime
-
-The sandbox runtime follows this loop:
-
-```text
-fetch ticket -> resolve active question -> load core skill -> build Todo plan
--> choose ready Todo -> call tool or Subagent -> record evidence
--> update Todo and context checkpoint -> repeat until completion gate
--> produce structured outcome
-```
-
-It must not treat a clarification answer as a replacement for the original
-active question. It must not ask the customer while an internally executable
-Todo remains.
-
-Each Tool Loop iteration has a versioned request schema, remaining wall-clock
-and token budgets, maximum tool rounds, and explicit termination reason. Tool
-results are validated before entering context; retryable tool failures use a
-bounded per-tool policy. An answer is allowed only when the completion gate
-finds no executable Todo and all claims are evidence-bound.
-
-## Context Governance
-
-- Soft compaction at 60% of the configured model context window.
-- Hard checkpoint/rebuild at 80%.
-- Retain the four most recent tool rounds inline.
-- Keep exact identifiers, timestamps, error codes, evidence IDs, open Todos,
-  and current customer messages verbatim.
-- Store large raw tool outputs and attachments as sandbox artifacts; place only
-  typed summaries and artifact references in model context.
-- Root and child contexts are isolated. Child results return as bounded,
-  structured reports.
-- Before delivery, refetch the latest Zendesk event. A changed event invalidates
-  the draft and starts a fresh processing run.
-- A context checkpoint contains active question, exact identifiers and cursors,
-  Todo graph/state, evidence/claim bindings, unresolved contradictions, loaded
-  Skill versions, model/tool budgets, and artifact references. Rebuild validates
-  them before the next model call; an irreducibly over-budget checkpoint fails
-  rather than dropping required evidence.
-
-## Skills
-
-The core Skill is always loaded. Specialized Skills are selected and loaded
-only when needed:
-
-- `zendesk-casework-core`
-- `app-run-investigation`
-- `workflow-investigation`
-- `saas-database-investigation`
-- `signoz-investigation`
-- `billing-investigation`
-- `source-release-investigation`
-- `customer-reply`
-
-Every Skill has a versioned manifest with content digest, selection predicates,
-dependencies, compatible tool contracts, and bounded context contribution.
-Load failure is typed; a required Skill blocks the dependent Todo instead of
-being silently omitted. A Subagent receives an explicitly configured slot,
-independent model credentials/name, scoped Todo, separate workdir/session and
-context budget, and returns a bounded evidence-linked report. Child
-cancellation follows the parent run. Child Agents cannot create children.
-
-## Delivery and outbox
-
-Only the Harness controller may create or send a customer reply. An outbox row
-is keyed by ticket generation and snapshot cursor and progresses through
-`pending`, `attempted`, `sent`, `confirmed`, `ambiguous`, or `cancelled`.
-Immediately before send, the controller verifies the latest customer cursor and
-human cancellation fence. A mismatch cancels the draft and schedules a fresh
-generation.
-
-The localized footer is selected from the frozen config revision, uses a
-canonical invisible marker, and is appended exactly once to customer-facing
-`answer` and `ask_customer` bodies. Existing marked footers are replaced, not
-duplicated. Unsupported locales use the configured default locale. Failed,
-cancelled, and takeover outcomes create no customer outbox entry.
-
-## Management Console
-
-Five top-level pages only:
-
-1. Overview: desired Agent state, jobs, failures, queue, active sandboxes.
-2. Harness: root model, explicit Subagent models, context, sandbox, memory,
-   Todo/Tool Loop settings.
-3. Processing rules: tags, assignee, statuses, `human` aliases, reply enable,
-   localized footers.
-4. Skills and tools: versions, enablement, assignments, tool contracts and
-   connection tests.
-5. Runs: ticket/session, active question, Todos, Tool Calls, Subagents,
-   evidence, checkpoints, sandbox lifecycle, and outcome.
-
-Host deployment, filesystem paths, and raw system-prompt editing are excluded.
-
-The editable allowlist is limited to desired Agent state, root model,
-independent Subagent slots/models, processing rules and human aliases, localized
-footers/reply enablement, Skill/tool enablement and assignment, bounded Tool
-Loop/context settings, and connection tests. Fixed sandbox resources, run
-snapshots, lifecycle history, evidence, digests, and audit records are read-only.
-Secrets are write-only and masked after save. Every save uses optimistic
-revision checks and creates an auditable configuration revision; rollback
-creates another revision rather than mutating history.
-
-## Image dependency graph
-
-```text
-casework-ingress -> contracts + persistence -> PostgreSQL
-casework-harness -> contracts + persistence -> PostgreSQL + Docker Engine API
-casework-sandbox -> contracts + agent-core + tool-sdk + built-in Skills
-casework-admin -> contracts + persistence -> PostgreSQL
-```
-
-Reverse application imports are forbidden. The sandbox does not access the
-queue or outbox database. Harness never imports sandbox runtime code. A release
-manifest records all four immutable image digests plus the migration revision;
-readiness requires migrations, queue connectivity, and a sandbox launch probe.
-
-## Code Style
-
-Use small typed functions, explicit domain names, immutable contracts, and
-dependency injection at process boundaries:
-
-```python
-async def submit_ticket(
-    *, ticket_id: int, jobs: JobRepository, event_id: str
-) -> CaseJob:
-    existing = await jobs.find_by_event_id(event_id)
-    if existing is not None:
-        return existing
-    return await jobs.enqueue(ticket_id=ticket_id, event_id=event_id)
-```
-
-- Python modules and functions use `snake_case`; types use `PascalCase`.
-- TypeScript uses strict mode and named exports.
-- Domain contracts contain validation but no infrastructure calls.
-- Tests assert outcomes, not private method call sequences.
-
-## Testing Strategy
-
-- Unit tests: processing rules, state transitions, Todo readiness, compaction,
-  Skill selection, Tool result validation, footer idempotency.
-- Contract tests: all cross-image JSON payloads and database enums.
-- Integration tests: PostgreSQL queue claim/retry, outbox idempotency, config
-  snapshots, Docker sandbox lifecycle through a fake engine first.
-- E2E tests: webhook -> filter -> sandbox -> structured outcome -> refreshed
-  delivery -> sandbox deletion, including `human`, timeout, OOM retry, Japanese
-  response, duplicate webhook, and new-message invalidation.
-- Browser tests: all five admin pages and the common operator workflows.
-- CI guard: run from `greenfield/`, fail on imports from `zd_agent`, verify the
-  dependency graph, and build each image target independently.
-
-Every behavior change follows RED -> GREEN -> REFACTOR.
+- CI (`.github/workflows/docker-image.yml`) runs Ruff, Pyright, pytest, and the
+  Admin and Pi Agent test/build. On `main` it pushes the `ingress`, `admin` and
+  `pi-agent` images and deploys them by digest.
+- `deploy/deploy-production.sh` runs on the server. It requires a
+  digest-pinned image for each service. `prepare_runtime.py` writes
+  `runtime.env` and the mounted `credentials.env` (both mode 0600), including
+  the image references. The script then runs migrations, restarts the
+  services, waits for `/readyz`, and records `release.env` /
+  `previous-release.env`.
+- `deploy/rollback-production.sh` redeploys the images recorded in
+  `previous-release.env`. It never downgrades the database.
+- `deploy/compose.release.yaml` refuses to start without the digest-pinned
+  images. Every container runs the code baked into its image; no source files
+  are mounted from the host.
+- Secrets are never committed. CI secrets (`OPENCONNECTOR_RUNTIME_TOKEN`,
+  `ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET`, optional `FEISHU_WEBHOOK_URL`) take
+  precedence over values on the server. Without the CI secret,
+  `FEISHU_WEBHOOK_URL` keeps the value saved in `runtime.env`; the server
+  source env only seeds a first deployment.
 
 ## Boundaries
 
 ### Always
 
-- Create failing behavior tests before implementation.
-- Pin every run to an immutable configuration revision.
-- Destroy the sandbox on every terminal path.
-- Keep customer delivery idempotent and freshness-checked.
-- Keep root and child model settings explicit.
-- Keep large raw artifacts outside model context.
+- Keep investigation read-only through OpenConnector. Recheck each tool's
+  live `read` classification before calling it.
+- Keep `human` detection, guards, footers and delivery in code, not in prompts.
+- Refresh the ticket before any public reply. Drop stale drafts.
+- Deploy only digest-pinned images.
 
 ### Ask first
 
-- Change the four-image boundary.
-- Add Redis, Kubernetes, or another durable dependency.
-- Change fixed sandbox CPU/memory policy.
-- Migrate legacy sessions, memory, or reply outbox data.
-- Push, deploy, or enable production Zendesk writes.
+- Add a new write path to Zendesk or any other system.
+- Add a durable dependency (Redis, Kubernetes, another database).
+- Change admission rules, delivery guards or the production deployment flow.
 
 ### Never
 
-- Import or copy legacy `src/zd_agent` runtime modules into Greenfield code.
-- Reuse a sandbox between processing runs.
-- Let a Subagent deliver directly to Zendesk.
-- Put `human` detection or the fixed footer in model prompts.
+- Send a public reply from an operator mention.
+- Write the internal investigation note to a Zendesk comment.
+- Commit credentials, webhook URLs or tokens.
 - Persist hidden model reasoning.
-- Commit credentials.
 
-## Success Criteria
+## Testing
 
-- Four application images build independently from the same release revision.
-- A matching webhook creates exactly one job containing `ticket_id` as its
-  business input; a nonmatching event creates none.
-- `human` cancels a live run and prevents its draft from being delivered.
-- Every run creates a `0.5 CPU / 1 GiB` sandbox and destroys it after success,
-  ask, human takeover, failure, timeout, or cancellation.
-- One resource-exhaustion retry may use `1 CPU / 1 GiB`.
-- The sandbox fetches the full current ticket and creates a visible Todo plan.
-- Tool Loop continues while an executable Todo remains.
-- Subagent models are independently configured and do not inherit root model
-  credentials or model names.
-- Compaction preserves all exact evidence bindings and active work.
-- The final footer is localized and appended exactly once.
-- The console implements the five-page information architecture.
-- Greenfield unit, contract, integration, browser, and E2E suites pass without
-  invoking production Zendesk writes.
-
-## Open Questions
-
-None block the initial contract and foundation slices. Production credentials,
-exact Zendesk field identifiers, and localized footer text are deployment-time
-configuration and are not required to build the runtime.
+- Python: `uv run pytest -q` covers ingress rules and webhooks, persistence
+  (integration tests need Docker for Testcontainers), admin API, contracts and
+  deployment scripts. `uv run ruff check .` and `uv run pyright` must pass.
+- Pi Agent: `pnpm --filter pi-agent test` (Vitest) and `pnpm --filter pi-agent build`.
+- Admin web: `pnpm --dir apps/admin-web test` and `build`.
+- Read-only investigation evaluation: `pnpm --dir apps/pi-agent eval:investigation`
+  (uses the real model and OpenConnector and consumes quota; see README).
