@@ -837,3 +837,15 @@ def test_legacy_model_migration_does_not_overwrite_new_admin_configuration(
 
     assert status == "skipped-admin-configured"
     assert json.loads(marker.read_text())["status"] == "skipped-admin-configured"
+
+
+def test_successful_deploy_tags_the_deployed_commit() -> None:
+    root = Path(__file__).resolve().parents[3]
+    workflow = (root / ".github/workflows/docker-image.yml").read_text()
+    job = workflow[workflow.index("  tag-deployment:") : workflow.index("  notify-success:")]
+    assert "needs: deploy" in job
+    assert "if: success()" in job
+    # Only this job may write to the repository; the deploy job stays read-only.
+    assert "contents: write" in job
+    assert workflow.count("contents: write") == 1
+    assert 'tag="deploy-$(TZ=Asia/Shanghai date +%Y-%m-%d)-${GITHUB_SHA::7}"' in job

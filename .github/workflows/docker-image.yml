@@ -207,6 +207,29 @@ jobs:
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" bash -se
 
+  tag-deployment:
+    needs: deploy
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Tag the deployed commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # One immutable tag per production deploy. The short SHA keeps
+          # several deploys on the same (Beijing) day from colliding.
+          tag="deploy-$(TZ=Asia/Shanghai date +%Y-%m-%d)-${GITHUB_SHA::7}"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" >/dev/null 2>&1; then
+            echo "${tag} already exists (re-run of the same deploy)"
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${tag}" -f sha="${GITHUB_SHA}" >/dev/null
+          fi
+          echo "Deployed commit tagged \`${tag}\`" >> "$GITHUB_STEP_SUMMARY"
+
   notify-success:
     needs: deploy
     if: success()
