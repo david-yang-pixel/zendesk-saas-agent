@@ -115,6 +115,8 @@ async function recordJobOutcome(opts: {
   trace: any | null;
   delivery: any | null;
   errorReason?: string;
+  // Operator-mention drafts go to an internal note, never final_reply.
+  internalDraft?: string;
 }) {
   const sessionId = `pi-session-${opts.jobId}`;
   const toolCallsCount = opts.trace?.toolCalls?.length ?? 0;
@@ -128,6 +130,7 @@ async function recordJobOutcome(opts: {
   const outcome = {
     status: opts.status,
     final_reply: opts.trace?.finalReply ?? '',
+    internal_draft: opts.internalDraft ?? '',
     delivery: opts.delivery ?? null,
     error: opts.errorReason ?? null,
     total_duration_ms: opts.trace?.totalDurationMs ?? (opts.finishedAt.getTime() - opts.startedAt.getTime()),
@@ -514,6 +517,7 @@ async function main() {
           finishedAt: new Date(),
           trace: agentResult.trace,
           delivery,
+          internalDraft: agentResult.customerReply,
         });
         await markJobSucceeded(job.job_id);
         return;

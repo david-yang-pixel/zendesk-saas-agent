@@ -52,6 +52,7 @@ interface TraceDetail {
     text?: string
   }>
   final_reply: string
+  reply_kind?: 'public' | 'internal_draft'
   delivery?: {
     channel: string
     status: string
@@ -65,6 +66,7 @@ const query = ref('')
 const statusFilter = ref<'all' | 'completed' | 'running' | 'failed'>('all')
 const traceList = ref<TraceItem[]>([])
 const selectedTicketId = ref<number | null>(null)
+const selectedJobId = ref<string | null>(null)
 const selectedDetail = ref<TraceDetail | null>(null)
 const loadingList = ref(false)
 const loadingDetail = ref(false)
@@ -154,7 +156,7 @@ async function loadTraces() {
     })
     traceList.value = res.items || []
     if (traceList.value.length > 0 && selectedTicketId.value === null) {
-      selectTicket(traceList.value[0].ticket_id)
+      selectTicket(traceList.value[0].ticket_id, traceList.value[0].job_id)
     }
   } catch (err: any) {
     errorMessage.value = err.message || '获取工单推演流水失败'
@@ -163,13 +165,15 @@ async function loadTraces() {
   }
 }
 
-async function selectTicket(ticketId: number) {
+// A ticket can have several runs; each list row opens its own run.
+async function selectTicket(ticketId: number, jobId?: string) {
   selectedTicketId.value = ticketId
+  selectedJobId.value = jobId ?? null
   loadingDetail.value = true
   selectedDetail.value = null
   isProcessingLogExpanded.value = false
   try {
-    const detail = await api.getTrace(ticketId)
+    const detail = await api.getTrace(ticketId, jobId)
     selectedDetail.value = detail
   } catch (err: any) {
     console.error('Failed to load trace detail:', err)
@@ -187,7 +191,7 @@ async function retryCurrentJob() {
     actionMessage.value = '已重新入队！Pi Agent 即将重新推理。'
     await loadTraces()
     if (selectedTicketId.value) {
-      await selectTicket(selectedTicketId.value)
+      await selectTicket(selectedTicketId.value, selectedJobId.value ?? undefined)
     }
     setTimeout(() => { actionMessage.value = ''; }, 4000)
   } catch (err: any) {
@@ -205,7 +209,7 @@ async function skipCurrentJob(jobId?: string) {
     actionMessage.value = '已终止并跳过该工单！'
     await loadTraces()
     if (selectedTicketId.value) {
-      await selectTicket(selectedTicketId.value)
+      await selectTicket(selectedTicketId.value, selectedJobId.value ?? undefined)
     }
     setTimeout(() => { actionMessage.value = ''; }, 4000)
   } catch (err: any) {
@@ -223,7 +227,7 @@ async function escalateCurrentJob(jobId?: string) {
     actionMessage.value = '已成功转交人工并触发飞书告警！'
     await loadTraces()
     if (selectedTicketId.value) {
-      await selectTicket(selectedTicketId.value)
+      await selectTicket(selectedTicketId.value, selectedJobId.value ?? undefined)
     }
     setTimeout(() => { actionMessage.value = ''; }, 4000)
   } catch (err: any) {
@@ -362,9 +366,9 @@ onMounted(() => {
         <div class="ticket-list" v-if="!loadingList && traceList.length > 0">
           <div
             v-for="item in traceList"
-            :key="item.ticket_id"
-            :class="['ticket-item', { active: selectedTicketId === item.ticket_id }]"
-            @click="selectTicket(item.ticket_id)"
+            :key="item.job_id"
+            :class="['ticket-item', { active: selectedJobId === item.job_id }]"
+            @click="selectTicket(item.ticket_id, item.job_id)"
           >
             <div class="ticket-item__top">
               <span class="ticket-id">#{{ item.ticket_id }}</span>
@@ -668,8 +672,8 @@ onMounted(() => {
               <div class="node-marker marker-reply">📝</div>
               <div class="node-body card card-reply">
                 <div class="card-header">
-                  <span class="step-title">{{ t('runs.step.reply') }}</span>
-                  <span class="lang-tag">English Only</span>
+                  <span class="step-title">{{ t(selectedDetail.reply_kind === 'internal_draft' ? 'runs.step.internal_draft' : 'runs.step.reply') }}</span>
+                  <span class="lang-tag">{{ selectedDetail.reply_kind === 'internal_draft' ? t('runs.step.internal_draft_tag') : 'English Only' }}</span>
                 </div>
                 <div class="reply-content">
                   <pre class="reply-pre">{{ selectedDetail.final_reply }}</pre>

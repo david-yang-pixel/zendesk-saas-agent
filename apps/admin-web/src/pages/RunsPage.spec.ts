@@ -155,4 +155,37 @@ describe('RunsPage Trace Player', () => {
     expect(wrapper.text()).toContain('基于知识库与规则解答')
     expect(wrapper.text()).toContain('未触发外部 MCP 工具')
   })
+
+  it('opens each run of a ticket by its job and labels an operator draft as internal', async () => {
+    const fixture = apiFixture()
+    const calls: Array<[number, string | undefined]> = []
+    fixture.getTraces = async () => ({
+      items: [mockTraceItem, { ...mockTraceItem, job_id: 'job-3726-old', customer_message: 'Which OpenAI plugin version is installed?' }],
+      total: 2,
+    })
+    fixture.getTrace = async (ticketId, jobId) => {
+      calls.push([ticketId, jobId])
+      return jobId === 'job-3726-old'
+        ? { ...mockTraceDetail, job_id: jobId, final_reply: 'The plugin version is not recorded.' }
+        : { ...mockTraceDetail, final_reply: 'We are checking the credit refresh.', reply_kind: 'internal_draft' as const }
+    }
+
+    const wrapper = mount(RunsPage, { global: { provide: { [ADMIN_API_KEY as symbol]: fixture } } })
+    await flushPromises()
+
+    expect(calls).toEqual([[3726, 'job-3726']])
+    expect(wrapper.text()).toContain('内部备注草稿')
+    expect(wrapper.text()).toContain('仅内部备注，未发给客户')
+    expect(wrapper.text()).toContain('We are checking the credit refresh.')
+
+    const rows = wrapper.findAll('.ticket-item')
+    await rows[1].trigger('click')
+    await flushPromises()
+
+    expect(calls.at(-1)).toEqual([3726, 'job-3726-old'])
+    expect(wrapper.text()).toContain('The plugin version is not recorded.')
+    expect(wrapper.text()).toContain('English Only')
+    expect(rows[1].classes()).toContain('active')
+    expect(rows[0].classes()).not.toContain('active')
+  })
 })
