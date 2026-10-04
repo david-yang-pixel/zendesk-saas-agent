@@ -1,12 +1,13 @@
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from starlette.testclient import TestClient
 
 import casework_admin.api_v2 as api_v2
-from casework_admin.api_v2 import _McpProbeError, _probe_mcp_tools, register_modern_routes
+from casework_admin.api_v2 import _McpProbeError, _probe_mcp_tools, _run_reply, register_modern_routes
 from casework_admin.app import create_app
 
 
@@ -49,6 +50,34 @@ def test_modern_model_settings_route(monkeypatch: pytest.MonkeyPatch) -> None:
     llm = next(item for item in health["items"] if item["name"] == "llm")
     assert llm["status"] == "error"
     assert "env-model" not in llm["label"]
+
+
+def _run(outcome: dict, records: list | None = None) -> SimpleNamespace:
+    return SimpleNamespace(outcome=outcome, tool_call_records=records or [])
+
+
+def test_run_reply_shows_the_operator_draft_this_run_delivered() -> None:
+    internal = {"final_reply": "", "delivery": {"channel": "zendesk-internal-note", "status": "sent"}}
+
+    assert _run_reply(_run({**internal, "internal_draft": "We are checking the credits."}), "Older plugin reply") == (
+        "We are checking the credits.",
+        "internal_draft",
+    )
+    # Runs recorded before internal_draft existed: read the reviewed answer step,
+    # never the ticket's older outbox message.
+    legacy = _run(internal, [
+        {"type": "answer", "text": "=== INTERNAL NOTE ===\nfirst\n=== CUSTOMER REPLY ===\nFirst draft"},
+        {"type": "tool_call", "toolName": "read"},
+        {"type": "answer", "text": "=== INTERNAL NOTE ===\nreviewed\n=== CUSTOMER REPLY ===\nReviewed draft"},
+    ])
+    assert _run_reply(legacy, "Older plugin reply") == ("Reviewed draft", "internal_draft")
+    assert _run_reply(_run(internal), "Older plugin reply") == ("", "internal_draft")
+
+
+def test_run_reply_uses_the_public_reply_or_this_runs_outbox_message() -> None:
+    assert _run_reply(_run({"final_reply": "Sent reply"}), "Outbox body") == ("Sent reply", "public")
+    assert _run_reply(_run({"final_reply": ""}), "Outbox body") == ("Outbox body", "public")
+    assert _run_reply(None) == ("", "public")
 
 
 def test_model_ping_uses_the_agent_responses_protocol(monkeypatch: pytest.MonkeyPatch) -> None:

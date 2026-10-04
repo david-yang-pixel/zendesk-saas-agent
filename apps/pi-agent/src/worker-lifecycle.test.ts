@@ -143,6 +143,7 @@ it('writes the English customer draft as an internal note for a mention, never a
   expect(deliverInternalDraft.mock.calls[0]?.[0]).not.toHaveProperty('internalNote');
   expect(recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({
     status: 'completed', delivery: { channel: 'zendesk-internal-note', status: 'sent' },
+    internalDraft: 'We are reviewing the current credits policy.',
   }));
   expect(markJobSucceeded).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);

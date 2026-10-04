@@ -380,6 +380,28 @@ def _count_run_tool_calls(run: Any) -> int:
         if isinstance(st, dict) and (st.get("type") == "tool_call" or st.get("tool_name") or st.get("toolName") or st.get("call_id"))
     )
 
+
+def _run_reply(run: Any, outbox_body: str = "") -> tuple[str, Literal["public", "internal_draft"]]:
+    """Return the reply this run produced and where it went.
+
+    ``outbox_body`` must come from this run's own outbox message: a ticket's
+    newest message can belong to an earlier run that answered another question.
+    """
+    outcome = run.outcome if run and isinstance(run.outcome, dict) else {}
+    if outcome.get("internal_draft"):
+        return outcome["internal_draft"], "internal_draft"
+    delivery = outcome.get("delivery")
+    if isinstance(delivery, dict) and delivery.get("channel") == "zendesk-internal-note":
+        # Runs recorded before internal_draft existed keep the delivered draft
+        # only in the reviewed answer step.
+        records = run.tool_call_records if isinstance(run.tool_call_records, list) else []
+        answers = [st.get("text") or "" for st in records if isinstance(st, dict) and st.get("type") == "answer"]
+        marker = "=== CUSTOMER REPLY ==="
+        if answers and marker in answers[-1]:
+            return answers[-1].split(marker, 1)[1].split("=== INTERNAL NOTE ===", 1)[0].strip(), "internal_draft"
+        return "", "internal_draft"
+    return outcome.get("final_reply") or outcome.get("answer") or outbox_body or "", "public"
+
 async def _fetch_zendesk_ticket_meta(ticket_id: int) -> dict[str, str]:
     if ticket_id in _TICKET_META_CACHE:
         return _TICKET_META_CACHE[ticket_id]
@@ -447,8 +469,14 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             res = await session.execute(stmt)
             pairs = res.all()
 
-            outbox_res = await session.execute(select(OutboxMessage).order_by(desc(OutboxMessage.created_at)))
-            outbox_msgs = {msg.ticket_id: msg for msg in outbox_res.scalars().all()}
+            job_ids = [job.job_id for job, _run in pairs]
+            outbox_res = await session.execute(
+                select(OutboxMessage)
+                .where(OutboxMessage.job_id.in_(job_ids))
+                .order_by(OutboxMessage.created_at)
+            )
+            # Oldest first, so each job keeps its newest message.
+            outbox_msgs = {msg.job_id: msg for msg in outbox_res.scalars().all()}
 
         items: list[TraceListItem] = []
         for job, run in pairs:
@@ -481,16 +509,12 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
 
             email = active_q.get("requester_email") or ""
             model_used = active_q.get("model") or ""
-            reply = (
-                outcome.get("final_reply")
-                or outcome.get("answer")
-                or (outbox_msgs[job.ticket_id].body if job.ticket_id in outbox_msgs else "")
-                or ""
-            )
+            outbox_msg = outbox_msgs.get(job.job_id)
+            reply, _reply_kind = _run_reply(run, outbox_msg.body if outbox_msg else "")
             delivery = outcome.get("delivery") or {}
             delivery_status = delivery.get("status") if isinstance(delivery, dict) else None
-            if not delivery_status and job.ticket_id in outbox_msgs:
-                delivery_status = outbox_msgs[job.ticket_id].status
+            if not delivery_status and outbox_msg:
+                delivery_status = outbox_msg.status
 
             if query:
                 q = query.casefold()
@@ -520,14 +544,14 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                     tool_calls_count=tool_count,
                     reply_preview=reply[:160] if reply else "",
                     delivery_status=delivery_status,
-                    has_trace=bool(run and (tool_count > 0 or run.tool_call_records or (isinstance(run.outcome, dict) and (run.outcome.get("answer") or run.outcome.get("final_reply"))))),
+                    has_trace=bool(run and (tool_count > 0 or run.tool_call_records or reply)),
                 )
             )
 
         return TraceListResponse(items=items, total=len(items))
 
     @router.get("/traces/{ticket_id}")
-    async def get_ticket_trace(ticket_id: int) -> dict[str, Any]:
+    async def get_ticket_trace(ticket_id: int, job_id: str = Query(default="")) -> dict[str, Any]:
         async with transaction_scope() as session:
             stmt = (
                 select(CaseJobRow, RunRecordRow)
@@ -535,32 +559,35 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                 .where(CaseJobRow.ticket_id == ticket_id)
                 .order_by(desc(CaseJobRow.created_at))
             )
+            if job_id:
+                stmt = stmt.where(CaseJobRow.job_id == job_id)
             res = await session.execute(stmt)
             pairs = res.all()
 
+            if not pairs:
+                raise HTTPException(status_code=404, detail="Trace for ticket not found")
+
+            # Without a job_id, pick the best job & run (prioritizing one that
+            # ran tools, then one with an answer).
+            best_job, best_run = pairs[0]
+            found = False
+            for j, r in pairs:
+                if r and _count_run_tool_calls(r) > 0:
+                    best_job, best_run = j, r
+                    found = True
+                    break
+            if not found:
+                for j, r in pairs:
+                    if r and _run_reply(r)[0]:
+                        best_job, best_run = j, r
+                        break
+
             outbox_res = await session.execute(
                 select(OutboxMessage)
-                .where(OutboxMessage.ticket_id == ticket_id)
+                .where(OutboxMessage.job_id == best_job.job_id)
                 .order_by(desc(OutboxMessage.created_at))
             )
             outbox_msg = outbox_res.scalars().first()
-
-        if not pairs:
-            raise HTTPException(status_code=404, detail="Trace for ticket not found")
-
-        # Pick the best job & run (prioritizing one that ran tools, then one with an answer)
-        best_job, best_run = pairs[0]
-        found = False
-        for j, r in pairs:
-            if r and _count_run_tool_calls(r) > 0:
-                best_job, best_run = j, r
-                found = True
-                break
-        if not found:
-            for j, r in pairs:
-                if r and (isinstance(r.outcome, dict) and (r.outcome.get("answer") or r.outcome.get("final_reply"))):
-                    best_job, best_run = j, r
-                    break
 
         active_q = (best_run.active_question if best_run and isinstance(best_run.active_question, dict) else {})
         outcome = (best_run.outcome if best_run and isinstance(best_run.outcome, dict) else {})
@@ -578,12 +605,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         requester_email = active_q.get("requester_email") or ""
         model_used = active_q.get("model") or ""
 
-        final_reply = (
-            outcome.get("final_reply")
-            or outcome.get("answer")
-            or (outbox_msg.body if outbox_msg else "")
-            or ""
-        )
+        final_reply, reply_kind = _run_reply(best_run, outbox_msg.body if outbox_msg else "")
 
         delivery = outcome.get("delivery")
         if not delivery and outbox_msg:
@@ -688,6 +710,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             "model": model_used,
             "steps": steps,
             "final_reply": final_reply,
+            "reply_kind": reply_kind,
             "delivery": delivery,
             "error": error_reason,
         }

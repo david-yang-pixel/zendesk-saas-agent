@@ -432,7 +432,7 @@ export interface AdminApiClient {
   replaceModelCredential(input: { credentialRef: string; secret: string }): Promise<ModelCredentialReplaceResult>
   discoverModels(input: { provider: string; baseUrl: string; secret: string }): Promise<ModelCatalog>
   getTraces(input?: { query?: string; status?: string }): Promise<{ items: any[]; total: number }>
-  getTrace(ticketId: number): Promise<any>
+  getTrace(ticketId: number, jobId?: string): Promise<any>
   retryJob(jobId: string): Promise<{ ok: boolean; message: string }>
   skipJob(jobId: string): Promise<{ ok: boolean; job_id: string; message: string }>
   escalateJob(jobId: string): Promise<{ ok: boolean; ticket_id: number; message: string }>
@@ -583,8 +583,9 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
       const suffix = params.toString() ? `?${params.toString()}` : ''
       return transport.request(`/api/traces${suffix}`)
     },
-    async getTrace(ticketId) {
-      return transport.request(`/api/traces/${ticketId}`)
+    async getTrace(ticketId, jobId) {
+      const query = jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''
+      return transport.request(`/api/traces/${ticketId}${query}`)
     },
     async retryJob(jobId) {
       return transport.request(`/api/traces/${jobId}/retry`, { method: 'POST' })
