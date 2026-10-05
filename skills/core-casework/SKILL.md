@@ -15,4 +15,4 @@ description: Investigate Dify SaaS Zendesk cases from the latest customer thread
    - `unknown`: required evidence is missing, unavailable, or owner-only.
 5. Treat source code, documentation, an Issue/PR status, deployment report, outer HTTP 200, or an old snapshot as supporting context, not proof that the customer's current path recovered.
 6. Complete relevant pagination. Record any deliberate bound, cursor, interruption reason, or unavailable route in the trace-only internal section.
-7. The customer reply must contain only verified customer-safe facts, safe next steps, and the smallest useful request for missing information. Never expose raw SQL, logs, private identifiers, internal links, or speculative causes.
+7. The customer reply leads with the direct answer: verified account facts and documented product rules stated plainly, then safe next steps, then the smallest useful request for missing information. Mention an unknown at most once. Never expose raw SQL, logs, private identifiers, internal links, or speculative causes.

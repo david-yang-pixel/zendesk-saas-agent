@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { writtenLanguage } from './reply-policy.js';
 
 export const INTERNAL_DRAFT_MARKER = '[DIFY_AI_AGENT_DRAFT:';
 
@@ -7,18 +8,32 @@ export interface InternalDraftDelivery {
   status: 'sent' | 'already_sent';
 }
 
-export function buildInternalDraftBody(jobId: string, customerReply: string): string {
-  if (!/^[a-zA-Z0-9_-]{1,255}$/.test(jobId)) {
-    throw new Error('Invalid internal draft job ID');
-  }
+/**
+ * The note text after the marker line. With an operator answer the note leads
+ * with it, in the operator's language, followed by the unsent customer draft.
+ */
+export function formatInternalDraft(customerReply: string, operatorAnswer?: string): string {
   const draft = customerReply.trim().replace(
     /\n\s*---\s*\nThis reply was sent by Dify AI Agent[\s\S]*$/i,
     '',
   ).trim();
-  if (!draft || draft.length > 20000) {
+  if (!draft) throw new Error('Internal customer-reply draft is empty or too long');
+  const answer = operatorAnswer?.trim();
+  if (!answer) return `AI-generated customer reply draft for human review. Not sent to the customer.\n\n${draft}`;
+  return writtenLanguage(answer) === 'zh'
+    ? `AI 调查结论（仅内部可见）\n\n${answer}\n\n---\n客户回复草稿（英文，未发送给客户）：\n\n${draft}`
+    : `AI investigation answer (internal only)\n\n${answer}\n\n---\nCustomer reply draft (not sent to the customer):\n\n${draft}`;
+}
+
+export function buildInternalDraftBody(jobId: string, customerReply: string, operatorAnswer?: string): string {
+  if (!/^[a-zA-Z0-9_-]{1,255}$/.test(jobId)) {
+    throw new Error('Invalid internal draft job ID');
+  }
+  const note = formatInternalDraft(customerReply, operatorAnswer);
+  if (note.length > 20000) {
     throw new Error('Internal customer-reply draft is empty or too long');
   }
-  return `${INTERNAL_DRAFT_MARKER}${jobId}]\nAI-generated customer reply draft for human review. Not sent to the customer.\n\n${draft}`;
+  return `${INTERNAL_DRAFT_MARKER}${jobId}]\n${note}`;
 }
 
 function zendeskTicketUrl(baseUrl: string, ticketId: number): string {
@@ -36,12 +51,13 @@ export async function deliverInternalDraft(options: {
   jobId: string;
   ticketId: number;
   customerReply: string;
+  operatorAnswer?: string;
   baseUrl: string;
   email: string;
   apiToken: string;
   fetchImpl?: typeof fetch;
 }): Promise<InternalDraftDelivery> {
-  const body = buildInternalDraftBody(options.jobId, options.customerReply);
+  const body = buildInternalDraftBody(options.jobId, options.customerReply, options.operatorAnswer);
   const url = zendeskTicketUrl(options.baseUrl, options.ticketId);
   if (!options.email.trim() || !options.apiToken.trim()) {
     throw new Error('Zendesk internal draft credentials are missing');

@@ -9,16 +9,20 @@ import { parseModelConfig } from '../dist/model-config.js';
 import { getTicketDetails } from '../dist/ticket-context.js';
 import { normalizeToolResult } from '../dist/tool-result.js';
 
-const scenario = process.argv[2] || 'education';
+const args = process.argv.slice(2);
+const scenario = args.find(arg => !arg.startsWith('--')) || 'education';
+// Opt-in: print the unsent operator answer and customer draft for human review.
+const showReply = args.includes('--show-reply');
 const cases = {
   education: '看下这个工单用户的会员是什么会员，是教育优惠还是自己开的，以及这个用户的工作区为什么积分不刷新。',
   product: 'Can a Dify Cloud workflow be published as an MCP server? Explain the supported setup and limitations using current product guidance.',
   bug: 'How can we determine whether a reported Dify Cloud Knowledge Retrieval metadata-filtering bug has a confirmed fix? Check relevant engineering records and explain what is still unknown about rollout.',
 };
-if (!Object.hasOwn(cases, scenario)) throw new Error('Usage: evaluate-investigation.mjs education|product|bug');
+if (!Object.hasOwn(cases, scenario)) throw new Error('Usage: evaluate-investigation.mjs education|product|bug [--show-reply]');
 const ticketId = 3726; // Explicitly approved evaluation ticket; no arbitrary customer replay.
 const write = process.stdout.write.bind(process.stdout);
-// Agent streams model text in normal operation. This diagnostic emits metadata only.
+// Agent streams model text in normal operation. This diagnostic emits metadata
+// only, plus the final unsent texts when --show-reply is given.
 process.stdout.write = () => true;
 console.error = () => {};
 const report = value => write(`${JSON.stringify(value)}\n`);
@@ -71,15 +75,17 @@ try {
   const sourceRead = (source, pattern) => actions.some(call => (call.source === source || call.action?.startsWith(`${source}.`)) && pattern.test(call.action || '') && call.status === 'succeeded');
   const acceptance = {
     englishDraft: Boolean(result.customerReply.trim()) && !/[\u3400-\u9fff]/u.test(result.customerReply),
+    operatorAnswer: Boolean(result.operatorAnswer?.trim()),
     noPublicReply: result.reply === '',
     planned: reviews.length > 0,
     reviewed: Array.isArray(finalProgress.gaps) && finalProgress.gaps.length === 0,
     officialBody: sourceRead('dify-docs', /official_(docs|site)_read/),
-    feishuBody: sourceRead('feishu', /get_document_content|fetch_document|get_document_blocks/),
+    accountRecord: sourceRead('dify-db', /db_gateway_query$/),
     engineeringBody: sourceRead('linear', /get_linear_issue/) || sourceRead('github-mcp', /^github_get_(issue|pr)$/),
   };
-  const passed = acceptance.englishDraft && acceptance.noPublicReply && acceptance.planned && acceptance.reviewed &&
-    (scenario === 'education' ? acceptance.officialBody && acceptance.feishuBody : scenario === 'product' ? acceptance.officialBody : acceptance.engineeringBody);
+  // Education policy is a known skill reference; the account question needs records.
+  const passed = acceptance.englishDraft && acceptance.operatorAnswer && acceptance.noPublicReply && acceptance.planned && acceptance.reviewed &&
+    (scenario === 'education' ? acceptance.accountRecord : scenario === 'product' ? acceptance.officialBody : acceptance.engineeringBody);
   report({ phase: 'summary', scenario, model: result.trace.model, passed, acceptance,
     durationMs: result.trace.totalDurationMs, rounds: result.trace.rounds.length, actions,
     checks: finalProgress.checks?.map(c => ({ id: c.id, source: c.source, phase: c.phase, requestedStatus: c.status,
@@ -90,6 +96,7 @@ try {
       category: /permission|forbidden|denied|scope|credential/i.test(c.outcome?.error ?? '') ? 'access' :
         /required|invalid|unknown|not found|parameter|schema/i.test(c.outcome?.error ?? '') ? 'input_or_descriptor' : 'provider_or_transport' })),
     remainingGaps: finalProgress.gaps?.length ?? null, noDelivery: true });
+  if (showReply) report({ phase: 'reply', scenario, operatorAnswer: result.operatorAnswer ?? null, customerReply: result.customerReply });
   if (!passed) process.exitCode = 1;
 } catch (error) {
   const message = String(error?.message ?? '');

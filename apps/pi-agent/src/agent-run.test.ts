@@ -8,6 +8,7 @@ const mocked = vi.hoisted(() => ({
   recovery: undefined as (() => Promise<void>) | undefined,
   review: undefined as (() => Promise<void>) | undefined,
   reviewText: undefined as string | undefined,
+  fixText: undefined as string | undefined,
   reviewDecision: undefined as any,
   reviewStopReason: undefined as string | undefined,
   splitReviewText: false,
@@ -25,9 +26,11 @@ vi.mock('@earendil-works/pi-coding-agent', () => ({
       async prompt(prompt: string) {
         mocked.prompts.push(prompt);
         mocked.messages.push({ role: 'user', content: prompt });
-        if (prompt.startsWith('Final customer reply quality review')) {
-          await mocked.review?.();
-          const text = mocked.reviewText ?? '=== INTERNAL NOTE ===\nReply reviewed.\n=== CUSTOMER REPLY ===\nHello, here is what we verified.';
+        const fixing = prompt.startsWith('Output check before delivery');
+        if (prompt.startsWith('Final reply quality review') || fixing) {
+          if (!fixing) await mocked.review?.();
+          const text = (fixing ? mocked.fixText : undefined) ?? mocked.reviewText ??
+            '=== INTERNAL NOTE ===\nReply reviewed.\n=== OPERATOR ANSWER ===\n结论：已核对该工作区。\n=== CUSTOMER REPLY ===\nHello, here is what we verified.';
           const reviewedText = text.replace(
             '=== INTERNAL NOTE ===\n', `=== INTERNAL NOTE ===\n${JSON.stringify(mocked.reviewDecision)}\n`,
           );
@@ -77,7 +80,7 @@ const options = { ticketId: 3726, customerMessage: 'Check the education offer an
 beforeEach(() => {
   mocked.messages = []; mocked.prompts = []; mocked.tools = []; mocked.results.clear();
   mocked.subscriber = undefined; mocked.initial = undefined; mocked.recovery = undefined;
-  mocked.review = undefined; mocked.reviewText = undefined; mocked.dispose.mockClear();
+  mocked.review = undefined; mocked.reviewText = undefined; mocked.fixText = undefined; mocked.dispose.mockClear();
   mocked.reviewDecision = { approved: true, claimMode: 'qualified', answersLatestQuestion: true, requestsOnlyMissingDetails: true, usesApplicableEvidence: true };
   mocked.reviewStopReason = undefined; mocked.splitReviewText = false;
   mocked.fileHook = undefined;
@@ -125,7 +128,7 @@ describe('Pi Agent evidence continuation and delivery', () => {
     expect(draftBody).not.toContain('Evidence coverage:');
   });
   it('keeps actual failures in the trace and still returns a useful draft', async () => {
-    mocked.reviewText = '=== INTERNAL NOTE ===\nBilling read failed; no subscription state verified.\n=== CUSTOMER REPLY ===\nI could not verify the billing records for this workspace. A billing engineer needs to check the subscription; no further customer details are missing.';
+    mocked.reviewText = '=== INTERNAL NOTE ===\nBilling read failed; no subscription state verified.\n=== OPERATOR ANSWER ===\n账单查询失败，订阅状态未核实。\n=== CUSTOMER REPLY ===\nI could not verify the billing records for this workspace. A billing engineer needs to check the subscription; no further customer details are missing.';
     mocked.initial = async () => {
       await update('plan', [check('account', 'dify-db', 'record')]);
       mocked.results.set('bad-sql', { isError: true, content: [{ type: 'text', text: 'Tool error: malformed SQL' }] });
@@ -167,6 +170,31 @@ describe('Pi Agent evidence continuation and delivery', () => {
     expect(mocked.prompts.at(-1)).toContain('Do not ask again for details or attachments already present');
     expect(result.customerReply).toContain('教えて');
     expect(mocked.dispose).toHaveBeenCalledOnce();
+  });
+  it('answers the operator first and keeps the customer draft English', async () => {
+    const result = await runPiSupportAgent(options);
+    expect(mocked.prompts[0]).toContain('=== OPERATOR ANSWER ===');
+    expect(mocked.prompts.some(prompt => prompt.startsWith('Output check before delivery'))).toBe(false);
+    expect(result.operatorAnswer).toBe('结论：已核对该工作区。');
+    expect(result.customerReply).toBe('Hello, here is what we verified.');
+    expect(result.reply).toBe('');
+  });
+  it('asks once for a missing operator answer instead of posting only the draft', async () => {
+    mocked.reviewText = '=== INTERNAL NOTE ===\nReviewed.\n=== CUSTOMER REPLY ===\nHello, here is what we verified.';
+    mocked.fixText = '=== INTERNAL NOTE ===\nReviewed.\n=== OPERATOR ANSWER ===\n这个工作区是教育版，积分不会按月刷新。\n=== CUSTOMER REPLY ===\nHello, here is what we verified.';
+    const result = await runPiSupportAgent(options);
+    expect(mocked.prompts.at(-1)).toContain('OPERATOR ANSWER === section is missing');
+    expect(result.operatorAnswer).toBe('这个工作区是教育版，积分不会按月刷新。');
+  });
+  it('rewrites a public reply that is not in the language the Worker chose', async () => {
+    mocked.reviewText = '=== INTERNAL NOTE ===\nReviewed.\n=== CUSTOMER REPLY ===\nYour iteration skips failed items only.';
+    mocked.fixText = '=== INTERNAL NOTE ===\nReviewed.\n=== CUSTOMER REPLY ===\n失敗した項目のみスキップされます。';
+    const result = await runPiSupportAgent({ ...options, publicReplyAllowed: true,
+      customerMessage: 'Hi there. How can I help you today?\nName: Yusuke\nConnecting you with someone now.\nなぜイテレーションが途中で終わらないのか' });
+    expect(mocked.prompts[0]).toContain('Reply language: Japanese');
+    expect(mocked.prompts.at(-1)).toContain('not written in Japanese');
+    expect(result.customerReply).toBe('失敗した項目のみスキップされます。');
+    expect(result.reply).toContain('この返信は Dify AI Agent');
   });
   it('does not reuse the first draft if the quality review fails and disposes the session', async () => {
     mocked.review = async () => { throw new Error('review unavailable'); };
