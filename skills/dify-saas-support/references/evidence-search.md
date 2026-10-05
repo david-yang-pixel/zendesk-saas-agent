@@ -8,7 +8,7 @@ The formal product source is `SaaS知识库`, known entry token `MGC0fbkWwloYg3d
 
 Discover capabilities with scoped `list_read_tools` and queries such as `wiki`, `document`, or `message`. The directory is alphabetically paginated: the first 50 entries are not the complete Feishu capability list. `query` filters all permitted entries before pagination. Use live `get_action_guide` for exact parameters. `feishu.search_documents` searches documents and Wiki resources; it does not search chats. Use `get_document_content`/`fetch_document` or other discovered read tools to open relevant bodies.
 
-Search short distinctive terms before compound sentences. For an education-credit question, useful independent terms include `教育`, `教育优惠`, `学生`, `积分`, `education`, or `student discount`. These are examples, not a universal fixed query set. For another problem use its feature name, error string, issue ID, or product component. Inspect relevant dates and follow promising document links.
+Search short distinctive terms before compound sentences. The education offer is already covered by the known policy in [Billing and credits](billing-and-credits.md); search Feishu for it only when account records contradict that policy, with short terms such as `教育`, `教育优惠`, `学生`, `积分`, or `education`. These are examples, not a universal fixed query set. For another problem use its feature name, error string, issue ID, or product component. Inspect relevant dates and follow promising document links.
 
 A zero result for `教育版 积分 刷新` proves only that this query returned no match. Shorten or change the term, check the canonical knowledge-base entry, and use a relevant alternative search surface before declaring a gap. Do not scan every document or every page of a broad query; refine around the ticket's actual question.
 
@@ -26,4 +26,4 @@ Keep internal policy and public promises as separate planned checks. A successfu
 
 ## Conflicts and stopping
 
-Compare source authority, effective date, cohort/plan, version, and the customer's event time. An active education-promotion row does not prove a current free-credit policy; an old policy may apply only to a legacy cohort. Describe unresolved contradictions instead of choosing the easiest result. Stop when the relevant statement is supported or when bounded focused attempts establish an explicit gap; do not consume the budget cataloging unrelated tools.
+Compare source authority, effective date, cohort/plan, version, and the customer's event time. When a current official page answers the question, state it plainly; a documented rule does not need account data to be true. Describe a real contradiction between sources instead of choosing the easiest result. Stop when the relevant statement is supported or when bounded focused attempts establish an explicit gap; do not consume the budget cataloging unrelated tools.

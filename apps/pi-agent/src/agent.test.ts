@@ -10,6 +10,7 @@ import {
   isBusinessRead,
   getDiscoveryOnlySources,
   validateCustomerDelivery,
+  finalOutputIssues,
 } from './agent.js';
 
 describe('Pi Support Agent Tool Format', () => {
@@ -99,6 +100,18 @@ describe('sanitizeCustomerReply', () => {
 });
 
 describe('extractDualTrackOutputs', () => {
+  it('separates the operator answer from the internal note and customer draft', () => {
+    const output = [
+      '=== INTERNAL NOTE ===', '{"approved":true}', 'Read call-1.',
+      '=== OPERATOR ANSWER ===', '结论：该工作区在教育优惠期内。', '- 积分一次性 200',
+      '=== CUSTOMER REPLY ===', 'Hello! Your education plan includes 200 one-time credits.',
+    ].join('\n');
+    const res = extractDualTrackOutputs(output);
+    expect(res.internalNote).toBe('{"approved":true}\nRead call-1.');
+    expect(res.operatorAnswer).toBe('结论：该工作区在教育优惠期内。\n- 积分一次性 200');
+    expect(res.customerReply).toBe('Hello! Your education plan includes 200 one-time credits.');
+  });
+
   it('correctly splits internal note and customer reply when both markers are present', () => {
     const output = `
 === INTERNAL NOTE ===
@@ -197,7 +210,7 @@ Hello! Currently Dify does not provide this setting.
   it('keeps customer delivery and internal trace boundaries in the prompt', () => {
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('current evidence');
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Internal analysis stays in the trace');
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('operator mentions receive an internal customer-reply draft');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('operator mentions receive an internal note with your answer to the operator and an English customer-reply draft');
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('=== CUSTOMER REPLY ===');
   });
 });
@@ -243,5 +256,23 @@ describe('customer delivery safety gate', () => {
     expect(getDiscoveryOnlySources([...calls, {
       toolName: 'execute_action', status: 'succeeded', arguments: { actionId: 'feishu.search_documents', connectionName: 'default' }, result: { ok: true, data: [] },
     }])).toEqual(['dify-docs']);
+  });
+});
+
+describe('finalOutputIssues', () => {
+  it('flags a public reply written in a language other than the one the Worker chose', () => {
+    const output = { customerReply: 'Hello! The credits are a one-time 200.' };
+    expect(finalOutputIssues(output, true, 'ja')).toEqual([expect.stringContaining('not written in Japanese')]);
+    expect(finalOutputIssues({ customerReply: '教育プランのクレジットは200です。' }, true, 'ja')).toEqual([]);
+  });
+
+  it('flags a mention without an operator answer but does not check its English draft language', () => {
+    expect(finalOutputIssues({ customerReply: 'Hello!' }, false, 'en'))
+      .toEqual([expect.stringContaining('OPERATOR ANSWER === section is missing')]);
+    expect(finalOutputIssues({ customerReply: 'Hello!', operatorAnswer: '结论：已核对。' }, false, 'en')).toEqual([]);
+  });
+
+  it('leaves an empty reply to the delivery gate', () => {
+    expect(finalOutputIssues({ customerReply: ' ' }, true, 'zh')).toEqual([]);
   });
 });

@@ -11,7 +11,8 @@ import { runPiSupportAgent } from './agent.js';
 import { ModelConfig, parseModelConfig } from './model-config.js';
 import { sumRoundTokens } from './round-telemetry.js';
 import { sendBrowserRelay } from './relay.js';
-import { deliverInternalDraft } from './internal-draft-delivery.js';
+import { deliverInternalDraft, formatInternalDraft } from './internal-draft-delivery.js';
+import { detectCustomerLanguage } from './reply-policy.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob } from './job-queue.js';
@@ -412,6 +413,9 @@ async function main() {
           conversationContext: initialDetails.conversationContext,
           contextPrepared: true,
           publicReplyAllowed,
+          replyLanguage: publicReplyAllowed
+            ? detectCustomerLanguage(initialDetails.message, initialDetails.conversationContext)
+            : 'en',
           requesterEmail: initialDetails.email,
           tools: allTools,
           apiKey: modelConfig.apiKey,
@@ -503,6 +507,7 @@ async function main() {
           jobId: job.job_id,
           ticketId: job.ticket_id,
           customerReply: agentResult.customerReply,
+          operatorAnswer: agentResult.operatorAnswer,
           baseUrl: ZENDESK_BASE_URL,
           email: ZENDESK_EMAIL,
           apiToken: ZENDESK_API_TOKEN,
@@ -517,7 +522,7 @@ async function main() {
           finishedAt: new Date(),
           trace: agentResult.trace,
           delivery,
-          internalDraft: agentResult.customerReply,
+          internalDraft: formatInternalDraft(agentResult.customerReply, agentResult.operatorAnswer),
         });
         await markJobSucceeded(job.job_id);
         return;

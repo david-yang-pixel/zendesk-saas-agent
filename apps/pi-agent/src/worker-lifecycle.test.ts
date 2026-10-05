@@ -1,10 +1,13 @@
 import fs from 'node:fs';
 import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
+import { formatInternalDraft } from './internal-draft-delivery.js';
+import { detectCustomerLanguage } from './reply-policy.js';
 
 // Exercise the actual worker closure without importing its process startup,
 // production DB connection, mention polling, or delivery services.
-function workerJob(dependencies: Record<string, unknown>) {
+function workerJob(overrides: Record<string, unknown>) {
+  const dependencies = { formatInternalDraft, detectCustomerLanguage, ...overrides };
   const source = fs.readFileSync(new URL('./worker.ts', import.meta.url), 'utf8');
   const start = source.indexOf('  async function processJob(');
   const end = source.indexOf('\n  while (running)', start);
@@ -121,6 +124,7 @@ it('writes the English customer draft as an internal note for a mention, never a
   const markJobSucceeded = vi.fn();
   const runPiSupportAgent = vi.fn(async () => ({
     reply: '', customerReply: 'We are reviewing the current credits policy.', internalNote: 'private analysis',
+    operatorAnswer: '该工作区在教育优惠期内，积分是一次性 200，不按月刷新。',
     trace: { toolCalls: [], rounds: [], totalDurationMs: 1, finalReply: '' },
   }));
   const process = workerJob({
@@ -139,11 +143,12 @@ it('writes the English customer draft as an internal note for a mention, never a
   expect(deliverInternalDraft).toHaveBeenCalledWith(expect.objectContaining({
     jobId: 'test-job', ticketId: 3726,
     customerReply: 'We are reviewing the current credits policy.',
+    operatorAnswer: '该工作区在教育优惠期内，积分是一次性 200，不按月刷新。',
   }));
   expect(deliverInternalDraft.mock.calls[0]?.[0]).not.toHaveProperty('internalNote');
   expect(recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({
     status: 'completed', delivery: { channel: 'zendesk-internal-note', status: 'sent' },
-    internalDraft: 'We are reviewing the current credits policy.',
+    internalDraft: expect.stringMatching(/^AI 调查结论（仅内部可见）\n\n该工作区在教育优惠期内.*\n---\n客户回复草稿（英文，未发送给客户）：\n\nWe are reviewing the current credits policy\.$/s),
   }));
   expect(markJobSucceeded).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);

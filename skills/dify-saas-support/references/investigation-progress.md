@@ -4,13 +4,12 @@ Use `investigation_check` to keep important unanswered questions visible through
 
 ## Plan before independent investigation
 
-Usually identify 1–3 material questions. Each question may require multiple source checks. Example: education eligibility and credit refresh require separate policy, public-guidance, account, and refresh-history checks. A known-bug question instead needs matching engineering records and, when claiming recovery, deployed/customer-path evidence.
+Usually identify 1–3 material questions. Plan only the checks that can change the answer. Example: for education credits, the policy is already known (see Billing and credits), so check which workspace is on the promotion and its refresh history. A product question answered by one official page needs one document check. A known-bug question instead needs matching engineering records and, when claiming recovery, deployed/customer-path evidence.
 
 ```json
 {"checks":[
-  {"id":"current-policy","question":"What does the current education offer grant?","source":"feishu","kind":"document","status":"pending"},
-  {"id":"public-guidance","question":"What does current public guidance promise?","source":"dify-docs","kind":"document","status":"pending"},
-  {"id":"account","question":"Which workspace and persisted entitlement match this customer?","source":"dify-db","kind":"record","status":"pending"}
+  {"id":"account","question":"Which workspace matches this customer, and is it on the education promotion?","source":"dify-db","kind":"record","status":"pending"},
+  {"id":"refresh","question":"What do its credit grants, usage, and monthly reload records show?","source":"dify-db","kind":"record","status":"pending"}
 ]}
 ```
 
@@ -21,7 +20,7 @@ Usually identify 1–3 material questions. Each question may require multiple so
 Business tool responses include `observationId`, `source`, `action`, and the real data. Inspect the data, then upsert the same check with those IDs:
 
 ```json
-{"checks":[{"id":"current-policy","status":"verified","callIds":["<actual observationId from a body read>"],"explanation":"Confirmed from the dated policy body for this offer. The older promotion described in ticket history does not establish the current benefit."}]}
+{"checks":[{"id":"account","status":"verified","callIds":["<actual observationId from a record read>"],"explanation":"The requester's workspace has an active education promotion until 2027-03-01, so the known education credit policy applies."}]}
 ```
 
 Omitted checks remain in the plan. Update existing check IDs rather than creating replacement checks and leaving the original questions pending. The equivalent source forms `feishu/default` and `custom_mcp/dify-docs` are accepted and normalized to `feishu` and `dify-docs`; non-default native connections remain distinct. `verified` means a matching real read was reviewed, not that the runtime proved the claim. Explain applicability and any limitations. Keep facts, inference, missing evidence, and contradictions separate. A DB schema lookup or another customer's record does not establish this customer's entitlement.
@@ -41,4 +40,4 @@ For `unresolved`, link an actual access/availability failure, a body read that d
 
 ## Final output
 
-Finish relevant pending checks within the bounded continuation budget. When evidence remains missing, still provide the required internal summary and customer-sendable English draft. The summary stays in the run trace, while an operator mention delivers only the English draft as an internal Zendesk note. Include verified useful findings, the precise unresolved point, and the minimum next step in the appropriate section. Do not replace a partial investigation with a generic “contact support” message. The Worker controls delivery.
+Finish relevant pending checks within the bounded continuation budget, then answer with what the evidence and documented rules support. The internal note stays in the run trace. An operator mention delivers the operator answer and the English customer draft as an internal Zendesk note. A remaining gap goes in one sentence, only when it changes what the reader should do next. Do not replace a partial investigation with a generic “contact support” message. The Worker controls delivery.

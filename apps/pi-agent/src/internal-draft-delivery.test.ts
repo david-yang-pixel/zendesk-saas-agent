@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildInternalDraftBody, deliverInternalDraft, INTERNAL_DRAFT_MARKER } from './internal-draft-delivery.js';
+import { buildInternalDraftBody, deliverInternalDraft, formatInternalDraft, INTERNAL_DRAFT_MARKER } from './internal-draft-delivery.js';
 
 function fixture() {
   let status: string | undefined;
@@ -74,6 +74,23 @@ describe('internal customer-reply draft delivery', () => {
     );
     expect(body).toContain('Hello, we are checking this.');
     expect(body).not.toContain('This reply was sent by Dify AI Agent');
+  });
+
+  it('leads with the operator answer in the operator language, then the unsent English draft', async () => {
+    const { options, fetchImpl } = fixture();
+    await deliverInternalDraft({ ...options, operatorAnswer: '结论：该工作区在教育优惠期内，积分不按月刷新。\n- 优惠记录有效' });
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).ticket.comment.body).toBe(
+      '[DIFY_AI_AGENT_DRAFT:job-123]\nAI 调查结论（仅内部可见）\n\n结论：该工作区在教育优惠期内，积分不按月刷新。\n- 优惠记录有效'
+      + '\n\n---\n客户回复草稿（英文，未发送给客户）：\n\nHello, we are checking your subscription.',
+    );
+  });
+
+  it('labels an English operator answer in English and keeps the plain draft without one', () => {
+    expect(formatInternalDraft('Hello!', 'The workspace is on the education promotion.'))
+      .toBe('AI investigation answer (internal only)\n\nThe workspace is on the education promotion.\n\n---\nCustomer reply draft (not sent to the customer):\n\nHello!');
+    expect(formatInternalDraft('Hello!', '  ')).toBe('AI-generated customer reply draft for human review. Not sent to the customer.\n\nHello!');
+    expect(buildInternalDraftBody('job-1', 'Hello!', '结论：已核对。')).toMatch(/^\[DIFY_AI_AGENT_DRAFT:job-1\]\nAI 调查结论/);
   });
 
   it('keeps internal investigation material out of the customer-sendable note', async () => {

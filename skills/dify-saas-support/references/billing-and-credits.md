@@ -1,11 +1,25 @@
 # Billing, Education, Credits, and Quota
 
-Read when the ticket asks about education or other discounts, plan entitlement, monthly credits, purchased balance, quota/rate limits, payment, or “the UI says active but usage is blocked.” A current account snapshot and a policy document answer different questions.
+Read when the ticket asks about education or other discounts, plan entitlement, monthly credits, purchased balance, quota/rate limits, payment, or “the UI says active but usage is blocked.” A known policy answers what a plan grants; account records answer which plan this workspace is on and what it used.
+
+## Known current policy: Dify for Education
+
+Checked against the public page on 2026-10-05: <https://docs.dify.ai/en/cloud/use-dify/workspace/subscription-management#dify-for-education> (Chinese: `/zh/cloud/...`, Japanese: `/ja/cloud/...`, same path).
+
+- Verified students, teachers, and school staff can use the **Yearly Professional plan for free**, for one workspace per verification. Re-verification is required every year. The education subscription does not auto-renew; when it ends, the workspace returns to the free Sandbox plan.
+- An education workspace has all Professional features and resource quotas **except AI credits, which stay at the Sandbox level: 200 one-time credits for built-in models, with no monthly refill.** When they run out, the customer configures their own model provider API key under **Integrations → Model Provider** (<https://docs.dify.ai/en/cloud/use-dify/workspace/model-providers>).
+- The discount applies only to the **Yearly** plan. A Monthly Professional subscription is charged full price, and the discount cannot be applied to an existing paid plan: cancel, let the paid period end, then subscribe to the Yearly plan with the discount.
+
+Apply it directly:
+
+- `plan = 'professional'` looks the same for paid and education workspaces. Check `billing.education_promotion_logs` by `tenant_id` (active when the current time is between `valid_starts_at` and `valid_ends_at`); `education_identities` shows only that the account was verified.
+- If the workspace has an active education promotion, say so plainly: its AI credits are the one-time 200, they do not refresh monthly, and a skipped monthly reload (for example `skip_reason: active_education`) is the expected behaviour, not a fault. Give the API-key next step with the public link.
+- This policy is already verified, so you do not need to find it again in Feishu for each ticket. Search Feishu only when the account records contradict it (a legacy cohort, a manual grant, an exception) or the question is about something this section does not cover.
 
 ## Establish the account and the two time frames
 
-1. Identify the requester, exact workspace/tenant, reported error or missing refresh time (with timezone), and the current time. Do not assume an email belongs to only one workspace or that the ticket's label is the effective billing identity.
-2. Separate the customer's policy question from their account question. For education and promotion cases, plan separate `investigation_check` entries for formal Feishu SaaS policy, relevant current public Dify guidance, and account state. Read [Evidence search](evidence-search.md) for the canonical knowledge-base entry, short terms, chat follow-ups, and full-page reads. Check both internal policy and public guidance even if DB records already explain the current plan. Treat chats and older tickets as leads rather than policy. Never infer free credits, refresh cadence, or discount duration merely from “Education,” “Professional,” or another plan name.
+1. Identify the requester, exact workspace/tenant, reported error or missing refresh time (with timezone), and the current time. Do not assume an email belongs to only one workspace or that the ticket's label is the effective billing identity. If the requester owns several workspaces and the question does not say which, check them all and answer for the one that matches the question, rather than asking the customer first.
+2. Separate the customer's policy question from their account question. Use the known policy above when it applies. For other discounts, promotions, or policies, read [Evidence search](evidence-search.md) for the canonical knowledge-base entry and current public guidance. Treat chats and older tickets as leads rather than policy.
 3. Read [Database routing](database-routing.md) before customer-specific SQL. Through read-only `dify-db`, inspect the matching `billing` subscription/education/promotion and credit-usage records plus the relevant `prod` workspace records. Resolve schema uncertainty with `information_schema`. Distinguish one-time grants, recurring allowances, purchased balances, reserved credits, consumption, expiration, and plan discounts; compare dated records rather than adding unlike balances together.
 
 ## If the customer saw a block or non-refresh
@@ -16,13 +30,12 @@ Reconstruct the relevant chain only as far as the claim requires:
 payment/invoice -> billing event -> subscription/plan state -> allowance or quota refresh -> runtime check/reservation -> customer error or successful use
 ```
 
-- Verify what happened at the reported time and whether the workspace works now; these are separate conclusions. For a numeric credit claim, compare the matching `billing.tenant_feature_usages` quota/usage with successful `COMMIT` consumption (and applicable refunds) in `billing.quota_usage_histories`; do not double-count `RESERVE`. A `prod.tenant_credit_pools` row or grant log alone is not a remaining-balance check. None of these persisted records, nor a UI display, is by itself real-time runtime quota truth.
+- For a numeric credit claim, compare the matching `billing.tenant_feature_usages` quota/usage with successful `COMMIT` consumption (and applicable refunds) in `billing.quota_usage_histories`; do not double-count `RESERVE`. A `prod.tenant_credit_pools` row or grant log alone is not a remaining-balance check.
 - Correlate payment or subscription transitions, refresh/webhook timing, credit grants and consumption, and the affected run/API error with absolute timestamps. Search `dify-signoz` narrowly by workspace, app/run/request, exact error, and UTC window if runtime rejection matters.
-- If Stripe, cache/runtime quota, reservation, or an owner-only billing hop is unavailable through authorized reads, mark that hop `unknown` and name the exact record/time window needed. Do not replace it with a guessed explanation or a neighboring tenant's history.
-- For a reported fix, require a matching post-change customer-path success and current effective entitlement or balance before saying “resolved.” A DB update, successful webhook, or HTTP 200 alone is insufficient.
+- If Stripe, cache/runtime quota, reservation, or an owner-only billing hop is unavailable through authorized reads, name that hop in the internal note. Do not replace it with a guessed explanation or a neighboring tenant's history.
+- For a reported fix, require a matching post-change customer-path success before saying “resolved.” A DB update, successful webhook, or HTTP 200 alone is insufficient.
 
 ## Reply gate
 
-For every statement about this customer's membership, discount, grant, or credit refresh, cite the matching account records and dated policy in the internal note. In the English customer reply, state only confirmed status, what was observed at the relevant time, whether present recovery is verified, and a safe next step. Do not expose raw SQL, payment IDs, internal policy links, or unverified credit amounts.
-If the customer reports zero credits while one checked record appears to show an available balance, treat that as a material contradiction. Do not declare the UI wrong or claim a numeric balance until the billing usage counter, consumption ledger, and applicable runtime/UI path are reconciled; report the remaining gap if they cannot be reconciled.
-If those records or the current policy cannot be verified, do not fail silently or infer the answer from a plan label. Give the customer a concise English reply identifying the missing verification and the specific customer detail or human-support check needed. For an operator mention, write that same customer-sendable reply as the internal draft, never as a public comment.
+Lead with the answer: which plan the workspace is on, what that plan grants, and why the customer sees what they see. State the known policy and the matching account records plainly; cite the public documentation link, never internal policy links, raw SQL, or payment IDs.
+Only a genuine contradiction needs a qualification: for example the customer reports zero credits while the usage counter shows a balance. Then state what the records show and the one check still needed. If a billing correction, refund, or manual credit grant is required, say once that a human will handle it; do not promise the outcome.
