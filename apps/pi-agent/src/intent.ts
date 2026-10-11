@@ -110,3 +110,45 @@ export function detectHumanHandoffIntent(text: string): boolean {
 
   return true;
 }
+
+export type HumanActionCategory = 'refund' | 'billing_dispute' | 'credit_restore' | 'account_security';
+
+export interface HumanActionDetection {
+  required: boolean;
+  category?: HumanActionCategory;
+}
+
+const REFUND_PATTERNS = [
+  /\b(?:request|want|need|apply for|get|ask for)\s+(?:a\s+)?refund\b/i,
+  /\brefund\s+(?:my\s+)?(?:subscription|payment|money|charge|credit)\b/i,
+  /\bcancel\s+and\s+refund\b/i,
+  /\bmoney\s*back\b/i,
+  /(?:申请)?退款/u,
+  /(?:退钱|退费|退回(?:款项|扣费|费用))/u,
+  /(?:返金|払い戻し)/u,
+];
+
+const BILLING_DISPUTE_PATTERNS = [
+  /\b(?:charged|billed)\s+(?:twice|wrong|incorrectly)\b/i,
+  /\b(?:invoice|billing)\s+(?:error|dispute|is wrong|incorrect)\b/i,
+  /(?:发票重开|发票金额错误|多扣款|重复扣款|账单有误)/u,
+  /(?:二重請求|誤請求)/u,
+];
+
+const CREDIT_RESTORE_PATTERNS = [
+  /\b(?:restore|replenish|compensate|reimburse|add back)\s+(?:my\s+)?(?:credits?|points?|tokens?)\b/i,
+  /\bcredit\s+compensation\b/i,
+  /(?:补发|补偿|退还|恢复).{0,12}?(?:积分|点数|额度)/u,
+  /(?:积分|点数|额度).{0,12}?(?:补发|补偿|退还|恢复)/u,
+  /(?:クレジット補填|ポイント返還)/u,
+];
+
+export function detectHumanActionRequirement(text: string): HumanActionDetection {
+  if (!text || typeof text !== 'string') return { required: false };
+  const trimmed = text.trim();
+  if (!trimmed) return { required: false };
+  if (REFUND_PATTERNS.some(r => r.test(trimmed))) return { required: true, category: 'refund' };
+  if (BILLING_DISPUTE_PATTERNS.some(r => r.test(trimmed))) return { required: true, category: 'billing_dispute' };
+  if (CREDIT_RESTORE_PATTERNS.some(r => r.test(trimmed))) return { required: true, category: 'credit_restore' };
+  return { required: false };
+}

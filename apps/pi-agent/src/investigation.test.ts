@@ -109,6 +109,21 @@ describe('claim-oriented investigation', () => {
     expect(result.details).toEqual(original.result);
   });
 
+  it('observes custom_mcp.call_tool calls with tool alias and inline arguments', async () => {
+    const tracker = new InvestigationTracker();
+    const tool = tracker.wrap({
+      name: 'execute_action', label: '', description: '', promptSnippet: '', parameters: {},
+      execute: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"results": [{"title": "Doc"}]}' }] }),
+    });
+    const result = await tool.execute('call-alias', {
+      actionId: 'custom_mcp.call_tool', connectionName: 'dify-docs',
+      input: { tool: 'official_docs_search', query: 'Cloudflare' },
+    });
+    expect(JSON.parse(result.content.at(-1).text)).toMatchObject({
+      observationId: 'call-alias', source: 'dify-docs', action: 'official_docs_search', empty: false,
+    });
+  });
+
   it('preserves pagination sidecars and resource links returned to the model', async () => {
     const tracker = new InvestigationTracker();
     const raw = { structuredContent: { 'io.oomol.open-connector/pagination': { nextCursor: 'ocmcp1.next' } },

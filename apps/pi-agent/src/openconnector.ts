@@ -343,14 +343,25 @@ export async function callOpenConnectorTool(
       }
       // Pi can echo the qualified MCP catalog name. OpenConnector expects the
       // bare remote name; still re-check that exact tool's live read policy.
-      const suppliedToolName = requiredString(input.toolName, 'custom MCP toolName');
+      const rawToolName = input.toolName ?? input.tool ?? input.name;
+      const suppliedToolName = requiredString(rawToolName, 'custom MCP toolName');
       const remoteToolName = suppliedToolName.startsWith('custom_mcp.remote.')
         ? suppliedToolName.slice('custom_mcp.remote.'.length)
         : suppliedToolName;
-      if (remoteToolName !== suppliedToolName) {
-        input = { ...input, toolName: remoteToolName };
-        requestParams = { ...params, input };
+      let normalizedArguments = asRecord(input.arguments);
+      if (!normalizedArguments) {
+        const { toolName: _tn, tool: _t, name: _n, pagination: _p, ...inlineArgs } = input;
+        if (Object.keys(inlineArgs).length > 0) {
+          normalizedArguments = inlineArgs;
+        } else {
+          normalizedArguments = {};
+        }
       }
+      input = { ...input, toolName: remoteToolName, arguments: normalizedArguments };
+      delete (input as any).tool;
+      delete (input as any).name;
+      requestParams = { ...params, input };
+
       const descriptor = await assertCustomMcpToolIsReadOnly(config, connectionName, remoteToolName, signal);
       validateCustomMcpPagination(input, descriptor.pagination);
       if (connectionName === 'dify-db' && remoteToolName === 'db_gateway_query') {
@@ -449,7 +460,7 @@ export async function discoverOpenConnectorTools(config: McpServiceConfig): Prom
     return {
       ...tool,
       parameters: { ...tool.parameters, properties, required: [...new Set([...(tool.parameters.required ?? []), ...required])] },
-      description: tool.name !== 'execute_action' ? tool.description : `${tool.description}\nFor custom_mcp.call_tool, continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
+      description: tool.name !== 'execute_action' ? tool.description : `${tool.description}\nFor custom_mcp.call_tool, input format is strictly: { "toolName": "<remote_tool_name>", "arguments": { ... } } (never use "tool" or "name"). Continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
     };
   });
   if (!OPENCONNECTOR_AGENT_TOOLS.every(name => controls.some(tool => tool.name === name))) {

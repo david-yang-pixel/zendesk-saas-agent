@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectHumanHandoffIntent } from './intent.js';
+import { detectHumanHandoffIntent, detectHumanActionRequirement } from './intent.js';
 
 describe('detectHumanHandoffIntent', () => {
   describe('English handoff requests', () => {
@@ -85,5 +85,25 @@ describe('detectHumanHandoffIntent', () => {
       expect(detectHumanHandoffIntent(null as any)).toBe(false);
       expect(detectHumanHandoffIntent(undefined as any)).toBe(false);
     });
+  });
+});
+
+describe('detectHumanActionRequirement', () => {
+  it('detects explicit refund requests across languages', () => {
+    expect(detectHumanActionRequirement('I want a refund for my subscription')).toEqual({ required: true, category: 'refund' });
+    expect(detectHumanActionRequirement('Please cancel and refund')).toEqual({ required: true, category: 'refund' });
+    expect(detectHumanActionRequirement('我想申请退款，扣款金额不对')).toEqual({ required: true, category: 'refund' });
+    expect(detectHumanActionRequirement('誤って購入したので返金してください')).toEqual({ required: true, category: 'refund' });
+  });
+
+  it('detects credit compensation requests (like ticket #4760)', () => {
+    expect(detectHumanActionRequirement('Can I get a credit compensation for the downtime?')).toEqual({ required: true, category: 'credit_restore' });
+    expect(detectHumanActionRequirement('希望能人工补发一下扣掉的积分')).toEqual({ required: true, category: 'credit_restore' });
+    expect(detectHumanActionRequirement('クレジット補填をお願いします')).toEqual({ required: true, category: 'credit_restore' });
+  });
+
+  it('does NOT trigger on ordinary technical questions', () => {
+    expect(detectHumanActionRequirement('How to build an agent workflow in Dify?')).toEqual({ required: false });
+    expect(detectHumanActionRequirement('')).toEqual({ required: false });
   });
 });

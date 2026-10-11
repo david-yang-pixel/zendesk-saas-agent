@@ -15,6 +15,12 @@ it('fails closed on missing, rejected or unsupported review decisions', () => {
   expect(() => validateReplyReview('{"approved":false}', true)).toThrow(/did not pass/);
   expect(() => validateReplyReview(JSON.stringify({ approved: true, claimMode: 'verified', answersLatestQuestion: true,
     requestsOnlyMissingDetails: true, usesApplicableEvidence: true }), false)).toThrow(/no successful business evidence/);
+  expect(() => validateReplyReview(JSON.stringify({ approved: true, claimMode: 'qualified', answersLatestQuestion: true,
+    requestsOnlyMissingDetails: true, usesApplicableEvidence: true, avoidsRepeatingAttempted: false }), true)).toThrow(/did not pass/);
+  expect(() => validateReplyReview(JSON.stringify({ approved: true, claimMode: 'qualified', answersLatestQuestion: true,
+    requestsOnlyMissingDetails: true, usesApplicableEvidence: true, providesActionableNextStep: false }), true)).toThrow(/did not pass/);
+  expect(validateReplyReview(JSON.stringify({ approved: true, claimMode: 'qualified', answersLatestQuestion: true,
+    requestsOnlyMissingDetails: true, usesApplicableEvidence: true, avoidsRepeatingAttempted: true, providesActionableNextStep: true }) + '\nSome note', true)).toBe('Some note');
 });
 it('reviews mentions as an operator answer plus English draft and public replies in the Worker-chosen language', () => {
   const mention = replyReviewPrompt('No reads', false);
