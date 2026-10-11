@@ -343,14 +343,25 @@ export async function callOpenConnectorTool(
       }
       // Pi can echo the qualified MCP catalog name. OpenConnector expects the
       // bare remote name; still re-check that exact tool's live read policy.
-      const suppliedToolName = requiredString(input.toolName, 'custom MCP toolName');
+      const rawToolName = input.toolName ?? input.tool ?? input.name;
+      const suppliedToolName = requiredString(rawToolName, 'custom MCP toolName');
       const remoteToolName = suppliedToolName.startsWith('custom_mcp.remote.')
         ? suppliedToolName.slice('custom_mcp.remote.'.length)
         : suppliedToolName;
-      if (remoteToolName !== suppliedToolName) {
-        input = { ...input, toolName: remoteToolName };
-        requestParams = { ...params, input };
+      let normalizedArguments = asRecord(input.arguments);
+      if (!normalizedArguments) {
+        const { toolName: _tn, tool: _t, name: _n, pagination: _p, ...inlineArgs } = input;
+        if (Object.keys(inlineArgs).length > 0) {
+          normalizedArguments = inlineArgs;
+        } else {
+          normalizedArguments = {};
+        }
       }
+      input = { ...input, toolName: remoteToolName, arguments: normalizedArguments };
+      delete (input as any).tool;
+      delete (input as any).name;
+      requestParams = { ...params, input };
+
       const descriptor = await assertCustomMcpToolIsReadOnly(config, connectionName, remoteToolName, signal);
       validateCustomMcpPagination(input, descriptor.pagination);
       if (connectionName === 'dify-db' && remoteToolName === 'db_gateway_query') {

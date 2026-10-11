@@ -116,6 +116,8 @@ Check the draft in this order:
 4. Uncertainty: keep at most one short sentence about what is still unknown, and only if it changes the reader's next step. Delete the other "cannot confirm / not verified" sentences. Do not make a correct answer more cautious than the evidence requires.
 5. Hand off to a human only when the fix needs a human action (refund or credit restore, billing or plan correction, exception, owner-only system). Never claim a handoff, fix, refund, activation or investigation occurred without an observed result.
 6. Use the known Dify Cloud web interface when that is the customer's interface; a CLI page alone does not answer a web-UI question. Do not ask again for details or attachments already present; an attachment that could not be read is an internal reading gap. Request only information the customer can supply, never a generic list of workspace ID/time/error ID.
+7. Exclude customer's already-attempted actions: never suggest an action the customer explicitly stated they already tried and reported as failed.
+8. Actionability: the customer reply must provide concrete, actionable next steps or viable workarounds. Never deflect to a third party without explaining the Dify-side mechanism and offering a constructive Dify workaround.
 Do not call tools merely to satisfy a check for a conversational reply. Never invent a conclusion.
 Run evidence status:\n${evidence || 'No business evidence has been verified.'}`;
 }
@@ -135,6 +137,9 @@ export function validateReplyReview(internalNote: string | undefined, hasBusines
   if (!decision || decision.approved !== true || decision.answersLatestQuestion !== true ||
       decision.requestsOnlyMissingDetails !== true || decision.usesApplicableEvidence !== true ||
       !['conversation', 'qualified', 'verified'].includes(decision.claimMode)) {
+    throw new Error('Customer delivery blocked: reply quality review did not pass');
+  }
+  if (decision.avoidsRepeatingAttempted === false || decision.providesActionableNextStep === false) {
     throw new Error('Customer delivery blocked: reply quality review did not pass');
   }
   if (decision.claimMode === 'verified' && !hasBusinessEvidence) {

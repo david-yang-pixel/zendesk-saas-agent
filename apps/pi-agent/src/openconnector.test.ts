@@ -79,6 +79,23 @@ describe('OpenConnector hard read-only boundary', () => {
     expect(executed.params.arguments.input.toolName).toBe('get_ticket');
   });
 
+  it('normalizes tool alias and inline arguments for custom_mcp.call_tool', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mcpResponse({ ok: true, data: {
+        tools: [{ name: 'official_docs_search', operationType: 'read', confirmationRequired: false }],
+      } }))
+      .mockResolvedValueOnce(mcpResponse({ ok: true, data: { results: [] } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    await expect(callOpenConnectorTool(config, 'execute_action', {
+      actionId: 'custom_mcp.call_tool', connectionName: 'dify-docs',
+      input: { tool: 'official_docs_search', query: 'Cloudflare human verification' },
+    })).resolves.toBeDefined();
+    const executed = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(executed.params.arguments.input.toolName).toBe('official_docs_search');
+    expect(executed.params.arguments.input.arguments.query).toBe('Cloudflare human verification');
+  });
+
   it('does not use qualified names to bypass a Custom MCP write classification', async () => {
     const fetchMock = vi.fn(async () => mcpResponse({ ok: true, data: {
       tools: [{ name: 'update_ticket_status', operationType: 'write', confirmationRequired: true }],

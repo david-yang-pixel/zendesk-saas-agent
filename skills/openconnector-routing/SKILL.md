@@ -12,6 +12,7 @@ OpenConnector is the only investigation gateway. The Agent receives `list_read_t
 - Investigation is read-only. Never send `confirmOperation`, and never call a tool or action whose live `operationType` is not `read`.
 - Gmail is out of scope. Do not list its connection, search its actions, read mail, or mention it as an investigation option.
 - Public replies are not OpenConnector actions. The Worker sends the final customer reply through Zendesk Browser Reply.
+- In production, `cloudflare_mcp` does NOT expose read-only edge/firewall/challenge logs (`execute` is classified `write` and blocked). Never attempt to query Cloudflare security events or WAF logs via `cloudflare_mcp`.
 - Never add a Zendesk internal note, update a ticket, create or comment on an issue, send a message, edit a document, refresh a repository, deploy, purge, or change external state.
 
 ## Discovery and execution
@@ -28,7 +29,40 @@ For a native provider:
 For Custom MCP:
 
 1. Start from a scoped `list_read_tools` entry. If the remote input schema is unclear, call `execute_action` with `actionId=custom_mcp.list_tools`, the selected connection name, and empty input once; inspect only the selected tool.
-2. Call `execute_action` with `actionId=custom_mcp.call_tool` and the exact selected remote tool name. The runtime re-fetches and verifies its live `read` classification and confirmation policy before allowing the call, even if the directory looked safe.
+2. Call `execute_action` with `actionId=custom_mcp.call_tool` and the exact selected remote tool name. The exact payload format is:
+   ```json
+   {
+     "actionId": "custom_mcp.call_tool",
+     "connectionName": "<connectionName>",
+     "input": {
+       "toolName": "<remote_tool_name>",
+       "arguments": { "<param>": "<value>" }
+     }
+   }
+   ```
+   Notice: the key inside `input` is strictly `toolName` (never `tool` or `action`).
+
+### High-frequency Custom MCP Tool Reference & Query Guidelines
+
+To maximize accuracy and eliminate trial-and-error:
+
+1. **`custom_mcp / dify-docs`**:
+   - `official_docs_search`: `input: { "toolName": "official_docs_search", "arguments": { "query": "<focused technical terms>", "limit": 5 } }`
+     - **Search formulation**: Use 2–3 precise technical keywords (e.g. `"Cloudflare human verification"`, `"OAuth callback"`, `"API trigger execution"`). Never submit long conversational sentences or entire ticket text.
+   - `official_docs_read`: `input: { "toolName": "official_docs_read", "arguments": { "url": "https://docs.dify.ai/en/..." } }`
+
+2. **`custom_mcp / dify-signoz`**:
+   - `signoz_search_logs`: `input: { "toolName": "signoz_search_logs", "arguments": { "timeRange": "<focused window>", "searchText": "<query>", "limit": 20 } }`
+     - **Time scoping**: When the customer reports an incident window (e.g. `2026-10-09 19:40-20:02 UTC`), target that specific window or narrow down to `1h`/`3h`. Never default to `1d` or `7d` for a specific incident time.
+     - **Filter formulation**: Combine user identifier with technical error indicators (e.g. status code `403`, `429`, endpoint `/api/v1/auth`, `WAF`, `challenge`) instead of loose email-only searches that drown in routine notification logs.
+
+3. **`custom_mcp / dify-db`**:
+   - `db_gateway_query`: `input: { "toolName": "db_gateway_query", "arguments": { "database": "prod", "sql": "SELECT ... FROM ... WHERE tenant_id = '...' LIMIT 10;" } }`
+     - Query indexed keys (`tenant_id`, `app_id`, `run_id`, `account_id`) directly. Never perform unindexed full-table scans.
+
+4. **`custom_mcp / github-mcp`**:
+   - `github_search_issues`: `input: { "toolName": "github_search_issues", "arguments": { "query": "repo:langgenius/dify <exact error message or keyword> is:issue" } }`
+   - `github_code_search`: `input: { "toolName": "github_code_search", "arguments": { "query": "repo:langgenius/dify <symbol or error constant>" } }`
 
 Discovery is not execution. After choosing a source, use its actual read action, inspect the business result, and record the exact coverage or error. A successful `list_connections`, `search_actions`, `get_action_guide`, or `custom_mcp.list_tools` call proves only tool availability. If a focused business search has no match, refine its query once or check a second relevant source before declaring evidence unavailable. Do not run every connected tool merely to satisfy this step.
 
