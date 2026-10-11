@@ -460,7 +460,7 @@ export async function discoverOpenConnectorTools(config: McpServiceConfig): Prom
     return {
       ...tool,
       parameters: { ...tool.parameters, properties, required: [...new Set([...(tool.parameters.required ?? []), ...required])] },
-      description: tool.name !== 'execute_action' ? tool.description : `${tool.description}\nFor custom_mcp.call_tool, continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
+      description: tool.name !== 'execute_action' ? tool.description : `${tool.description}\nFor custom_mcp.call_tool, input format is strictly: { "toolName": "<remote_tool_name>", "arguments": { ... } } (never use "tool" or "name"). Continue an OpenConnector nextCursor via input.pagination={mode:"single",cursor:nextCursor,pageSize:25}. Never put an ocmcp1. cursor inside input.arguments. Keep the same tool and query. Native Zendesk after_cursor is a different cursor. Use get_ticket for metadata only, and get_ticket_conversation_log for conversation pages.`,
     };
   });
   if (!OPENCONNECTOR_AGENT_TOOLS.every(name => controls.some(tool => tool.name === name))) {
