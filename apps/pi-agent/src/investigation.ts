@@ -29,8 +29,14 @@ function businessTarget(call: ObservedCall): { source: string; action: string; i
   const args = call.arguments ?? {};
   if (call.toolName !== 'execute_action' || typeof args.actionId !== 'string' || args.actionId === 'custom_mcp.list_tools') return;
   if (args.actionId === 'custom_mcp.call_tool') {
-    if (!args.connectionName || typeof args.input?.toolName !== 'string') return;
-    return { source: args.connectionName, action: args.input.toolName, input: args.input.arguments ?? {} };
+    const rawToolName = args.input?.toolName ?? args.input?.tool ?? args.input?.name;
+    if (!args.connectionName || typeof rawToolName !== 'string') return;
+    let inputArgs = args.input?.arguments;
+    if (!inputArgs || typeof inputArgs !== 'object') {
+      const { toolName: _tn, tool: _t, name: _n, pagination: _p, ...inlineArgs } = args.input ?? {};
+      inputArgs = Object.keys(inlineArgs).length > 0 ? inlineArgs : {};
+    }
+    return { source: args.connectionName, action: rawToolName, input: inputArgs };
   }
   const service = args.actionId.split('.')[0];
   return { source: args.connectionName && args.connectionName !== 'default' ? `${service}/${args.connectionName}` : service,
