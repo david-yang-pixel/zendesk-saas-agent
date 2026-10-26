@@ -29,8 +29,6 @@ function apiFixture(saveCalls: any[] = []): AdminApiClient {
       model: 'gpt-5.6-terra',
       api_key_masked: 'sk-hIey...GlqfZ',
       has_key: true,
-      reasoning: true,
-      timeout_seconds: 120,
     }),
     saveModelSettings: async (payload) => {
       saveCalls.push(payload)
@@ -86,7 +84,7 @@ describe('HarnessPage Model Studio', () => {
     const api = {
       ...apiFixture(),
       getModelSettings: async () => ({
-        provider: 'openai', base_url: '', model: '', api_key_masked: '', has_key: false, reasoning: true, timeout_seconds: 120,
+        provider: 'openai', base_url: '', model: '', api_key_masked: '', has_key: false,
       }),
     }
     const wrapper = mount(HarnessPage, { global: { provide: { [ADMIN_API_KEY as symbol]: api } } })
@@ -120,6 +118,9 @@ describe('HarnessPage Model Studio', () => {
     await wrapper.find('.btn-save').trigger('click')
     await flushPromises()
     expect(saveCalls).toEqual([expect.objectContaining({ reasoning_levels: ['low', 'medium', 'high'], reasoning_effort: 'high' })])
+    // The unused reasoning-mode switch and step timeout are no longer sent.
+    expect(saveCalls[0]).not.toHaveProperty('reasoning')
+    expect(saveCalls[0]).not.toHaveProperty('timeout_seconds')
   })
 
   it('needs a new detection after the model changes', async () => {
@@ -128,7 +129,7 @@ describe('HarnessPage Model Studio', () => {
       ...apiFixture(saveCalls),
       getModelSettings: async () => ({
         provider: 'openai', base_url: 'https://api.openai.com/v1', model: 'gpt-6-sol', api_key_masked: 'sk-...', has_key: true,
-        reasoning: true, timeout_seconds: 120, reasoning_levels: ['low', 'high'], reasoning_effort: 'high',
+        reasoning_levels: ['low', 'high'], reasoning_effort: 'high',
       }),
     }
     const wrapper = mount(HarnessPage, { global: { provide: { [ADMIN_API_KEY as symbol]: api } } })

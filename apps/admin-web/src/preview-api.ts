@@ -238,8 +238,6 @@ export const previewAdminApi: AdminApiClient = {
       model: 'gpt-5.6-terra',
       api_key_masked: 'sk-hIey...GlqfZ',
       has_key: true,
-      reasoning: true,
-      timeout_seconds: 120,
       reasoning_levels: ['low', 'medium', 'high', 'xhigh'],
       reasoning_effort: 'medium',
     }

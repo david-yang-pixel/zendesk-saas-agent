@@ -72,7 +72,7 @@ function apiFixture(): AdminApiClient {
     getTraces: async () => ({ items: [mockTraceItem], total: 1 }),
     getTrace: async () => mockTraceDetail,
     retryJob: async () => ({ ok: true, message: 'requeued' }),
-    getModelSettings: async () => ({ provider: 'openai', base_url: 'https://api.tokener.dev/v1', model: 'gpt-5.6-terra', api_key_masked: 'sk-***', has_key: true, reasoning: true, timeout_seconds: 120 }),
+    getModelSettings: async () => ({ provider: 'openai', base_url: 'https://api.tokener.dev/v1', model: 'gpt-5.6-terra', api_key_masked: 'sk-***', has_key: true }),
     saveModelSettings: async () => ({ ok: true, message: 'saved' }),
     testModelConnection: async () => ({ ok: true, status_code: 200, latency_ms: 100, message: 'ok', sample_text: 'pong' }),
     detectReasoningLevels: async () => ({ ok: true, levels: [], message: '' }),

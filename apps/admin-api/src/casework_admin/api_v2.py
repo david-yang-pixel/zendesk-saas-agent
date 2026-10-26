@@ -66,8 +66,6 @@ class ModelConfigPayload(BaseModel):
     base_url: str = Field(..., min_length=1)
     model: str = Field(..., min_length=1)
     api_key: str | None = None
-    reasoning: bool = True
-    timeout_seconds: int = 120
     # Levels detected for this model by /settings/model/reasoning-levels.
     # None means the model was never probed; [] means it accepts no explicit
     # reasoning effort, so the gateway's own default applies.
@@ -856,8 +854,6 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             "model": "",
             "api_key_masked": "",
             "has_key": False,
-            "reasoning": True,
-            "timeout_seconds": 120,
             "reasoning_levels": None,
             "reasoning_effort": None,
         }
@@ -875,8 +871,6 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                     key = val.get("api_key") or ""
                     config["api_key_masked"] = _mask_key(key)
                     config["has_key"] = bool(key)
-                    config["reasoning"] = val.get("reasoning", True)
-                    config["timeout_seconds"] = val.get("timeout_seconds", 120)
                     config["reasoning_levels"] = val.get("reasoning_levels")
                     config["reasoning_effort"] = val.get("reasoning_effort")
         except Exception:
@@ -890,8 +884,6 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             "provider": payload.provider,
             "base_url": payload.base_url.rstrip("/"),
             "model": payload.model.strip(),
-            "reasoning": payload.reasoning,
-            "timeout_seconds": payload.timeout_seconds,
             "reasoning_levels": payload.reasoning_levels,
             "reasoning_effort": payload.reasoning_effort,
         }

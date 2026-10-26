@@ -18,8 +18,6 @@ const apiKey = ref('')
 const apiKeyMasked = ref('********')
 const hasKey = ref(false)
 const showKey = ref(false)
-const reasoning = ref(true)
-const timeoutSeconds = ref(120)
 
 // Reasoning levels are detected per base URL + model; editing either
 // requires a new detection before the configuration can be saved.
@@ -65,8 +63,6 @@ async function loadSettings() {
     model.value = data.model || ''
     apiKeyMasked.value = data.api_key_masked || '********'
     hasKey.value = data.has_key || false
-    reasoning.value = data.reasoning ?? true
-    timeoutSeconds.value = data.timeout_seconds || 120
     reasoningLevels.value = Array.isArray(data.reasoning_levels) ? data.reasoning_levels : null
     reasoningEffort.value = data.reasoning_effort || ''
     levelsDetectedFor.value = reasoningLevels.value ? modelKey.value : ''
@@ -143,8 +139,6 @@ async function saveSettings() {
       provider: provider.value,
       base_url: baseUrl.value,
       model: model.value,
-      reasoning: reasoning.value,
-      timeout_seconds: timeoutSeconds.value,
       reasoning_levels: levels,
       reasoning_effort: levels.length > 0 ? reasoningEffort.value : null,
     }
@@ -358,29 +352,6 @@ onMounted(() => {
               </label>
             </div>
             <small :class="{ 'effort-warning': effortHintWarning }">{{ effortHint }}</small>
-          </div>
-
-          <div class="form-group">
-            <label>{{ t('model.reasoning.label') }}</label>
-            <div class="toggle-row">
-              <input type="checkbox" id="reasoningToggle" v-model="reasoning" class="studio-checkbox" />
-              <label for="reasoningToggle" class="checkbox-label">
-                {{ t('model.reasoning.desc') }}
-              </label>
-            </div>
-          </div>
-
-          <div class="form-group">
-            <label>{{ t('model.timeout.label') }}{{ timeoutSeconds }}{{ t('model.timeout.sec') }}</label>
-            <input
-              v-model.number="timeoutSeconds"
-              type="range"
-              min="30"
-              max="300"
-              step="10"
-              class="studio-range"
-            />
-            <small>针对复杂 SQL 排查与 SigNoz 日志聚合，建议保留 120 秒以上。</small>
           </div>
 
           <div class="runtime-status-box">
@@ -762,29 +733,6 @@ onMounted(() => {
 .form-group small.effort-warning {
   color: var(--red);
 }
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.studio-checkbox {
-  width: 18px;
-  height: 18px;
-  cursor: pointer;
-}
-.checkbox-label {
-  font-size: 12px !important;
-  font-weight: 400 !important;
-  color: var(--ink-soft) !important;
-  margin-bottom: 0 !important;
-  cursor: pointer;
-}
-
-.studio-range {
-  width: 100%;
-  accent-color: var(--blue);
-}
-
 .runtime-status-box {
   margin-top: 24px;
   background: var(--surface-soft);
