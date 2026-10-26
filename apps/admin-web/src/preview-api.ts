@@ -240,6 +240,8 @@ export const previewAdminApi: AdminApiClient = {
       has_key: true,
       reasoning: true,
       timeout_seconds: 120,
+      reasoning_levels: ['low', 'medium', 'high', 'xhigh'],
+      reasoning_effort: 'medium',
     }
   },
   async saveModelSettings(data) {
@@ -253,6 +255,9 @@ export const previewAdminApi: AdminApiClient = {
       message: 'Connection successful',
       sample_text: 'pong',
     }
+  },
+  async detectReasoningLevels() {
+    return { ok: true, levels: ['low', 'medium', 'high', 'xhigh'], message: '检测到 4 档思考程度' }
   },
   async getMcpMesh() {
     return {

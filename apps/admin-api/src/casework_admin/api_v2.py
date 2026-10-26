@@ -11,7 +11,7 @@ from typing import Any, Literal, cast
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import desc, select, text
 
 from casework_persistence.models import (
@@ -49,6 +49,18 @@ class TraceListResponse(BaseModel):
     total: int
 
 
+# Pi thinking levels the agent can request, with the Responses API
+# `reasoning.effort` value Pi sends for each ("off" is sent as "none").
+REASONING_EFFORTS: dict[str, str] = {
+    "off": "none",
+    "minimal": "minimal",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+}
+
+
 class ModelConfigPayload(BaseModel):
     provider: str = "openai"
     base_url: str = Field(..., min_length=1)
@@ -56,6 +68,25 @@ class ModelConfigPayload(BaseModel):
     api_key: str | None = None
     reasoning: bool = True
     timeout_seconds: int = 120
+    # Levels detected for this model by /settings/model/reasoning-levels.
+    # None means the model was never probed; [] means it accepts no explicit
+    # reasoning effort, so the gateway's own default applies.
+    reasoning_levels: list[str] | None = None
+    reasoning_effort: str | None = None
+
+    @model_validator(mode="after")
+    def _require_detected_effort(self) -> ModelConfigPayload:
+        if self.reasoning_levels is None:
+            raise ValueError("Detect the model's reasoning levels before saving")
+        unknown = [level for level in self.reasoning_levels if level not in REASONING_EFFORTS]
+        if unknown:
+            raise ValueError(f"Unknown reasoning levels: {', '.join(unknown)}")
+        if self.reasoning_levels:
+            if self.reasoning_effort not in self.reasoning_levels:
+                raise ValueError("Choose one of the model's supported reasoning levels")
+        elif self.reasoning_effort is not None:
+            raise ValueError("This model does not accept a reasoning level")
+        return self
 
 
 class ModelTestRequest(BaseModel):
@@ -70,6 +101,12 @@ class ModelTestResponse(BaseModel):
     latency_ms: int
     message: str
     sample_text: str = ""
+
+
+class ReasoningLevelsResponse(BaseModel):
+    ok: bool
+    levels: list[str] = []
+    message: str
 
 
 class McpServiceStatus(BaseModel):
@@ -821,6 +858,8 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             "has_key": False,
             "reasoning": True,
             "timeout_seconds": 120,
+            "reasoning_levels": None,
+            "reasoning_effort": None,
         }
         try:
             async with transaction_scope() as session:
@@ -838,6 +877,8 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                     config["has_key"] = bool(key)
                     config["reasoning"] = val.get("reasoning", True)
                     config["timeout_seconds"] = val.get("timeout_seconds", 120)
+                    config["reasoning_levels"] = val.get("reasoning_levels")
+                    config["reasoning_effort"] = val.get("reasoning_effort")
         except Exception:
             pass
 
@@ -851,6 +892,8 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             "model": payload.model.strip(),
             "reasoning": payload.reasoning,
             "timeout_seconds": payload.timeout_seconds,
+            "reasoning_levels": payload.reasoning_levels,
+            "reasoning_effort": payload.reasoning_effort,
         }
         if payload.api_key:
             save_val["api_key"] = payload.api_key.strip()
@@ -881,26 +924,32 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
 
         return {"ok": True, "message": "Model configuration saved and active."}
 
+    async def _model_test_key(payload: ModelTestRequest) -> str | None:
+        if payload.api_key:
+            return payload.api_key
+        try:
+            async with transaction_scope() as session:
+                res = await session.execute(
+                    text("SELECT value FROM system_settings WHERE key = 'model_config'")
+                )
+                row = res.first()
+                if row and isinstance(row[0], dict):
+                    return row[0].get("api_key")
+        except Exception:
+            pass
+        return None
+
+    def _responses_api_base(base_url: str) -> str:
+        url = base_url.rstrip("/")
+        return url if url.endswith("/v1") else url + "/v1"
+
     @router.post("/settings/model/test", response_model=ModelTestResponse)
     async def test_model_connection(payload: ModelTestRequest) -> ModelTestResponse:
-        key = payload.api_key
-        if not key:
-            try:
-                async with transaction_scope() as session:
-                    res = await session.execute(
-                        text("SELECT value FROM system_settings WHERE key = 'model_config'")
-                    )
-                    row = res.first()
-                    if row and isinstance(row[0], dict):
-                        key = row[0].get("api_key")
-            except Exception:
-                pass
+        key = await _model_test_key(payload)
         if not key:
             return ModelTestResponse(ok=False, status_code=400, latency_ms=0, message="未配置 API Key")
 
-        url = payload.base_url.rstrip("/")
-        if not url.endswith("/v1"):
-            url += "/v1"
+        url = _responses_api_base(payload.base_url)
 
         # Pi Agent uses the Responses API; the ping must exercise that same protocol.
         test_endpoint = f"{url}/responses"
@@ -955,6 +1004,60 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                 latency_ms=latency,
                 message="Could not connect to the model endpoint",
             )
+
+    @router.post("/settings/model/reasoning-levels", response_model=ReasoningLevelsResponse)
+    async def detect_reasoning_levels(payload: ModelTestRequest) -> ReasoningLevelsResponse:
+        # OpenAI-compatible APIs do not list the reasoning efforts a model
+        # accepts, so ask the model itself: send each effort the way Pi Agent
+        # would and keep the ones the endpoint does not reject.
+        import asyncio
+
+        key = await _model_test_key(payload)
+        if not key:
+            return ReasoningLevelsResponse(ok=False, message="未配置 API Key")
+
+        endpoint = f"{_responses_api_base(payload.base_url)}/responses"
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
+
+        async def _probe(client: httpx.AsyncClient, effort: str) -> bool | str:
+            """True/False when the endpoint accepted/rejected the effort, else why it could not tell."""
+            body: dict[str, Any] = {
+                "model": payload.model,
+                "input": "Respond with 'pong'",
+                "max_output_tokens": 16,
+                "store": False,
+            }
+            if effort == "none":
+                body["reasoning"] = {"effort": effort}
+            else:
+                body["reasoning"] = {"effort": effort, "summary": "auto"}
+                body["include"] = ["reasoning.encrypted_content"]
+            try:
+                res = await client.post(endpoint, headers=headers, json=body)
+            except Exception:
+                return "无法连接"
+            if res.status_code in (400, 422):
+                return False
+            if not res.is_success:
+                return f"HTTP {res.status_code}"
+            try:
+                echoed = (res.json().get("reasoning") or {}).get("effort")
+            except Exception:
+                echoed = None
+            # A gateway that silently rewrites the effort does not honour it.
+            return not isinstance(echoed, str) or echoed == effort
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            results = await asyncio.gather(*(_probe(client, effort) for effort in REASONING_EFFORTS.values()))
+
+        failures = [r for r in results if isinstance(r, str)]
+        if failures:
+            return ReasoningLevelsResponse(ok=False, message=f"思考程度检测未完成（{failures[0]}），请确认连通性后重试")
+
+        levels = [level for level, supported in zip(REASONING_EFFORTS, results, strict=True) if supported]
+        if not levels:
+            return ReasoningLevelsResponse(ok=True, message="该模型/网关不接受 reasoning.effort，将使用服务端默认思考程度")
+        return ReasoningLevelsResponse(ok=True, levels=levels, message=f"检测到 {len(levels)} 档思考程度")
 
     # -----------------------------------------------------------------------
     # Endpoints: MCP Mesh (7 Services)

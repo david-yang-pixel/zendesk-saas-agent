@@ -35,6 +35,7 @@ function apiFixture(saveCalls: any[] = []): AdminApiClient {
     getModelSettings: async () => { throw new Error('not used') },
     saveModelSettings: async () => { throw new Error('not used') },
     testModelConnection: async () => { throw new Error('not used') },
+    detectReasoningLevels: async () => ({ ok: true, levels: [], message: '' }),
     getMcpMesh: async () => ({ services: [], total_tools: 0 }),
     getSkills: async () => mockSkills,
     saveSkill: async (name, content) => {

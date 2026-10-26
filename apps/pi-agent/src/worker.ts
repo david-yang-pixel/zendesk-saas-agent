@@ -421,6 +421,7 @@ async function main() {
           apiKey: modelConfig.apiKey,
           modelBaseUrl: modelConfig.baseUrl,
           modelName: modelConfig.model,
+          reasoning: modelConfig.reasoning,
           abortSignal: abortController.signal,
           attachments: initialDetails.attachments,
           onRoundTelemetry: (rounds) => {

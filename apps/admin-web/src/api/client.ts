@@ -445,6 +445,7 @@ export interface AdminApiClient {
   getModelSettings(): Promise<any>
   saveModelSettings(data: any): Promise<{ ok: boolean; message: string }>
   testModelConnection(data: any): Promise<{ ok: boolean; status_code: number; latency_ms: number; message: string; sample_text: string }>
+  detectReasoningLevels(data: { base_url: string; model: string; api_key?: string }): Promise<{ ok: boolean; levels: string[]; message: string }>
   getMcpMesh(): Promise<{ services: any[]; total_tools: number }>
   getSkills(): Promise<any[]>
   saveSkill(skillName: string, content: string): Promise<{ ok: boolean; message: string }>
@@ -638,6 +639,13 @@ export function createAdminApiClient(transport: AdminApiTransport = new FetchAdm
     },
     async testModelConnection(data) {
       return transport.request('/api/settings/model/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      })
+    },
+    async detectReasoningLevels(data) {
+      return transport.request('/api/settings/model/reasoning-levels', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
