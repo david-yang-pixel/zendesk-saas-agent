@@ -5,6 +5,7 @@ import {
   sanitizeCustomerReply,
   extractDualTrackOutputs,
   getTerminalAssistantError,
+  reasoningThinkingLevelMap,
   supportsExplicitReasoningEffort,
   DIFY_SUPPORT_SYSTEM_PROMPT,
   isBusinessRead,
@@ -49,6 +50,12 @@ describe('model provider compatibility', () => {
   it('omits explicit reasoning effort for Tokener while preserving it for OpenAI-compatible providers', () => {
     expect(supportsExplicitReasoningEffort('https://api.tokener.dev/v1')).toBe(false);
     expect(supportsExplicitReasoningEffort('https://api.openai.com/v1')).toBe(true);
+  });
+
+  it('only lets Pi send the reasoning levels detected for the model', () => {
+    expect(reasoningThinkingLevelMap(['off', 'low', 'xhigh'])).toEqual({
+      off: 'none', minimal: null, low: 'low', medium: null, high: null, xhigh: 'xhigh', max: null,
+    });
   });
 
   it('surfaces the terminal provider error instead of reporting an empty answer', () => {

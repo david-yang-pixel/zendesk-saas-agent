@@ -144,6 +144,94 @@ def test_model_ping_does_not_echo_upstream_error_details(monkeypatch: pytest.Mon
     assert "secret upstream details" not in response.text
 
 
+def test_reasoning_level_detection_keeps_the_efforts_the_model_accepts(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
+    sent: list[dict] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://api.example.test/v1/responses"
+        payload = json.loads(request.content)
+        sent.append(payload["reasoning"])
+        effort = payload["reasoning"]["effort"]
+        if effort in ("none", "minimal"):
+            return httpx.Response(400, json={"error": {"message": "Unsupported value"}})
+        # A gateway that rewrites an effort it does not support does not honour it.
+        echoed = "high" if effort == "xhigh" else effort
+        return httpx.Response(200, json={"status": "incomplete", "reasoning": {"effort": echoed}})
+
+    monkeypatch.setattr(
+        api_v2.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    app = create_app()
+    register_modern_routes(app, dummy_scope)
+
+    response = TestClient(app).post(
+        "/api/settings/model/reasoning-levels",
+        json={"base_url": "https://api.example.test", "model": "gpt-6-sol", "api_key": "test-key"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["levels"] == ["low", "medium", "high"]
+    # Probes mirror what Pi Agent sends: "off" as effort none without a summary.
+    assert {"effort": "none"} in sent
+    assert {"effort": "medium", "summary": "auto"} in sent
+
+
+def test_reasoning_level_detection_reports_an_unreachable_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.AsyncClient
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": {"message": "secret upstream details"}})
+
+    monkeypatch.setattr(
+        api_v2.httpx,
+        "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    app = create_app()
+    register_modern_routes(app, dummy_scope)
+
+    response = TestClient(app).post(
+        "/api/settings/model/reasoning-levels",
+        json={"base_url": "https://api.example.test/v1", "model": "gpt-6-sol", "api_key": "test-key"},
+    )
+
+    assert response.json()["ok"] is False
+    assert response.json()["levels"] == []
+    assert "HTTP 401" in response.json()["message"]
+    assert "secret upstream details" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("levels", "effort"),
+    [
+        (None, None),
+        (["low", "high"], None),
+        (["low", "high"], "medium"),
+        ([], "medium"),
+        (["turbo"], "turbo"),
+    ],
+)
+def test_model_settings_require_a_detected_reasoning_effort(levels: list[str] | None, effort: str | None) -> None:
+    app = create_app()
+    register_modern_routes(app, dummy_scope)
+
+    response = TestClient(app).post(
+        "/api/settings/model",
+        json={
+            "base_url": "https://api.example.test/v1",
+            "model": "gpt-6-sol",
+            "reasoning_levels": levels,
+            "reasoning_effort": effort,
+        },
+    )
+
+    assert response.status_code == 422
+
+
 def test_mcp_mesh_reports_live_catalog_and_relay_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CASEWORK_OPENCONNECTOR_MCP_URL", "https://connector.example/mcp")
     monkeypatch.setenv("CASEWORK_CREDENTIAL_OPENCONNECTOR_RUNTIME", "test-key")

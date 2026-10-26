@@ -5,7 +5,9 @@ import {
   DefaultResourceLoader,
   getAgentDir,
 } from '@earendil-works/pi-coding-agent';
+import type { ThinkingLevelMap } from '@earendil-works/pi-ai';
 import { CustomTool } from './mcp.js';
+import type { ModelReasoning } from './model-config.js';
 import { createProjectSkillReadTool, getProjectSkills } from './project-skills.js';
 import { inferOpenConnectorService } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
@@ -35,6 +37,8 @@ export interface AgentRunOptions {
   modelName: string;
   modelBaseUrl: string;
   apiKey: string;
+  /** Thinking levels detected and chosen on the Admin page. */
+  reasoning?: ModelReasoning;
   abortSignal?: AbortSignal;
   attachments?: AgentAttachment[];
   contextPrepared?: boolean;
@@ -99,6 +103,18 @@ export function supportsExplicitReasoningEffort(baseUrl: string): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * Marks every level the model was not seen to accept as unsupported, so Pi
+ * never sends it, and maps the accepted ones to their Responses API value.
+ */
+export function reasoningThinkingLevelMap(levels: readonly string[]): ThinkingLevelMap {
+  const map: ThinkingLevelMap = {};
+  for (const level of ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const) {
+    map[level] = levels.includes(level) ? (level === 'off' ? 'none' : level) : null;
+  }
+  return map;
 }
 
 export function getTerminalAssistantError(messages: readonly unknown[]): string | undefined {
@@ -350,7 +366,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     return { reply, customerReply: acknowledgement, internalNote: 'Conversational acknowledgement; no account or product claims and no business evidence required.', trace };
   }
 
-  const { modelName, apiKey } = options;
+  const { modelName, apiKey, reasoning } = options;
   let baseUrl = options.modelBaseUrl.replace(/\/+$/, '');
   if (!baseUrl.endsWith('/v1')) {
     baseUrl += '/v1';
@@ -367,10 +383,12 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
         id: modelName,
         name: modelName,
         api: 'openai-responses',
-        // Tokener's Responses-compatible endpoint currently rejects the SDK's
-        // explicit reasoning.effort field. It still applies its own server-side
-        // reasoning default when the field is omitted.
-        reasoning: supportsExplicitReasoningEffort(baseUrl),
+        // Levels detected on the Admin page decide what Pi may send. Older
+        // configurations fall back to the endpoint check: Tokener's
+        // Responses-compatible endpoint rejects an explicit reasoning.effort
+        // field and applies its own server-side default when it is omitted.
+        reasoning: reasoning ? reasoning.levels.length > 0 : supportsExplicitReasoningEffort(baseUrl),
+        thinkingLevelMap: reasoning ? reasoningThinkingLevelMap(reasoning.levels) : undefined,
         input: ['text', 'image'],
         cost: { input: 0, output: 0 },
         contextWindow: 128000,
@@ -409,6 +427,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     sessionManager: SessionManager.inMemory(),
     modelRuntime: runtime,
     model: model,
+    thinkingLevel: reasoning?.effort,
     customTools: [...investigationTools, skillReadTool, investigation.tool()],
     tools: [...investigationTools.map(t => t.name), 'read', 'investigation_check'],
   });

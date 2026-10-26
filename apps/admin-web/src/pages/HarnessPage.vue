@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import AppIcon from '../components/AppIcon.vue'
 import { ADMIN_API_KEY } from '../api/client'
 import type { AdminApiClient } from '../api/client'
@@ -18,8 +18,28 @@ const apiKey = ref('')
 const apiKeyMasked = ref('********')
 const hasKey = ref(false)
 const showKey = ref(false)
-const reasoning = ref(true)
-const timeoutSeconds = ref(120)
+
+// Reasoning levels are detected per base URL + model; editing either
+// requires a new detection before the configuration can be saved.
+const reasoningLevels = ref<string[] | null>(null)
+const reasoningEffort = ref('')
+const levelsDetectedFor = ref('')
+const detecting = ref(false)
+const levelsError = ref('')
+const modelKey = computed(() => `${baseUrl.value.trim().replace(/\/+$/, '')}|${model.value.trim()}`)
+const detectedLevels = computed(() => (levelsDetectedFor.value === modelKey.value ? reasoningLevels.value : null))
+const effortHint = computed(() => {
+  const levels = detectedLevels.value
+  if (levelsError.value) return levelsError.value
+  if (levels === null) return t('model.effort.undetected')
+  if (levels.length === 0) return t('model.effort.none')
+  if (!levels.includes(reasoningEffort.value)) return t('model.effort.choose')
+  return t('model.effort.chosen').replace('{count}', String(levels.length))
+})
+const effortHintWarning = computed(() => {
+  const levels = detectedLevels.value
+  return Boolean(levelsError.value) || levels === null || (levels.length > 0 && !levels.includes(reasoningEffort.value))
+})
 
 const loading = ref(false)
 const testing = ref(false)
@@ -43,8 +63,9 @@ async function loadSettings() {
     model.value = data.model || ''
     apiKeyMasked.value = data.api_key_masked || '********'
     hasKey.value = data.has_key || false
-    reasoning.value = data.reasoning ?? true
-    timeoutSeconds.value = data.timeout_seconds || 120
+    reasoningLevels.value = Array.isArray(data.reasoning_levels) ? data.reasoning_levels : null
+    reasoningEffort.value = data.reasoning_effort || ''
+    levelsDetectedFor.value = reasoningLevels.value ? modelKey.value : ''
   } catch (err: any) {
     errorMessage.value = err.message || '获取模型配置失败'
   } finally {
@@ -62,6 +83,7 @@ async function testConnection() {
       api_key: apiKey.value || undefined,
     })
     testResult.value = res
+    if (res.ok) void detectReasoningLevels()
   } catch (err: any) {
     testResult.value = {
       ok: false,
@@ -75,7 +97,40 @@ async function testConnection() {
   }
 }
 
+async function detectReasoningLevels() {
+  detecting.value = true
+  levelsError.value = ''
+  const detectedFor = modelKey.value
+  try {
+    const res = await api.detectReasoningLevels({
+      base_url: baseUrl.value,
+      model: model.value,
+      api_key: apiKey.value || undefined,
+    })
+    if (!res.ok) {
+      levelsError.value = res.message
+      return
+    }
+    reasoningLevels.value = res.levels
+    levelsDetectedFor.value = detectedFor
+    if (!res.levels.includes(reasoningEffort.value)) reasoningEffort.value = ''
+  } catch (err: any) {
+    levelsError.value = err.message || '思考程度检测失败'
+  } finally {
+    detecting.value = false
+  }
+}
+
 async function saveSettings() {
+  const levels = detectedLevels.value
+  if (levels === null) {
+    errorMessage.value = t('model.effort.undetected')
+    return
+  }
+  if (levels.length > 0 && !levels.includes(reasoningEffort.value)) {
+    errorMessage.value = t('model.effort.choose')
+    return
+  }
   loading.value = true
   saveMessage.value = ''
   errorMessage.value = ''
@@ -84,8 +139,8 @@ async function saveSettings() {
       provider: provider.value,
       base_url: baseUrl.value,
       model: model.value,
-      reasoning: reasoning.value,
-      timeout_seconds: timeoutSeconds.value,
+      reasoning_levels: levels,
+      reasoning_effort: levels.length > 0 ? reasoningEffort.value : null,
     }
     if (apiKey.value.trim()) {
       payload.api_key = apiKey.value.trim()
@@ -275,26 +330,28 @@ onMounted(() => {
           </div>
 
           <div class="form-group">
-            <label>{{ t('model.reasoning.label') }}</label>
-            <div class="toggle-row">
-              <input type="checkbox" id="reasoningToggle" v-model="reasoning" class="studio-checkbox" />
-              <label for="reasoningToggle" class="checkbox-label">
-                {{ t('model.reasoning.desc') }}
+            <div class="label-row">
+              <label>{{ t('model.effort.label') }}</label>
+              <button
+                class="btn-detect"
+                :disabled="detecting || !baseUrl.trim() || !model.trim()"
+                @click="detectReasoningLevels"
+              >
+                {{ detecting ? t('model.effort.detecting') : t('model.effort.detect') }}
+              </button>
+            </div>
+            <div v-if="detectedLevels?.length" class="effort-options" role="radiogroup">
+              <label
+                v-for="level in detectedLevels"
+                :key="level"
+                :class="['effort-option', { active: reasoningEffort === level }]"
+              >
+                <input v-model="reasoningEffort" type="radio" name="reasoningEffort" :value="level" />
+                <span>{{ t(`model.effort.level.${level}`, level) }}</span>
+                <code>{{ level }}</code>
               </label>
             </div>
-          </div>
-
-          <div class="form-group">
-            <label>{{ t('model.timeout.label') }}{{ timeoutSeconds }}{{ t('model.timeout.sec') }}</label>
-            <input
-              v-model.number="timeoutSeconds"
-              type="range"
-              min="30"
-              max="300"
-              step="10"
-              class="studio-range"
-            />
-            <small>针对复杂 SQL 排查与 SigNoz 日志聚合，建议保留 120 秒以上。</small>
+            <small :class="{ 'effort-warning': effortHintWarning }">{{ effortHint }}</small>
           </div>
 
           <div class="runtime-status-box">
@@ -615,29 +672,67 @@ onMounted(() => {
   background: var(--surface-hover);
 }
 
-.toggle-row {
+.label-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
 }
-.studio-checkbox {
-  width: 18px;
-  height: 18px;
+.btn-detect {
+  margin-bottom: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--blue);
+  font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
 }
-.checkbox-label {
+.btn-detect:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+.effort-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.effort-option {
+  position: relative;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
   font-size: 12px !important;
-  font-weight: 400 !important;
-  color: var(--ink-soft) !important;
+  font-weight: 500 !important;
   margin-bottom: 0 !important;
   cursor: pointer;
 }
-
-.studio-range {
-  width: 100%;
-  accent-color: var(--blue);
+.effort-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
 }
-
+.effort-option:has(input:focus-visible) {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+.effort-option code {
+  font-size: 11px;
+  color: var(--muted) !important;
+}
+.effort-option.active {
+  border-color: var(--blue);
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+.form-group small.effort-warning {
+  color: var(--red);
+}
 .runtime-status-box {
   margin-top: 24px;
   background: var(--surface-soft);

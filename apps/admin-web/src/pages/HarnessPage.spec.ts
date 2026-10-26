@@ -29,8 +29,6 @@ function apiFixture(saveCalls: any[] = []): AdminApiClient {
       model: 'gpt-5.6-terra',
       api_key_masked: 'sk-hIey...GlqfZ',
       has_key: true,
-      reasoning: true,
-      timeout_seconds: 120,
     }),
     saveModelSettings: async (payload) => {
       saveCalls.push(payload)
@@ -43,6 +41,7 @@ function apiFixture(saveCalls: any[] = []): AdminApiClient {
       message: 'Connection successful',
       sample_text: 'pong',
     }),
+    detectReasoningLevels: async () => ({ ok: true, levels: ['low', 'medium', 'high'], message: '检测到 3 档思考程度' }),
     getMcpMesh: async () => ({ services: [], total_tools: 0 }),
     getSkills: async () => [],
     saveSkill: async () => ({ ok: true, message: 'saved' }),
@@ -85,7 +84,7 @@ describe('HarnessPage Model Studio', () => {
     const api = {
       ...apiFixture(),
       getModelSettings: async () => ({
-        provider: 'openai', base_url: '', model: '', api_key_masked: '', has_key: false, reasoning: true, timeout_seconds: 120,
+        provider: 'openai', base_url: '', model: '', api_key_masked: '', has_key: false,
       }),
     }
     const wrapper = mount(HarnessPage, { global: { provide: { [ADMIN_API_KEY as symbol]: api } } })
@@ -93,5 +92,68 @@ describe('HarnessPage Model Studio', () => {
 
     const values = wrapper.findAll('input.studio-input[type="text"]').map(input => (input.element as HTMLInputElement).value)
     expect(values).toEqual(['', ''])
+  })
+
+  it('detects the reasoning levels after a ping test and requires choosing one before saving', async () => {
+    const saveCalls: any[] = []
+    const wrapper = mount(HarnessPage, { global: { provide: { [ADMIN_API_KEY as symbol]: apiFixture(saveCalls) } } })
+    await flushPromises()
+
+    // A configuration saved before detection existed cannot be saved as is.
+    await wrapper.find('.btn-save').trigger('click')
+    await flushPromises()
+    expect(saveCalls).toHaveLength(0)
+    expect(wrapper.text()).toContain('保存前需检测该模型支持的思考程度')
+
+    await wrapper.find('.btn-test').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.effort-option').map(option => option.find('code').text())).toEqual(['low', 'medium', 'high'])
+
+    await wrapper.find('.btn-save').trigger('click')
+    await flushPromises()
+    expect(saveCalls).toHaveLength(0)
+    expect(wrapper.text()).toContain('请选择一个思考程度后再保存')
+
+    await wrapper.find('input[type="radio"][value="high"]').setValue()
+    await wrapper.find('.btn-save').trigger('click')
+    await flushPromises()
+    expect(saveCalls).toEqual([expect.objectContaining({ reasoning_levels: ['low', 'medium', 'high'], reasoning_effort: 'high' })])
+    // The unused reasoning-mode switch and step timeout are no longer sent.
+    expect(saveCalls[0]).not.toHaveProperty('reasoning')
+    expect(saveCalls[0]).not.toHaveProperty('timeout_seconds')
+  })
+
+  it('needs a new detection after the model changes', async () => {
+    const saveCalls: any[] = []
+    const api = {
+      ...apiFixture(saveCalls),
+      getModelSettings: async () => ({
+        provider: 'openai', base_url: 'https://api.openai.com/v1', model: 'gpt-6-sol', api_key_masked: 'sk-...', has_key: true,
+        reasoning_levels: ['low', 'high'], reasoning_effort: 'high',
+      }),
+    }
+    const wrapper = mount(HarnessPage, { global: { provide: { [ADMIN_API_KEY as symbol]: api } } })
+    await flushPromises()
+    expect((wrapper.find('input[type="radio"][value="high"]').element as HTMLInputElement).checked).toBe(true)
+
+    await wrapper.findAll('input.studio-input[type="text"]')[1].setValue('gpt-6-terra')
+    expect(wrapper.find('.effort-option').exists()).toBe(false)
+    await wrapper.find('.btn-save').trigger('click')
+    await flushPromises()
+    expect(saveCalls).toHaveLength(0)
+  })
+
+  it('saves without an effort when the model accepts none', async () => {
+    const saveCalls: any[] = []
+    const api = { ...apiFixture(saveCalls), detectReasoningLevels: async () => ({ ok: true, levels: [], message: 'none' }) }
+    const wrapper = mount(HarnessPage, { global: { provide: { [ADMIN_API_KEY as symbol]: api } } })
+    await flushPromises()
+
+    await wrapper.find('.btn-detect').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('该模型/网关不接受指定思考程度')
+    await wrapper.find('.btn-save').trigger('click')
+    await flushPromises()
+    expect(saveCalls).toEqual([expect.objectContaining({ reasoning_levels: [], reasoning_effort: null })])
   })
 })

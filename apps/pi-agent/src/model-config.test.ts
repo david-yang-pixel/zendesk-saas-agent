@@ -8,6 +8,18 @@ describe('parseModelConfig', () => {
     })).toEqual({ baseUrl: 'https://api.example.test/v1', model: 'gpt-6-sol', apiKey: 'secret' });
   });
 
+  it('reads the reasoning level detected and chosen on the Admin page', () => {
+    const base = { base_url: 'https://api.example.test/v1', model: 'gpt-6-sol', api_key: 'secret' };
+    expect(parseModelConfig({ ...base, reasoning_levels: ['low', 'high', 'turbo'], reasoning_effort: 'high' }).reasoning)
+      .toEqual({ levels: ['low', 'high'], effort: 'high' });
+    expect(parseModelConfig({ ...base, reasoning_levels: ['low'], reasoning_effort: 'high' }).reasoning)
+      .toEqual({ levels: ['low'], effort: undefined });
+    expect(parseModelConfig({ ...base, reasoning_levels: [], reasoning_effort: null }).reasoning)
+      .toEqual({ levels: [], effort: undefined });
+    // Saved before levels were detected: the agent keeps its endpoint default.
+    expect(parseModelConfig(base).reasoning).toBeUndefined();
+  });
+
   it.each([
     undefined,
     {},
