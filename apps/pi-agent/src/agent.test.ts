@@ -13,6 +13,7 @@ import {
   validateCustomerDelivery,
   finalOutputIssues,
 } from './agent.js';
+import { validateReplyReview } from './reply-policy.js';
 
 describe('Pi Support Agent Tool Format', () => {
   it('correctly constructs tool definition conforming to Pi Agent schema', () => {
@@ -117,6 +118,21 @@ describe('extractDualTrackOutputs', () => {
     expect(res.internalNote).toBe('{"approved":true}\nRead call-1.');
     expect(res.operatorAnswer).toBe('结论：该工作区在教育优惠期内。\n- 积分一次性 200');
     expect(res.customerReply).toBe('Hello! Your education plan includes 200 one-time credits.');
+  });
+
+  it('keeps a review decision written above the INTERNAL NOTE marker as the note\'s first line', () => {
+    // Production output for ticket #5356/#5373: the model put the JSON before the header.
+    const decision = '{"approved":true,"claimMode":"conversation","answersLatestQuestion":true,"requestsOnlyMissingDetails":true,"usesApplicableEvidence":true}';
+    const output = [decision, '', '=== INTERNAL NOTE ===', '- No business reads.', '', '=== CUSTOMER REPLY ===', 'Hi Kim,'].join('\n');
+    const res = extractDualTrackOutputs(output);
+    expect(res.internalNote).toBe(`${decision}\n- No business reads.`);
+    expect(res.customerReply).toBe('Hi Kim,');
+    expect(validateReplyReview(res.internalNote, false)).toBe('- No business reads.');
+  });
+
+  it('does not add a preamble decision when the note already starts with one', () => {
+    const output = ['{"approved":false}', '=== INTERNAL NOTE ===', '{"approved":true}', 'Read.', '=== CUSTOMER REPLY ===', 'Hi'].join('\n');
+    expect(extractDualTrackOutputs(output).internalNote).toBe('{"approved":true}\nRead.');
   });
 
   it('correctly splits internal note and customer reply when both markers are present', () => {
@@ -267,16 +283,26 @@ describe('customer delivery safety gate', () => {
 });
 
 describe('finalOutputIssues', () => {
+  const REVIEWED = '{"approved":true}\n- Read call-1.';
   it('flags a public reply written in a language other than the one the Worker chose', () => {
-    const output = { customerReply: 'Hello! The credits are a one-time 200.' };
+    const output = { customerReply: 'Hello! The credits are a one-time 200.', internalNote: REVIEWED };
     expect(finalOutputIssues(output, true, 'ja')).toEqual([expect.stringContaining('not written in Japanese')]);
-    expect(finalOutputIssues({ customerReply: '教育プランのクレジットは200です。' }, true, 'ja')).toEqual([]);
+    expect(finalOutputIssues({ customerReply: '教育プランのクレジットは200です。', internalNote: REVIEWED }, true, 'ja')).toEqual([]);
   });
 
   it('flags a mention without an operator answer but does not check its English draft language', () => {
-    expect(finalOutputIssues({ customerReply: 'Hello!' }, false, 'en'))
+    expect(finalOutputIssues({ customerReply: 'Hello!', internalNote: REVIEWED }, false, 'en'))
       .toEqual([expect.stringContaining('OPERATOR ANSWER === section is missing')]);
-    expect(finalOutputIssues({ customerReply: 'Hello!', operatorAnswer: '结论：已核对。' }, false, 'en')).toEqual([]);
+    expect(finalOutputIssues({ customerReply: 'Hello!', internalNote: REVIEWED, operatorAnswer: '结论：已核对。' }, false, 'en')).toEqual([]);
+  });
+
+  it('flags a missing INTERNAL NOTE or review decision so the fix turn can restore it', () => {
+    // Production output for ticket #5342: JSON and notes with no INTERNAL NOTE marker.
+    expect(finalOutputIssues({ customerReply: 'Hello!' }, true, 'en'))
+      .toEqual([expect.stringContaining('review JSON')]);
+    expect(finalOutputIssues({ customerReply: 'Hello!', internalNote: '- Read call-1.' }, true, 'en'))
+      .toEqual([expect.stringContaining('review JSON')]);
+    expect(finalOutputIssues({ customerReply: 'Hello!', internalNote: '{"approved":true}\n- Read.' }, true, 'en')).toEqual([]);
   });
 
   it('leaves an empty reply to the delivery gate', () => {

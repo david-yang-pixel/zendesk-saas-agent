@@ -189,6 +189,9 @@ export function finalOutputIssues(
   if (publicReplyAllowed && writtenLanguage(output.customerReply) !== language) {
     issues.push(`The CUSTOMER REPLY is not written in ${LANGUAGE_NAMES[language]}. Rewrite it in ${LANGUAGE_NAMES[language]} with the same content.`);
   }
+  if (!isReviewDecisionLine((output.internalNote || '').split('\n')[0].trim())) {
+    issues.push('The === INTERNAL NOTE === section is missing or does not start with the review JSON line. Start the response with the === INTERNAL NOTE === marker line and put the review JSON object on the line directly after it.');
+  }
   if (!publicReplyAllowed && !output.operatorAnswer?.trim()) {
     issues.push("The === OPERATOR ANSWER === section is missing. Add it between INTERNAL NOTE and CUSTOMER REPLY: answer the operator's question directly in their language, then 2–5 short evidence points.");
   }
@@ -202,6 +205,14 @@ export interface DualTrackOutput {
 }
 
 const OPERATOR_MARKER = '=== OPERATOR ANSWER ===';
+
+function isReviewDecisionLine(line: string): boolean {
+  if (!line.startsWith('{')) return false;
+  try {
+    const value = JSON.parse(line);
+    return Boolean(value) && typeof value === 'object' && !Array.isArray(value) && 'approved' in value;
+  } catch { return false; }
+}
 
 export function extractDualTrackOutputs(rawText: string): DualTrackOutput {
   if (!rawText) return { customerReply: '' };
@@ -222,9 +233,17 @@ export function extractDualTrackOutputs(rawText: string): DualTrackOutput {
       return rawText.substring(index + marker.length, next).trim();
     };
     const operatorContent = section(operatorIdx, OPERATOR_MARKER);
+    // Models often write the review decision above the first marker instead of
+    // as the note's first line; it is still this note's decision.
+    let internalContent = section(internalIdx, internalMarker);
+    const preambleDecision = rawText.substring(0, Math.min(...starts)).split('\n')
+      .map(line => line.trim()).find(isReviewDecisionLine);
+    if (preambleDecision && !isReviewDecisionLine(internalContent.split('\n')[0].trim())) {
+      internalContent = `${preambleDecision}\n${internalContent}`.trim();
+    }
     return {
       customerReply: sanitizeCustomerReply(section(customerIdx, customerMarker)),
-      internalNote: section(internalIdx, internalMarker) || undefined,
+      internalNote: internalContent || undefined,
       ...(operatorContent ? { operatorAnswer: operatorContent } : {}),
     };
   }
