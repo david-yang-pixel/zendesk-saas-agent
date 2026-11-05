@@ -15,7 +15,7 @@ import { deliverInternalDraft, formatInternalDraft } from './internal-draft-deli
 import { detectCustomerLanguage } from './reply-policy.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
-import { claimNextJob } from './job-queue.js';
+import { claimNextJob, requeueLatestConversation } from './job-queue.js';
 
 dotenv.config();
 
@@ -301,6 +301,41 @@ async function main() {
 
     let activeTrace: any = null;
     let monitorTimer: ReturnType<typeof setInterval> | undefined;
+
+    // The job is cancelled once a newer customer message is seen; queueing the
+    // successor is follow-up work. If it fails, the run is still cancelled (not
+    // failed), the reason says why the successor is missing, and a low-priority
+    // alert (not the failure alert) is sent; ingress still queues a job when it
+    // records that customer message.
+    async function requeueAfterInterception(
+      latest: { lastEventId?: string; message?: string },
+      interceptReason: string,
+    ): Promise<string> {
+      try {
+        const requeued = await requeueLatestConversation(pool, {
+          job,
+          latestZendeskEventId: latest.lastEventId,
+          reason: interceptReason,
+        });
+        console.log(`[Worker] Requeued ticket #${job.ticket_id} as job ${requeued.jobId} (${requeued.outcome}) after intercepting job ${job.job_id}.`);
+        return interceptReason;
+      } catch (requeueErr: any) {
+        console.error(`[Worker] Failed to requeue ticket #${job.ticket_id} after intercepting job ${job.job_id}:`, requeueErr.message);
+        try {
+          await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
+            title: 'ℹ️ Dify 工单重新排队失败提醒（低优先级）',
+            ticketId: job.ticket_id,
+            status: '旧答复已取消（未发送），自动重新排队失败',
+            reason: requeueErr.message,
+            customerMessage: latest.message ? latest.message.slice(0, 500) : undefined,
+            note: '客户在 AI 推理期间发送了新消息，旧答复已作废。ingress 记录该消息后通常会自动排队处理；如稍后仍无 AI 回复，请人工跟进。',
+          });
+        } catch (alertErr: any) {
+          console.warn(`[Worker] Failed to send requeue alert for ticket #${job.ticket_id}:`, alertErr.message);
+        }
+        return `${interceptReason}（重新排队失败：${requeueErr.message}）`;
+      }
+    }
     // Context loading is also leased work, and its failures must reach the same
     // terminal-state handler as model and delivery failures.
     const leaseTimer = setInterval(() => {
@@ -459,7 +494,10 @@ async function main() {
             await markJobCancelled(job.job_id, humanReason);
             return;
           } else {
-            const interceptReason = `推理中途收到客户新消息（“${freshDetails.message.slice(0, 60)}...”），已即时打断并触发 10 秒防抖重排。`;
+            const interceptReason = await requeueAfterInterception(
+              freshDetails,
+              `推理中途收到客户新消息（“${freshDetails.message.slice(0, 60)}...”），已即时打断并触发 10 秒防抖重排。`,
+            );
             await recordJobOutcome({
               jobId: job.job_id,
               ticketId: job.ticket_id,
@@ -471,30 +509,6 @@ async function main() {
               delivery: null,
               errorReason: interceptReason,
             });
-            await pool.query(`
-              INSERT INTO case_jobs (
-                job_id, session_id, event_id, expected_event_id, ticket_id, generation,
-                status, attempts, available_at, created_at, updated_at,
-                config_revision, root_model_config_id, child_model_config_ids,
-                model_digest, skill_digest, tool_digest
-              )
-              VALUES (
-                $1, $2, $3, $4, $5, $6,
-                'queued', 0, NOW() + INTERVAL '10 seconds', NOW(), NOW(),
-                'rev-1', 'root', '[]', 'digest-model', 'digest-skill', 'digest-tool'
-              )
-              ON CONFLICT (ticket_id) WHERE status = 'queued'
-              DO UPDATE SET
-                available_at = NOW() + INTERVAL '10 seconds',
-                updated_at = NOW()
-            `, [
-              `job-${Date.now()}-${job.ticket_id}`,
-              `session-retry-${Date.now()}-${job.ticket_id}`,
-              freshDetails.lastEventId || `event-${Date.now()}`,
-              freshDetails.lastEventId || `event-${Date.now()}`,
-              job.ticket_id,
-              job.generation,
-            ]);
             await markJobCancelled(job.job_id, interceptReason);
             return;
           }
@@ -578,8 +592,9 @@ async function main() {
         );
 
       if (hasNewMessage) {
-        const interceptReason = `检测到客户在推理期间发送了新消息（“${freshDetails.message.slice(0, 60)}...”）。旧答复已自动拦截作废，触发 10 秒防抖并重新排队最新会话。`;
-        console.warn(`[Worker] 🚨 INTERCEPTED: ${interceptReason}`);
+        const interceptNotice = `检测到客户在推理期间发送了新消息（“${freshDetails.message.slice(0, 60)}...”）。旧答复已自动拦截作废，触发 10 秒防抖并重新排队最新会话。`;
+        console.warn(`[Worker] 🚨 INTERCEPTED: ${interceptNotice}`);
+        const interceptReason = await requeueAfterInterception(freshDetails, interceptNotice);
 
         await recordJobOutcome({
           jobId: job.job_id,
@@ -592,31 +607,6 @@ async function main() {
           delivery: null,
           errorReason: interceptReason,
         });
-
-        await pool.query(`
-          INSERT INTO case_jobs (
-            job_id, session_id, event_id, expected_event_id, ticket_id, generation,
-            status, attempts, available_at, created_at, updated_at,
-            config_revision, root_model_config_id, child_model_config_ids,
-            model_digest, skill_digest, tool_digest
-          )
-          VALUES (
-            $1, $2, $3, $4, $5, $6,
-            'queued', 0, NOW() + INTERVAL '10 seconds', NOW(), NOW(),
-            'rev-1', 'root', '[]', 'digest-model', 'digest-skill', 'digest-tool'
-          )
-          ON CONFLICT (ticket_id) WHERE status = 'queued'
-          DO UPDATE SET
-            available_at = NOW() + INTERVAL '10 seconds',
-            updated_at = NOW()
-        `, [
-          `job-${Date.now()}-${job.ticket_id}`,
-          `session-retry-${Date.now()}-${job.ticket_id}`,
-          freshDetails.lastEventId || `event-${Date.now()}`,
-          freshDetails.lastEventId || `event-${Date.now()}`,
-          job.ticket_id,
-          job.generation,
-        ]);
 
         await markJobCancelled(job.job_id, interceptReason);
         return;
