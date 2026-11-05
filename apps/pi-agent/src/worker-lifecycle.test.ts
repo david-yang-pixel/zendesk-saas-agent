@@ -3,11 +3,12 @@ import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
 import { formatInternalDraft } from './internal-draft-delivery.js';
 import { detectCustomerLanguage } from './reply-policy.js';
+import { requeueLatestConversation } from './job-queue.js';
 
 // Exercise the actual worker closure without importing its process startup,
 // production DB connection, mention polling, or delivery services.
 function workerJob(overrides: Record<string, unknown>) {
-  const dependencies = { formatInternalDraft, detectCustomerLanguage, ...overrides };
+  const dependencies = { formatInternalDraft, detectCustomerLanguage, requeueLatestConversation, ...overrides };
   const source = fs.readFileSync(new URL('./worker.ts', import.meta.url), 'utf8');
   const start = source.indexOf('  async function processJob(');
   const end = source.indexOf('\n  while (running)', start);
@@ -178,4 +179,124 @@ it('does not treat an explicit public-reply request inside an operator mention a
   expect(deliverInternalDraft).toHaveBeenCalledOnce();
   expect(sendBrowserRelay).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+// Enforces case_jobs.event_id -> events.event_id like production, which is
+// exactly the constraint ticket #5352 violated on requeue.
+function fkEnforcingPool(knownEvents: string[], runningJob: Record<string, unknown>) {
+  const events = new Set(knownEvents);
+  const jobs: Record<string, any>[] = [{ ...runningJob, status: 'running' }];
+  const query = vi.fn(async (sql: string, params: any[] = []) => {
+    if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql.trim())) return { rows: [], rowCount: 0 };
+    if (sql.includes('INSERT INTO events')) {
+      events.add(params[0]);
+      return { rows: [], rowCount: 1 };
+    }
+    if (sql.includes('INSERT INTO case_jobs')) {
+      const eventId = params[2];
+      if (!events.has(eventId)) {
+        throw new Error('insert or update on table "case_jobs" violates foreign key constraint "case_jobs_event_id_fkey"');
+      }
+      jobs.push({ job_id: params[0], event_id: eventId, expected_event_id: params[3], ticket_id: runningJob.ticket_id, status: 'queued' });
+      return { rows: [{ job_id: params[0] }], rowCount: 1 };
+    }
+    if (sql.includes('UPDATE case_jobs') && sql.includes("status = 'queued'")) {
+      const queued = jobs.filter(job => job.status === 'queued');
+      return { rows: queued.map(job => ({ job_id: job.job_id })), rowCount: queued.length };
+    }
+    return { rows: [], rowCount: 0 };
+  });
+  return { events, jobs, pool: { query, connect: async () => ({ query, release: () => {} }) } };
+}
+
+const ticket5352Job = { job_id: '880b1790-test', ticket_id: 5352, generation: 1, event_id: 'webhook-uuid-1', expected_event_id: 'webhook-uuid-1' };
+const beforeReasoning = { isAlreadyAnswered: false, hasRequestedHuman: false, message: 'first question', lastEventId: '41230000001', customerEventsCount: 1 };
+// The new comment is visible in Zendesk before ingress has recorded its webhook.
+const afterReasoning = { isAlreadyAnswered: false, hasRequestedHuman: false, message: 'Conversation with n77 follow-up', lastEventId: '41230000002', customerEventsCount: 2 };
+
+function interceptionHarness(overrides: Record<string, unknown> = {}) {
+  const db = fkEnforcingPool(['webhook-uuid-1'], ticket5352Job);
+  const spies = {
+    recordJobOutcome: vi.fn(), markJobCancelled: vi.fn(), markJobFailed: vi.fn(), markJobSucceeded: vi.fn(),
+    sendFeishuAlert: vi.fn(), sendBrowserRelay: vi.fn(),
+  };
+  const getTicketDetails = vi.fn()
+    .mockResolvedValueOnce(beforeReasoning)
+    .mockResolvedValue(afterReasoning);
+  const job = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: db.pool,
+    isTicketHumanCancelled: async () => false, getTicketDetails,
+    getActiveModelConfig: async () => ({ model: 'test' }), openConnectorService: {}, allTools: [],
+    runPiSupportAgent: async () => ({ reply: 'stale reply', trace: { toolCalls: [], rounds: [], totalDurationMs: 1, finalReply: 'stale reply' } }),
+    BROWSER_RELAY_URL: 'test', BROWSER_RELAY_KEY: 'test', FEISHU_WEBHOOK_URL: 'test',
+    ...spies, ...overrides,
+  });
+  return { db, job, ...spies };
+}
+
+function expectCancelledNotFailed(h: ReturnType<typeof interceptionHarness>) {
+  expect(h.sendBrowserRelay).not.toHaveBeenCalled();
+  expect(h.markJobCancelled).toHaveBeenCalledOnce();
+  expect(h.markJobFailed).not.toHaveBeenCalled();
+  expect(h.recordJobOutcome).toHaveBeenCalledTimes(1);
+  expect(h.recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
+  expect(h.sendFeishuAlert).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
+}
+
+it('ticket #5352: pre-delivery interception requeues against a recorded event and stays cancelled', async () => {
+  vi.useFakeTimers();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const h = interceptionHarness();
+    await h.job(ticket5352Job, new AbortController());
+    expectCancelledNotFailed(h);
+    const successor = h.db.jobs.find(job => job.status === 'queued');
+    expect(successor).toBeDefined();
+    expect(h.db.events.has(successor!.event_id)).toBe(true);
+    expect(successor!.event_id).not.toBe('41230000002');
+    expect(successor!.expected_event_id).toBe('41230000002');
+  } finally { warn.mockRestore(); log.mockRestore(); }
+});
+
+it('keeps an intercepted job cancelled, without a failure alert, when the requeue itself fails', async () => {
+  vi.useFakeTimers();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const h = interceptionHarness({
+      requeueLatestConversation: vi.fn(async () => { throw new Error('connection terminated'); }),
+    });
+    // Also fail any direct INSERT so a requeue that bypasses the helper fails too.
+    const query = h.db.pool.query;
+    h.db.pool.query = vi.fn(async (sql: string, params?: any[]) => {
+      if (sql.includes('INSERT INTO case_jobs')) throw new Error('connection terminated');
+      return query(sql, params);
+    });
+    await h.job(ticket5352Job, new AbortController());
+    expectCancelledNotFailed(h);
+    expect(h.markJobCancelled.mock.calls[0]?.[1]).toContain('connection terminated');
+  } finally { warn.mockRestore(); error.mockRestore(); log.mockRestore(); }
+});
+
+it('in-flight abort for a new customer message requeues against a recorded event and stays cancelled', async () => {
+  vi.useFakeTimers();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const abortController = new AbortController();
+    const h = interceptionHarness({
+      runPiSupportAgent: async () => {
+        abortController.abort();
+        const err = new Error('aborted'); err.name = 'AbortError'; throw err;
+      },
+    });
+    await h.job(ticket5352Job, abortController);
+    expectCancelledNotFailed(h);
+    const successor = h.db.jobs.find(job => job.status === 'queued');
+    expect(successor).toBeDefined();
+    expect(h.db.events.has(successor!.event_id)).toBe(true);
+  } finally { warn.mockRestore(); log.mockRestore(); }
 });
