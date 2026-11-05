@@ -240,7 +240,7 @@ function expectCancelledNotFailed(h: ReturnType<typeof interceptionHarness>) {
   expect(h.markJobFailed).not.toHaveBeenCalled();
   expect(h.recordJobOutcome).toHaveBeenCalledTimes(1);
   expect(h.recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
-  expect(h.sendFeishuAlert).not.toHaveBeenCalled();
+  expect(h.sendFeishuAlert).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ title: expect.stringContaining('失败警告') }));
   expect(vi.getTimerCount()).toBe(0);
 }
 
@@ -252,6 +252,7 @@ it('ticket #5352: pre-delivery interception requeues against a recorded event an
     const h = interceptionHarness();
     await h.job(ticket5352Job, new AbortController());
     expectCancelledNotFailed(h);
+    expect(h.sendFeishuAlert).not.toHaveBeenCalled();
     const successor = h.db.jobs.find(job => job.status === 'queued');
     expect(successor).toBeDefined();
     expect(h.db.events.has(successor!.event_id)).toBe(true);
@@ -260,24 +261,54 @@ it('ticket #5352: pre-delivery interception requeues against a recorded event an
   } finally { warn.mockRestore(); log.mockRestore(); }
 });
 
-it('keeps an intercepted job cancelled, without a failure alert, when the requeue itself fails', async () => {
+function failingRequeueHarness(overrides: Record<string, unknown> = {}) {
+  const h = interceptionHarness({
+    requeueLatestConversation: vi.fn(async () => { throw new Error('connection terminated'); }),
+    ...overrides,
+  });
+  // Also fail any direct INSERT so a requeue that bypasses the helper fails too.
+  const query = h.db.pool.query;
+  h.db.pool.query = vi.fn(async (sql: string, params?: any[]) => {
+    if (sql.includes('INSERT INTO case_jobs')) throw new Error('connection terminated');
+    return query(sql, params);
+  });
+  return h;
+}
+
+it('keeps an intercepted job cancelled and sends only a low-priority requeue alert when the requeue fails', async () => {
   vi.useFakeTimers();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = vi.spyOn(console, 'error').mockImplementation(() => {});
   const log = vi.spyOn(console, 'log').mockImplementation(() => {});
   try {
-    const h = interceptionHarness({
-      requeueLatestConversation: vi.fn(async () => { throw new Error('connection terminated'); }),
-    });
-    // Also fail any direct INSERT so a requeue that bypasses the helper fails too.
-    const query = h.db.pool.query;
-    h.db.pool.query = vi.fn(async (sql: string, params?: any[]) => {
-      if (sql.includes('INSERT INTO case_jobs')) throw new Error('connection terminated');
-      return query(sql, params);
-    });
+    const h = failingRequeueHarness();
     await h.job(ticket5352Job, new AbortController());
     expectCancelledNotFailed(h);
     expect(h.markJobCancelled.mock.calls[0]?.[1]).toContain('connection terminated');
+    expect(h.sendFeishuAlert).toHaveBeenCalledOnce();
+    const [, alert] = h.sendFeishuAlert.mock.calls[0]!;
+    expect(alert).toMatchObject({
+      title: 'ℹ️ Dify 工单重新排队失败提醒（低优先级）',
+      ticketId: 5352,
+      reason: 'connection terminated',
+      customerMessage: 'Conversation with n77 follow-up',
+    });
+    expect(alert.status).toContain('已取消');
+    expect(alert).not.toHaveProperty('draftReply');
+  } finally { warn.mockRestore(); error.mockRestore(); log.mockRestore(); }
+});
+
+it('still cancels the intercepted job when the requeue alert itself throws', async () => {
+  vi.useFakeTimers();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  try {
+    const h = failingRequeueHarness();
+    h.sendFeishuAlert.mockRejectedValue(new Error('feishu down'));
+    await h.job(ticket5352Job, new AbortController());
+    expectCancelledNotFailed(h);
+    expect(h.sendFeishuAlert).toHaveBeenCalledOnce();
   } finally { warn.mockRestore(); error.mockRestore(); log.mockRestore(); }
 });
 
@@ -295,6 +326,7 @@ it('in-flight abort for a new customer message requeues against a recorded event
     });
     await h.job(ticket5352Job, abortController);
     expectCancelledNotFailed(h);
+    expect(h.sendFeishuAlert).not.toHaveBeenCalled();
     const successor = h.db.jobs.find(job => job.status === 'queued');
     expect(successor).toBeDefined();
     expect(h.db.events.has(successor!.event_id)).toBe(true);

@@ -304,19 +304,35 @@ async function main() {
 
     // The job is cancelled once a newer customer message is seen; queueing the
     // successor is follow-up work. If it fails, the run is still cancelled (not
-    // failed) and the reason says why the successor is missing; ingress still
-    // queues one when it records that customer message.
-    async function requeueAfterInterception(latestZendeskEventId: string | undefined, interceptReason: string): Promise<string> {
+    // failed), the reason says why the successor is missing, and a low-priority
+    // alert (not the failure alert) is sent; ingress still queues a job when it
+    // records that customer message.
+    async function requeueAfterInterception(
+      latest: { lastEventId?: string; message?: string },
+      interceptReason: string,
+    ): Promise<string> {
       try {
         const requeued = await requeueLatestConversation(pool, {
           job,
-          latestZendeskEventId,
+          latestZendeskEventId: latest.lastEventId,
           reason: interceptReason,
         });
         console.log(`[Worker] Requeued ticket #${job.ticket_id} as job ${requeued.jobId} (${requeued.outcome}) after intercepting job ${job.job_id}.`);
         return interceptReason;
       } catch (requeueErr: any) {
         console.error(`[Worker] Failed to requeue ticket #${job.ticket_id} after intercepting job ${job.job_id}:`, requeueErr.message);
+        try {
+          await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
+            title: 'ℹ️ Dify 工单重新排队失败提醒（低优先级）',
+            ticketId: job.ticket_id,
+            status: '旧答复已取消（未发送），自动重新排队失败',
+            reason: requeueErr.message,
+            customerMessage: latest.message ? latest.message.slice(0, 500) : undefined,
+            note: '客户在 AI 推理期间发送了新消息，旧答复已作废。ingress 记录该消息后通常会自动排队处理；如稍后仍无 AI 回复，请人工跟进。',
+          });
+        } catch (alertErr: any) {
+          console.warn(`[Worker] Failed to send requeue alert for ticket #${job.ticket_id}:`, alertErr.message);
+        }
         return `${interceptReason}（重新排队失败：${requeueErr.message}）`;
       }
     }
@@ -479,7 +495,7 @@ async function main() {
             return;
           } else {
             const interceptReason = await requeueAfterInterception(
-              freshDetails.lastEventId,
+              freshDetails,
               `推理中途收到客户新消息（“${freshDetails.message.slice(0, 60)}...”），已即时打断并触发 10 秒防抖重排。`,
             );
             await recordJobOutcome({
@@ -578,7 +594,7 @@ async function main() {
       if (hasNewMessage) {
         const interceptNotice = `检测到客户在推理期间发送了新消息（“${freshDetails.message.slice(0, 60)}...”）。旧答复已自动拦截作废，触发 10 秒防抖并重新排队最新会话。`;
         console.warn(`[Worker] 🚨 INTERCEPTED: ${interceptNotice}`);
-        const interceptReason = await requeueAfterInterception(freshDetails.lastEventId, interceptNotice);
+        const interceptReason = await requeueAfterInterception(freshDetails, interceptNotice);
 
         await recordJobOutcome({
           jobId: job.job_id,
