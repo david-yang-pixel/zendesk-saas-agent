@@ -22,7 +22,16 @@ import { detectCustomerLanguage, type ReplyLanguage } from './reply-policy.js';
 
 export const DEFAULT_HANDOFF_TAG = 'human_requested';
 export const MAX_HANDOFF_ATTEMPTS = 5;
-const HANDOFF_LEASE_SECONDS = 120;
+const HANDOFF_LEASE_SECONDS = 180;
+// The loop is serial, so every external call is bounded well inside the lease.
+export const HANDOFF_ALERT_TIMEOUT_MS = 10_000;
+export const HANDOFF_CONVERSATION_TIMEOUT_MS = 30_000;
+export const HANDOFF_REPLY_TIMEOUT_MS = 60_000;
+
+/** True for the error an AbortSignal.timeout() raises. */
+export function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
 
 // Support hours are New York Sunday–Thursday nights, 9 PM–6 AM EDT or
 // 8 PM–5 AM EST. Both are exactly 01:00–10:00 UTC, Monday–Friday, so the
@@ -341,18 +350,34 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
         log.log(`[Handoff] Acknowledged human request on ticket #${ticketId} (${language}, ${inHours ? 'in' : 'outside'} support hours).`);
       } catch (error) {
         const reason = errorText(error);
-        await deps.pool.query(
-          `UPDATE human_handoffs SET ack_state = 'failed', updated_at = NOW() WHERE handoff_id = $1`,
-          [row.handoff_id],
-        );
-        await reportReplyProblem({
-          title: '🚨 转人工确认消息发送失败',
-          ticketId,
-          status: '未能自动回复客户',
-          reason,
-          draftReply: body,
-          note: '客户已请求人工，但自动确认消息发送失败。为避免重复发送，系统不会重试，请人工回复客户。',
-        });
+        if (isTimeoutError(error)) {
+          // The relay may still post it: report it as unknown, never resend.
+          await deps.pool.query(
+            `UPDATE human_handoffs SET ack_state = 'uncertain', updated_at = NOW() WHERE handoff_id = $1`,
+            [row.handoff_id],
+          );
+          await reportReplyProblem({
+            title: '⚠️ 转人工确认消息状态未知',
+            ticketId,
+            status: '确认消息发送超时',
+            reason,
+            draftReply: body,
+            note: '发送转人工确认消息超时，无法确认客户是否收到。为避免重复发送，系统不会重试，请人工检查并回复客户。',
+          });
+        } else {
+          await deps.pool.query(
+            `UPDATE human_handoffs SET ack_state = 'failed', updated_at = NOW() WHERE handoff_id = $1`,
+            [row.handoff_id],
+          );
+          await reportReplyProblem({
+            title: '🚨 转人工确认消息发送失败',
+            ticketId,
+            status: '未能自动回复客户',
+            reason,
+            draftReply: body,
+            note: '客户已请求人工，但自动确认消息发送失败。为避免重复发送，系统不会重试，请人工回复客户。',
+          });
+        }
       }
     }
   }

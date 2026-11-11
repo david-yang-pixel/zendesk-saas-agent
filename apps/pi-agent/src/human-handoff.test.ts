@@ -238,6 +238,18 @@ describe('processHandoff', () => {
     expect(statusOf(retry.queries)).toEqual(['alerted_at', "status = 'completed'"]);
   });
 
+  it('reports a timed-out reply as uncertain instead of failed', async () => {
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    const { value, queries } = deps({ sendReply: vi.fn(async () => { throw timeout; }) });
+    await processHandoff(row(), value);
+    expect(statusOf(queries)).toContain("ack_state = 'uncertain'");
+    expect(statusOf(queries)).not.toContain("ack_state = 'failed'");
+    expect(vi.mocked(value.sendAlert).mock.calls[1][0]).toMatchObject({
+      title: '⚠️ 转人工确认消息状态未知', draftReply: expect.stringContaining('转接人工支持'),
+    });
+    expect(statusOf(queries).at(-1)).toBe("status = 'completed'");
+  });
+
   it('skips the acknowledgement when support already replied', async () => {
     const { value, queries } = deps({
       loadConversation: vi.fn(async () => ({ message: 'human', conversationContext: '', isAlreadyAnswered: true })),

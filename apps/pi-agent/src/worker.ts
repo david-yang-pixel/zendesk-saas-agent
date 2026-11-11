@@ -16,7 +16,10 @@ import { detectCustomerLanguage } from './reply-policy.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob, requeueLatestConversation } from './job-queue.js';
-import { addZendeskTicketTags, DEFAULT_HANDOFF_TAG, processHandoff, recordWorkerHandoff, runHandoffLoop } from './human-handoff.js';
+import {
+  addZendeskTicketTags, DEFAULT_HANDOFF_TAG, HANDOFF_ALERT_TIMEOUT_MS, HANDOFF_CONVERSATION_TIMEOUT_MS,
+  HANDOFF_REPLY_TIMEOUT_MS, processHandoff, recordWorkerHandoff, runHandoffLoop,
+} from './human-handoff.js';
 
 dotenv.config();
 
@@ -323,13 +326,18 @@ async function main() {
       now: () => new Date(),
       alertTracker: humanAlertTracker,
       // With no webhook configured, alerts are disabled, not undelivered.
-      sendAlert: async params => !FEISHU_WEBHOOK_URL || sendFeishuAlert(FEISHU_WEBHOOK_URL, params),
+      sendAlert: async params => !FEISHU_WEBHOOK_URL || sendFeishuAlert(FEISHU_WEBHOOK_URL, params,
+        (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(HANDOFF_ALERT_TIMEOUT_MS) })),
       addTags: (ticketId, tags) => addZendeskTicketTags({
         baseUrl: ZENDESK_BASE_URL, email: ZENDESK_EMAIL, apiToken: ZENDESK_API_TOKEN, ticketId, tags,
       }),
-      loadConversation: ticketId => getTicketDetails(ticketId, openConnectorService),
+      loadConversation: ticketId => getTicketDetails(
+        ticketId, openConnectorService, AbortSignal.timeout(HANDOFF_CONVERSATION_TIMEOUT_MS),
+      ),
       sendReply: async (ticketId, body) => {
-        await sendBrowserRelay(BROWSER_RELAY_URL, BROWSER_RELAY_KEY, ticketId, body);
+        await sendBrowserRelay(
+          BROWSER_RELAY_URL, BROWSER_RELAY_KEY, ticketId, body, AbortSignal.timeout(HANDOFF_REPLY_TIMEOUT_MS),
+        );
       },
     }),
   });
