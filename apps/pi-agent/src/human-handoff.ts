@@ -5,10 +5,13 @@ import { ticketIdFromDatabase } from './job-queue.js';
 import { detectCustomerLanguage, type ReplyLanguage } from './reply-policy.js';
 
 /**
- * Follow-up work for a customer's "human" command.
+ * Follow-up work for a customer's request for a human.
  *
- * Ingress cancels the AI run and records one human_handoffs row in the same
- * transaction. This module claims those rows and, for each one:
+ * Requests reach the human_handoffs table two ways: ingress records one in the
+ * same transaction that cancels the AI run when a customer replies exactly
+ * "human", 人工 or 真人; the worker records one (recordWorkerHandoff) when it
+ * detects a request phrased as a sentence. This module claims those rows and,
+ * for each one:
  *   1. tags the Zendesk ticket (retried until it succeeds or attempts run out),
  *   2. alerts Feishu once,
  *   3. for the first command of a takeover, sends the customer one
@@ -114,6 +117,61 @@ export interface HandoffRow {
 
 type Queryable = Pick<pg.Pool, 'query'>;
 
+export type WorkerHandoffOutcome = 'recorded' | 'already_locked';
+
+/**
+ * Lock the ticket for humans and record a handoff for a request the worker
+ * detected. If the ticket is already locked, whoever locked it (usually
+ * ingress, for an exact "human") already recorded the handoff, so nothing is
+ * added. Only a request in the customer's unanswered messages is acknowledged;
+ * one found only in older history is alerted and tagged but not answered.
+ */
+export async function recordWorkerHandoff(
+  pool: Pick<pg.Pool, 'connect'>,
+  options: { jobId: string; ticketId: number; customerMessage: string; acknowledge: boolean; reason: string },
+): Promise<WorkerHandoffOutcome> {
+  const handoffId = `handoff:${options.jobId}`;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO ticket_states (ticket_id, updated_at) VALUES ($1, NOW()) ON CONFLICT (ticket_id) DO NOTHING`,
+      [options.ticketId],
+    );
+    const state = await client.query(
+      'SELECT human_cancelled_at FROM ticket_states WHERE ticket_id = $1 FOR UPDATE',
+      [options.ticketId],
+    );
+    if (state.rows[0]?.human_cancelled_at) {
+      await client.query('COMMIT');
+      return 'already_locked';
+    }
+    await client.query(
+      'UPDATE ticket_states SET human_cancelled_at = NOW(), updated_at = NOW() WHERE ticket_id = $1',
+      [options.ticketId],
+    );
+    // An internal event, so the in-flight monitor does not read it as a new
+    // customer message; human_handoffs.handoff_id references it.
+    await client.query(`
+      INSERT INTO events (event_id, ticket_id, occurred_at, source, customer_origin, event_type, payload, received_at)
+      VALUES ($1, $2, NOW(), 'pi-agent', 'internal', 'human.handoff_detected', $3::json, NOW())
+      ON CONFLICT (event_id) DO NOTHING
+    `, [handoffId, options.ticketId, JSON.stringify({ job_id: options.jobId, reason: options.reason })]);
+    await client.query(`
+      INSERT INTO human_handoffs (handoff_id, ticket_id, acknowledge, customer_message, status, attempts, available_at, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, 'pending', 0, NOW(), NOW(), NOW())
+      ON CONFLICT (handoff_id) DO NOTHING
+    `, [handoffId, options.ticketId, options.acknowledge, options.customerMessage.trim().slice(0, 500) || null]);
+    await client.query('COMMIT');
+    return 'recorded';
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 /** Claim the next due handoff, or reclaim one whose lease expired. */
 export async function claimNextHandoff(pool: Queryable): Promise<HandoffRow | null> {
   // A row that keeps losing its lease is given up instead of retried forever.
@@ -196,13 +254,13 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
         : `已给工单打标签 ${deps.tag}。`;
       const ackLine = row.acknowledge
         ? `AI 将自动回复客户：${inHours ? '人工支持马上就来，请稍等' : '当前不在支持时间，人工会在支持时间内第一时间查看'}。`
-        : '客户此前已请求人工，本次为重复请求，不再自动回复客户。';
+        : '本次不自动回复客户：客户此前已请求过人工，或转人工诉求只出现在较早的对话中。';
       await deps.sendAlert({
         title: '🙋 Dify 工单转人工接管提醒',
         ticketId,
         status: inHours
-          ? '客户回复 human，AI 已停止回复（当前在支持时间内，请尽快跟进）'
-          : '客户回复 human，AI 已停止回复（当前不在支持时间内）',
+          ? '客户请求人工支持，AI 已停止回复（当前在支持时间内，请尽快跟进）'
+          : '客户请求人工支持，AI 已停止回复（当前不在支持时间内）',
         customerMessage: customerMessage.slice(0, 500),
         note: `${tagLine}\n${ackLine}`,
       });

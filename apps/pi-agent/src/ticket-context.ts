@@ -81,6 +81,8 @@ interface TicketDetails {
   lastEventTime?: string;
   customerEventsCount: number;
   hasRequestedHuman: boolean;
+  /** True when a customer message not yet answered asks for a human (a new request). */
+  latestRequestedHuman: boolean;
   isAlreadyAnswered: boolean;
   unrepliedCount: number;
 }
@@ -249,6 +251,7 @@ export async function getTicketDetails(ticketId: number, openConnector: McpServi
       lastEventTime,
       customerEventsCount: unrepliedCustomerMessages.length,
       hasRequestedHuman,
+      latestRequestedHuman: unrepliedCustomerMessages.some(m => detectHumanHandoffIntent(m.text)),
       isAlreadyAnswered,
       unrepliedCount: unrepliedCustomerMessages.length,
     };

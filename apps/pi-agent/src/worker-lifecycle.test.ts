@@ -332,3 +332,22 @@ it('in-flight abort for a new customer message requeues against a recorded event
     expect(h.db.events.has(successor!.event_id)).toBe(true);
   } finally { warn.mockRestore(); log.mockRestore(); }
 });
+
+it('hands a human request found by the worker to the handoff queue and cancels the job', async () => {
+  vi.useFakeTimers();
+  const handOffToHuman = vi.fn(async () => {});
+  const markJobCancelled = vi.fn();
+  const details = { isAlreadyAnswered: false, hasRequestedHuman: true, latestRequestedHuman: true, message: 'I want to talk to a human' };
+  const job = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query: vi.fn() },
+    isTicketHumanCancelled: vi.fn(async () => false),
+    getTicketDetails: vi.fn(async () => details),
+    openConnectorService: {}, handOffToHuman, markJobCancelled,
+    runPiSupportAgent: vi.fn(), recordJobOutcome: vi.fn(), markJobFailed: vi.fn(),
+    sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
+  });
+  await job({ job_id: 'job-h', ticket_id: 5500, event_id: 'evt-1', expected_event_id: 'evt-1' }, new AbortController());
+  expect(handOffToHuman).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'job-h' }), details, expect.stringContaining('人工'));
+  expect(markJobCancelled).toHaveBeenCalledWith('job-h', expect.stringContaining('人工'));
+  expect(vi.getTimerCount()).toBe(0);
+});

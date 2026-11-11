@@ -6,6 +6,7 @@ import {
   isWithinSupportHours,
   MAX_HANDOFF_ATTEMPTS,
   processHandoff,
+  recordWorkerHandoff,
   SUPPORT_HOURS_TEXT,
   type HandoffDependencies,
   type HandoffRow,
@@ -197,5 +198,55 @@ describe('processHandoff', () => {
     const { value } = deps({ loadConversation: vi.fn(async () => { throw new Error('unavailable'); }) });
     await processHandoff(row({ customer_message: '人工' }), value);
     expect(vi.mocked(value.sendReply).mock.calls[0][1]).toContain('转接人工支持');
+  });
+});
+
+function fakeClientPool(lockedAt: Date | null, failOn?: RegExp) {
+  const sql: string[] = [];
+  const params: unknown[][] = [];
+  const client = {
+    query: vi.fn(async (text: string, values: unknown[] = []) => {
+      const flat = text.replace(/\s+/g, ' ').trim();
+      sql.push(flat);
+      params.push(values);
+      if (failOn?.test(flat)) throw new Error('db down');
+      if (flat.startsWith('SELECT human_cancelled_at')) return { rows: [{ human_cancelled_at: lockedAt }] };
+      return { rows: [], rowCount: 1 };
+    }),
+    release: vi.fn(),
+  };
+  return { pool: { connect: vi.fn(async () => client) } as any, client, sql, params };
+}
+
+describe('recordWorkerHandoff', () => {
+  const options = { jobId: 'job-1', ticketId: 5500, customerMessage: ' I want to talk to a human ', acknowledge: true, reason: 'test' };
+
+  it('locks the ticket and records an acknowledged handoff', async () => {
+    const { pool, client, sql, params } = fakeClientPool(null);
+    await expect(recordWorkerHandoff(pool, options)).resolves.toBe('recorded');
+    expect(sql[0]).toBe('BEGIN');
+    expect(sql.at(-1)).toBe('COMMIT');
+    expect(sql.some(q => q.startsWith('UPDATE ticket_states SET human_cancelled_at = NOW()'))).toBe(true);
+    const eventIndex = sql.findIndex(q => q.startsWith('INSERT INTO events'));
+    const handoffIndex = sql.findIndex(q => q.startsWith('INSERT INTO human_handoffs'));
+    expect(eventIndex).toBeGreaterThan(0);
+    expect(handoffIndex).toBeGreaterThan(eventIndex);
+    expect(sql[eventIndex]).toContain("'internal'");
+    expect(params[handoffIndex]).toEqual(['handoff:job-1', 5500, true, 'I want to talk to a human']);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it('adds nothing when the ticket is already locked', async () => {
+    const { pool, sql } = fakeClientPool(new Date());
+    await expect(recordWorkerHandoff(pool, options)).resolves.toBe('already_locked');
+    expect(sql.some(q => q.includes('human_handoffs') || q.startsWith('UPDATE ticket_states'))).toBe(false);
+    expect(sql.at(-1)).toBe('COMMIT');
+  });
+
+  it('rolls back and rethrows on failure', async () => {
+    const { pool, client, sql } = fakeClientPool(null, /^INSERT INTO human_handoffs/);
+    await expect(recordWorkerHandoff(pool, options)).rejects.toThrow('db down');
+    expect(sql.at(-1)).toBe('ROLLBACK');
+    expect(client.release).toHaveBeenCalledOnce();
   });
 });

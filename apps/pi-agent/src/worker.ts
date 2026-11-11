@@ -16,7 +16,7 @@ import { detectCustomerLanguage } from './reply-policy.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob, requeueLatestConversation } from './job-queue.js';
-import { addZendeskTicketTags, DEFAULT_HANDOFF_TAG, processHandoff, runHandoffLoop } from './human-handoff.js';
+import { addZendeskTicketTags, DEFAULT_HANDOFF_TAG, processHandoff, recordWorkerHandoff, runHandoffLoop } from './human-handoff.js';
 
 dotenv.config();
 
@@ -231,6 +231,30 @@ async function isTicketHumanCancelled(ticketId: number): Promise<boolean> {
   }
 }
 
+/**
+ * Lock the ticket and record a handoff for a human request the worker detected,
+ * so the handoff loop tags it, alerts Feishu and (for a new request) answers the
+ * customer. Falls back to a plain Feishu alert if the handoff cannot be recorded.
+ */
+async function handOffToHuman(
+  job: { job_id: string; ticket_id: number },
+  details: { message: string; latestRequestedHuman?: boolean },
+  reason: string,
+): Promise<void> {
+  try {
+    const outcome = await recordWorkerHandoff(pool, {
+      jobId: job.job_id,
+      ticketId: job.ticket_id,
+      customerMessage: details.message,
+      acknowledge: Boolean(details.latestRequestedHuman),
+      reason,
+    });
+    console.warn(`[Worker] 🛡️ HUMAN TAKEOVER for ticket #${job.ticket_id} (${outcome}): ${reason}`);
+  } catch (error: any) {
+    console.warn(`[Worker] Failed to record human handoff for ticket #${job.ticket_id}:`, error.message);
+    await notifyHumanTakeover(job.ticket_id, details.message, reason);
+  }
+}
 
 async function main() {
   console.log(`[Worker] Starting Pi Agent Worker (${WORKER_ID}) on port ${PORT}...`);
@@ -396,18 +420,7 @@ async function main() {
       // NOTE: Mention jobs BYPASS this guard as well!
       if (initialDetails.hasRequestedHuman && !isMentionJob) {
         const humanReason = `模式 B 人工优先保护：对话历史中检测到客户曾请求人工客服，AI 保持静默。`;
-        console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
-        try {
-          await pool.query(
-            `INSERT INTO ticket_states (ticket_id, human_cancelled_at, updated_at)
-             VALUES ($1, NOW(), NOW())
-             ON CONFLICT (ticket_id) DO UPDATE SET human_cancelled_at = NOW(), updated_at = NOW()`,
-            [job.ticket_id]
-          );
-        } catch (e: any) {
-          console.warn('[Worker] Failed to update ticket_states for human cancellation:', e.message);
-        }
-        await notifyHumanTakeover(job.ticket_id, initialDetails.message, humanReason);
+        await handOffToHuman(job, initialDetails, humanReason);
         await markJobCancelled(job.job_id, humanReason);
         return;
       }
@@ -501,7 +514,7 @@ async function main() {
           const freshDetails = await getTicketDetails(job.ticket_id, openConnectorService);
           if (freshDetails.hasRequestedHuman && !isMentionJob) {
             const humanReason = `模式 B 人工优先保护：推理中途检测到客户转人工诉求，旧答复已即时打断并移交人工。`;
-            await notifyHumanTakeover(job.ticket_id, freshDetails.message, humanReason);
+            await handOffToHuman(job, freshDetails, humanReason);
             await recordJobOutcome({
               jobId: job.job_id,
               ticketId: job.ticket_id,
@@ -578,18 +591,7 @@ async function main() {
       // Guard 3: Did customer request human during reasoning?
       if (freshDetails.hasRequestedHuman && !isMentionJob) {
         const humanReason = `模式 B 人工优先保护：最新会话中检测到转人工诉求，旧答复已拦截并移交人工。`;
-        console.warn(`[Worker] 🛡️ HUMAN TAKEOVER: ${humanReason}`);
-        try {
-          await pool.query(
-            `INSERT INTO ticket_states (ticket_id, human_cancelled_at, updated_at)
-             VALUES ($1, NOW(), NOW())
-             ON CONFLICT (ticket_id) DO UPDATE SET human_cancelled_at = NOW(), updated_at = NOW()`,
-            [job.ticket_id]
-          );
-        } catch (e: any) {
-          console.warn('[Worker] Failed to update ticket_states for human cancellation:', e.message);
-        }
-        await notifyHumanTakeover(job.ticket_id, freshDetails.message, humanReason);
+        await handOffToHuman(job, freshDetails, humanReason);
         await recordJobOutcome({
           jobId: job.job_id,
           ticketId: job.ticket_id,
