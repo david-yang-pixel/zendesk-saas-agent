@@ -108,7 +108,7 @@ function deps(overrides: Partial<HandoffDependencies> = {}) {
     tag: 'human_requested',
     now: () => new Date('2026-11-11T03:00:00Z'), // Tuesday night shift
     alertTracker: { shouldAlert: vi.fn(() => true), recordAlert: vi.fn() },
-    sendAlert: vi.fn(async () => {}),
+    sendAlert: vi.fn(async () => true),
     addTags: vi.fn(async () => {}),
     loadConversation: vi.fn(async () => ({ message: 'human', conversationContext: 'Customer [t1]:\n工作流报错了\n\nCustomer [t2]:\nhuman' })),
     sendReply: vi.fn(async () => {}),
@@ -192,6 +192,40 @@ describe('processHandoff', () => {
     expect(last.value.sendReply).not.toHaveBeenCalled();
     expect(statusOf(last.queries).at(-1)).toBe("status = 'failed'");
     expect(vi.mocked(last.value.sendAlert).mock.calls[0][0].title).toContain('打标签失败');
+  });
+
+  it('retries an alert Feishu did not accept, without resending the reply', async () => {
+    const tracker = { shouldAlert: vi.fn(() => true), recordAlert: vi.fn() };
+    const first = deps({ alertTracker: tracker, sendAlert: vi.fn(async () => false) });
+    await processHandoff(row(), first.value);
+    expect(tracker.recordAlert).not.toHaveBeenCalled();
+    expect(first.value.sendReply).toHaveBeenCalledOnce();
+    expect(statusOf(first.queries)).toEqual(['tagged_at', "ack_state = 'attempting'", "ack_state = 'sent'", "status = 'pending'"]);
+    expect(first.queries.at(-1)?.[1]).toContain('Feishu alert was not delivered');
+
+    const retry = deps({ alertTracker: tracker });
+    await processHandoff(row({ attempts: 2, tagged_at: new Date(), ack_state: 'sent' }), retry.value);
+    expect(retry.value.sendReply).not.toHaveBeenCalled();
+    expect(vi.mocked(retry.value.sendAlert).mock.calls[0][0].note).toContain('已自动回复客户');
+    expect(tracker.recordAlert).toHaveBeenCalledWith(5459);
+    expect(statusOf(retry.queries)).toEqual(['alerted_at', "status = 'completed'"]);
+  });
+
+  it('re-sends the takeover alert once more when the alert keeps failing', async () => {
+    const sendAlert = vi.fn(async () => false);
+    const { value, queries } = deps({ sendAlert });
+    await processHandoff(row({ attempts: MAX_HANDOFF_ATTEMPTS, tagged_at: new Date(), ack_state: 'sent' }), value);
+    expect(statusOf(queries).at(-1)).toBe("status = 'failed'");
+    expect(sendAlert.mock.calls.at(-1)?.[0].title).toContain('多次发送失败后重发');
+  });
+
+  it('skips the acknowledgement when support already replied', async () => {
+    const { value, queries } = deps({
+      loadConversation: vi.fn(async () => ({ message: 'human', conversationContext: '', isAlreadyAnswered: true })),
+    });
+    await processHandoff(row(), value);
+    expect(value.sendReply).not.toHaveBeenCalled();
+    expect(statusOf(queries)).toEqual(['tagged_at', 'alerted_at', "ack_state = 'skipped'", "status = 'completed'"]);
   });
 
   it('falls back to the command language when the conversation cannot be loaded', async () => {

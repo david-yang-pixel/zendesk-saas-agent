@@ -397,7 +397,7 @@ class HumanHandoffRow(Base):
         ),
         CheckConstraint(
             "ack_state IS NULL OR ack_state IN "
-            "('attempting', 'sent', 'failed', 'uncertain')",
+            "('attempting', 'sent', 'skipped', 'failed', 'uncertain')",
             name="ck_human_handoffs_ack_state",
         ),
         Index("ix_human_handoffs_claimable", "status", "available_at"),

@@ -322,7 +322,8 @@ async function main() {
       tag: HUMAN_HANDOFF_TAG,
       now: () => new Date(),
       alertTracker: humanAlertTracker,
-      sendAlert: async params => { await sendFeishuAlert(FEISHU_WEBHOOK_URL, params); },
+      // With no webhook configured, alerts are disabled, not undelivered.
+      sendAlert: async params => !FEISHU_WEBHOOK_URL || sendFeishuAlert(FEISHU_WEBHOOK_URL, params),
       addTags: (ticketId, tags) => addZendeskTicketTags({
         baseUrl: ZENDESK_BASE_URL, email: ZENDESK_EMAIL, apiToken: ZENDESK_API_TOKEN, ticketId, tags,
       }),

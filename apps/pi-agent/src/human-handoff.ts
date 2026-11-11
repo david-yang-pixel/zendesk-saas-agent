@@ -12,11 +12,12 @@ import { detectCustomerLanguage, type ReplyLanguage } from './reply-policy.js';
  * "human", 人工 or 真人; the worker records one (recordWorkerHandoff) when it
  * detects a request phrased as a sentence. This module claims those rows and,
  * for each one:
- *   1. tags the Zendesk ticket (retried until it succeeds or attempts run out),
+ *   1. tags the Zendesk ticket,
  *   2. alerts Feishu once,
- *   3. for the first command of a takeover, sends the customer one
- *      acknowledgement through Browser Relay. That reply is fenced and never
- *      retried, so a customer can never receive it twice.
+ *   3. for a new request, sends the customer one acknowledgement through
+ *      Browser Relay, unless support has already replied. That reply is fenced
+ *      and never retried, so a customer can never receive it twice.
+ * A failed tag or Feishu alert is retried until attempts run out.
  */
 
 export const DEFAULT_HANDOFF_TAG = 'human_requested';
@@ -210,10 +211,11 @@ export interface HandoffDependencies {
   tag: string;
   now: () => Date;
   alertTracker: Pick<HumanAlertTracker, 'shouldAlert' | 'recordAlert'>;
-  sendAlert: (params: FeishuAlertParams) => Promise<void>;
+  /** Resolves true once Feishu accepted the alert (or alerts are disabled). */
+  sendAlert: (params: FeishuAlertParams) => Promise<boolean>;
   addTags: (ticketId: number, tags: string[]) => Promise<void>;
-  /** The public conversation, used only to pick the reply language. */
-  loadConversation: (ticketId: number) => Promise<{ message: string; conversationContext: string }>;
+  /** The public conversation: picks the reply language and shows whether support already replied. */
+  loadConversation: (ticketId: number) => Promise<{ message: string; conversationContext: string; isAlreadyAnswered?: boolean }>;
   /** Send one public reply; throws unless the relay reports it as sent. */
   sendReply: (ticketId: number, body: string) => Promise<void>;
   log?: Pick<Console, 'log' | 'warn'>;
@@ -229,7 +231,7 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
   const inHours = isWithinSupportHours(deps.now());
   const customerMessage = row.customer_message?.trim() || 'human';
 
-  // 1. Tag. The only step that is retried.
+  // 1. Tag (retried).
   let tagError: string | undefined;
   if (!row.tagged_at) {
     try {
@@ -244,33 +246,37 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
     }
   }
 
-  // 2. Alert once. A repeated command inside the cooldown is not re-announced,
-  // but the first command of a takeover is always announced.
+  // 2. Alert once (retried until Feishu accepts it). A repeated command inside
+  // the cooldown is not re-announced, but the first command of a takeover is.
+  let alertError: string | undefined;
   if (!row.alerted_at) {
+    let delivered = true;
     if (row.acknowledge || deps.alertTracker.shouldAlert(ticketId)) {
-      deps.alertTracker.recordAlert(ticketId);
       const tagLine = tagError
         ? `打标签 ${deps.tag} 失败，将自动重试：${tagError}`
         : `已给工单打标签 ${deps.tag}。`;
-      const ackLine = row.acknowledge
-        ? `AI 将自动回复客户：${inHours ? '人工支持马上就来，请稍等' : '当前不在支持时间，人工会在支持时间内第一时间查看'}。`
-        : '本次不自动回复客户：客户此前已请求过人工，或转人工诉求只出现在较早的对话中。';
-      await deps.sendAlert({
+      delivered = await deps.sendAlert({
         title: '🙋 Dify 工单转人工接管提醒',
         ticketId,
         status: inHours
           ? '客户请求人工支持，AI 已停止回复（当前在支持时间内，请尽快跟进）'
           : '客户请求人工支持，AI 已停止回复（当前不在支持时间内）',
         customerMessage: customerMessage.slice(0, 500),
-        note: `${tagLine}\n${ackLine}`,
+        note: `${tagLine}\n${acknowledgementLine(row, inHours)}`,
       });
+      if (delivered) deps.alertTracker.recordAlert(ticketId);
     } else {
       log.log(`[Handoff] Alert for ticket #${ticketId} suppressed (cooldown active).`);
     }
-    await deps.pool.query(
-      'UPDATE human_handoffs SET alerted_at = NOW(), updated_at = NOW() WHERE handoff_id = $1',
-      [row.handoff_id],
-    );
+    if (delivered) {
+      await deps.pool.query(
+        'UPDATE human_handoffs SET alerted_at = NOW(), updated_at = NOW() WHERE handoff_id = $1',
+        [row.handoff_id],
+      );
+    } else {
+      alertError = 'Feishu alert was not delivered';
+      log.warn(`[Handoff] Feishu alert for ticket #${ticketId} was not delivered (attempt ${row.attempts}/${MAX_HANDOFF_ATTEMPTS}).`);
+    }
   }
 
   // 3. Acknowledge the customer at most once.
@@ -288,20 +294,30 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
     });
   } else if (row.acknowledge && !row.ack_state) {
     let language: ReplyLanguage;
+    let alreadyAnswered = false;
     try {
       const conversation = await deps.loadConversation(ticketId);
       language = handoffLanguage(customerMessage, conversation.conversationContext);
+      alreadyAnswered = Boolean(conversation.isAlreadyAnswered);
     } catch (error) {
       log.warn(`[Handoff] Could not load ticket #${ticketId} to pick the reply language: ${errorText(error)}`);
       language = handoffLanguage(customerMessage);
     }
     const body = handoffAcknowledgement(language, inHours);
-    const claimed = await deps.pool.query(
+    // Support may have replied while this row waited (a backlog or a restart);
+    // promising that a human is on the way would then be wrong.
+    const claimed = alreadyAnswered ? { rowCount: 0 } : await deps.pool.query(
       `UPDATE human_handoffs SET ack_state = 'attempting', updated_at = NOW()
        WHERE handoff_id = $1 AND ack_state IS NULL RETURNING handoff_id`,
       [row.handoff_id],
     );
-    if ((claimed.rowCount ?? 0) === 1) {
+    if (alreadyAnswered) {
+      await deps.pool.query(
+        `UPDATE human_handoffs SET ack_state = 'skipped', updated_at = NOW() WHERE handoff_id = $1 AND ack_state IS NULL`,
+        [row.handoff_id],
+      );
+      log.log(`[Handoff] Support already replied on ticket #${ticketId}; acknowledgement skipped.`);
+    } else if ((claimed.rowCount ?? 0) === 1) {
       try {
         await deps.sendReply(ticketId, body);
         await deps.pool.query(
@@ -327,8 +343,9 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
     }
   }
 
-  // 4. Finish, or schedule another tagging attempt.
-  if (!tagError) {
+  // 4. Finish, or schedule another attempt at the tag or the alert.
+  const retryError = [tagError, alertError].filter(Boolean).join('; ');
+  if (!retryError) {
     await deps.pool.query(
       `UPDATE human_handoffs SET status = 'completed', lease_expires_at = NULL, last_error = NULL, updated_at = NOW()
        WHERE handoff_id = $1`,
@@ -340,23 +357,43 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
     await deps.pool.query(
       `UPDATE human_handoffs SET status = 'failed', lease_expires_at = NULL, last_error = $2, updated_at = NOW()
        WHERE handoff_id = $1`,
-      [row.handoff_id, tagError],
+      [row.handoff_id, retryError],
     );
-    await deps.sendAlert({
-      title: 'ℹ️ 转人工工单打标签失败（低优先级）',
-      ticketId,
-      status: `打标签 ${deps.tag} 已重试 ${row.attempts} 次仍失败`,
-      reason: tagError,
-      note: '转人工提醒和客户确认不受影响，请手动给工单加上该标签。',
-    });
+    await deps.sendAlert(tagError && !alertError
+      ? {
+        title: 'ℹ️ 转人工工单打标签失败（低优先级）',
+        ticketId,
+        status: `打标签 ${deps.tag} 已重试 ${row.attempts} 次仍失败`,
+        reason: tagError,
+        note: '转人工提醒和客户确认不受影响，请手动给工单加上该标签。',
+      }
+      : {
+        title: '🙋 Dify 工单转人工接管提醒（多次发送失败后重发）',
+        ticketId,
+        status: `客户请求人工支持，AI 已停止回复；转人工处理已重试 ${row.attempts} 次仍未完成`,
+        reason: retryError,
+        customerMessage: customerMessage.slice(0, 500),
+        note: tagError ? `请手动给工单加上标签 ${deps.tag}，并尽快跟进客户。` : '请尽快跟进客户。',
+      });
     return;
   }
   await deps.pool.query(
     `UPDATE human_handoffs SET status = 'pending', lease_expires_at = NULL, last_error = $2,
        available_at = NOW() + make_interval(secs => $3), updated_at = NOW()
      WHERE handoff_id = $1`,
-    [row.handoff_id, tagError, 30 * row.attempts],
+    [row.handoff_id, retryError, 30 * row.attempts],
   );
+}
+
+function acknowledgementLine(row: HandoffRow, inHours: boolean): string {
+  if (!row.acknowledge) return '本次不自动回复客户：客户此前已请求过人工，或转人工诉求只出现在较早的对话中。';
+  switch (row.ack_state) {
+    case 'sent': return '已自动回复客户转人工确认消息。';
+    case 'skipped': return '人工已回复客户，未再发送自动确认消息。';
+    case 'failed':
+    case 'uncertain': return '自动确认消息发送失败或状态未知，请人工回复客户。';
+    default: return `AI 将自动回复客户：${inHours ? '人工支持马上就来，请稍等' : '当前不在支持时间，人工会在支持时间内第一时间查看'}。`;
+  }
 }
 
 /** Poll and process handoffs one at a time until isRunning() turns false. */

@@ -54,7 +54,7 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint(
             "ack_state IS NULL OR ack_state IN "
-            "('attempting', 'sent', 'failed', 'uncertain')",
+            "('attempting', 'sent', 'skipped', 'failed', 'uncertain')",
             name="ck_human_handoffs_ack_state",
         ),
     )
