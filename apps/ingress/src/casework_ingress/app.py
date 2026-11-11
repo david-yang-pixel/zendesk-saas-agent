@@ -8,8 +8,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, ValidationError
 from starlette.types import Lifespan
 
 from .fakes import InMemoryCancelSink, InMemoryIdempotency, InMemoryJobSink
@@ -203,11 +204,16 @@ def create_app(
     messaging_clock: Callable[[], float] | None = None,
     ticket_sync_sleep: Callable[[float], Awaitable[None]] | None = None,
     ticket_events_signing_secret: str = "",
+    classic_webhook_signing_secret: str | None = None,
 ) -> FastAPI:
     """Build the ingress app with injected side-effect destinations.
 
     The defaults make the factory runnable for local development.  Production
     callers should inject durable sinks at process composition time.
+
+    ``classic_webhook_signing_secret`` guards ``WEBHOOK_PATH``. ``None`` (local
+    development only) leaves it unsigned; production always passes a string,
+    and an empty one rejects every request, closing the route.
     """
 
     processing_config = config or ProcessingRuleConfig(
@@ -248,7 +254,23 @@ def create_app(
         ingress_metrics.record_webhook(action=action, reason=reason)
         return _response(action=action, reason=reason, ticket_id=ticket_id)
 
-    async def webhook(payload: ZendeskWebhookPayload) -> WebhookResponse:
+    async def webhook(request: Request) -> WebhookResponse:
+        body = await request.body()
+        if classic_webhook_signing_secret is not None and not verify_zendesk_signature(
+            secret=classic_webhook_signing_secret,
+            timestamp=request.headers.get("X-Zendesk-Webhook-Signature-Timestamp", ""),
+            body=body,
+            signature=request.headers.get("X-Zendesk-Webhook-Signature", ""),
+            now=messaging_clock() if messaging_clock is not None else None,
+            max_age_seconds=messaging_signature_max_age_seconds,
+        ):
+            raise HTTPException(status_code=401, detail="bad_signature")
+        try:
+            payload = ZendeskWebhookPayload.model_validate_json(body)
+        except ValidationError as error:
+            raise HTTPException(
+                status_code=422, detail=jsonable_encoder(error.errors())
+            ) from error
         if admission is not None:
             try:
                 admitted = await admission.admit(

@@ -356,3 +356,72 @@ def test_internal_customer_actor_message_cannot_trigger_human_cancellation() -> 
     assert response.json()["action"] == "ignore"
     assert jobs.submitted == []
     assert cancellations.cancelled == []
+
+
+def _classic_client(secret: str) -> tuple[TestClient, _Admission]:
+    admission = _Admission()
+    app = create_app(
+        admission=admission,
+        classic_webhook_signing_secret=secret,
+        messaging_clock=lambda: 1_800_000_000,
+    )
+    return TestClient(app), admission
+
+
+def _classic_post(
+    client: TestClient, *, secret: str | None, timestamp: int = 1_800_000_000
+) -> httpx.Response:
+    import base64
+    import hashlib
+    import hmac
+    import json
+
+    body = json.dumps(
+        {"event_id": "evt-forged", "ticket_id": 4242, "is_customer_message": True,
+         "message_text": "human"}
+    ).encode()
+    headers = {"Content-Type": "application/json"}
+    if secret is not None:
+        headers["X-Zendesk-Webhook-Signature-Timestamp"] = str(timestamp)
+        headers["X-Zendesk-Webhook-Signature"] = base64.b64encode(
+            hmac.new(secret.encode(), str(timestamp).encode() + body, hashlib.sha256).digest()
+        ).decode()
+    return client.post("/webhook/zendesk", content=body, headers=headers)
+
+
+def test_classic_webhook_rejects_unsigned_and_wrongly_signed_requests() -> None:
+    client, admission = _classic_client("classic-secret")
+
+    assert _classic_post(client, secret=None).status_code == 401
+    assert _classic_post(client, secret="other-secret").status_code == 401
+    assert _classic_post(client, secret="classic-secret", timestamp=1_700_000_000).status_code == 401
+    assert admission.events == []
+
+    accepted = _classic_post(client, secret="classic-secret")
+    assert accepted.status_code == 202
+    assert [event.event_id for event in admission.events] == ["evt-forged"]
+
+
+def test_classic_webhook_is_closed_without_a_secret() -> None:
+    client, admission = _classic_client("")
+
+    assert _classic_post(client, secret=None).status_code == 401
+    assert _classic_post(client, secret="").status_code == 401
+    assert admission.events == []
+
+
+def test_classic_webhook_still_validates_a_signed_body() -> None:
+    import base64
+    import hashlib
+    import hmac
+
+    client, _ = _classic_client("classic-secret")
+    body = b'{"event_id": "evt-bad"}'
+    signature = base64.b64encode(
+        hmac.new(b"classic-secret", b"1800000000" + body, hashlib.sha256).digest()
+    ).decode()
+    response = client.post("/webhook/zendesk", content=body, headers={
+        "X-Zendesk-Webhook-Signature-Timestamp": "1800000000",
+        "X-Zendesk-Webhook-Signature": signature,
+    })
+    assert response.status_code == 422
