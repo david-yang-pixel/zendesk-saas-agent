@@ -16,6 +16,7 @@ import { detectCustomerLanguage } from './reply-policy.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
 import { getTicketDetails } from './ticket-context.js';
 import { claimNextJob, requeueLatestConversation } from './job-queue.js';
+import { addZendeskTicketTags, DEFAULT_HANDOFF_TAG, processHandoff, runHandoffLoop } from './human-handoff.js';
 
 dotenv.config();
 
@@ -77,6 +78,7 @@ const OPENCONNECTOR_RUNTIME_TOKEN = cleanEnv(process.env.CASEWORK_CREDENTIAL_OPE
   || cleanEnv(process.env.OOMOL_CONNECT_RUNTIME_TOKEN);
 const FEISHU_WEBHOOK_URL = cleanEnv(process.env.FEISHU_WEBHOOK_URL);
 const humanAlertTracker = new HumanAlertTracker(30 * 60 * 1000);
+const HUMAN_HANDOFF_TAG = cleanEnv(process.env.CASEWORK_HUMAN_HANDOFF_TAG) || DEFAULT_HANDOFF_TAG;
 
 async function notifyHumanTakeover(ticketId: number, customerMessage: string, reason: string): Promise<void> {
   if (!humanAlertTracker.shouldAlert(ticketId)) {
@@ -286,6 +288,26 @@ async function main() {
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // Customer "human" commands recorded by ingress: tag, alert, acknowledge.
+  const handoffLoop = runHandoffLoop({
+    pool,
+    isRunning: () => running,
+    process: row => processHandoff(row, {
+      pool,
+      tag: HUMAN_HANDOFF_TAG,
+      now: () => new Date(),
+      alertTracker: humanAlertTracker,
+      sendAlert: async params => { await sendFeishuAlert(FEISHU_WEBHOOK_URL, params); },
+      addTags: (ticketId, tags) => addZendeskTicketTags({
+        baseUrl: ZENDESK_BASE_URL, email: ZENDESK_EMAIL, apiToken: ZENDESK_API_TOKEN, ticketId, tags,
+      }),
+      loadConversation: ticketId => getTicketDetails(ticketId, openConnectorService),
+      sendReply: async (ticketId, body) => {
+        await sendBrowserRelay(BROWSER_RELAY_URL, BROWSER_RELAY_KEY, ticketId, body);
+      },
+    }),
+  });
 
   async function processJob(
     job: any,
@@ -743,6 +765,7 @@ async function main() {
     }
   }
 
+  await handoffLoop;
   console.log('[Worker] Shutting down cleanly...');
   server.close();
   await pool.end();

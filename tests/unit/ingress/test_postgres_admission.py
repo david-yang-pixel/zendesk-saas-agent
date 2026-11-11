@@ -14,7 +14,13 @@ from sqlalchemy.orm import Session
 from casework_ingress.ports import AdmissionEvent, AdmissionUnavailable
 from casework_ingress.postgres_admission import PostgresAdmission
 from casework_ingress.processing_rules import NormalizedZendeskEvent
-from casework_persistence.models import Base, CaseJobRow, TicketState, EventRecord
+from casework_persistence.models import (
+    Base,
+    CaseJobRow,
+    EventRecord,
+    HumanHandoffRow,
+    TicketState,
+)
 from casework_persistence.repositories import ConfigRevisionRepository
 
 
@@ -182,6 +188,61 @@ async def test_postgres_admission_human_command_fences_active_job(
     async with sessions.transaction() as session:
         state = (await session.execute(select(TicketState))).scalar_one()
         assert state.human_cancelled_at is None
+
+
+def _operator_mention(event_id: str) -> AdmissionEvent:
+    return AdmissionEvent(
+        event_id=event_id,
+        received_at=datetime(2026, 9, 1, tzinfo=UTC),
+        normalized=NormalizedZendeskEvent(
+            ticket_id=3726,
+            tags=("saas",),
+            assignee="saas-support",
+            status="open",
+            is_customer_message=False,
+            message_text="@agent please look again",
+        ),
+        raw_payload={"event_id": event_id, "ticket_id": 3726},
+    )
+
+
+@pytest.mark.asyncio
+async def test_human_command_records_handoff_and_acknowledges_once_per_takeover(
+    tmp_path: Path,
+) -> None:
+    sessions = _SessionAdapter(tmp_path / "handoff.sqlite")
+    async with sessions.transaction() as session:
+        await ConfigRevisionRepository(session).bootstrap(
+            revision="cfg-1", config=CONFIG, actor="bootstrap"
+        )
+    admission = PostgresAdmission(transaction_scope=sessions.transaction)
+
+    first = await admission.admit(_event(event_id="evt-human-1", message=" Human! "))
+    repeat = await admission.admit(_event(event_id="evt-human-2", message="真人"))
+    replay = await admission.admit(_event(event_id="evt-human-1", message="human"))
+    await admission.admit(_operator_mention("evt-mention"))
+    after_mention = await admission.admit(_event(event_id="evt-human-3", message="human"))
+
+    assert [first.action, repeat.action, replay.action, after_mention.action] == [
+        "cancel",
+        "cancel",
+        "duplicate",
+        "cancel",
+    ]
+    async with sessions.transaction() as session:
+        rows = (
+            (await session.execute(select(HumanHandoffRow).order_by(HumanHandoffRow.handoff_id)))
+            .scalars()
+            .all()
+        )
+    assert [(row.handoff_id, row.acknowledge) for row in rows] == [
+        ("evt-human-1", True),
+        ("evt-human-2", False),
+        ("evt-human-3", True),
+    ]
+    assert all(row.ticket_id == 3726 and row.status == "pending" for row in rows)
+    assert rows[0].customer_message == "Human!"
+    assert rows[0].available_at.replace(tzinfo=UTC) == datetime(2026, 9, 1, tzinfo=UTC)
 
 
 @pytest.mark.asyncio

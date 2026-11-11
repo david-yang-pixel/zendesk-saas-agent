@@ -27,6 +27,7 @@ from casework_persistence.repositories import (
     ConfigSnapshot,
     EventRepository,
     HumanCancelRepository,
+    HumanHandoffRepository,
     JobRepository,
     SessionPort,
     TicketRepository,
@@ -125,6 +126,16 @@ class PostgresAdmission:
                 )
                 if cancelled.duplicate_event:
                     return self._duplicate(event)
+                # The worker alerts Feishu and tags the ticket for every
+                # accepted command, and acknowledges the customer only for the
+                # first command of a takeover so repeats are not answered.
+                await HumanHandoffRepository(session).record(
+                    event_id=event.event_id,
+                    ticket_id=event.normalized.ticket_id,
+                    acknowledge=not cancelled.takeover_already_active,
+                    customer_message=event.normalized.message_text,
+                    occurred_at=event.received_at,
+                )
                 return AdmissionResult(
                     action="cancel",
                     reason="human",

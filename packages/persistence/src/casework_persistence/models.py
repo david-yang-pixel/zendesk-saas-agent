@@ -14,6 +14,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -349,6 +350,60 @@ class RunLogExportRow(Base):
     )
 
 
+class HumanHandoffRow(Base):
+    """Durable follow-up work for one customer ``human`` command.
+
+    Ingress records the row in the same transaction as the cancellation; the
+    worker alerts Feishu, tags the ticket and, for the first request of a
+    takeover, acknowledges the customer. Each step keeps its own marker so a
+    retried row never repeats a step that already happened.
+    """
+
+    __tablename__ = "human_handoffs"
+
+    handoff_id: Mapped[str] = mapped_column(
+        String(255), ForeignKey("events.event_id"), primary_key=True
+    )
+    ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    acknowledge: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    customer_message: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tagged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ack_state: Mapped[str | None] = mapped_column(String(20))
+    ack_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint("ticket_id > 0", name="ck_human_handoffs_ticket_id_positive"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'completed', 'failed')",
+            name="ck_human_handoffs_status",
+        ),
+        CheckConstraint(
+            "ack_state IS NULL OR ack_state IN "
+            "('attempting', 'sent', 'failed', 'uncertain')",
+            name="ck_human_handoffs_ack_state",
+        ),
+        Index("ix_human_handoffs_claimable", "status", "available_at"),
+    )
+
+
 __all__ = [
     "ACTIVE_JOB_STATUSES",
     "Base",
@@ -356,6 +411,7 @@ __all__ = [
     "ConfigHeadRow",
     "ConfigRevisionRow",
     "EventRecord",
+    "HumanHandoffRow",
     "OutboxMessage",
     "RunEventRow",
     "RunRecordRow",
