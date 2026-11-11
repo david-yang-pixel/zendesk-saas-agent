@@ -219,6 +219,25 @@ describe('processHandoff', () => {
     expect(sendAlert.mock.calls.at(-1)?.[0].title).toContain('多次发送失败后重发');
   });
 
+  it('re-opens the takeover alert when the reply-failure alert is not delivered', async () => {
+    const sendAlert = vi.fn(async (params: { title: string }) => !params.title.includes('发送失败'));
+    const first = deps({ sendAlert, sendReply: vi.fn(async () => { throw new Error('relay down'); }) });
+    await processHandoff(row(), first.value);
+    const firstSql = first.queries.map(([sql]) => sql);
+    expect(firstSql.some(sql => sql.startsWith('UPDATE human_handoffs SET alerted_at = NULL'))).toBe(true);
+    expect(statusOf(first.queries).at(-1)).toBe("status = 'pending'");
+    expect(String(first.queries.at(-1)?.[1][1])).toContain('reply-failure alert was not delivered');
+
+    const retry = deps();
+    await processHandoff(row({ attempts: 2, tagged_at: new Date(), ack_state: 'failed' }), retry.value);
+    expect(retry.value.sendReply).not.toHaveBeenCalled();
+    expect(vi.mocked(retry.value.sendAlert).mock.calls[0][0]).toMatchObject({
+      note: expect.stringContaining('自动确认消息发送失败或状态未知'),
+      draftReply: expect.stringContaining('Thanks for reaching out'),
+    });
+    expect(statusOf(retry.queries)).toEqual(['alerted_at', "status = 'completed'"]);
+  });
+
   it('skips the acknowledgement when support already replied', async () => {
     const { value, queries } = deps({
       loadConversation: vi.fn(async () => ({ message: 'human', conversationContext: '', isAlreadyAnswered: true })),

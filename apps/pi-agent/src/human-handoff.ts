@@ -263,6 +263,9 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
           : '客户请求人工支持，AI 已停止回复（当前不在支持时间内）',
         customerMessage: customerMessage.slice(0, 500),
         note: `${tagLine}\n${acknowledgementLine(row, inHours)}`,
+        draftReply: row.ack_state === 'failed' || row.ack_state === 'uncertain'
+          ? handoffAcknowledgement(handoffLanguage(customerMessage), inHours)
+          : undefined,
       });
       if (delivered) deps.alertTracker.recordAlert(ticketId);
     } else {
@@ -279,6 +282,17 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
     }
   }
 
+  // A failed reply is reported in its own alert. If Feishu rejects that one,
+  // re-open the takeover alert: its retry states the failure and the draft.
+  const reportReplyProblem = async (params: FeishuAlertParams) => {
+    if (await deps.sendAlert(params)) return;
+    await deps.pool.query(
+      'UPDATE human_handoffs SET alerted_at = NULL, updated_at = NOW() WHERE handoff_id = $1',
+      [row.handoff_id],
+    );
+    alertError = [alertError, 'Feishu reply-failure alert was not delivered'].filter(Boolean).join('; ');
+  };
+
   // 3. Acknowledge the customer at most once.
   if (row.acknowledge && row.ack_state === 'attempting') {
     // A previous attempt stopped mid-send: the customer may already have it.
@@ -286,7 +300,7 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
       `UPDATE human_handoffs SET ack_state = 'uncertain', updated_at = NOW() WHERE handoff_id = $1`,
       [row.handoff_id],
     );
-    await deps.sendAlert({
+    await reportReplyProblem({
       title: '⚠️ 转人工确认消息状态未知',
       ticketId,
       status: '确认消息可能未发送',
@@ -331,7 +345,7 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
           `UPDATE human_handoffs SET ack_state = 'failed', updated_at = NOW() WHERE handoff_id = $1`,
           [row.handoff_id],
         );
-        await deps.sendAlert({
+        await reportReplyProblem({
           title: '🚨 转人工确认消息发送失败',
           ticketId,
           status: '未能自动回复客户',
