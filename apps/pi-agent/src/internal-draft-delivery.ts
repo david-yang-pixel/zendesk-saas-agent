@@ -36,14 +36,16 @@ export function buildInternalDraftBody(jobId: string, customerReply: string, ope
   return `${INTERNAL_DRAFT_MARKER}${jobId}]\n${note}`;
 }
 
-function zendeskTicketUrl(baseUrl: string, ticketId: number): string {
+/** A Zendesk ticket API URL, accepting only a bare https://*.zendesk.com origin. */
+export function zendeskTicketUrl(baseUrl: string, ticketId: number, resource?: 'tags'): string {
   const origin = new URL(baseUrl);
   if (origin.protocol !== 'https:' || !origin.hostname.endsWith('.zendesk.com') ||
       origin.username || origin.password || origin.port || origin.pathname !== '/' ||
       origin.search || origin.hash || !Number.isSafeInteger(ticketId) || ticketId <= 0) {
     throw new Error('Invalid Zendesk internal draft destination');
   }
-  return new URL(`/api/v2/tickets/${ticketId}.json`, origin).toString();
+  const path = resource ? `${ticketId}/${resource}` : String(ticketId);
+  return new URL(`/api/v2/tickets/${path}.json`, origin).toString();
 }
 
 export async function deliverInternalDraft(options: {

@@ -29,6 +29,7 @@ from casework_persistence.models import (
     ConfigHeadRow,
     ConfigRevisionRow,
     EventRecord,
+    HumanHandoffRow,
     OutboxMessage,
     RunEventRow,
     RunRecordRow,
@@ -142,6 +143,8 @@ class CancelResult:
     cancelled_jobs: int
     cancelled_outbox: int
     duplicate_event: bool = False
+    # True when a human takeover was already active before this command.
+    takeover_already_active: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -704,6 +707,7 @@ class HumanCancelRepository:
                 duplicate_event=True,
             )
 
+        takeover_already_active = state.human_cancelled_at is not None
         new_generation = state.generation + 1
         timestamp = occurred_at
         state.generation = new_generation
@@ -753,6 +757,42 @@ class HumanCancelRepository:
             generation=new_generation,
             cancelled_jobs=_rowcount(jobs),
             cancelled_outbox=_rowcount(outbox),
+            takeover_already_active=takeover_already_active,
+        )
+
+
+class HumanHandoffRepository:
+    """Record the worker follow-up for one accepted customer ``human`` command."""
+
+    def __init__(self, session: SessionPort) -> None:
+        self.session = session
+
+    async def record(
+        self,
+        *,
+        event_id: str,
+        ticket_id: int,
+        acknowledge: bool,
+        customer_message: str | None,
+        occurred_at: datetime,
+    ) -> None:
+        if ticket_id <= 0:
+            raise ValueError("ticket_id must be positive")
+        if not event_id.strip():
+            raise ValueError("event_id must not be blank")
+        message = (customer_message or "").strip()[:500] or None
+        await self.session.execute(
+            insert(HumanHandoffRow).values(
+                handoff_id=event_id,
+                ticket_id=ticket_id,
+                acknowledge=acknowledge,
+                customer_message=message,
+                status="pending",
+                attempts=0,
+                available_at=occurred_at,
+                created_at=occurred_at,
+                updated_at=occurred_at,
+            )
         )
 
 
@@ -1152,6 +1192,7 @@ class CaseworkPersistence:
         self.tickets = TicketRepository(session)
         self.jobs = JobRepository(session)
         self.human_cancel = HumanCancelRepository(session)
+        self.human_handoffs = HumanHandoffRepository(session)
         self.outbox = OutboxRepository(session)
         self.run_telemetry = RunTelemetryRepository(session)
 
@@ -1169,6 +1210,7 @@ __all__ = [
     "EventRepository",
     "GenerationFenceError",
     "HumanCancelRepository",
+    "HumanHandoffRepository",
     "JobRepository",
     "MissingConfigSnapshotError",
     "OutboxDraft",

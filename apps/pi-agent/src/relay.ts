@@ -12,7 +12,8 @@ export async function sendBrowserRelay(
   relayUrl: string,
   apiKey: string,
   ticketId: number,
-  body: string
+  body: string,
+  signal?: AbortSignal,
 ): Promise<RelaySendResult> {
   const normalizedUrl = relayUrl.replace(/\/+$/, '') + '/send';
   const start = Date.now();
@@ -26,6 +27,7 @@ export async function sendBrowserRelay(
       ticket_id: ticketId,
       body: body,
     }),
+    signal,
   });
 
   const duration = Date.now() - start;

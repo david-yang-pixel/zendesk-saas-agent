@@ -90,3 +90,38 @@ def test_production_ingress_requires_messaging_webhook_secret(
 
     with pytest.raises(RuntimeError, match="ZENDESK_MESSAGING_WEBHOOK_SECRET"):
         create_app()
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, ""), (" classic ", "classic")])
+def test_production_composition_closes_the_classic_webhook_without_a_secret(
+    monkeypatch: pytest.MonkeyPatch, configured: str | None, expected: str
+) -> None:
+    for name, value in {
+        "DATABASE_URL": "postgresql+asyncpg://db",
+        "ZENDESK_BASE_URL": "https://tenant.zendesk.com",
+        "ZENDESK_EMAIL": "support@example.com",
+        "ZENDESK_API_TOKEN": "api-token",
+        "ZENDESK_MESSAGING_WEBHOOK_SECRET": "webhook-secret",
+    }.items():
+        monkeypatch.setenv(name, value)
+    if configured is None:
+        monkeypatch.delenv("ZENDESK_CLASSIC_WEBHOOK_SECRET", raising=False)
+    else:
+        monkeypatch.setenv("ZENDESK_CLASSIC_WEBHOOK_SECRET", configured)
+    captured: dict[str, object] = {}
+
+    def _capture(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(composition, "create_ingress_app", _capture)
+    monkeypatch.setattr(composition, "ZendeskApiTicketReader", lambda **_: object())
+    monkeypatch.setattr(composition, "create_engine", lambda _: object())
+    monkeypatch.setattr(composition, "create_session_factory", lambda _: object())
+    monkeypatch.setattr(composition, "postgres_transaction_scope", lambda _: object())
+    monkeypatch.setattr(composition, "DatabaseReadiness", lambda *_a, **_k: object())
+
+    create_app()
+
+    # An empty secret rejects every request; None would leave the route unsigned.
+    assert captured["classic_webhook_signing_secret"] == expected

@@ -51,3 +51,24 @@ it('preserves earlier answers, requester identity and attachments without exposi
   expect(result.attachments).toEqual([expect.objectContaining({ id: 'pdf', contentType: 'application/pdf' })]);
   expect(result.lastEventId).toBe('new');
 });
+
+it('separates a new human request from one only in earlier history', async () => {
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: '1', author: { type: 'end-user' }, content: { text: 'I want to talk to a human' } },
+    { id: '2', author: { type: 'agent' }, content: { text: 'A human will reply soon' } },
+    { id: '3', author: { type: 'end-user' }, content: { text: 'Also, why does my workflow fail?' } },
+  ]);
+  const earlier = await getTicketDetails(3726, config);
+  expect(earlier.hasRequestedHuman).toBe(true);
+  expect(earlier.latestRequestedHuman).toBe(false);
+
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: '1', author: { type: 'end-user' }, content: { text: 'My workflow fails' } },
+    { id: '2', author: { type: 'agent' }, content: { text: 'Please check the logs' } },
+    { id: '3', author: { type: 'end-user' }, content: { text: 'Still broken.' } },
+    { id: '4', author: { type: 'end-user' }, content: { text: '请帮我转人工客服' } },
+  ]);
+  const latest = await getTicketDetails(3726, config);
+  expect(latest.hasRequestedHuman).toBe(true);
+  expect(latest.latestRequestedHuman).toBe(true);
+});
