@@ -335,9 +335,11 @@ async function main() {
         ticketId, openConnectorService, AbortSignal.timeout(HANDOFF_CONVERSATION_TIMEOUT_MS),
       ),
       sendReply: async (ticketId, body) => {
-        await sendBrowserRelay(
-          BROWSER_RELAY_URL, BROWSER_RELAY_KEY, ticketId, body, AbortSignal.timeout(HANDOFF_REPLY_TIMEOUT_MS),
-        );
+        // The relay's "reply human" footer would ask a customer who just did so to do it again.
+        await sendBrowserRelay(BROWSER_RELAY_URL, BROWSER_RELAY_KEY, ticketId, body, {
+          signal: AbortSignal.timeout(HANDOFF_REPLY_TIMEOUT_MS),
+          appendFooter: false,
+        });
       },
     }),
   });
