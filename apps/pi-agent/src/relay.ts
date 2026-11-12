@@ -8,12 +8,23 @@ export interface RelaySendResult {
   total_duration_ms?: number;
 }
 
+export interface RelaySendOptions {
+  signal?: AbortSignal;
+  /**
+   * The relay appends the "reply human" footer to every reply by default.
+   * Pass false for a message where that prompt makes no sense, such as the
+   * acknowledgement of a human request. A relay that predates this option
+   * ignores it and still appends the footer.
+   */
+  appendFooter?: boolean;
+}
+
 export async function sendBrowserRelay(
   relayUrl: string,
   apiKey: string,
   ticketId: number,
   body: string,
-  signal?: AbortSignal,
+  options: RelaySendOptions = {},
 ): Promise<RelaySendResult> {
   const normalizedUrl = relayUrl.replace(/\/+$/, '') + '/send';
   const start = Date.now();
@@ -26,8 +37,10 @@ export async function sendBrowserRelay(
     body: JSON.stringify({
       ticket_id: ticketId,
       body: body,
+      // Sent only to opt out, so ordinary replies keep the exact same payload.
+      ...(options.appendFooter === false ? { append_footer: false } : {}),
     }),
-    signal,
+    signal: options.signal,
   });
 
   const duration = Date.now() - start;
