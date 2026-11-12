@@ -265,11 +265,12 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
         ? `打标签 ${deps.tag} 失败，将自动重试：${tagError}`
         : `已给工单打标签 ${deps.tag}。`;
       delivered = await deps.sendAlert({
-        title: '🙋 Dify 工单转人工接管提醒',
+        title: `🙋 工单 #${ticketId} 需要人工处理`,
+        color: 'red',
         ticketId,
         status: inHours
-          ? '客户请求人工支持，AI 已停止回复（当前在支持时间内，请尽快跟进）'
-          : '客户请求人工支持，AI 已停止回复（当前不在支持时间内）',
+          ? '客户请求人工支持，AI 已停止回复。当前在支持时间内，请尽快跟进。'
+          : '客户请求人工支持，AI 已停止回复。当前不在支持时间内，请在支持时间开始后第一时间处理。',
         customerMessage: customerMessage.slice(0, 500),
         note: `${tagLine}\n${acknowledgementLine(row, inHours)}`,
         draftReply: row.ack_state === 'failed' || row.ack_state === 'uncertain'
@@ -311,6 +312,7 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
     );
     await reportReplyProblem({
       title: '⚠️ 转人工确认消息状态未知',
+      color: 'orange',
       ticketId,
       status: '确认消息可能未发送',
       note: '发送转人工确认消息时 worker 中断，无法确认客户是否收到。为避免重复发送，系统不会重试，请人工检查并回复客户。',
@@ -358,6 +360,7 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
           );
           await reportReplyProblem({
             title: '⚠️ 转人工确认消息状态未知',
+            color: 'orange',
             ticketId,
             status: '确认消息发送超时',
             reason,
@@ -371,6 +374,7 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
           );
           await reportReplyProblem({
             title: '🚨 转人工确认消息发送失败',
+            color: 'orange',
             ticketId,
             status: '未能自动回复客户',
             reason,
@@ -407,7 +411,8 @@ export async function processHandoff(row: HandoffRow, deps: HandoffDependencies)
         note: '转人工提醒和客户确认不受影响，请手动给工单加上该标签。',
       }
       : {
-        title: '🙋 Dify 工单转人工接管提醒（多次发送失败后重发）',
+        title: `🙋 工单 #${ticketId} 需要人工处理（提醒多次发送失败后重发）`,
+        color: 'red',
         ticketId,
         status: `客户请求人工支持，AI 已停止回复；转人工处理已重试 ${row.attempts} 次仍未完成`,
         reason: retryError,

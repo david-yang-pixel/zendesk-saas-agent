@@ -1,3 +1,6 @@
+/** Header colours a Feishu message card supports. */
+export type FeishuCardColor = 'red' | 'orange' | 'yellow' | 'green' | 'blue' | 'grey';
+
 export interface FeishuAlertParams {
   title: string;
   ticketId: number;
@@ -6,7 +9,11 @@ export interface FeishuAlertParams {
   customerMessage?: string;
   draftReply?: string;
   note?: string;
+  /** Send a message card with this header colour instead of plain text. */
+  color?: FeishuCardColor;
 }
+
+const ticketUrl = (ticketId: number) => `https://langgenius.zendesk.com/agent/tickets/${ticketId}`;
 
 export function formatFeishuAlertText(params: FeishuAlertParams): string {
   const lines: string[] = [
@@ -14,7 +21,7 @@ export function formatFeishuAlertText(params: FeishuAlertParams): string {
     '',
     `工单：#${params.ticketId}`,
     `状态：${params.status}`,
-    `链接：https://langgenius.zendesk.com/agent/tickets/${params.ticketId}`,
+    `链接：${ticketUrl(params.ticketId)}`,
   ];
 
   if (params.reason) {
@@ -36,6 +43,44 @@ export function formatFeishuAlertText(params: FeishuAlertParams): string {
   return lines.join('\n');
 }
 
+/**
+ * A Feishu interactive card: a coloured header, the status in bold, then each
+ * section. Customer and model text goes in plain_text blocks so its Markdown is
+ * shown as written, never rendered.
+ */
+export function formatFeishuAlertCard(params: FeishuAlertParams): Record<string, unknown> {
+  const markdown = (content: string) => ({ tag: 'div', text: { tag: 'lark_md', content } });
+  const plain = (content: string) => ({ tag: 'div', text: { tag: 'plain_text', content } });
+  const elements: unknown[] = [
+    markdown(`**${params.status}**`),
+    markdown(`工单：[#${params.ticketId}](${ticketUrl(params.ticketId)})`),
+  ];
+  const sections: Array<[string, string | undefined]> = [
+    ['失败原因', params.reason],
+    ['客户最新诉求', params.customerMessage],
+    ['AI 建议回复草稿（可直接复制发送）', params.draftReply],
+    ['说明', params.note],
+  ];
+  for (const [label, value] of sections) {
+    if (!value?.trim()) continue;
+    elements.push({ tag: 'hr' }, markdown(`**${label}**`), plain(value.trim()));
+  }
+  elements.push({
+    tag: 'action',
+    actions: [{
+      tag: 'button',
+      text: { tag: 'plain_text', content: '打开工单' },
+      type: params.color === 'red' ? 'danger' : 'primary',
+      url: ticketUrl(params.ticketId),
+    }],
+  });
+  return {
+    config: { wide_screen_mode: true },
+    header: { template: params.color ?? 'blue', title: { tag: 'plain_text', content: params.title } },
+    elements,
+  };
+}
+
 export async function sendFeishuAlert(
   webhookUrl: string,
   params: FeishuAlertParams,
@@ -46,16 +91,15 @@ export async function sendFeishuAlert(
     return false;
   }
 
-  const text = formatFeishuAlertText(params);
+  const message = params.color
+    ? { msg_type: 'interactive', card: formatFeishuAlertCard(params) }
+    : { msg_type: 'text', content: { text: formatFeishuAlertText(params) } };
 
   try {
     const res = await fetchFn(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        msg_type: 'text',
-        content: { text },
-      }),
+      body: JSON.stringify(message),
     });
 
     if (!res.ok) {
