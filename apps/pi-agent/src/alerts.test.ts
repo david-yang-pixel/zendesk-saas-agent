@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  formatFeishuAlertCard,
   formatFeishuAlertText,
   sendFeishuAlert,
   HumanAlertTracker,
@@ -112,5 +113,38 @@ describe('HumanAlertTracker', () => {
     // Operator mentions @David Yang -> clears ticket lock & alert tracker
     tracker.clear(4277);
     expect(tracker.shouldAlert(4277, t0 + 1000)).toBe(true);
+  });
+});
+
+describe('Feishu alert cards', () => {
+  const params = {
+    title: '🙋 工单 #5492 需要人工处理',
+    color: 'red' as const,
+    ticketId: 5492,
+    status: '客户请求人工支持，AI 已停止回复。当前在支持时间内，请尽快跟进。',
+    customerMessage: 'human **not bold** [link](https://evil.example)',
+    note: '已给工单打标签 human_requested。',
+  };
+
+  it('builds a red card with the status first, plain customer text and a ticket button', () => {
+    const card = formatFeishuAlertCard(params) as any;
+    expect(card.header).toEqual({ template: 'red', title: { tag: 'plain_text', content: '🙋 工单 #5492 需要人工处理' } });
+    expect(card.elements[0]).toEqual({ tag: 'div', text: { tag: 'lark_md', content: `**${params.status}**` } });
+    expect(JSON.stringify(card.elements)).toContain('[#5492](https://langgenius.zendesk.com/agent/tickets/5492)');
+    // Customer text is never rendered as Markdown.
+    expect(card.elements).toContainEqual({ tag: 'div', text: { tag: 'plain_text', content: params.customerMessage } });
+    const button = card.elements.at(-1).actions[0];
+    expect(button).toMatchObject({ type: 'danger', url: 'https://langgenius.zendesk.com/agent/tickets/5492' });
+  });
+
+  it('sends an interactive card when a colour is set and plain text otherwise', async () => {
+    const fetchFn = vi.fn(async () => new Response(JSON.stringify({ code: 0 }), { status: 200 }));
+    await sendFeishuAlert('https://open.feishu.cn/hook/x', params, fetchFn as unknown as typeof fetch);
+    const { color: _color, ...plainParams } = params;
+    await sendFeishuAlert('https://open.feishu.cn/hook/x', plainParams, fetchFn as unknown as typeof fetch);
+    const bodies = fetchFn.mock.calls.map(call => JSON.parse(String((call as unknown as [string, RequestInit])[1].body)));
+    expect(bodies[0].msg_type).toBe('interactive');
+    expect(bodies[0].card.header.template).toBe('red');
+    expect(bodies[1].msg_type).toBe('text');
   });
 });

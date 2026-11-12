@@ -129,7 +129,9 @@ describe('processHandoff', () => {
     expect(value.sendAlert).toHaveBeenCalledOnce();
     expect(vi.mocked(value.sendAlert).mock.calls[0][0]).toMatchObject({
       ticketId: 5459,
-      status: expect.stringContaining('支持时间内'),
+      title: '🙋 工单 #5459 需要人工处理',
+      color: 'red',
+      status: expect.stringContaining('请尽快跟进'),
       note: expect.stringContaining('已给工单打标签 human_requested'),
     });
     expect(value.sendReply).toHaveBeenCalledWith(5459, '您好，已为您转接人工支持，工程师马上就来，请您稍等一会。');

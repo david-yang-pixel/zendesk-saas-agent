@@ -90,9 +90,10 @@ async function notifyHumanTakeover(ticketId: number, customerMessage: string, re
   }
   humanAlertTracker.recordAlert(ticketId);
   await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
-    title: '🙋 Dify 工单转人工接管提醒',
+    title: `🙋 工单 #${ticketId} 需要人工处理`,
+    color: 'red',
     ticketId,
-    status: '模式 B 人工优先锁定（AI 保持静默）',
+    status: '客户请求人工支持，AI 已停止回复，请尽快跟进。',
     customerMessage: customerMessage ? customerMessage.slice(0, 500) : '客户请求人工支持',
     note: reason || '检测到客户诉求转人工或已有真人介入，AI 已自动暂停并移交，请真人客服及时跟进。',
   });
