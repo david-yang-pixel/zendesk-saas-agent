@@ -102,6 +102,17 @@ describe('Pi Agent evidence continuation and delivery', () => {
       .toEqual(['openconnector-routing']);
     expect(mocked.prompts[0]).not.toContain('/tmp/SKILL.md');
   });
+  it('uses the model-reviewed welcome for an unanswered contact form', async () => {
+    const welcome = 'Hi Alex, what would you like to work on in Dify?';
+    mocked.reviewText = `=== INTERNAL NOTE ===\nReviewed the conversation.\n=== CUSTOMER REPLY ===\n${welcome}`;
+    const form = 'Name: Alex\nEmail: alex@example.test\nWorkspace ID: example';
+    const result = await runPiSupportAgent({ ...options, customerMessage: form,
+      conversationContext: `Customer [now]:\n${form}`, publicReplyAllowed: true });
+    expect(mocked.prompts[0]).toContain(`Customer Message:\n"""\n${form}\n"""`);
+    expect(mocked.prompts[0]).not.toContain('Compose a brief, natural welcome');
+    expect(result.customerReply).toBe(welcome);
+    expect(result.trace.model).toBe(options.modelName);
+  });
   it('repairs an absent plan through registered tools and stops after a reviewed read', async () => {
     mocked.recovery = async () => {
       await update('plan', [check('policy', 'feishu')]);

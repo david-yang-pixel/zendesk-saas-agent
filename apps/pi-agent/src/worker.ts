@@ -485,7 +485,7 @@ async function main() {
       if (coverage) {
         const afterRead = await loadCustomerCoverage(pool, job.ticket_id);
         const missingExpected = initialDetails.visibleCustomerCursors && [...coverage.pendingCursors].some(cursor =>
-          !initialDetails.visibleCustomerCursors.has(cursor) && (cursor === expected || readCursors.size === 0));
+          !initialDetails.visibleCustomerCursors.has(cursor) && (cursor === expected || readCursors.size === 0 || initialDetails.contactFormOnly));
         const admissionAfterRead = afterRead.pending.some(({ seq, cursor }) =>
           seq > coverage.latestSeq && (!cursor || !readCursors.has(cursor)));
         const unknownPending = initialDetails.isAlreadyAnswered && !coverage.coveredCursors.has(expected) &&

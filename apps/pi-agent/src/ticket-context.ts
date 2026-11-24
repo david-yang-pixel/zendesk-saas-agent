@@ -91,7 +91,8 @@ function extractEventDetails(ev: any) {
   }
   const issueText = content?.type === 'html' && !text.replace(/<[^>]*>|&nbsp;|&#160;/gi, '').trim()
     ? '' : text;
-  return { text: form ? '' : issueText || (content?.type === 'html' ? '' : fallback), historyText: text || fallback, attachments, form };
+  const rendered = text || fallback || (form && content?.fields?.length ? JSON.stringify(content.fields) : '');
+  return { text: form ? rendered : issueText || (content?.type === 'html' ? '' : fallback), historyText: rendered, attachments, form };
 }
 
 export interface ReadCustomerMessage {
@@ -100,6 +101,7 @@ export interface ReadCustomerMessage {
 }
 
 interface CustomerMessage extends ReadCustomerMessage {
+  formOnly: boolean;
   id: string;
   text: string;
   attachments: AgentAttachment[];
@@ -154,6 +156,7 @@ interface TicketDetails {
   humanRequestMessage?: string;
   isAlreadyAnswered: boolean;
   unrepliedCount: number;
+  contactFormOnly: boolean;
   /** The substantive customer messages actually included in the model input. */
   readCustomerMessages: ReadCustomerMessage[];
   visibleCustomerCursors: Set<string>;
@@ -226,19 +229,20 @@ export async function getTicketDetails(
         }
         const cursors = customerEventCursors(ev);
         cursors.forEach(cursor => visibleCustomerCursors.add(cursor));
-        if (text || attachments.length) {
+        if (form || text || attachments.length) {
           const occurredAt = typeof ev.created_at === 'string' ? ev.created_at : undefined;
           const occurredTime = Date.parse(occurredAt ?? '');
           const afterResume = Number.isFinite(resumeTime) && Number.isFinite(occurredTime) && occurredTime !== resumeTime
             ? occurredTime > resumeTime
             : noteIndex === -1 || index > noteIndex;
-          const requestsHuman = afterResume && detectHumanHandoffIntent(text.replace(QUOTED_REPLY_FOOTER, ''));
+          const requestsHuman = !form && afterResume && detectHumanHandoffIntent(text.replace(QUOTED_REPLY_FOOTER, ''));
           if (requestsHuman && Number.isFinite(occurredTime) &&
               (!humanRequestOccurredAt || occurredTime > Date.parse(humanRequestOccurredAt))) {
             humanRequestOccurredAt = occurredAt;
           }
           customerMessages.push({
             id: identifier(ev.id) || identifier(ev.reference), text, attachments, cursors,
+            formOnly: form && attachments.length === 0,
             occurredAt, requestsHuman,
           });
           hasRequestedHuman ||= requestsHuman;
@@ -259,8 +263,9 @@ export async function getTicketDetails(
     });
     const customerMessage = unreplied.map(message => [message.text, ...message.attachments.map(a =>
       `[Attachment: ${a.name} (${a.contentType || 'file'}), URL: ${a.url || 'N/A'}]`,
-    )].filter(Boolean).join('\n')).join('\n\n');
+    )].filter(Boolean).join('\n')).filter(Boolean).join('\n\n');
     const latest = unreplied.at(-1);
+    const contactFormOnly = unreplied.length > 0 && unreplied.every(message => message.formOnly);
 
     const selected = history.length > 25
       ? [...history.slice(0, 2), `[${history.length - 25} older public messages omitted; fetch older history if material.]`, ...history.slice(-23)]
@@ -290,6 +295,7 @@ export async function getTicketDetails(
       humanRequestMessage: customerMessages.filter(message => message.requestsHuman).at(-1)?.text,
       isAlreadyAnswered: unreplied.length === 0 && foundAgentReply,
       unrepliedCount: unreplied.length,
+      contactFormOnly,
       readCustomerMessages: unreplied.map(({ cursors, occurredAt }) => ({ cursors, occurredAt })),
       visibleCustomerCursors,
       staffAnsweredCursors: customerMessages.slice(0, lastStaffReplyIndex)

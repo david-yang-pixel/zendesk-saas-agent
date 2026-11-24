@@ -171,10 +171,9 @@ class PostgresAdmission:
                 and payload.get("has_attachments") is not True
                 and (payload.get("form_only") is True or is_contact_form_only(event.normalized.message_text))
             )
-            substantive = (
+            needs_reply = (
                 decision.action == "enqueue" and event.normalized.is_customer_message
-                and not form_only
-                and (bool(event.normalized.message_text.strip()) or payload.get("has_attachments") is True)
+                and (form_only or bool(event.normalized.message_text.strip()) or payload.get("has_attachments") is True)
             )
             events = EventRepository(session)
             mention_cursor = self._mention_cursor(event) if is_mention else None
@@ -182,12 +181,12 @@ class PostgresAdmission:
                 event.normalized.ticket_id, mention_cursor, "operator.mention"
             ):
                 return self._duplicate(event)
-            message_id = self._message_cursor(event) if substantive else None
+            message_id = self._message_cursor(event) if needs_reply else None
             tracked = (
                 await events.tracked_customer_message(event.normalized.ticket_id, message_id)
                 if message_id is not None else None
             )
-            next_seq = state.latest_customer_seq + 1 if substantive and tracked is None else None
+            next_seq = state.latest_customer_seq + 1 if needs_reply and tracked is None else None
             event_type = "operator.mention" if is_mention else "ticket.updated"
             inserted = await events.record(
                 event_id=event.event_id,
@@ -240,10 +239,10 @@ class PostgresAdmission:
                     reason=decision.reason,
                     ticket_id=event.normalized.ticket_id,
                 )
-            if form_only or (tracked is not None and (tracked.answered_by_job_id is not None or tracked.answered_by_staff)):
+            if tracked is not None and (tracked.answered_by_job_id is not None or tracked.answered_by_staff):
                 return AdmissionResult(
                     action="ignore",
-                    reason="awaiting_customer_message" if form_only else "customer_message_covered",
+                    reason="customer_message_covered",
                     ticket_id=event.normalized.ticket_id,
                 )
             if runtime.desired_state != "running":

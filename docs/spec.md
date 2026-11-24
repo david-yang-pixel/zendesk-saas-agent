@@ -64,7 +64,9 @@ ingress (FastAPI) ── admission rules ──► PostgreSQL: events, case_jobs
   first nonempty line records a takeover in `ticket_states` and cancels active
   work. Subsequent lines stay with the request for the support engineer.
 - Admission deduplicates webhook events in PostgreSQL. Contact-only forms wait
-  for a substantive message or attachment. There is one queued customer job per
+  through the normal 20-second customer debounce. The worker passes the submitted
+  form content as the customer message to the standard support prompt. Questions
+  and attachments arriving during that wait are included in the same conversation. There is one queued customer job per
   ticket. Operator mentions retain their own instructions and queue entries.
   A paused runtime rejects new work with `agent_paused`.
 
