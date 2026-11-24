@@ -13,6 +13,7 @@ const mocked = vi.hoisted(() => ({
   reviewStopReason: undefined as string | undefined,
   splitReviewText: false,
   fileHook: undefined as ((event: any) => any) | undefined,
+  loaderOptions: undefined as any,
   dispose: vi.fn(),
   results: new Map<string, any>(),
 }));
@@ -49,6 +50,7 @@ vi.mock('@earendil-works/pi-coding-agent', () => ({
   SessionManager: { inMemory: () => ({}) },
   DefaultResourceLoader: class {
     constructor(options: any) {
+      mocked.loaderOptions = options;
       for (const factory of options.extensionFactories ?? []) factory({ on(event: string, handler: any) {
         if (event === 'before_provider_request') mocked.fileHook = handler;
       } });
@@ -57,7 +59,11 @@ vi.mock('@earendil-works/pi-coding-agent', () => ({
   }, getAgentDir: () => '/tmp',
 }));
 vi.mock('./project-skills.js', () => ({
-  getProjectSkills: () => [{ name: 'dify-saas-support', filePath: '/tmp/SKILL.md' }],
+  getProjectSkills: () => [
+    { name: 'dify-saas-support', filePath: '/tmp/SKILL.md' },
+    { name: 'openconnector-routing', filePath: '/tmp/routing/SKILL.md' },
+  ],
+  inlineSkillBody: (skill: { name: string }) => `# Inlined ${skill.name} body`,
   createProjectSkillReadTool: () => ({ name: 'read', label: 'read', description: 'read', promptSnippet: 'read', parameters: {}, execute: async () => ({ content: [] }) }),
 }));
 
@@ -87,6 +93,15 @@ beforeEach(() => {
 });
 
 describe('Pi Agent evidence continuation and delivery', () => {
+  it('supplies the support Skill and tool directory up front instead of asking the model to read them', async () => {
+    await runPiSupportAgent({ ...options, toolDirectory: 'DIRECTORY-SNAPSHOT' });
+    const systemPrompt = mocked.loaderOptions.systemPromptOverride();
+    expect(systemPrompt).toContain('# Inlined dify-saas-support body');
+    expect(systemPrompt).toContain('DIRECTORY-SNAPSHOT');
+    expect(mocked.loaderOptions.skillsOverride({ skills: [], diagnostics: [] }).skills.map((skill: any) => skill.name))
+      .toEqual(['openconnector-routing']);
+    expect(mocked.prompts[0]).not.toContain('/tmp/SKILL.md');
+  });
   it('repairs an absent plan through registered tools and stops after a reviewed read', async () => {
     mocked.recovery = async () => {
       await update('plan', [check('policy', 'feishu')]);

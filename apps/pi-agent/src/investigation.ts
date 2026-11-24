@@ -184,7 +184,7 @@ export class InvestigationTracker {
   tool(): CustomTool {
     return {
       name: 'investigation_check', label: 'Investigation evidence progress',
-      description: 'Record or review run-local evidence checks, one per material question and source. Upsert by id; omitted checks remain. Plan before non-Zendesk reads. Review with observationId values returned by execute_action. An empty update returns progress. This tool performs no external action.',
+      description: 'Record or review run-local evidence checks, one per material question and source. Upsert by id; omitted checks remain. Plan before or alongside the first non-Zendesk reads; the plan and independent reads may share one turn. Review with observationId values returned by execute_action. An empty update returns progress. This tool performs no external action.',
       promptSnippet: 'Plan material evidence checks and review actual read results before concluding.',
       parameters: { type: 'object', properties: { checks: { type: 'array', maxItems: 12, items: {
         type: 'object', properties: {

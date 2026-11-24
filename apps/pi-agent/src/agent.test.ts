@@ -222,7 +222,7 @@ Hello! Currently Dify does not provide this setting.
   });
 
   it('keeps the system prompt brief and leaves investigation routing to the skill', () => {
-    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Read the dify-saas-support skill');
+    expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('Follow the dify-saas-support skill included below');
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).toContain('OpenConnector read operations');
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).not.toContain('custom_mcp.list_tools');
     expect(DIFY_SUPPORT_SYSTEM_PROMPT).not.toContain('github-mcp');

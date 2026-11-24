@@ -5,10 +5,11 @@ import {
   DefaultResourceLoader,
   getAgentDir,
 } from '@earendil-works/pi-coding-agent';
+import type { Skill } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevelMap } from '@earendil-works/pi-ai';
 import { CustomTool } from './mcp.js';
 import type { ModelReasoning } from './model-config.js';
-import { createProjectSkillReadTool, getProjectSkills } from './project-skills.js';
+import { createProjectSkillReadTool, getProjectSkills, inlineSkillBody } from './project-skills.js';
 import { inferOpenConnectorService, withRunDiscoveryCache } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
 import { captureAgentRound, sumRoundTokens, updateAgentTool, type AgentRoundTelemetry, type CompletedToolTelemetry } from './round-telemetry.js';
@@ -45,6 +46,8 @@ export interface AgentRunOptions {
   publicReplyAllowed?: boolean;
   /** Customer reply language chosen by the Worker; operator drafts are English. */
   replyLanguage?: ReplyLanguage;
+  /** Worker snapshot of connected read-only sources; omitted when the directory is cold. */
+  toolDirectory?: string;
   onRoundTelemetry?: (rounds: readonly AgentRoundTelemetry[]) => void;
   onTrace?: (trace: AgentTracePayload) => void;
 }
@@ -148,10 +151,29 @@ export function inferToolService(toolName: string, args?: unknown): string {
 }
 
 export const DIFY_SUPPORT_SYSTEM_PROMPT = `
-You are the Dify SaaS support investigator for Zendesk tickets. Read the dify-saas-support skill before investigating; load other listed skills only when relevant.
+You are the Dify SaaS support investigator for Zendesk tickets. Follow the dify-saas-support skill included below; read its references and other listed skills only when relevant.
 Investigate only through OpenConnector read operations. Never use Gmail or perform any external mutation. Target tools accurately: choose the exact relevant source without trial-and-error, formulate 2–3 precise technical keywords for docs, use bounded time windows for logs, and avoid write-only sources. The Worker alone decides delivery: customer messages may receive a public reply through Zendesk Browser Reply, while operator mentions receive an internal note with your answer to the operator and an English customer-reply draft. Internal analysis stays in the trace.
 Ground account claims in current evidence and state documented product rules plainly. Lead with the direct answer; mention an unknown at most once, only when it changes the next step. Write the customer reply in the language the Worker names. The customer reply must be actionable: provide concrete next steps, never repeat steps the customer already tried and reported as failed, and never deflect to third parties without a Dify technical explanation and viable alternative path. A greeting, thank-you or request to use a language needs no account investigation or human staffing-policy lookup. Never invent a conclusion or ask again for information already provided. Return === INTERNAL NOTE === for factual internal findings, === OPERATOR ANSWER === for an operator mention only, then === CUSTOMER REPLY === for a concise, customer-safe reply.
 `.trim();
+
+/**
+ * The support Skill is read on every run, so it belongs in the stable system
+ * prompt rather than a read round. It is not advertised again for reading;
+ * its references and the other Skills stay on demand.
+ */
+export function supportPromptResources(projectSkills: readonly Skill[], toolDirectory?: string): {
+  systemPrompt: string;
+  advertisedSkills: Skill[];
+} {
+  const supportSkill = projectSkills.find(skill => skill.name === 'dify-saas-support');
+  if (!supportSkill) throw new Error('Required dify-saas-support skill is missing');
+  const sections = [
+    DIFY_SUPPORT_SYSTEM_PROMPT,
+    `<skill name="dify-saas-support">\n${inlineSkillBody(supportSkill)}\n</skill>`,
+    ...(toolDirectory ? [`<connected_read_tools>\n${toolDirectory}\n</connected_read_tools>`] : []),
+  ];
+  return { systemPrompt: sections.join('\n\n'), advertisedSkills: projectSkills.filter(skill => skill !== supportSkill) };
+}
 
 export function sanitizeCustomerReply(rawReply: string): string {
   if (!rawReply) return '';
@@ -426,9 +448,8 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
 
   const projectSkills = getProjectSkills();
   console.log(`[Agent] Registered ${projectSkills.length} project skills:`, projectSkills.map(s => s.name));
-  if (!projectSkills.some(skill => skill.name === 'dify-saas-support')) {
-    throw new Error('Required dify-saas-support skill is missing');
-  }
+  const { systemPrompt, advertisedSkills } = supportPromptResources(projectSkills, options.toolDirectory);
+  // Reads stay allowed across every Skill directory, including the inlined Skill's references.
   const skillReadTool = createProjectSkillReadTool(projectSkills);
   const investigation = new InvestigationTracker();
   const modelFiles = new ModelFileInputs();
@@ -438,8 +459,8 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     agentDir: getAgentDir(),
     noContextFiles: true,
     extensionFactories: [modelFiles.extension],
-    skillsOverride: (current) => ({ skills: projectSkills, diagnostics: current.diagnostics }),
-    systemPromptOverride: () => DIFY_SUPPORT_SYSTEM_PROMPT,
+    skillsOverride: (current) => ({ skills: advertisedSkills, diagnostics: current.diagnostics }),
+    systemPromptOverride: () => systemPrompt,
     appendSystemPromptOverride: () => [],
   });
   await loader.reload();
@@ -567,7 +588,7 @@ ${options.contextPrepared ? 'The Worker prepared the public conversation context
 ${publicReplyAllowed
   ? `Reply language: ${LANGUAGE_NAMES[customerLanguage]}. The Worker chose it from the customer's own latest words, ignoring Zendesk chat-widget text; write the CUSTOMER REPLY in it.`
   : "This is an operator mention: a support colleague is asking you. Answer them in === OPERATOR ANSWER === in their language, and add an English customer-sendable draft in === CUSTOMER REPLY ==="}
-First read the dify-saas-support skill at ${projectSkills.find(skill => skill.name === 'dify-saas-support')!.filePath}. Follow it for investigation and final output; read other relevant skills only when needed.
+Follow the dify-saas-support skill in the system prompt for investigation and final output; read its references and other skills only when needed.
 `.trim();
 
     const startTime = Date.now();

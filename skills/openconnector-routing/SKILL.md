@@ -17,7 +17,7 @@ OpenConnector is the only investigation gateway. The Agent receives `list_read_t
 
 ## Discovery and execution
 
-Start each investigation with one unfiltered `list_connections` call to establish the current connection-instance count, distinct services, and available connection names. Compare them with the known routes below; only the live result establishes what is configured now. A connection listing does not prove its business tools work. If the listing fails, report the discovery gap and use only sources that can be verified independently.
+When the Worker supplies the connected read-only directory in the system prompt, use it as the live connection list and do not repeat discovery. Otherwise, start the investigation with one unfiltered `list_connections` call to establish the current connection-instance count, distinct services, and available connection names. Compare them with the known routes below; only the live result establishes what is configured now. A connection listing does not prove its business tools work. If the listing fails, report the discovery gap and use only sources that can be verified independently.
 
 Reuse successful connection lists, action guides, and directory pages already returned in this investigation. Repeat discovery only when a query, connection, or page changes, or when retrying a failure. Move directly to the selected business read once its inputs are known.
 
