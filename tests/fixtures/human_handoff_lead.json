@@ -1,0 +1,67 @@
+[
+  {
+    "name": "English lead followed by details",
+    "text": "human\nI cannot access my workspace. The reset link has expired.",
+    "handoff": true
+  },
+  {
+    "name": "fullwidth English lead after blank lines with CRLF",
+    "text": " \t\r\n\r\n  Ｈｕｍａｎ！ \r\n\r\nThe workspace still does not open.",
+    "handoff": true
+  },
+  {
+    "name": "Chinese lead with a full stop",
+    "text": "人工。\n我无法登录工作区。",
+    "handoff": true
+  },
+  {
+    "name": "Chinese synonym with a colon",
+    "text": "真人：\n我需要检查我的发票。",
+    "handoff": true
+  },
+  {
+    "name": "direct lead with technical details",
+    "text": "human\nThe human-in-the-loop node is failing in production.",
+    "handoff": true
+  },
+  {
+    "name": "later standalone word",
+    "text": "Here is the label on the form:\nhuman\nIt was prefilled.",
+    "handoff": false
+  },
+  {
+    "name": "Markdown blockquote",
+    "text": "> human\nThis is what the form displayed.",
+    "handoff": false
+  },
+  {
+    "name": "quoted Chinese label on first line",
+    "text": "「真人」\n这是界面上显示的标签。",
+    "handoff": false
+  },
+  {
+    "name": "quotation spanning lines",
+    "text": "“\nhuman\n”",
+    "handoff": false
+  },
+  {
+    "name": "Markdown code fence",
+    "text": "```\n人工\n```\n这是界面上显示的标签。",
+    "handoff": false
+  },
+  {
+    "name": "English technical term",
+    "text": "human-in-the-loop\nWhere is this workflow documented?",
+    "handoff": false
+  },
+  {
+    "name": "technical identifier ending in an underscore",
+    "text": "human_\nThis is the prefix of the field.",
+    "handoff": false
+  },
+  {
+    "name": "Chinese technical term",
+    "text": "人工审核\n这个节点怎么配置？",
+    "handoff": false
+  }
+]

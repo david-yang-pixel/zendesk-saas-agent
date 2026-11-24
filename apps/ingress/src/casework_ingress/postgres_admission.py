@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 from uuid import uuid4
 
@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 
+from casework_ingress.intake_form import is_contact_form_only
 from casework_ingress.ports import (
     AdmissionEvent,
     AdmissionResult,
@@ -116,16 +117,26 @@ class PostgresAdmission:
                     human_aliases=runtime.rules.human_aliases,
                 ),
             )
+            provider_time = self._provider_message_time(event)
+            occurred_at = provider_time or event.received_at
             if decision.action == "cancel":
                 cancelled = await HumanCancelRepository(session).apply(
                     event_id=event.event_id,
                     ticket_id=event.normalized.ticket_id,
-                    occurred_at=event.received_at,
+                    occurred_at=occurred_at,
+                    received_at=event.received_at,
+                    message_id=self._message_cursor(event),
                     reason="human",
                     payload=event.raw_payload,
                 )
                 if cancelled.duplicate_event:
                     return self._duplicate(event)
+                if cancelled.stale_event:
+                    return AdmissionResult(
+                        action="ignore",
+                        reason="stale_human_request",
+                        ticket_id=event.normalized.ticket_id,
+                    )
                 # The worker alerts Feishu and tags the ticket for every
                 # accepted command, and acknowledges the customer only for the
                 # first command of a takeover so repeats are not answered.
@@ -142,7 +153,7 @@ class PostgresAdmission:
                     ticket_id=event.normalized.ticket_id,
                 )
 
-            # Check if ticket was previously handed over to human
+            # Admission, requeues and delivery all serialize on this row.
             state = await TicketRepository(session).ensure_state(event.normalized.ticket_id)
             if decision.reason != "operator_mention" and state.human_cancelled_at is not None:
                 return AdmissionResult(
@@ -151,26 +162,88 @@ class PostgresAdmission:
                     ticket_id=event.normalized.ticket_id,
                 )
 
-            inserted = await EventRepository(session).record(
+            is_mention = decision.reason == "operator_mention"
+            payload = event.raw_payload
+            if is_mention:
+                payload = {**payload, "body": event.normalized.message_text}
+            form_only = (
+                event.normalized.is_customer_message
+                and payload.get("has_attachments") is not True
+                and (payload.get("form_only") is True or is_contact_form_only(event.normalized.message_text))
+            )
+            substantive = (
+                decision.action == "enqueue" and event.normalized.is_customer_message
+                and not form_only
+                and (bool(event.normalized.message_text.strip()) or payload.get("has_attachments") is True)
+            )
+            events = EventRepository(session)
+            mention_cursor = self._mention_cursor(event) if is_mention else None
+            if mention_cursor and await events.message_event_exists(
+                event.normalized.ticket_id, mention_cursor, "operator.mention"
+            ):
+                return self._duplicate(event)
+            message_id = self._message_cursor(event) if substantive else None
+            tracked = (
+                await events.tracked_customer_message(event.normalized.ticket_id, message_id)
+                if message_id is not None else None
+            )
+            next_seq = state.latest_customer_seq + 1 if substantive and tracked is None else None
+            event_type = "operator.mention" if is_mention else "ticket.updated"
+            inserted = await events.record(
                 event_id=event.event_id,
                 ticket_id=event.normalized.ticket_id,
-                occurred_at=event.received_at,
+                occurred_at=occurred_at,
                 source="zendesk",
                 customer_origin=(
                     "customer" if event.normalized.is_customer_message else "internal"
                 ),
-                payload=event.raw_payload,
+                event_type="customer.form_only" if form_only else event_type,
+                message_id=mention_cursor or message_id,
+                customer_seq=next_seq,
+                payload=payload,
             )
             if not inserted:
                 return self._duplicate(event)
-            if decision.reason == "operator_mention":
-                # A replay must never undo a later human cancellation.
-                state.human_cancelled_at = None
+            if next_seq is not None:
+                state.latest_customer_seq = next_seq
+                latest_at = state.latest_customer_at
+                if latest_at is None or occurred_at > latest_at.replace(tzinfo=latest_at.tzinfo or UTC):
+                    state.latest_customer_at = occurred_at
                 state.updated_at = event.received_at
+            if is_mention:
+                cancelled_at = state.human_cancelled_at
+                resumed_at = state.human_resumed_at
+                blocked_by_takeover = cancelled_at is not None and (
+                    provider_time is None
+                    or provider_time <= cancelled_at.replace(tzinfo=cancelled_at.tzinfo or UTC)
+                )
+                superseded = provider_time is not None and resumed_at is not None and (
+                    provider_time < resumed_at.replace(tzinfo=resumed_at.tzinfo or UTC)
+                )
+                if blocked_by_takeover or superseded:
+                    return AdmissionResult(
+                        action="ignore",
+                        reason="stale_operator_mention",
+                        ticket_id=event.normalized.ticket_id,
+                    )
+                # Legacy notes without provider time can request a draft on an unlocked ticket.
+                if provider_time is not None and (
+                    resumed_at is None or provider_time > resumed_at.replace(tzinfo=resumed_at.tzinfo or UTC)
+                ):
+                    state.human_cancelled_at = None
+                    state.human_resumed_at = provider_time
+                    state.human_resume_cursor = mention_cursor
+                    state.updated_at = event.received_at
             if decision.action == "ignore":
                 return AdmissionResult(
                     action="ignore",
                     reason=decision.reason,
+                    ticket_id=event.normalized.ticket_id,
+                )
+            if form_only or (tracked is not None and (tracked.answered_by_job_id is not None or tracked.answered_by_staff)):
+                return AdmissionResult(
+                    action="ignore",
+                    reason="awaiting_customer_message" if form_only else "customer_message_covered",
                     ticket_id=event.normalized.ticket_id,
                 )
             if runtime.desired_state != "running":
@@ -183,7 +256,8 @@ class PostgresAdmission:
             queued = await JobRepository(session).enqueue(
                 ticket_id=event.normalized.ticket_id,
                 event_id=event.event_id,
-                expected_event_id=self._expected_event_id(event),
+                expected_event_id=mention_cursor or message_id or self._expected_event_id(event),
+                is_operator_mention=is_mention,
                 config=self.frozen_config(revision.revision, runtime),
                 job_id=str(uuid4()),
                 # Operator mentions are explicit requests; the customer-message
@@ -209,9 +283,46 @@ class PostgresAdmission:
     @staticmethod
     def _expected_event_id(event: AdmissionEvent) -> str:
         cursor = event.raw_payload.get("snapshot_cursor")
-        if isinstance(cursor, str) and cursor.strip():
+        if isinstance(cursor, str) and 0 < len(cursor.strip()) <= 255:
             return cursor.strip()
         return event.event_id
+
+    @staticmethod
+    def _message_cursor(event: AdmissionEvent) -> str | None:
+        cursor = event.raw_payload.get("snapshot_cursor")
+        if not isinstance(cursor, str):
+            return None
+        cursor = cursor.strip()
+        for provider_prefix, namespace in (
+            ("zen:sunco:conversation_message:", "messaging:"),
+            ("zen:ticket:comment:", "zendesk:"),
+            ("messaging:", "messaging:"),
+            ("zendesk:", "zendesk:"),
+        ):
+            if cursor.startswith(provider_prefix):
+                message_id = cursor[len(provider_prefix):].strip()
+                normalized = f"{namespace}{message_id}"
+                if message_id and ":" not in message_id and len(normalized) <= 255:
+                    return normalized
+        return None
+
+    @classmethod
+    def _mention_cursor(cls, event: AdmissionEvent) -> str:
+        cursor = cls._expected_event_id(event)
+        return cursor if cursor.startswith("mention:") else event.event_id
+
+    @staticmethod
+    def _provider_message_time(event: AdmissionEvent) -> datetime | None:
+        value = event.raw_payload.get("message_created_at")
+        if isinstance(value, str):
+            try:
+                created_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if created_at.tzinfo is not None:
+                    return created_at
+            except ValueError:
+                pass
+        return None
+
 
     @staticmethod
     def _duplicate(event: AdmissionEvent) -> AdmissionResult:

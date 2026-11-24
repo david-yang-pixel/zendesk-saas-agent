@@ -19,6 +19,8 @@ services:
     cpus: 0.35
 
   migration:
+    # Production entrypoints run this explicitly after stopping the old worker.
+    profiles: [migration]
     image: ${CASEWORK_ADMIN_IMAGE:?render a release manifest first}
     command: ["/app/.venv/bin/python", "/app/deploy/migrate.py"]
     environment: &common-environment
@@ -42,9 +44,6 @@ services:
       # Empty keeps the legacy unsigned /webhook/zendesk route closed (401).
       ZENDESK_CLASSIC_WEBHOOK_SECRET: ${ZENDESK_CLASSIC_WEBHOOK_SECRET:-}
     ports: ["127.0.0.1:${CASEWORK_INGRESS_PORT:-18101}:8101"]
-    depends_on:
-      migration:
-        condition: service_completed_successfully
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.25
@@ -61,6 +60,7 @@ services:
       ZENDESK_API_TOKEN: ${ZENDESK_API_TOKEN:?set ZENDESK_API_TOKEN}
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
       CASEWORK_HUMAN_HANDOFF_TAG: ${CASEWORK_HUMAN_HANDOFF_TAG:-human_requested}
+      CASEWORK_AUTOMATION_AUTHOR_IDS: ${CASEWORK_AUTOMATION_AUTHOR_IDS:-}
       NODE_OPTIONS: "--max-old-space-size=768"
       CASEWORK_WORKER_CONCURRENCY: ${CASEWORK_WORKER_CONCURRENCY:-2}
     ports: ["127.0.0.1:${CASEWORK_PI_AGENT_PORT:-18102}:8102"]
@@ -68,9 +68,6 @@ services:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}/credentials.env:/app/credentials.env:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      migration:
-        condition: service_completed_successfully
     restart: unless-stopped
     mem_limit: 1024m
     cpus: 0.5
@@ -93,9 +90,6 @@ services:
       - ${CASEWORK_CREDENTIAL_DIR:?set CASEWORK_CREDENTIAL_DIR}:/run/casework-credentials
       - ${CASEWORK_ADMIN_AUTH_DIR:?set CASEWORK_ADMIN_AUTH_DIR}:/run/casework-admin-auth
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on:
-      migration:
-        condition: service_completed_successfully
     restart: unless-stopped
     mem_limit: 256m
     cpus: 0.25
@@ -115,9 +109,6 @@ services:
       <<: *common-environment
     volumes:
       - ${CASEWORK_LOG_SYNC_CREDENTIAL_DIR:-/opt/zd-agent/greenfield/log-sync}:/run/log-sync:ro
-    depends_on:
-      migration:
-        condition: service_completed_successfully
     restart: unless-stopped
     mem_limit: 128m
     cpus: 0.10

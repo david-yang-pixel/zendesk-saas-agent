@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -80,16 +81,20 @@ CONFIG: dict[str, object] = {
     "enabled_tools": ["zendesk_ticket"],
 }
 
+NOW = datetime(2026, 9, 1, tzinfo=UTC)
+
 
 def _event(
     *,
     event_id: str,
     message: str = "please investigate",
     snapshot_cursor: str | None = None,
+    occurred_at: datetime | None = None,
+    received_at: datetime = NOW,
 ) -> AdmissionEvent:
     return AdmissionEvent(
         event_id=event_id,
-        received_at=datetime(2026, 9, 1, tzinfo=UTC),
+        received_at=received_at,
         normalized=NormalizedZendeskEvent(
             ticket_id=3726,
             tags=("saas",),
@@ -106,6 +111,7 @@ def _event(
                 if snapshot_cursor is not None
                 else {}
             ),
+            "message_created_at": occurred_at.isoformat() if occurred_at else None,
         },
     )
 
@@ -169,40 +175,37 @@ async def test_postgres_admission_human_command_fences_active_job(
     assert subsequent.action == "ignore"
     assert subsequent.reason == "human_takeover_active"
 
-    # Verify that an internal note @David Yang actively triggers and clears human takeover restriction
-    operator_mention = AdmissionEvent(
-        event_id="evt-operator-mention",
-        received_at=datetime(2026, 9, 1, tzinfo=UTC),
-        normalized=NormalizedZendeskEvent(
-            ticket_id=3726,
-            tags=("saas",),
-            assignee="saas-support",
-            status="open",
-            is_customer_message=False,
-            message_text="@David Yang please analyze this customer issue",
-        ),
-        raw_payload={"event_id": "evt-operator-mention", "ticket_id": 3726},
-    )
+    operator_mention = _operator_mention("evt-operator-mention")
     mention_result = await admission.admit(operator_mention)
     assert mention_result.action == "enqueue"
     async with sessions.transaction() as session:
         state = (await session.execute(select(TicketState))).scalar_one()
         assert state.human_cancelled_at is None
+        assert state.human_resumed_at == (NOW + timedelta(seconds=1)).replace(tzinfo=None)
+        assert state.human_resume_cursor == "mention:evt-operator-mention"
 
 
-def _operator_mention(event_id: str) -> AdmissionEvent:
+def _operator_mention(
+    event_id: str, *, occurred_at: datetime | None = NOW + timedelta(seconds=1),
+    received_at: datetime = NOW + timedelta(seconds=2), comment_id: str | None = None,
+) -> AdmissionEvent:
     return AdmissionEvent(
         event_id=event_id,
-        received_at=datetime(2026, 9, 1, tzinfo=UTC),
+        received_at=received_at,
         normalized=NormalizedZendeskEvent(
             ticket_id=3726,
             tags=("saas",),
             assignee="saas-support",
             status="open",
             is_customer_message=False,
+            is_staff_note=True,
             message_text="@agent please look again",
         ),
-        raw_payload={"event_id": event_id, "ticket_id": 3726},
+        raw_payload={
+            "event_id": event_id, "ticket_id": 3726,
+            "snapshot_cursor": f"mention:{comment_id or event_id}",
+            "message_created_at": occurred_at.isoformat() if occurred_at else None,
+        },
     )
 
 
@@ -221,7 +224,9 @@ async def test_human_command_records_handoff_and_acknowledges_once_per_takeover(
     repeat = await admission.admit(_event(event_id="evt-human-2", message="真人"))
     replay = await admission.admit(_event(event_id="evt-human-1", message="human"))
     await admission.admit(_operator_mention("evt-mention"))
-    after_mention = await admission.admit(_event(event_id="evt-human-3", message="human"))
+    after_mention = await admission.admit(_event(
+        event_id="evt-human-3", message="human", occurred_at=NOW + timedelta(seconds=2),
+    ))
 
     assert [first.action, repeat.action, replay.action, after_mention.action] == [
         "cancel",
@@ -285,3 +290,92 @@ async def test_database_failure_is_sanitized():
     admission = PostgresAdmission(transaction_scope=unavailable)
     with pytest.raises(AdmissionUnavailable, match=r"^postgres_unavailable$"):
         await admission.admit(_event(event_id="failure"))
+
+
+@pytest.mark.asyncio
+async def test_form_only_does_not_advance_substantive_sequence_and_attachments_do(tmp_path):
+    sessions = _SessionAdapter(tmp_path / "form.sqlite")
+    async with sessions.transaction() as session:
+        await ConfigRevisionRepository(session).bootstrap(revision="cfg-1", config=CONFIG, actor="test")
+    admission = PostgresAdmission(transaction_scope=sessions.transaction)
+    form = "Name: Test\nEmail: test@example.invalid\nPlan: Pro"
+    assert (await admission.admit(_event(event_id="form", message=form))).reason == "awaiting_customer_message"
+    assert (await admission.admit(_event(event_id="full-text", message=f"{form}\nWhy was I charged?"))).action == "enqueue"
+    attachment = _event(event_id="attachment", message="", snapshot_cursor="messaging:attachment-id")
+    assert (await admission.admit(replace(attachment, raw_payload={
+        **attachment.raw_payload, "has_attachments": True,
+    }))).action == "enqueue"
+    async with sessions.transaction() as session:
+        state = (await session.execute(select(TicketState))).scalar_one()
+        assert state.latest_customer_seq == 2
+        assert state.answered_customer_seq == 0
+        assert state.latest_customer_at is not None
+        rows = (await session.execute(select(EventRecord))).scalars().all()
+        assert {row.event_id: row.customer_seq for row in rows} == {"form": None, "full-text": 1, "attachment": 2}
+        assert (await session.execute(select(CaseJobRow))).scalar_one().expected_event_id == "messaging:attachment-id"
+
+
+@pytest.mark.asyncio
+async def test_exact_late_webhook_is_covered_without_erasing_operator_or_customer_jobs(tmp_path):
+    sessions = _SessionAdapter(tmp_path / "covered.sqlite")
+    async with sessions.transaction() as session:
+        await ConfigRevisionRepository(session).bootstrap(revision="cfg-1", config=CONFIG, actor="test")
+    admission = PostgresAdmission(transaction_scope=sessions.transaction)
+    assert (await admission.admit(_event(event_id="first", snapshot_cursor="messaging:first"))).action == "enqueue"
+    async with sessions.transaction() as session:
+        first = (await session.execute(select(EventRecord))).scalar_one()
+        first.answered_by_job_id = "delivered-job"
+    await admission.admit(_operator_mention("mention-a"))
+    await admission.admit(_operator_mention("mention-b"))
+    late = await admission.admit(_event(event_id="repeat-delivery", snapshot_cursor="zen:sunco:conversation_message:first"))
+    assert late.reason == "customer_message_covered"
+    assert (await admission.admit(_event(event_id="newer", snapshot_cursor="messaging:newer"))).action == "enqueue"
+    async with sessions.transaction() as session:
+        state = (await session.execute(select(TicketState))).scalar_one()
+        assert state.latest_customer_seq == 2
+        jobs = (await session.execute(select(CaseJobRow))).scalars().all()
+        assert {(job.event_id, job.is_operator_mention) for job in jobs} == {
+            ("first", False), ("mention-a", True), ("mention-b", True),
+        }
+        assert next(job for job in jobs if not job.is_operator_mention).expected_event_id == "messaging:newer"
+
+
+@pytest.mark.asyncio
+async def test_admission_orders_takeover_and_resume_by_provider_time(tmp_path):
+    sessions = _SessionAdapter(tmp_path / "ordered.sqlite")
+    async with sessions.transaction() as session:
+        await ConfigRevisionRepository(session).bootstrap(revision="cfg-1", config=CONFIG, actor="test")
+    admission = PostgresAdmission(transaction_scope=sessions.transaction)
+    old = NOW + timedelta(seconds=1)
+    resume = NOW + timedelta(seconds=2)
+    new = NOW + timedelta(seconds=3)
+    late_delivery = NOW + timedelta(seconds=5)
+
+    assert (await admission.admit(_event(event_id="first-human", message="human", occurred_at=old))).action == "cancel"
+    assert (await admission.admit(_operator_mention("resume", occurred_at=resume, comment_id="12"))).action == "enqueue"
+    stale = await admission.admit(_event(
+        event_id="late-human", message="human", occurred_at=old, received_at=late_delivery,
+    ))
+    assert (stale.action, stale.reason) == ("ignore", "stale_human_request")
+    assert (await admission.admit(_event(
+        event_id="current-human", message="human", occurred_at=new, snapshot_cursor="messaging:request-3",
+    ))).action == "cancel"
+    assert (await admission.admit(_event(
+        event_id="second-delivery", message="human", received_at=late_delivery, snapshot_cursor="messaging:request-3",
+    ))).action == "duplicate"
+
+    same_note = await admission.admit(_operator_mention("resume-replay", comment_id="12", received_at=late_delivery))
+    assert same_note.action == "duplicate"
+    for stale_at in (old, new, None):
+        different_note = await admission.admit(_operator_mention(
+            f"stale-{stale_at}", occurred_at=stale_at, received_at=late_delivery,
+        ))
+        assert (different_note.action, different_note.reason) == ("ignore", "stale_operator_mention")
+
+    async with sessions.transaction() as session:
+        state = (await session.execute(select(TicketState))).scalar_one()
+        assert state.human_cancelled_at == new.replace(tzinfo=None)
+        assert state.human_resumed_at == resume.replace(tzinfo=None)
+        assert state.human_resume_cursor == "mention:12"
+        assert state.generation == 3
+        assert len((await session.execute(select(HumanHandoffRow))).scalars().all()) == 2

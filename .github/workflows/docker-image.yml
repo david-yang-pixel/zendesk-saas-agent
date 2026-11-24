@@ -26,6 +26,17 @@ env:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: casework_test
+          POSTGRES_USER: casework
+          POSTGRES_PASSWORD: ci-only
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgresql://casework:ci-only@127.0.0.1:5432/casework_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -54,6 +65,7 @@ jobs:
         run: pnpm --dir apps/admin-web build
       - name: Test and build Pi Agent
         run: |
+          DATABASE_URL="${TEST_DATABASE_URL/postgresql:/postgresql+asyncpg:}" uv run alembic upgrade head
           pnpm --filter pi-agent test
           pnpm --filter pi-agent build
 
@@ -145,6 +157,7 @@ jobs:
           ZENDESK_MESSAGING_WEBHOOK_SECRET: ${{ secrets.ZENDESK_MESSAGING_WEBHOOK_SECRET }}
           ZENDESK_BROWSER_RELAY_API_KEY: ${{ secrets.ZENDESK_BROWSER_RELAY_API_KEY }}
           CASEWORK_OPENCONNECTOR_MCP_URL: ${{ vars.CASEWORK_OPENCONNECTOR_MCP_URL }}
+          CASEWORK_AUTOMATION_AUTHOR_IDS: ${{ vars.CASEWORK_AUTOMATION_AUTHOR_IDS }}
           ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET: ${{ secrets.ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET }}
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           HC_CLIENT_URL: ${{ vars.HC_CLIENT_URL }}
@@ -184,6 +197,7 @@ jobs:
               printf 'export %s=%q\n' "$name" "${!name}"
             done
             printf 'export CASEWORK_OPENCONNECTOR_MCP_URL=%q\n' "$CASEWORK_OPENCONNECTOR_MCP_URL"
+            printf 'export CASEWORK_AUTOMATION_AUTHOR_IDS=%q\n' "$CASEWORK_AUTOMATION_AUTHOR_IDS"
             printf 'export ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET=%q\n' "$ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET"
             # Optional rotation input. An exported empty value would override
             # the URL already saved in runtime.env, so export only when set.

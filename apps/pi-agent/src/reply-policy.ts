@@ -1,7 +1,8 @@
-export type ReplyLanguage = 'en' | 'ja' | 'zh';
+export type ReplyLanguage = 'en' | 'es' | 'ja' | 'zh';
 
 export const LANGUAGE_NAMES: Record<ReplyLanguage, string> = {
   en: 'English',
+  es: 'Spanish',
   ja: 'Japanese',
   zh: 'Chinese (match the customer\'s Simplified or Traditional script)',
 };
@@ -28,6 +29,37 @@ function customerText(text: string): string {
     .join('\n');
 }
 
+const SPANISH_GREETING = /^[¡!\s]*(?:hola(?: a todos)?(?:[,.!\s]+(?:buenos d[ií]as|buenas(?: tardes| noches)?))?|buenos d[ií]as|buenas(?: tardes| noches)?)[.!¡\s]*$/iu;
+const SPANISH_THANKS = /^[¡!\s]*(?:(?:perfecto|genial|de acuerdo|entendido|listo|ok(?:ay)?)[.,!\s]+)?(?:muchas gracias|mil gracias|gracias(?: por (?:todo|la ayuda|su ayuda|tu ayuda))?)[.!¡\s]*$/iu;
+const SPANISH_REQUEST = [
+  /\b(?:(?:can|could|would|will|may) (?:you|we) |please[, ]+)(?:reply|respond|answer|speak|chat|talk|write|continue|use)(?: to me| with me)?(?: in)? spanish\b/iu,
+  /^(?:reply|respond|answer|speak|write|continue) in spanish\b|\b(?:in )?spanish[,. ]+please\b/iu,
+  /\b(?:(?:(?:puedes?|pueden|podemos|podr[ií]as?|podr[ií]an|podr[ií]amos) )?(?:hablar|responder(?:me|nos)?|contestar(?:me|nos)?|escribir(?:me|nos)?|comunicar(?:nos)?|seguir|continuar)(?: en)?|(?:habla[ns]?|hablamos|hablemos)(?: en)?|prefiero|(?:cambiar|pasar) a) espa[ñn]ol\b/iu,
+  /\b(?:responde(?:me)?|resp[oó]ndeme|contesta(?:me)?|cont[eé]stame|escribe(?:me)?|escr[ií]beme) en espa[ñn]ol\b|\b(?:en )?espa[ñn]ol[,. ]+por favor\b|^en espa[ñn]ol(?=[?.!\s]*$)/iu,
+];
+const SPANISH_WORDS = new Set(`
+  al como con cual cuales cuando cuanto cuantos del donde el ella en es esa esas esos esta estan estas este la las les los
+  mi mis nuestra nuestras nuestro nuestros otra otras otro otros para pero por porque que se si sin sobre son tu tus un una unas uno usted ustedes ya
+  claro despues entonces favor fue fueron hay hacer hasta luego nada tambien todavia ver
+  ayuda bien buenas buenos consulta dias duda dudas genial gracias hola horas muchas muchos perfecto
+  cobrado cobrada cobrar cobraron cobro cobros credito creditos cuenta cuentas duplicado duplicada factura facturas facturacion
+  mes meses pagar pago pagos pague problema problemas reembolso reembolsos renovacion soporte suscripcion suscripciones vez veces
+  enviado enviada enviar enviaremos necesitamos necesito podemos podria podrian puedo puede pueden puedes queremos quiero quieren quieres
+  recibido recibida recibir responder responderemos respuesta respuestas revisa revisar revisaremos solicitud solicitudes tengo tenemos tiene tienen tienes
+  agente conectar hablar humano persona transferir
+`.trim().split(/\s+/));
+const DISTINCTIVE_SPANISH_WORD = /^(?:ayuda|cobros?|factura(?:s|cion)?|gracias|hola|reembolsos?|suscripcion(?:es)?)$/u;
+
+function spanishText(text: string): boolean {
+  if (SPANISH_GREETING.test(text) || SPANISH_THANKS.test(text)) return true;
+  const words = text.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').match(/\p{Script=Latin}+/gu) ?? [];
+  const spanishWords = words.filter(word => SPANISH_WORDS.has(word)).length;
+  // Common words need corroboration to avoid switching languages for a name or loanword.
+  return (spanishWords >= 2 && spanishWords * 4 >= words.length) ||
+    (words.length === 1 && DISTINCTIVE_SPANISH_WORD.test(words[0])) ||
+    (spanishWords >= 1 && /[¿¡]/u.test(text));
+}
+
 function textLanguage(text: string): ReplyLanguage | undefined {
   const kana = text.match(/[぀-ヿ]/gu)?.length ?? 0;
   const han = text.match(/[㐀-鿿]/gu)?.length ?? 0;
@@ -36,11 +68,12 @@ function textLanguage(text: string): ReplyLanguage | undefined {
   // or product term in kanji inside an English message stays English.
   if (kana >= 2 && (kana + han) * 2 >= words) return 'ja';
   if (han >= 2 && han * 2 >= words) return 'zh';
+  if (spanishText(text)) return 'es';
   if (words >= 1) return 'en';
   return undefined;
 }
 
-/** The language a generated reply is actually written in, by script. */
+/** The language a generated reply is actually written in. */
 export function writtenLanguage(text: string): ReplyLanguage {
   return textLanguage(text.replace(/https?:\/\/\S+/g, ' ')) ?? 'en';
 }
@@ -57,19 +90,28 @@ export function detectCustomerLanguage(message: string, conversationContext = ''
     if (/中文|chinese/i.test(requested)) return 'zh';
     return 'en';
   }
-  const current = textLanguage(customerText(message));
+  const currentText = customerText(message);
+  if (SPANISH_REQUEST.some(pattern => pattern.test(currentText))) return 'es';
+  const current = textLanguage(currentText);
   if (current) return current;
   const customerTurns = conversationContext.split(/\n\n(?=(?:Customer|Support) \[)/)
     .filter(block => block.startsWith('Customer ['))
     .map(block => block.slice(block.indexOf('\n') + 1));
   for (let index = customerTurns.length - 1; index >= 0; index--) {
-    const language = textLanguage(customerText(customerTurns[index]));
+    const turn = customerText(customerTurns[index]);
+    if (SPANISH_REQUEST.some(pattern => pattern.test(turn))) return 'es';
+    const language = textLanguage(turn);
     if (language) return language;
   }
   return 'en';
 }
 
+export const SPANISH_SUPPORT_HOURS = 'de domingo a jueves por la noche, de 21:00 a 6:00 (EDT, horario de verano) o de 20:00 a 5:00 (EST, horario estándar)';
+
 export function customerFooter(language: ReplyLanguage): string {
+  if (language === 'es') {
+    return `\n\n---\nDify AI Agent envió esta respuesta. Si el problema continúa, responde «human». Un especialista de soporte te responderá lo antes posible durante nuestro horario de atención, ${SPANISH_SUPPORT_HOURS} (hora de Nueva York).`;
+  }
   const hours = 'Sunday–Thursday nights, 9:00 PM–6:00 AM EDT (daylight saving time) or 8:00 PM–5:00 AM EST (standard time)';
   const body = language === 'ja'
     ? `この返信は Dify AI Agent が送信しました。問題が解決しない場合は「human」と返信してください。サポート担当者が営業時間内に順次対応します（ニューヨーク時間：日曜～木曜、夏時間 21:00～翌6:00、標準時間 20:00～翌5:00）。`
@@ -85,16 +127,25 @@ export function conversationalReply(message: string): string | undefined {
   if (/^(?:hi(?: there)?|hello|hey|good (?:morning|afternoon|evening))[.!\s]*$/i.test(text)) return 'Hello! How can we help you?';
   if (/^(?:你好|您好)[！!。\s]*$/u.test(text)) return '您好！请告诉我们您需要什么帮助。';
   if (/^こんにちは[！!。\s]*$/u.test(text)) return 'こんにちは。どのようなことでお困りでしょうか。';
+  if (SPANISH_GREETING.test(text)) return '¡Hola! ¿En qué podemos ayudarte?';
   if (/^(?:(?:perfect|great|ok(?:ay)?|got it|understood)[.!]?\s*)?(?:i should be able to work with that[.!]?\s*)?(?:thank(?:s| you)(?: very much)?|much appreciated)[.!\s]*$/i.test(text)) {
     return "You're welcome!";
   }
   if (/^(?:ありがとうございます|ありがとうございました|ありがとう|助かりました)[。！!\s]*$/u.test(text)) return 'どういたしまして。';
   if (/^(?:好的[，,。\s]*)?(?:谢谢|多谢|感谢)[你您！!。\s]*$/u.test(text)) return '不客气！';
+  if (SPANISH_THANKS.test(text)) return '¡De nada!';
   if (/^(?:日本語で(?:話せますか|話せます|対応できますか|相談できますか)|can (?:you|we) (?:speak|chat|talk)(?: in)? Japanese)[？?。.!\s]*$/iu.test(text)) {
     return 'はい、日本語でお問い合わせいただけます。どのようなことでお困りでしょうか。';
   }
   if (/^(?:可以(?:用)?中文(?:交流|沟通|回答)?吗|can (?:you|we) (?:speak|chat|talk)(?: in)? Chinese)[？?。.!\s]*$/iu.test(text)) {
     return '可以，请用中文告诉我们您需要什么帮助。';
+  }
+  const request = text.replace(/^[¿¡\s]*(?:por favor[, ]+)?[¿¡\s]*|[?!.,\s]+$/giu, '');
+  if (SPANISH_REQUEST.some(pattern => {
+    const match = request.match(pattern);
+    return match?.index === 0 && /^(?:[, ]+(?:please|por favor))?$/iu.test(request.slice(match[0].length));
+  })) {
+    return 'Sí, podemos atenderte en español. ¿En qué podemos ayudarte?';
   }
   return undefined;
 }

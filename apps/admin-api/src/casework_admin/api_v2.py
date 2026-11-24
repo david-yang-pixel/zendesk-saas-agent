@@ -8,19 +8,16 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
+from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import desc, select, text
+from sqlalchemy import desc, func, select, text, update
 
-from casework_persistence.models import (
-    CaseJobRow,
-    OutboxMessage,
-    RunRecordRow,
-)
-
-router = APIRouter(prefix="/api", tags=["modern_admin"])
+from casework_admin.postgres_reads import select_runs_with_ticket_state, ticket_coverage
+from casework_admin.read_models import TicketCoverage
+from casework_persistence.models import CaseJobRow, EventRecord, OutboxMessage, PublicDelivery, TicketState
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +39,7 @@ class TraceListItem(BaseModel):
     reply_preview: str = ""
     delivery_status: str | None = None
     has_trace: bool = False
+    ticket_coverage: TicketCoverage = Field(default_factory=TicketCoverage)
 
 
 class TraceListResponse(BaseModel):
@@ -487,7 +485,66 @@ async def _fetch_zendesk_ticket_meta(ticket_id: int) -> dict[str, str]:
     return {"subject": "", "message": "", "email": ""}
 
 
+class StaffDeliveryResolution(BaseModel):
+    message_id: str = Field(min_length=1, max_length=255, pattern=r"^[\w:-]+$")
+
+
 def register_modern_routes(app: Any, transaction_scope: Any) -> None:
+    router = APIRouter(prefix="/api", tags=["modern_admin"])
+
+    @router.get("/deliveries/{delivery_id}")
+    async def public_delivery(delivery_id: UUID) -> dict[str, Any]:
+        async with transaction_scope() as session:
+            result = await session.execute(select(
+                PublicDelivery.delivery_id, PublicDelivery.job_id, PublicDelivery.ticket_id,
+                PublicDelivery.status, PublicDelivery.started_at, PublicDelivery.confirmed_at,
+                PublicDelivery.next_check_at,
+            ).where(PublicDelivery.delivery_id == str(delivery_id)))
+            row = result.mappings().one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Delivery not found")
+        return dict(row)
+
+    @router.post("/deliveries/{delivery_id}/staff-resolution")
+    async def resolve_public_delivery(delivery_id: UUID, body: StaffDeliveryResolution, request: Request) -> dict[str, str]:
+        async with transaction_scope() as session:
+            ticket = (await session.execute(select(TicketState).join(
+                PublicDelivery, PublicDelivery.ticket_id == TicketState.ticket_id
+            ).where(PublicDelivery.delivery_id == str(delivery_id)).with_for_update(of=TicketState))).scalar_one_or_none()
+            if ticket is None:
+                raise HTTPException(status_code=404, detail="Delivery not found")
+            delivery = (await session.execute(select(PublicDelivery).where(
+                PublicDelivery.delivery_id == str(delivery_id)
+            ).with_for_update())).scalar_one()
+            if delivery.status == "staff_handled" and (delivery.receipt or {}).get("message_id") == body.message_id:
+                return {"status": "staff_handled"}
+            if delivery.status != "uncertain":
+                raise HTTPException(status_code=409, detail="Only an uncertain delivery can be resolved by staff")
+            now = datetime.now(UTC)
+            delivery.status = "staff_handled"
+            delivery.next_check_at = None
+            delivery.updated_at = now
+            delivery.receipt = {"source": "staff_attestation", "message_id": body.message_id,
+                                "actor": getattr(request.state, "admin_actor", "local-admin"), "at": now.isoformat()}
+            ticket.human_cancelled_at = now
+            ticket.updated_at = now
+            cursors = {cursor for msg in delivery.messages for cursor in msg.get("cursors", []) if isinstance(cursor, str)}
+            if cursors:
+                await session.execute(update(EventRecord).where(
+                    EventRecord.ticket_id == ticket.ticket_id, EventRecord.message_id.in_(cursors),
+                    EventRecord.customer_seq.is_not(None), EventRecord.answered_by_job_id.is_(None),
+                ).values(answered_by_staff=True))
+                first_pending = (await session.execute(select(func.min(EventRecord.customer_seq)).where(
+                    EventRecord.ticket_id == ticket.ticket_id, EventRecord.answered_by_job_id.is_(None),
+                    EventRecord.answered_by_staff.is_(False),
+                ))).scalar_one()
+                frontier = ticket.latest_customer_seq if first_pending is None else first_pending - 1
+                if frontier > ticket.answered_customer_seq:
+                    ticket.answered_customer_seq = frontier
+                    ticket.answered_by_job_id = (await session.execute(select(EventRecord.answered_by_job_id).where(
+                        EventRecord.ticket_id == ticket.ticket_id, EventRecord.customer_seq == frontier,
+                    ))).scalar_one_or_none()
+        return {"status": "staff_handled"}
 
     @router.get("/traces", response_model=TraceListResponse)
     async def list_traces(
@@ -496,15 +553,14 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
     ) -> TraceListResponse:
         async with transaction_scope() as session:
             stmt = (
-                select(CaseJobRow, RunRecordRow)
-                .outerjoin(RunRecordRow, RunRecordRow.job_id == CaseJobRow.job_id)
+                select_runs_with_ticket_state()
                 .order_by(desc(CaseJobRow.created_at))
                 .limit(200)
             )
             res = await session.execute(stmt)
-            pairs = res.all()
+            rows = res.all()
 
-            job_ids = [job.job_id for job, _run in pairs]
+            job_ids = [job.job_id for job, _run, _state in rows]
             outbox_res = await session.execute(
                 select(OutboxMessage)
                 .where(OutboxMessage.job_id.in_(job_ids))
@@ -512,9 +568,13 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             )
             # Oldest first, so each job keeps its newest message.
             outbox_msgs = {msg.job_id: msg for msg in outbox_res.scalars().all()}
+            journal = await session.execute(select(PublicDelivery.job_id, PublicDelivery.status)
+                .where(PublicDelivery.job_id.in_(job_ids)))
+            public_statuses = dict(journal.all())
 
         items: list[TraceListItem] = []
-        for job, run in pairs:
+        now = datetime.now(UTC)
+        for job, run, state in rows:
             if status and status != "all":
                 if status == "running" and job.status in {"running", "leased"}:
                     pass
@@ -548,6 +608,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             reply, _reply_kind = _run_reply(run, outbox_msg.body if outbox_msg else "")
             delivery = outcome.get("delivery") or {}
             delivery_status = delivery.get("status") if isinstance(delivery, dict) else None
+            delivery_status = public_statuses.get(job.job_id, delivery_status)
             if not delivery_status and outbox_msg:
                 delivery_status = outbox_msg.status
 
@@ -580,6 +641,7 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                     reply_preview=reply[:160] if reply else "",
                     delivery_status=delivery_status,
                     has_trace=bool(run and (tool_count > 0 or run.tool_call_records or reply)),
+                    ticket_coverage=ticket_coverage(state, now=now),
                 )
             )
 
@@ -589,30 +651,29 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
     async def get_ticket_trace(ticket_id: int, job_id: str = Query(default="")) -> dict[str, Any]:
         async with transaction_scope() as session:
             stmt = (
-                select(CaseJobRow, RunRecordRow)
-                .outerjoin(RunRecordRow, RunRecordRow.job_id == CaseJobRow.job_id)
+                select_runs_with_ticket_state()
                 .where(CaseJobRow.ticket_id == ticket_id)
                 .order_by(desc(CaseJobRow.created_at))
             )
             if job_id:
                 stmt = stmt.where(CaseJobRow.job_id == job_id)
             res = await session.execute(stmt)
-            pairs = res.all()
+            rows = res.all()
 
-            if not pairs:
+            if not rows:
                 raise HTTPException(status_code=404, detail="Trace for ticket not found")
 
             # Without a job_id, pick the best job & run (prioritizing one that
             # ran tools, then one with an answer).
-            best_job, best_run = pairs[0]
+            best_job, best_run, state = rows[0]
             found = False
-            for j, r in pairs:
+            for j, r, _state in rows:
                 if r and _count_run_tool_calls(r) > 0:
                     best_job, best_run = j, r
                     found = True
                     break
             if not found:
-                for j, r in pairs:
+                for j, r, _state in rows:
                     if r and _run_reply(r)[0]:
                         best_job, best_run = j, r
                         break
@@ -623,6 +684,8 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
                 .order_by(desc(OutboxMessage.created_at))
             )
             outbox_msg = outbox_res.scalars().first()
+            journal = (await session.execute(select(PublicDelivery.delivery_id, PublicDelivery.status)
+                .where(PublicDelivery.job_id == best_job.job_id))).one_or_none()
 
         active_q = (best_run.active_question if best_run and isinstance(best_run.active_question, dict) else {})
         outcome = (best_run.outcome if best_run and isinstance(best_run.outcome, dict) else {})
@@ -643,7 +706,10 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
         final_reply, reply_kind = _run_reply(best_run, outbox_msg.body if outbox_msg else "")
 
         delivery = outcome.get("delivery")
-        if not delivery and outbox_msg:
+        if journal is not None:
+            delivery = {**(delivery if isinstance(delivery, dict) else {}), "channel": "browser-relay",
+                        "delivery_id": journal.delivery_id, "status": journal.status}
+        elif not delivery and outbox_msg:
             delivery = {
                 "channel": "browser-relay",
                 "status": outbox_msg.status,
@@ -748,24 +814,42 @@ def register_modern_routes(app: Any, transaction_scope: Any) -> None:
             "reply_kind": reply_kind,
             "delivery": delivery,
             "error": error_reason,
+            "ticket_coverage": ticket_coverage(state, now=datetime.now(UTC)).model_dump(mode="json"),
         }
 
     @router.post("/traces/{job_id}/retry")
     async def retry_job(job_id: str) -> dict[str, Any]:
         async with transaction_scope() as session:
-            await session.execute(
-                text("""
-                    UPDATE case_jobs
-                    SET status = 'queued',
-                        lease_owner = NULL,
-                        lease_expires_at = NULL,
-                        finished_at = NULL,
-                        dead_letter_reason = NULL,
-                        updated_at = NOW()
-                    WHERE job_id = :job_id
-                """),
-                {"job_id": job_id},
-            )
+            state = (await session.execute(select(TicketState).join(
+                CaseJobRow, TicketState.ticket_id == CaseJobRow.ticket_id
+            ).where(CaseJobRow.job_id == job_id).with_for_update(of=TicketState))).scalar_one_or_none()
+            if state is None:
+                raise HTTPException(status_code=404, detail="Job not found")
+            job = (await session.execute(select(CaseJobRow).where(
+                CaseJobRow.job_id == job_id
+            ).with_for_update())).scalar_one()
+            if job.status == "queued":
+                return {"ok": True, "job_id": job_id, "message": "Job already queued"}
+            if job.status not in {"failed", "cancelled"} or job.generation != state.generation:
+                raise HTTPException(status_code=409, detail="Only a failed or cancelled job from the current generation can retry")
+            if not job.is_operator_mention:
+                attempted = (await session.execute(select(PublicDelivery.delivery_id).where(
+                    PublicDelivery.ticket_id == job.ticket_id,
+                    (PublicDelivery.status.in_(("pending", "uncertain"))) |
+                    ((PublicDelivery.job_id == job_id) & PublicDelivery.status.in_(("sent", "staff_handled"))),
+                ).limit(1))).scalar_one_or_none()
+                if attempted is not None:
+                    raise HTTPException(status_code=409, detail=f"Check public delivery {attempted} before retrying")
+                queued = (await session.execute(select(CaseJobRow.job_id).where(
+                    CaseJobRow.ticket_id == job.ticket_id, CaseJobRow.status == "queued",
+                    CaseJobRow.is_operator_mention.is_(False),
+                ).limit(1))).scalar_one_or_none()
+                if state.human_cancelled_at or queued:
+                    raise HTTPException(status_code=409, detail="Ticket is under human control or already has a pending job")
+            job.status = "queued"
+            job.lease_owner = job.lease_expires_at = job.finished_at = job.dead_letter_reason = None
+            job.updated_at = job.available_at = datetime.now(UTC)
+            job.attempts = 0
         return {"ok": True, "job_id": job_id, "message": "Job re-queued successfully"}
 
     @router.post("/traces/{job_id}/skip")

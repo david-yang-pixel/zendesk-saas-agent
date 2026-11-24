@@ -238,7 +238,8 @@ def test_duplicate_claim_is_controlled_by_the_injected_idempotency_port() -> Non
     assert len(jobs.submitted) == 1
 
 
-def test_human_webhook_cancels_without_submitting_a_job() -> None:
+@pytest.mark.parametrize("message_text", ["  HuMaN  ", "human\nMy workspace is inaccessible."])
+def test_human_webhook_cancels_without_submitting_a_job(message_text: str) -> None:
     client, jobs, cancellations = _app()
 
     response = client.post(
@@ -248,7 +249,7 @@ def test_human_webhook_cancels_without_submitting_a_job() -> None:
             tags=[],
             assignee="other-team",
             status="solved",
-            message_text="  HuMaN  ",
+            message_text=message_text,
         ),
     )
 

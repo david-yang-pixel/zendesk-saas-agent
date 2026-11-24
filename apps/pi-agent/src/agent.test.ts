@@ -257,6 +257,9 @@ describe('customer delivery safety gate', () => {
     expect(() => validateCustomerDelivery(dualTrack, 'はい、日本語でお問い合わせください。')).not.toThrow();
     expect(() => validateCustomerDelivery(dualTrack, '请告诉我们您遇到的问题。')).not.toThrow();
     expect(() => validateCustomerDelivery(dualTrack, 'はい、日本語でお問い合わせください。', true)).toThrow(/English/);
+    const spanishReply = 'Puedes descargar tu factura en el portal de facturación.';
+    expect(() => validateCustomerDelivery(dualTrack, spanishReply)).not.toThrow();
+    expect(() => validateCustomerDelivery(dualTrack, spanishReply, true)).toThrow(/English/);
   });
 
   it('counts only an answered business read, never discovery or a failed action', () => {
@@ -288,6 +291,8 @@ describe('finalOutputIssues', () => {
     const output = { customerReply: 'Hello! The credits are a one-time 200.', internalNote: REVIEWED };
     expect(finalOutputIssues(output, true, 'ja')).toEqual([expect.stringContaining('not written in Japanese')]);
     expect(finalOutputIssues({ customerReply: '教育プランのクレジットは200です。', internalNote: REVIEWED }, true, 'ja')).toEqual([]);
+    expect(finalOutputIssues(output, true, 'es')).toEqual([expect.stringContaining('not written in Spanish')]);
+    expect(finalOutputIssues({ customerReply: 'Puedes descargar tu factura en el portal de facturación.', internalNote: REVIEWED }, true, 'es')).toEqual([]);
   });
 
   it('flags a mention without an operator answer but does not check its English draft language', () => {

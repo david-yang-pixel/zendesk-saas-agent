@@ -3,73 +3,141 @@ import type { AgentAttachment } from './agent.js';
 import { callOpenConnectorCustomMcpTool, parseOpenConnectorResult } from './openconnector.js';
 import { detectHumanHandoffIntent } from './intent.js';
 import { loadConversation } from './conversation.js';
+import { publicDeliveryIdsInBody } from './relay.js';
 
-interface EventExtraction {
-  text: string;
-  attachments: AgentAttachment[];
+function identifier(value: unknown): string {
+  if (typeof value === 'string') return value.trim();
+  return typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : '';
 }
 
-function extractEventDetails(ev: any): EventExtraction {
-  let text = '';
+const SUNCO_REFERENCE = 'zen:sunco:conversation_message:';
+const COMMENT_REFERENCE = 'zen:ticket:comment:';
+const CUSTOMER_TYPES = /^(?:end[-_]?user|customer|requester|user)$/;
+const STAFF_TYPES = /^(?:agent|admin|staff)$/;
+const AI_AGENT_TYPES = /^ai[-_]?agent$/;
+const QUOTED_REPLY_FOOTER = /(?:^|\n\s*---\s*\n)(?:This reply was sent by Dify AI Agent|此回复由 Dify AI Agent 发送|この返信は Dify AI Agent が送信しました|Dify AI Agent envió esta respuesta)[\s\S]*$/i;
+
+/** Zendesk's conversation event ID and the SunCo message ID are different namespaces. */
+export function customerEventCursors(ev: { id?: unknown; reference?: unknown }): string[] {
+  const cursors = new Set<string>();
+  const add = (namespace: string, id: string) => {
+    if (id && !id.includes(':') && namespace.length + id.length <= 255) cursors.add(`${namespace}${id}`);
+  };
+  const reference = identifier(ev.reference);
+  const id = identifier(ev.id);
+  if (reference.startsWith(SUNCO_REFERENCE)) add('messaging:', reference.slice(SUNCO_REFERENCE.length));
+  if (id.startsWith(SUNCO_REFERENCE)) add('messaging:', id.slice(SUNCO_REFERENCE.length));
+  if (id.startsWith('messaging:')) add('messaging:', id.slice('messaging:'.length));
+  if (reference.startsWith(COMMENT_REFERENCE)) add('zendesk:', reference.slice(COMMENT_REFERENCE.length));
+  if (id.startsWith(COMMENT_REFERENCE)) add('zendesk:', id.slice(COMMENT_REFERENCE.length));
+  add('zendesk:', id.startsWith('zendesk:') ? id.slice('zendesk:'.length) : id);
+  return [...cursors];
+}
+
+function isContactFormOnly(text: string): boolean {
+  const fields = new Set<string>();
+  for (const line of text.split(/\r?\n/).map(value => value.trim()).filter(Boolean)) {
+    const match = /^(name|email|workspace id|plan)\s*:\s*(.+)$/i.exec(line);
+    if (!match) return false;
+    const field = match[1].toLowerCase();
+    if (fields.has(field) || (field === 'email' && !/^[^\s@]+@[^\s@]+$/.test(match[2]))) return false;
+    fields.add(field);
+  }
+  return fields.has('name') && fields.has('email');
+}
+
+function extractEventDetails(ev: any) {
+  const content = ev.content;
+  const structuredForm = /^(?:form|form[_-]?response)$/i.test(content?.type ?? ev.type ?? '') ||
+    (Array.isArray(content?.fields) && !content.text && !content.body);
+  const candidates = typeof content === 'string'
+    ? [content, ev.body, ev.message]
+    : [content?.text, content?.body, ev.body, ev.body?.text, ev.message, ev.message?.text];
+  const text = candidates.find(value => typeof value === 'string' && value.trim())?.trim() ?? '';
+  const fallback = typeof content?.text_fallback === 'string' ? content.text_fallback.trim() : '';
+  const form = (structuredForm && !text) || isContactFormOnly(text || fallback);
   const attachments: AgentAttachment[] = [];
-  if (!ev) return { text: '', attachments: [] };
 
-  if (typeof ev.content === 'string' && ev.content.trim()) {
-    text = ev.content.trim();
-  } else if (ev.content && typeof ev.content === 'object') {
-    if (typeof ev.content.text === 'string' && ev.content.text.trim()) text = ev.content.text.trim();
-    else if (typeof ev.content.body === 'string' && ev.content.body.trim()) text = ev.content.body.trim();
-    else if (typeof ev.content.text_fallback === 'string' && ev.content.text_fallback.trim()) text = ev.content.text_fallback.trim();
+  function addAttachment(attachment: any, url: unknown) {
+    if (typeof url !== 'string' || !url.trim()) return;
+    attachments.push({
+      id: identifier(attachment.id ?? attachment.attachment_id) || url,
+      name: String(attachment.alt_text || attachment.file_name || attachment.name || 'attachment'),
+      url,
+      contentType: attachment.media_type || attachment.content_type || attachment.contentType ||
+        (/\.pdf(?:$|\?)/i.test(url) ? 'application/pdf' :
+          attachment.type === 'image' ? 'image/png' : undefined),
+    });
+  }
 
-    if (ev.content.media_url || ev.content.url) {
-      attachments.push({
-        id: String(ev.content.attachment_id || ev.id || `${Date.now()}`),
-        name: String(ev.content.alt_text || ev.content.file_name || ev.content.name || 'image_attachment'),
-        url: ev.content.media_url || ev.content.url,
-        contentType: ev.content.media_type || ev.content.content_type ||
-          (/\.pdf(?:$|\?)/i.test(ev.content.media_url || ev.content.url) ? 'application/pdf' :
-            ev.content.type === 'image' ? 'image/png' : undefined),
-      });
-    }
-
-    if (Array.isArray(ev.content.attachments)) {
-      for (const a of ev.content.attachments) {
-        if (a && typeof a === 'object') {
-          attachments.push({
-            id: String(a.id || a.attachment_id || `${Date.now()}`),
-            name: String(a.file_name || a.name || 'attachment'),
-            url: a.content_url || a.url,
-            contentType: a.content_type,
-          });
-        }
+  if (content && typeof content === 'object') {
+    const mediaUrl = content.media_url || content.mediaUrl ||
+      (['image', 'file', 'audio', 'video'].includes(content.type) ? content.url || content.content_url || content.contentUrl : undefined);
+    addAttachment(content, mediaUrl);
+  }
+  for (const list of [content?.attachments, ev.attachments]) {
+    if (!Array.isArray(list)) continue;
+    for (const attachment of list) {
+      if (attachment && typeof attachment === 'object') {
+        addAttachment(attachment, attachment.content_url || attachment.contentUrl || attachment.url || attachment.media_url || attachment.mediaUrl);
       }
     }
   }
-
-  if (!text) {
-    if (typeof ev.body === 'string' && ev.body.trim()) text = ev.body.trim();
-    else if (typeof ev.message === 'string' && ev.message.trim()) text = ev.message.trim();
-    else if (ev.body && typeof ev.body === 'object' && typeof ev.body.text === 'string' && ev.body.text.trim()) {
-      text = ev.body.text.trim();
-    } else if (ev.message && typeof ev.message === 'object' && typeof ev.message.text === 'string' && ev.message.text.trim()) {
-      text = ev.message.text.trim();
+  // HTML comments can carry an image and no text.
+  if (content?.type === 'html') {
+    for (const image of text.matchAll(/<img\b[^>]*\bsrc\s*=\s*["'](https?:\/\/[^"']+)["']/gi)) {
+      addAttachment({ type: 'image', name: 'inline image' }, image[1]);
     }
   }
+  const issueText = content?.type === 'html' && !text.replace(/<[^>]*>|&nbsp;|&#160;/gi, '').trim()
+    ? '' : text;
+  return { text: form ? '' : issueText || (content?.type === 'html' ? '' : fallback), historyText: text || fallback, attachments, form };
+}
 
-  if (Array.isArray(ev.attachments)) {
-    for (const a of ev.attachments) {
-      if (a && typeof a === 'object') {
-        attachments.push({
-          id: String(a.id || a.attachment_id || `${Date.now()}`),
-          name: String(a.file_name || a.name || 'attachment'),
-          url: a.content_url || a.url,
-          contentType: a.content_type,
-        });
-      }
-    }
-  }
+export interface ReadCustomerMessage {
+  cursors: string[];
+  occurredAt?: string;
+}
 
-  return { text, attachments };
+interface CustomerMessage extends ReadCustomerMessage {
+  id: string;
+  text: string;
+  attachments: AgentAttachment[];
+  requestsHuman: boolean;
+}
+
+interface ConversationCoverage {
+  pendingCursors: ReadonlySet<string>;
+  coveredCursors: ReadonlySet<string>;
+}
+
+export interface HandoffResume {
+  occurredAt: string | Date;
+  /** The signed Zendesk internal note cursor, in the mention:<comment ID> namespace. */
+  cursor: string | null;
+}
+
+export interface TicketContextOptions {
+  handoffResume?: HandoffResume | null;
+  /** Provider cursors for confirmed automated public deliveries on this ticket. */
+  automatedReplyCursors?: ReadonlySet<string>;
+  confirmedDeliveryIds?: ReadonlySet<string>;
+  /** Stable provider author IDs for accounts used exclusively by automation. */
+  automationAuthorIds?: ReadonlySet<string>;
+}
+
+function isInternalEvent(ev: any): boolean {
+  return ev.public === false || ev.is_public === false || ev.metadata?.is_public === false;
+}
+
+function resumeNoteIndex(events: any[], resume: HandoffResume | null | undefined): number {
+  if (!resume?.cursor?.startsWith('mention:')) return -1;
+  const commentId = resume.cursor.slice('mention:'.length);
+  return events.findIndex(ev => ev && isInternalEvent(ev) && (
+    identifier(ev.reference) === `${COMMENT_REFERENCE}${commentId}` ||
+    identifier(ev.id) === `${COMMENT_REFERENCE}${commentId}` ||
+    identifier(ev.id) === commentId
+  ));
 }
 
 interface TicketDetails {
@@ -81,67 +149,116 @@ interface TicketDetails {
   lastEventTime?: string;
   customerEventsCount: number;
   hasRequestedHuman: boolean;
-  /** True when a customer message not yet answered asks for a human (a new request). */
   latestRequestedHuman: boolean;
+  humanRequestOccurredAt?: string;
+  humanRequestMessage?: string;
   isAlreadyAnswered: boolean;
   unrepliedCount: number;
+  /** The substantive customer messages actually included in the model input. */
+  readCustomerMessages: ReadCustomerMessage[];
+  visibleCustomerCursors: Set<string>;
+  staffAnsweredCursors: string[];
 }
 
-export async function getTicketDetails(ticketId: number, openConnector: McpServiceConfig, signal?: AbortSignal): Promise<TicketDetails> {
+export async function getTicketDetails(
+  ticketId: number, openConnector: McpServiceConfig, signal?: AbortSignal, coverage?: ConversationCoverage,
+  options: TicketContextOptions = {},
+): Promise<TicketDetails> {
   try {
     let email = '';
     let subject = '';
-
     try {
       const rawTicket = await callOpenConnectorCustomMcpTool(
-        openConnector,
-        'zendesk',
-        'get_ticket',
-        { ticket_id: ticketId },
-        signal,
+        openConnector, 'zendesk', 'get_ticket', { ticket_id: ticketId }, signal,
       );
-      {
-        const parsed = parseOpenConnectorResult(rawTicket);
-        email = parsed?.data?.ticket?.requester?.email || parsed?.data?.ticket?.email || '';
-        subject = parsed?.data?.ticket?.subject || '';
-      }
-    } catch (e: any) {
-      console.warn(`[Worker] Could not fetch ticket metadata:`, e.message);
+      const parsed = parseOpenConnectorResult(rawTicket);
+      email = parsed?.data?.ticket?.requester?.email || parsed?.data?.ticket?.email || '';
+      subject = parsed?.data?.ticket?.subject || '';
+    } catch (error: any) {
+      console.warn('[Worker] Could not fetch ticket metadata:', error.message);
     }
 
-    let allEvents: any[];
-    try {
-      allEvents = await loadConversation(ticketId, openConnector, signal);
-    } catch (e: any) {
-      throw new Error(`Could not fetch Zendesk conversation log for ticket #${ticketId}: ${e.message}`);
+    const allEvents = await loadConversation(ticketId, openConnector, signal);
+    if (allEvents.every(event => Number.isFinite(Date.parse(event?.created_at)))) {
+      allEvents.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
     }
-
-    // Collect unreplied customer messages since the last agent message
-    const unrepliedCustomerMessages: Array<{ id: string; text: string; time: string; attachments: AgentAttachment[] }> = [];
+    const resume = options.handoffResume;
+    const resumeTime = resume?.occurredAt instanceof Date ? resume.occurredAt.getTime() : Date.parse(resume?.occurredAt ?? '');
+    const noteIndex = resumeNoteIndex(allEvents, resume);
     const allAttachments: AgentAttachment[] = [];
     const history: string[] = [];
+    const visibleCustomerCursors = new Set<string>();
+    const customerMessages: CustomerMessage[] = [];
+    let lastReplyIndex = 0;
+    let lastStaffReplyIndex = 0;
+    let foundAgentReply = false;
+    let latestReplyAllowsPending = false;
     let hasRequestedHuman = false;
-    let isAlreadyAnswered = false;
+    let humanRequestOccurredAt: string | undefined;
 
-    // Give each fresh model session the public thread, including prior answers
-    // and attachment metadata. Internal operator notes stay out of this context.
-    for (const ev of allEvents) {
-      if (ev.public === false || ev.metadata?.is_public === false || ev.author?.type === 'system') continue;
-      const { text, attachments } = extractEventDetails(ev);
-      const isAgent = ev.author?.type === 'agent' || /David Yang|AI Agent/.test(ev.author?.display_name || '');
-      if (!isAgent) {
+    for (const [index, ev] of allEvents.entries()) {
+      if (!ev || isInternalEvent(ev)) continue;
+      const authorType = (identifier(ev.author?.type) || identifier(ev.author?.role)).toLowerCase();
+      const isCustomer = CUSTOMER_TYPES.test(authorType);
+      const isAgent = STAFF_TYPES.test(authorType) || AI_AGENT_TYPES.test(authorType);
+      if (!isAgent && !isCustomer) continue;
+      const { text, historyText, attachments, form } = extractEventDetails(ev);
+      if (isAgent && !form && (text || attachments.length)) {
+        foundAgentReply = true;
+        lastReplyIndex = customerMessages.length;
+        const authorId = identifier(ev.author?.id ?? ev.author?.user_id ?? ev.author_id);
+        const isAutomated = AI_AGENT_TYPES.test(authorType) ||
+          options.automationAuthorIds?.has(authorId) ||
+          publicDeliveryIdsInBody(historyText).some(id => options.confirmedDeliveryIds?.has(id)) ||
+          customerEventCursors(ev).some(cursor => options.automatedReplyCursors?.has(cursor));
+        // An unidentifiable legacy support reply is visible as a reply, but cannot
+        // settle an exact pending message permanently or hide it from this run.
+        latestReplyAllowsPending = Boolean(isAutomated) || !authorId;
+        if (!latestReplyAllowsPending) lastStaffReplyIndex = customerMessages.length;
+      }
+      if (isCustomer) {
         allAttachments.push(...attachments);
-        if (!email) {
-          const fields = ev.content?.fields;
-          if (Array.isArray(fields)) email = fields.find((field: any) => field.type === 'EMAIL')?.email || '';
+        if (!email && Array.isArray(ev.content?.fields)) {
+          email = ev.content.fields.find((field: any) => field.type === 'EMAIL')?.email || '';
+        }
+        const cursors = customerEventCursors(ev);
+        cursors.forEach(cursor => visibleCustomerCursors.add(cursor));
+        if (text || attachments.length) {
+          const occurredAt = typeof ev.created_at === 'string' ? ev.created_at : undefined;
+          const occurredTime = Date.parse(occurredAt ?? '');
+          const afterResume = Number.isFinite(resumeTime) && Number.isFinite(occurredTime) && occurredTime !== resumeTime
+            ? occurredTime > resumeTime
+            : noteIndex === -1 || index > noteIndex;
+          const requestsHuman = afterResume && detectHumanHandoffIntent(text.replace(QUOTED_REPLY_FOOTER, ''));
+          if (requestsHuman && Number.isFinite(occurredTime) &&
+              (!humanRequestOccurredAt || occurredTime > Date.parse(humanRequestOccurredAt))) {
+            humanRequestOccurredAt = occurredAt;
+          }
+          customerMessages.push({
+            id: identifier(ev.id) || identifier(ev.reference), text, attachments, cursors,
+            occurredAt, requestsHuman,
+          });
+          hasRequestedHuman ||= requestsHuman;
         }
       }
-      if (text || attachments.length) history.push(
-        `${isAgent ? 'Support' : 'Customer'} [${ev.created_at || 'time unknown'}]:\n${text.slice(0, 4000)}${text.length > 4000 ? '\n[Message truncated; fetch this event if needed.]' : ''}` +
+      if (historyText || attachments.length) history.push(
+        `${isAgent ? 'Support' : 'Customer'} [${ev.created_at || 'time unknown'}]:\n${historyText.slice(0, 4000)}${historyText.length > 4000 ? '\n[Message truncated; fetch this event if needed.]' : ''}` +
         attachments.map(a => `\n[Attachment: ${a.name} (${a.contentType || 'file'}), URL: ${a.url || 'N/A'}]`).join(''),
       );
     }
-    // Retain initial identity/question plus recent turns, and disclose omissions.
+
+    // An older AI run may have posted after an admitted follow-up appeared.
+    // An exact pending cursor can recover that follow-up from before the AI reply.
+    const unreplied = customerMessages.filter((message, index) => {
+      if (message.cursors.some(cursor => coverage?.coveredCursors.has(cursor))) return false;
+      return index >= lastReplyIndex ||
+        (latestReplyAllowsPending && index >= lastStaffReplyIndex && message.cursors.some(cursor => coverage?.pendingCursors.has(cursor)));
+    });
+    const customerMessage = unreplied.map(message => [message.text, ...message.attachments.map(a =>
+      `[Attachment: ${a.name} (${a.contentType || 'file'}), URL: ${a.url || 'N/A'}]`,
+    )].filter(Boolean).join('\n')).join('\n\n');
+    const latest = unreplied.at(-1);
+
     const selected = history.length > 25
       ? [...history.slice(0, 2), `[${history.length - 25} older public messages omitted; fetch older history if material.]`, ...history.slice(-23)]
       : history;
@@ -156,106 +273,26 @@ export async function getTicketDetails(ticketId: number, openConnector: McpServi
       remaining -= selected[i].length;
     }
 
-    // 1. Check if the customer EVER asked for human support in any message using refined intent detection
-    for (const ev of allEvents) {
-      if (ev.public === false || ev.metadata?.is_public === false) continue;
-      const authorName = ev.author?.display_name || '';
-      const authorType = ev.author?.type || '';
-      const isAgent = authorType === 'agent' || authorName.includes('David Yang') || authorName.includes('AI Agent');
-      if (!isAgent) {
-        const { text } = extractEventDetails(ev);
-        if (detectHumanHandoffIntent(text)) {
-          hasRequestedHuman = true;
-          break;
-        }
-      }
-    }
-
-    // 2. Scan backwards from newest to oldest:
-    // If the latest event in the conversation is an agent reply, older customer messages have already been replied!
-    let foundAgentReply = false;
-    let latestEventId = '';
-    let latestEventTime = '';
-
-    for (let i = allEvents.length - 1; i >= 0; i--) {
-      const ev = allEvents[i];
-      // An operator's @ internal note is a trigger, not a customer-visible reply.
-      if (ev.public === false || ev.metadata?.is_public === false || ev.author?.type === 'system') continue;
-      const authorName = ev.author?.display_name || '';
-      const authorType = ev.author?.type || '';
-      const isAgent = authorType === 'agent' || authorName.includes('David Yang') || authorName.includes('AI Agent');
-      const { text, attachments } = extractEventDetails(ev);
-
-      if (!latestEventId) {
-        latestEventId = String(ev.id || ev.reference || '');
-        latestEventTime = String(ev.created_at || '');
-      }
-
-      if (isAgent) {
-        // Encountered the most recent agent reply! Stop collecting customer messages before this reply.
-        foundAgentReply = true;
-        break;
-      } else {
-        // Customer message sent after the latest agent reply
-        if (text || attachments.length > 0) {
-          unrepliedCustomerMessages.unshift({
-            id: String(ev.id || ev.reference || ''),
-            text: text,
-            time: String(ev.created_at || ''),
-            attachments: attachments,
-          });
-        }
-      }
-    }
-
-    // If there are no customer messages after the latest agent reply:
-    if (unrepliedCustomerMessages.length === 0 && foundAgentReply) {
-      isAlreadyAnswered = true;
-    }
-
-    // Combine all unreplied consecutive customer messages (separated by double newline)
-    let customerMessage = '';
-    if (unrepliedCustomerMessages.length > 0) {
-      customerMessage = unrepliedCustomerMessages
-        .map(m => {
-          let part = m.text;
-          if (m.attachments.length > 0) {
-            const attList = m.attachments
-              .map(a => `[Attachment: ${a.name} (${a.contentType || 'file'}), URL: ${a.url || 'N/A'}]`)
-              .join('\n');
-            part = part ? `${part}\n${attList}` : attList;
-          }
-          return part;
-        })
-        .filter(Boolean)
-        .join('\n\n');
-    }
-
-    if (!customerMessage) {
-      customerMessage = subject || `Ticket #${ticketId}`;
-    }
-
-    const lastEventId = unrepliedCustomerMessages.length > 0
-      ? unrepliedCustomerMessages[unrepliedCustomerMessages.length - 1].id
-      : latestEventId;
-    const lastEventTime = unrepliedCustomerMessages.length > 0
-      ? unrepliedCustomerMessages[unrepliedCustomerMessages.length - 1].time
-      : latestEventTime;
-
     return {
-      message: customerMessage,
+      message: customerMessage || subject || `Ticket #${ticketId}`,
       conversationContext: boundedHistory.join('\n\n'),
       email,
       attachments: [...new Map(allAttachments.map(attachment => [attachment.id, attachment])).values()].slice(-8),
-      lastEventId,
-      lastEventTime,
-      customerEventsCount: unrepliedCustomerMessages.length,
+      lastEventId: latest?.id,
+      lastEventTime: latest?.occurredAt,
+      customerEventsCount: unreplied.length,
       hasRequestedHuman,
-      latestRequestedHuman: unrepliedCustomerMessages.some(m => detectHumanHandoffIntent(m.text)),
-      isAlreadyAnswered,
-      unrepliedCount: unrepliedCustomerMessages.length,
+      latestRequestedHuman: unreplied.some(message => message.requestsHuman),
+      humanRequestOccurredAt,
+      humanRequestMessage: customerMessages.filter(message => message.requestsHuman).at(-1)?.text,
+      isAlreadyAnswered: unreplied.length === 0 && foundAgentReply,
+      unrepliedCount: unreplied.length,
+      readCustomerMessages: unreplied.map(({ cursors, occurredAt }) => ({ cursors, occurredAt })),
+      visibleCustomerCursors,
+      staffAnsweredCursors: customerMessages.slice(0, lastStaffReplyIndex)
+        .flatMap(message => message.cursors).filter(cursor => coverage?.pendingCursors.has(cursor)),
     };
-  } catch (err: any) {
-    throw new Error(`Unable to load complete ticket context for #${ticketId}: ${err.message}`);
+  } catch (error: any) {
+    throw new Error(`Unable to load complete ticket context for #${ticketId}: ${error.message}`);
   }
 }

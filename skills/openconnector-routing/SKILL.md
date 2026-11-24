@@ -19,6 +19,8 @@ OpenConnector is the only investigation gateway. The Agent receives `list_read_t
 
 Start each investigation with one unfiltered `list_connections` call to establish the current connection-instance count, distinct services, and available connection names. Compare them with the known routes below; only the live result establishes what is configured now. A connection listing does not prove its business tools work. If the listing fails, report the discovery gap and use only sources that can be verified independently.
 
+Reuse successful connection lists, action guides, and directory pages already returned in this investigation. Repeat discovery only when a query, connection, or page changes, or when retrying a failure. Move directly to the selected business read once its inputs are known.
+
 For a native provider:
 
 1. Use `list_read_tools` to find relevant connected sources and read actions. Scope by `service` or `connectionName` and use its capability `query` filter (for example `search wiki message document`) to search across all permitted entries before pagination. Continue `nextOffset` with the same filters when needed; the first 50 actions are not the entire provider. All connected read actions remain available. Do not inventory unrelated providers on every ticket.

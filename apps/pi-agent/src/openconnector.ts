@@ -445,6 +445,24 @@ export function createOpenConnectorServiceConfig(endpoint: string, apiKey: strin
   return config;
 }
 
+/** Scope successful discovery responses to the investigation that requested them. */
+export function withRunDiscoveryCache(tool: CustomTool): CustomTool {
+  if (!['list_connections', 'get_action_guide', 'search_actions', READ_TOOL_DIRECTORY_NAME].includes(tool.name)) return tool;
+  const results = new Map<string, Awaited<ReturnType<CustomTool['execute']>>>();
+  return {
+    ...tool,
+    async execute(id, params, signal) {
+      signal?.throwIfAborted();
+      // Discovery controls take flat JSON parameters, including pagination cursors.
+      const key = JSON.stringify(Object.entries(params ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+      if (results.has(key)) return structuredClone(results.get(key));
+      const result = await tool.execute(id, params, signal);
+      if (!signal?.aborted && result && !result.isError) results.set(key, structuredClone(result));
+      return result;
+    },
+  };
+}
+
 export async function discoverOpenConnectorTools(config: McpServiceConfig): Promise<CustomTool[]> {
   const tools = await discoverMcpTools(config);
   const controls = tools.filter((tool) => OPENCONNECTOR_TOOL_SET.has(tool.name)).map(tool => {

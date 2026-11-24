@@ -9,7 +9,7 @@ import type { ThinkingLevelMap } from '@earendil-works/pi-ai';
 import { CustomTool } from './mcp.js';
 import type { ModelReasoning } from './model-config.js';
 import { createProjectSkillReadTool, getProjectSkills } from './project-skills.js';
-import { inferOpenConnectorService } from './openconnector.js';
+import { inferOpenConnectorService, withRunDiscoveryCache } from './openconnector.js';
 import { mergeToolCalls, normalizeToolResult, type ToolOutcome } from './tool-result.js';
 import { captureAgentRound, sumRoundTokens, updateAgentTool, type AgentRoundTelemetry, type CompletedToolTelemetry } from './round-telemetry.js';
 import { InvestigationTracker, continueInvestigation } from './investigation.js';
@@ -294,7 +294,7 @@ export function validateCustomerDelivery(
     throw new Error('Customer delivery blocked: required dual-track output markers are missing');
   }
   if (!customerReply.trim()) throw new Error('Customer delivery blocked: customer reply is empty');
-  if (requireEnglish && /[\u3400-\u9fff\u3040-\u30ff]/u.test(customerReply)) {
+  if (requireEnglish && (/[\u3400-\u9fff\u3040-\u30ff]/u.test(customerReply) || writtenLanguage(customerReply) === 'es')) {
     throw new Error('Customer delivery blocked: public reply must be entirely in English');
   }
   if (/=== (?:INTERNAL NOTE|CUSTOMER REPLY|OPERATOR ANSWER) ===|(?:内部调查|调查结果\s*\(|Internal Analysis|Internal Note)/i.test(customerReply)) {
@@ -372,9 +372,12 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
     : 'en';
   const acknowledgement = publicReplyAllowed
     ? conversationalReply(options.customerMessage) : undefined;
-  if (acknowledgement) {
+  const acknowledgementLanguage = acknowledgement ? writtenLanguage(acknowledgement) : undefined;
+  const matchesSpanishLanguage = customerLanguage === 'es' || acknowledgementLanguage === 'es'
+    ? acknowledgementLanguage === customerLanguage : true;
+  if (acknowledgement && acknowledgementLanguage && matchesSpanishLanguage) {
     const now = new Date().toISOString();
-    const reply = acknowledgement + customerFooter(writtenLanguage(acknowledgement));
+    const reply = acknowledgement + customerFooter(acknowledgementLanguage);
     const trace: AgentTracePayload = {
       ticketId: options.ticketId, customerMessage: options.customerMessage,
       requesterEmail: options.requesterEmail, startedAt: now, finishedAt: now,
@@ -429,7 +432,7 @@ export async function runPiSupportAgent(options: AgentRunOptions): Promise<Agent
   const skillReadTool = createProjectSkillReadTool(projectSkills);
   const investigation = new InvestigationTracker();
   const modelFiles = new ModelFileInputs();
-  const investigationTools = options.tools.map(tool => investigation.wrap(modelFiles.wrap(tool)));
+  const investigationTools = options.tools.map(tool => investigation.wrap(modelFiles.wrap(withRunDiscoveryCache(tool))));
   const loader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: getAgentDir(),
@@ -775,8 +778,11 @@ First read the dify-saas-support skill at ${projectSkills.find(skill => skill.na
     validateCustomerDelivery(finalAnswer, safeCustomerReply, !publicReplyAllowed);
 
     // Match the customer reply language while keeping operator drafts unsent.
-    const footer = customerFooter(writtenLanguage(safeCustomerReply));
-    const fullReply = publicReplyAllowed ? safeCustomerReply + footer : '';
+    const replyLanguage = writtenLanguage(safeCustomerReply);
+    if (publicReplyAllowed && (customerLanguage === 'es' || replyLanguage === 'es') && replyLanguage !== customerLanguage) {
+      throw new Error(`Customer delivery blocked: customer reply must be written in ${LANGUAGE_NAMES[customerLanguage]}`);
+    }
+    const fullReply = publicReplyAllowed ? safeCustomerReply + customerFooter(replyLanguage) : '';
     trace.finalReply = fullReply;
 
     return {

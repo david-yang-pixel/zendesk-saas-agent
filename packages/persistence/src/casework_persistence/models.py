@@ -2,9 +2,8 @@
 
 The schema is deliberately boring: PostgreSQL is the queue and the source of
 truth. State transitions are performed by repository methods, while the
-database enforces event de-duplication and at most one queued successor per
-ticket. A running job may coexist with that successor so customer messages are
-not dropped while an older snapshot is being processed.
+database enforces event de-duplication and one queued customer successor per
+ticket. Explicit operator mentions have their own jobs.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
@@ -50,6 +50,9 @@ class EventRecord(Base):
     customer_origin: Mapped[str] = mapped_column(String(100), nullable=False)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     message_id: Mapped[str | None] = mapped_column(String(255))
+    customer_seq: Mapped[int | None] = mapped_column(BigInteger)
+    answered_by_staff: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    answered_by_job_id: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -57,6 +60,8 @@ class EventRecord(Base):
 
     __table_args__ = (
         CheckConstraint("ticket_id > 0", name="ck_events_ticket_id_positive"),
+        Index("ix_events_ticket_message_id", "ticket_id", "message_id"),
+        Index("uq_events_ticket_customer_seq", "ticket_id", "customer_seq", unique=True),
     )
 
 
@@ -75,6 +80,16 @@ class TicketState(Base):
         String(255), ForeignKey("events.event_id")
     )
     human_cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    human_resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    human_resume_cursor: Mapped[str | None] = mapped_column(String(255))
+    latest_customer_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    answered_customer_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    latest_customer_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    answered_by_job_id: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -129,6 +144,9 @@ class CaseJobRow(Base):
         String(255), ForeignKey("events.event_id"), nullable=False, unique=True
     )
     expected_event_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_operator_mention: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(
@@ -150,6 +168,8 @@ class CaseJobRow(Base):
     skill_digest: Mapped[str] = mapped_column(String(255), nullable=False)
     tool_digest: Mapped[str] = mapped_column(String(255), nullable=False)
     dead_letter_reason: Mapped[str | None] = mapped_column(Text)
+    snapshot_wait_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    snapshot_alert_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -172,12 +192,33 @@ class CaseJobRow(Base):
             "uq_case_jobs_one_queued_ticket",
             "ticket_id",
             unique=True,
-            postgresql_where=text("status = 'queued'"),
-            sqlite_where=text("status = 'queued'"),
+            postgresql_where=text("status = 'queued' AND NOT is_operator_mention"),
+            sqlite_where=text("status = 'queued' AND NOT is_operator_mention"),
         ),
         Index("ix_case_jobs_claimable", "status", "available_at", "created_at"),
         Index("ix_case_jobs_ticket_generation", "ticket_id", "generation"),
     )
+
+
+class PublicDelivery(Base):
+    """Durable intent and receipt for a Worker public reply."""
+
+    __tablename__ = "public_deliveries"
+
+    job_id: Mapped[str] = mapped_column(String(255), ForeignKey("case_jobs.job_id"), primary_key=True)
+    delivery_id: Mapped[str] = mapped_column(Uuid(as_uuid=False), nullable=False, unique=True)
+    ticket_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    messages: Mapped[list[dict[str, object]]] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    reply_body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    receipt: Mapped[dict[str, object] | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    next_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    alert_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OutboxMessage(Base):

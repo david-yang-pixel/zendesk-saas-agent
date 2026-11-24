@@ -12,18 +12,26 @@ from fastapi.testclient import TestClient
 from casework_ingress.app import create_app
 from casework_ingress.ports import AdmissionUnavailable
 from casework_ingress.postgres_admission import PostgresAdmission
+from casework_ingress.zendesk import ZendeskTicket
 from casework_persistence.repositories import ConfigRevisionRepository
 from tests.unit.ingress.test_postgres_admission import CONFIG, _SessionAdapter
 
 SECRET = "independent-ticket-events-secret"
 NOW = 1780460000
+MESSAGING_SECRET = "different-messaging-secret"
 PATH = "/webhook/zendesk-ticket-events"
+
+class TicketReader:
+    async def fetch_ticket(self, ticket_id: int) -> ZendeskTicket:
+        return ZendeskTicket(ticket_id=ticket_id, tags=("saas",), group_id="saas-support", status="open")
+
 
 
 def payload() -> dict[str, Any]:
     return {
         "id": "evt-ticket-1",
         "type": "zen:event-type:ticket.comment_added",
+        "time": "2026-06-03T09:10:01Z",
         "detail": {"id": "99999"},
         "event": {"comment": {
             "id": "1234", "body": "@agent investigate private-fixture",
@@ -32,12 +40,12 @@ def payload() -> dict[str, Any]:
     }
 
 
-def signed(client: TestClient, data: Any, *, timestamp: int = NOW, secret: str = SECRET):
+def signed(client: TestClient, data: Any, *, timestamp: int = NOW, secret: str = SECRET, path: str = PATH):
     body = data if isinstance(data, bytes) else json.dumps(data, indent=2).encode()
     signature = base64.b64encode(hmac.new(
         secret.encode(), str(timestamp).encode() + body, hashlib.sha256
     ).digest()).decode()
-    return client.post(PATH, content=body, headers={
+    return client.post(path, content=body, headers={
         "X-Zendesk-Webhook-Signature": signature,
         "X-Zendesk-Webhook-Signature-Timestamp": str(timestamp),
     })
@@ -53,7 +61,8 @@ async def client(tmp_path):
     return TestClient(create_app(
         admission=PostgresAdmission(transaction_scope=sessions.transaction),
         ticket_events_signing_secret=SECRET,
-        messaging_signing_secret="different-messaging-secret",
+        messaging_signing_secret=MESSAGING_SECRET,
+        ticket_reader=TicketReader(),
         messaging_clock=lambda: NOW,
     ))
 
@@ -136,3 +145,31 @@ def test_missing_secret_does_not_break_health_but_rejects_events():
     client = TestClient(create_app(messaging_clock=lambda: NOW))
     assert client.get("/healthz").status_code == 200
     assert signed(client, payload()).status_code == 401
+
+
+def test_only_a_fresh_signed_staff_note_releases_a_takeover(client):
+    def customer_request(event_id: str, created_at: str):
+        return signed(client, {
+            "id": event_id, "detail": {"id": "99999"},
+            "event": {
+                "actor": {"type": "end_user", "display_name": "David Yang"},
+                "message": {"id": event_id, "body": "human", "created_at": created_at, "public": True},
+            },
+        }, path="/webhook/zendesk-messaging", secret=MESSAGING_SECRET).json()
+
+    assert customer_request("first-request", "2026-06-03T09:10:00Z")["action"] == "cancel"
+
+    spoof = {"event_id": "spoof", "ticket_id": 99999, "tags": ["saas"],
+             "assignee": "saas-support", "status": "open", "is_customer_message": False,
+             "actor": "customer", "visibility": "public", "message_text": "@David Yang",
+             "message_created_at": "2026-06-03T09:10:02Z"}
+    assert client.post("/webhook/zendesk", json=spoof).json()["reason"] == "human_takeover_active"
+    assert signed(client, payload()).json()["action"] == "enqueue"
+
+    assert customer_request("late-request", "2026-06-03T09:10:00Z")["reason"] == "stale_human_request"
+    assert customer_request("new-request", "2026-06-03T09:10:03Z")["action"] == "cancel"
+    assert signed(client, payload()).json()["action"] == "duplicate"
+
+    delayed = {**payload(), "id": "late-delivery", "time": "2026-06-03T09:10:02Z"}
+    delayed["event"]["comment"]["id"] = "1235"
+    assert signed(client, delayed).json()["reason"] == "stale_operator_mention"

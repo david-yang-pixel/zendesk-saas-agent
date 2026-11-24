@@ -60,12 +60,13 @@ ingress (FastAPI) ── admission rules ──► PostgreSQL: events, case_jobs
   draft marker are ignored. See `deploy/TICKET_EVENTS_WEBHOOK.md`.
 - Processing rules (`processing_rules.py`) are pure: the configured SaaS tag
   and assignee, `new`/`open` status, and a public customer-origin message are
-  required. A whole-message `human` (NFKC-normalized, punctuation-trimmed)
-  records a takeover in `ticket_states` and cancels active work instead of
-  queueing a job.
-- Admission is atomic in PostgreSQL. It deduplicates by `event_id`, keeps at
-  most one queued job per ticket, and rejects new work with `agent_paused` when
-  the Admin desired state is `paused`.
+  required. A standalone handoff command (`human`, `人工`, or `真人`) on the
+  first nonempty line records a takeover in `ticket_states` and cancels active
+  work. Subsequent lines stay with the request for the support engineer.
+- Admission deduplicates webhook events in PostgreSQL. Contact-only forms wait
+  for a substantive message or attachment. There is one queued customer job per
+  ticket. Operator mentions retain their own instructions and queue entries.
+  A paused runtime rejects new work with `agent_paused`.
 
 ## Job processing (Pi Agent)
 
@@ -79,6 +80,10 @@ Per job:
    the ticket was already handed to a human, if the latest message has already
    been answered, or if the conversation contains a request for a human. A
    takeover is persisted and announced to the Feishu bot.
+   A verified private staff mention establishes a new handoff boundary. The
+   worker compares requests with the time and cursor of that note on each read.
+   Zendesk roles identify customers and staff. `CASEWORK_AUTOMATION_AUTHOR_IDS`
+   optionally lists comma-separated account IDs dedicated to automation.
 2. **Context**: read the full ticket conversation and attachments through
    OpenConnector's Zendesk connection. Attachments are passed to the model as
    native image/file inputs. For a mention job the operator's note is injected
@@ -87,29 +92,40 @@ Per job:
    `system_settings.model_config`, saved on the Admin 模型配置 page. There is
    no built-in default: if any of them is missing the job fails with an alert
    instead of running a different model.
+   A model HTTP 402 pauses claims for the active endpoint for five minutes. The
+   worker retains pending work and issues one alert per cooldown window. Each
+   resumed job reloads its conversation and checks for a human response.
+   Alerts include consecutive quota windows and the age of the oldest queued
+   unanswered ticket. A successful model request resets its window count.
 4. **Investigation**: the agent loop (`@earendil-works/pi-coding-agent`) uses
    only tools discovered live from OpenConnector whose operation type is
    `read`. Gmail and every mutation are excluded. Skills are loaded on demand
    through a read tool. `investigation_check` records the material questions,
    sources and observation IDs, and the runtime allows at most two continuation
    reviews before returning qualified partial findings.
+   Within one investigation, successful discovery calls with identical inputs
+   reuse their results. Business reads and execution permission checks stay live.
 5. **Reply review gate**: the model must return `=== INTERNAL NOTE ===` and
    `=== CUSTOMER REPLY ===` with a JSON review decision.
    `validateReplyReview` blocks delivery when the review fails, or when a
    `verified` claim has no successful business evidence. The internal note
    stays in run telemetry and is never written to Zendesk.
-6. **Footer**: a localized footer (en/ja/zh, New York support hours) is
-   appended in code, never by the model.
+6. **Footer**: the worker adds the customer footer in English, Spanish,
+   Japanese or Chinese and uses the same language for a handoff acknowledgement.
 7. **In-flight monitor** (every 5 seconds): a human takeover or a new customer
    message aborts the run. A new message requeues the ticket with a 10-second
    debounce.
 8. **Pre-delivery freshness check**: reread the ticket. If anything changed,
    discard the draft and requeue (or hand over to a human).
 9. **Delivery**:
-   - Customer job: POST to the Browser Relay `/send`, the only public-reply
-     write path. A relay failure fails the job and sends the draft to the
-     Feishu bot. On success, redundant queued jobs for the ticket are
-     cancelled.
+   - Customer job: persist the reply and message cursors under a stable delivery
+     ID, then commit a dispatch permit before calling Browser Relay `/send`.
+     The ticket remains available for ingress and takeover during the network call.
+     A matching receipt commits coverage for the exact messages read. After an
+     interruption the worker checks Zendesk for the opaque marker on a public
+     staff message. Newer customer messages retain their pending state.
+     An uncertain outcome pauses automated public replies for that ticket
+     and alerts support. Reconciliation reads history without resending.
    - Mention job: an idempotent internal note through the Zendesk API, marked
      `[DIFY_AI_AGENT_DRAFT:<job_id>]` and recorded in
      `internal_draft_deliveries`.
@@ -118,13 +134,17 @@ Per job:
 
 `FEISHU_WEBHOOK_URL` is optional. When it is unset, alerts are disabled and
 the worker logs a warning at startup.
+After 15 minutes waiting for a conversation snapshot, the worker logs the
+ticket and notifies Feishu when configured. Successful reminders are spaced
+an hour apart. An unsuccessful notification becomes eligible after two minutes.
 
 ## Persistence
 
 PostgreSQL is the queue and the source of truth. Alembic owns these tables:
 `events`, `ticket_states`, `config_revisions`, `config_head`, `case_jobs`,
-`outbox_messages`, `run_records`, `run_events`, `run_log_exports` and
-`internal_draft_deliveries`.
+`outbox_messages`, `run_records`, `run_events`, `run_log_exports`,
+`internal_draft_deliveries`, `human_handoffs`, `model_endpoint_cooldowns`
+and `public_deliveries`.
 
 `system_settings` (model, mode and safety settings written by Admin) is read
 and written by `admin-api` and `pi-agent`, but no migration creates it.
@@ -136,26 +156,46 @@ and written by `admin-api` and `pi-agent`, but no migration creates it.
 test, operating mode, safety and Feishu test, the MCP mesh and tool probes,
 Skills, and live logs. Authentication uses the mounted admin auth file and an
 internal token used by deployment scripts.
+`GET /api/deliveries/{delivery_id}` returns the current public delivery status.
+For an uncertain send, open its Zendesk conversation and handle the customer
+messages there. In the run detail, record the public message ID under **Record
+staff resolution**. This keeps the ticket under human control, records the
+operator's attestation and leaves the original AI send unconfirmed.
 
 ## Deployment
 
 - CI (`.github/workflows/docker-image.yml`) runs Ruff, Pyright, pytest, and the
   Admin and Pi Agent test/build. On `main` it pushes the `ingress`, `admin` and
   `pi-agent` images and deploys them by digest.
-- `deploy/deploy-production.sh` runs on the server. It requires a
-  digest-pinned image for each service. `prepare_runtime.py` writes
-  `runtime.env` and the mounted `credentials.env` (both mode 0600), including
-  the image references. The script then runs migrations, restarts the
-  services, waits for `/readyz`, and records `release.env` /
-  `previous-release.env`.
-- `deploy/rollback-production.sh` redeploys the images recorded in
-  `previous-release.env`. It never downgrades the database.
+- `deploy/deploy-production.sh` pulls the digest-pinned bundle before stopping
+  services. For an existing Greenfield release it fences new PostgreSQL job
+  and handoff claims, stops ingress and Admin writes, and waits for active
+  jobs and handoffs to finish before signaling the worker. It runs migrations
+  with the old worker stopped, starts the new bundle, checks readiness, and
+  records `release.env` and `previous-release.env`.
+- `deploy/rollback-production.sh` uses the same drain and restores the images
+  recorded in `previous-release.env` against the applied schema. Before
+  stopping services, it compares the pinned images' required schema heads
+  with the live Alembic revision. A mismatch requires a compatible bundle.
+  Unresolved
+  public deliveries and an unverifiable journal block rollback. A rollback
+  to a legacy bundle also requires one queued job per ticket and no queued
+  operator mentions. After those checks pass, it adds a compatibility index
+  for the legacy worker's queue upsert. The next forward deployment restores
+  modern queue behavior before starting its ingress and worker.
+- The drain defaults to 300 seconds. Set `CASEWORK_DEPLOY_DRAIN_TIMEOUT` on
+  the host to a value from 1 to 600 seconds for a manual run. A drain timeout
+  or failed rollback check resumes the previously running containers and
+  releases the fence installed by that attempt. An interrupted release change
+  can leave the database fence in place. Rerun deployment or the guarded
+  rollback after correcting the failure. Investigate stale active rows using
+  the worker logs and delivery evidence before attempting recovery.
 - After a successful deploy, CI tags the deployed commit
   `deploy-YYYY-MM-DD-<short sha>` (Beijing date). The tag job is the only
   job with repository write access.
-- `deploy/compose.release.yaml` refuses to start without the digest-pinned
-  images. Every container runs the code baked into its image; no source files
-  are mounted from the host.
+- `deploy/compose.release.yaml` requires digest-pinned images. Production
+  migrations run explicitly through the deployment entrypoint. Every container
+  runs the code baked into its image.
 - Secrets are never committed. Settings have exactly two homes:
   - **GitHub `production` environment**: every deployment setting and secret
     (OpenConnector token, Zendesk account and webhook secrets, Browser Relay

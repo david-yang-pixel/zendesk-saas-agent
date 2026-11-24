@@ -145,6 +145,7 @@ class CancelResult:
     duplicate_event: bool = False
     # True when a human takeover was already active before this command.
     takeover_already_active: bool = False
+    stale_event: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +186,7 @@ class EventRepository:
         customer_origin: str,
         event_type: str = "ticket.updated",
         message_id: str | None = None,
+        customer_seq: int | None = None,
         payload: dict[str, Any] | None = None,
     ) -> bool:
         """Return true only when this event ID was newly inserted."""
@@ -210,6 +212,7 @@ class EventRepository:
             customer_origin=customer_origin,
             event_type=event_type,
             message_id=message_id,
+            customer_seq=customer_seq,
             payload=payload or {},
         )
         statement = statement.on_conflict_do_nothing(
@@ -218,9 +221,37 @@ class EventRepository:
         result = await self.session.execute(statement)
         return _rowcount(result) > 0
 
+    async def tracked_customer_message(
+        self, ticket_id: int, message_id: str
+    ) -> EventRecord | None:
+        result = await self.session.execute(
+            select(EventRecord)
+            .where(
+                EventRecord.ticket_id == ticket_id,
+                EventRecord.message_id == message_id,
+                or_(
+                    EventRecord.customer_seq.is_not(None),
+                    EventRecord.answered_by_job_id.is_not(None),
+                ),
+            )
+            .order_by(EventRecord.customer_seq.desc().nulls_last())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def exists(self, event_id: str) -> bool:
         result = await self.session.execute(
             select(EventRecord.event_id).where(EventRecord.event_id == event_id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def message_event_exists(self, ticket_id: int, message_id: str, event_type: str) -> bool:
+        result = await self.session.execute(
+            select(EventRecord.event_id).where(
+                EventRecord.ticket_id == ticket_id,
+                EventRecord.message_id == message_id,
+                EventRecord.event_type == event_type,
+            ).limit(1)
         )
         return result.scalar_one_or_none() is not None
 
@@ -370,6 +401,7 @@ class JobRepository:
         ticket_id: int,
         event_id: str,
         expected_event_id: str | None = None,
+        is_operator_mention: bool = False,
         config: ConfigSnapshot,
         available_at: datetime | None = None,
         created_at: datetime | None = None,
@@ -416,12 +448,13 @@ class JobRepository:
             .where(
                 CaseJobRow.ticket_id == ticket_id,
                 CaseJobRow.generation == generation,
+                CaseJobRow.is_operator_mention.is_(False),
                 CaseJobRow.status == "queued",
             )
             .with_for_update()
             .limit(1)
         )
-        queued = queued_result.scalar_one_or_none()
+        queued = None if is_operator_mention else queued_result.scalar_one_or_none()
         if queued is not None:
             timestamp = created_at or utc_now()
             queued.expected_event_id = expected_event_id
@@ -448,6 +481,7 @@ class JobRepository:
                 session_id=new_session_id,
                 event_id=event_id,
                 expected_event_id=expected_event_id,
+                is_operator_mention=is_operator_mention,
                 ticket_id=ticket_id,
                 generation=generation,
                 status="queued",
@@ -680,6 +714,8 @@ class HumanCancelRepository:
         reason: str,
         source: str = "zendesk",
         payload: dict[str, Any] | None = None,
+        message_id: str | None = None,
+        received_at: datetime | None = None,
     ) -> CancelResult:
         if ticket_id <= 0:
             raise ValueError("ticket_id must be positive")
@@ -687,6 +723,10 @@ class HumanCancelRepository:
             raise ValueError("occurred_at must be timezone-aware")
         if not event_id.strip() or not reason.strip():
             raise ValueError("event_id and reason must not be blank")
+        state = await self.tickets.ensure_state(ticket_id)
+        duplicate_message = message_id is not None and await self.events.message_event_exists(
+            ticket_id, message_id, "human.cancel"
+        )
         inserted = await self.events.record(
             event_id=event_id,
             ticket_id=ticket_id,
@@ -694,25 +734,32 @@ class HumanCancelRepository:
             source=source,
             customer_origin="customer",
             event_type="human.cancel",
+            message_id=message_id,
             payload=payload or {"reason": reason},
         )
-        state = await self.tickets.ensure_state(ticket_id)
-        if not inserted:
+        resumed_at = state.human_resumed_at
+        cancelled_at = state.human_cancelled_at
+        stale = any(
+            occurred_at < previous.replace(tzinfo=previous.tzinfo or UTC)
+            for previous in (resumed_at, cancelled_at) if previous is not None
+        )
+        if not inserted or duplicate_message or stale:
             return CancelResult(
                 event_id=event_id,
                 ticket_id=ticket_id,
                 generation=state.generation,
                 cancelled_jobs=0,
                 cancelled_outbox=0,
-                duplicate_event=True,
+                duplicate_event=not inserted or duplicate_message,
+                stale_event=stale,
             )
 
         takeover_already_active = state.human_cancelled_at is not None
         new_generation = state.generation + 1
-        timestamp = occurred_at
+        timestamp = received_at or occurred_at
         state.generation = new_generation
         state.last_event_id = event_id
-        state.human_cancelled_at = timestamp
+        state.human_cancelled_at = occurred_at
         state.updated_at = timestamp
 
         jobs = await self.session.execute(
@@ -780,7 +827,7 @@ class HumanHandoffRepository:
             raise ValueError("ticket_id must be positive")
         if not event_id.strip():
             raise ValueError("event_id must not be blank")
-        message = (customer_message or "").strip()[:500] or None
+        message = (customer_message or "").strip() or None
         await self.session.execute(
             insert(HumanHandoffRow).values(
                 handoff_id=event_id,

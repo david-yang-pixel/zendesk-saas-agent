@@ -114,6 +114,8 @@ describe('RunsPage Trace Player', () => {
     expect(wrapper.text()).toContain('执行结果 (Output)')
     expect(wrapper.text()).toContain('timeout')
     expect(wrapper.text()).toContain('Zendesk Browser Relay 前台投递回执')
+    expect(wrapper.get('.ticket-coverage').text()).toContain('未知')
+    expect(wrapper.get('.ticket-coverage-summary').text()).toContain('未知')
 
     // Test collapsible processing log bar (default collapsed)
     const procToggleBtn = wrapper.find('.btn-toggle-processing-log')
@@ -157,6 +159,62 @@ describe('RunsPage Trace Player', () => {
     expect(wrapper.text()).toContain('未触发外部 MCP 工具')
   })
 
+  it('shows pending ticket coverage alongside sent delivery and without run telemetry', async () => {
+    const fixture = apiFixture()
+    let pending = true
+    const currentCoverage = () => ({
+      status: pending ? 'pending' : 'answered',
+      latest_customer_seq: 8,
+      answered_customer_seq: pending ? 7 : 8,
+      answered_by_job_id: pending ? 'job-3726' : 'job-queued',
+      pending_age_seconds: pending ? 720 : null,
+      human_takeover: pending,
+    })
+    fixture.getTraces = async () => ({
+      items: [
+        { ...mockTraceItem, ticket_coverage: currentCoverage() },
+        { ...mockTraceItem, job_id: 'job-queued', status: 'queued', tool_calls_count: 0,
+          has_trace: false, delivery_status: undefined, ticket_coverage: currentCoverage() },
+      ],
+      total: 2,
+    })
+    fixture.getTrace = async (_ticketId, jobId) => jobId === 'job-queued'
+      ? { ...mockTraceDetail, job_id: jobId, status: 'queued', steps: [], final_reply: '',
+          delivery: undefined, ticket_coverage: currentCoverage() }
+      : { ...mockTraceDetail, ticket_coverage: currentCoverage() }
+
+    const wrapper = mount(RunsPage, { global: { provide: { [ADMIN_API_KEY as symbol]: fixture } } })
+    await flushPromises()
+
+    const rows = wrapper.findAll('.ticket-item')
+    expect(rows[0].text()).toContain('sent')
+    for (const row of rows) {
+      const summary = row.get('.ticket-coverage-summary')
+      expect(summary.text()).toContain('最新消息 #8')
+      expect(summary.get('strong').text()).toBe('待答复')
+    }
+    const coverage = wrapper.get('.ticket-coverage')
+    expect(coverage.get('strong').text()).toBe('待答复')
+    expect(coverage.findAll('dd').map(value => value.text())).toEqual([
+      '#8', new Intl.NumberFormat('zh-CN', { style: 'unit', unit: 'minute' }).format(12),
+      '#7', 'job-3726', '已接管',
+    ])
+    expect(coverage.text()).not.toContain(mockTraceDetail.customer_message)
+
+    await rows[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.ticket-coverage').get('strong').text()).toBe('待答复')
+    expect(wrapper.get('.hero-title-line .status-pill').text()).toBe('queued')
+
+    pending = false
+    await wrapper.get('.trace-sidebar__header .btn-icon').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.ticket-coverage').get('strong').text()).toBe('已答复')
+    expect(wrapper.get('.ticket-coverage').text()).toContain('job-queued')
+    expect(wrapper.get('.ticket-coverage').text()).toContain('未接管')
+    expect(wrapper.get('.ticket-coverage').text()).not.toContain('待答复时长')
+  })
+
   it('opens each run of a ticket by its job and labels an operator draft as internal', async () => {
     const fixture = apiFixture()
     const calls: Array<[number, string | undefined]> = []
@@ -185,7 +243,7 @@ describe('RunsPage Trace Player', () => {
 
     expect(calls.at(-1)).toEqual([3726, 'job-3726-old'])
     expect(wrapper.text()).toContain('The plugin version is not recorded.')
-    expect(wrapper.text()).toContain('English Only')
+    expect(wrapper.text()).not.toContain('English Only')
     expect(rows[1].classes()).toContain('active')
     expect(rows[0].classes()).not.toContain('active')
   })

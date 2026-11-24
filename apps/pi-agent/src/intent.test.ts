@@ -1,7 +1,16 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { detectHumanHandoffIntent, detectHumanActionRequirement } from './intent.js';
 
+const handoffLeadCases: Array<{ name: string; text: string; handoff: boolean }> = JSON.parse(
+  readFileSync(new URL('../../../tests/fixtures/human_handoff_lead.json', import.meta.url), 'utf8'),
+);
+
 describe('detectHumanHandoffIntent', () => {
+  it.each(handoffLeadCases)('detects multiline handoff intent for $name', ({ text, handoff }) => {
+    expect(detectHumanHandoffIntent(text)).toBe(handoff);
+  });
+
   describe('English handoff requests', () => {
     it('detects explicit requests to talk to human', () => {
       expect(detectHumanHandoffIntent('I want to talk to a human')).toBe(true);

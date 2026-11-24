@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { conversationalReply, detectCustomerLanguage, finalOutputFixPrompt, replyReviewPrompt, validateReplyReview, writtenLanguage } from './reply-policy.js';
+import { conversationalReply, customerFooter, detectCustomerLanguage, finalOutputFixPrompt, replyReviewPrompt, validateReplyReview, writtenLanguage } from './reply-policy.js';
 
 it('keeps mixed thank-you/questions in the investigation path', () => {
   for (const message of ['Thanks, but the error persists.', 'Thank you. Where is the workspace ID?', 'ありがとうございます。まだ動きません', '谢谢，如何退款？']) {
@@ -9,6 +9,36 @@ it('keeps mixed thank-you/questions in the investigation path', () => {
 it('handles standalone greetings without treating a mixed question as a greeting', () => {
   expect(conversationalReply('Hello!')).toBe('Hello! How can we help you?');
   expect(conversationalReply('Hello! My workflow still fails.')).toBeUndefined();
+});
+it.each([
+  ['¡Buenos días!', '¡Hola! ¿En qué podemos ayudarte?'],
+  ['Hola, buenos días', '¡Hola! ¿En qué podemos ayudarte?'],
+  ['Perfecto, muchas gracias.', '¡De nada!'],
+  ['¿Podemos hablar en español?', 'Sí, podemos atenderte en español. ¿En qué podemos ayudarte?'],
+  ['Por favor responde en español.', 'Sí, podemos atenderte en español. ¿En qué podemos ayudarte?'],
+  ['Could you reply in Spanish, please?', 'Sí, podemos atenderte en español. ¿En qué podemos ayudarte?'],
+])('answers the standalone Spanish conversation turn %s', (message, expected) => {
+  expect(conversationalReply(message)).toBe(expected);
+  expect(writtenLanguage(expected)).toBe('es');
+});
+
+it.each([
+  'Hola, ¿por qué me cobraron dos veces?',
+  'Gracias. ¿Dónde puedo descargar la factura?',
+  'Please reply in Spanish. Why was I charged twice?',
+  '¿Podemos hablar en español? Tengo una duda sobre el cobro.',
+])('keeps the substantive Spanish support request %s in the investigation path', message => {
+  expect(conversationalReply(message)).toBeUndefined();
+  expect(detectCustomerLanguage(message)).toBe('es');
+});
+
+it('localizes the Spanish footer and keeps the supported handoff keyword', () => {
+  const footer = customerFooter('es');
+  expect(footer).toContain('Dify AI Agent envió esta respuesta');
+  expect(footer).toContain('responde «human»');
+  expect(footer).toContain('hora de Nueva York');
+  expect(footer).toContain('21:00 a 6:00 (EDT');
+  expect(footer).toContain('20:00 a 5:00 (EST');
 });
 it('fails closed on missing, rejected or unsupported review decisions', () => {
   expect(() => validateReplyReview('Evidence checked.', true)).toThrow(/decision is missing/);
@@ -28,6 +58,8 @@ it('reviews mentions as an operator answer plus English draft and public replies
   expect(mention).toContain('English customer-sendable draft');
   expect(replyReviewPrompt('No reads', true, 'ja')).toContain('The CUSTOMER REPLY must be written in Japanese.');
   expect(replyReviewPrompt('No reads', true)).not.toContain('OPERATOR ANSWER');
+  expect(replyReviewPrompt('No reads', true, 'es')).toContain('The CUSTOMER REPLY must be written in Spanish.');
+  expect(replyReviewPrompt('No reads', false, 'es')).toContain('English customer-sendable draft');
 });
 it('tells the reviewer to state documented rules plainly and keep one uncertainty sentence at most', () => {
   const prompt = replyReviewPrompt('No reads', true);
@@ -64,6 +96,15 @@ describe('detectCustomerLanguage', () => {
     expect(detectCustomerLanguage('日本語で話せますか')).toBe('ja');
     expect(detectCustomerLanguage('Can you reply in Chinese? 我看不太懂')).toBe('zh');
     expect(detectCustomerLanguage('请 reply in English please')).toBe('en');
+    expect(detectCustomerLanguage('Can you help me? Please reply in Spanish.')).toBe('es');
+    expect(detectCustomerLanguage('I prefer to keep using this plan. ¿Me pueden responder en español?')).toBe('es');
+    expect(detectCustomerLanguage('Necesito ayuda con mi factura. Please reply in English.')).toBe('en');
+    expect(detectCustomerLanguage('The documentation in Spanish has a broken link.')).toBe('en');
+  });
+
+  it('detects Spanish without accents and ignores pasted technical lines', () => {
+    expect(detectCustomerLanguage('Name: Test\nEmail: test@example.invalid\nError: request timed out\nPor que me cobraron dos veces por la suscripcion?')).toBe('es');
+    expect(detectCustomerLanguage('Hello! José reported a billing problem with the Café plan.')).toBe('en');
   });
 
   it('falls back to the latest customer turn when the current message has no language signal', () => {
@@ -75,6 +116,8 @@ describe('detectCustomerLanguage', () => {
     ].join('\n\n');
     expect(detectCustomerLanguage(table, context)).toBe('en');
     expect(detectCustomerLanguage('https://cloud.dify.ai/app/123', 'Customer [2026-09-01]:\nアプリが開けません')).toBe('ja');
+    expect(detectCustomerLanguage('[Attachment: receipt.pdf]', 'Customer [t1]:\n¿Me pueden enviar la factura?\n\nSupport [t2]:\nCould you attach the receipt?')).toBe('es');
+    expect(detectCustomerLanguage('', 'Customer [t1]:\nPlease reply in Spanish.')).toBe('es');
     expect(detectCustomerLanguage('', '')).toBe('en');
   });
 });
@@ -84,5 +127,8 @@ describe('writtenLanguage', () => {
     expect(writtenLanguage('お問い合わせありがとうございます。教育プランのクレジットは200です。')).toBe('ja');
     expect(writtenLanguage('您好，教育版的 AI 积分是一次性 200 点，不会按月刷新。')).toBe('zh');
     expect(writtenLanguage('Hello! See https://docs.dify.ai/ja/cloud for details.')).toBe('en');
+    expect(writtenLanguage('Puedes descargar tu factura en el portal de facturación.')).toBe('es');
+    expect(writtenLanguage('El cobro aparece dos veces en tu cuenta.')).toBe('es');
+    expect(writtenLanguage('Check the billing tab for details. José can help.')).toBe('en');
   });
 });

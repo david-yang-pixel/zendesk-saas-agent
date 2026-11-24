@@ -162,6 +162,42 @@ describe('Pi Agent evidence continuation and delivery', () => {
     expect(result.reply).not.toContain('This reply was sent');
     expect(mocked.prompts).toEqual([]);
   });
+  it.each([
+    ['¡Hola!', '¡Hola! ¿En qué podemos ayudarte?'],
+    ['¡Muchas gracias!', '¡De nada!'],
+    ['Can we speak Spanish?', 'Sí, podemos atenderte en español. ¿En qué podemos ayudarte?'],
+  ])('answers %s with a Spanish acknowledgement and footer without a model turn', async (customerMessage, acknowledgement) => {
+    const result = await runPiSupportAgent({ ...options, publicReplyAllowed: true, customerMessage });
+    expect(result.customerReply).toBe(acknowledgement);
+    expect(result.reply).toContain('Dify AI Agent envió esta respuesta');
+    expect(result.reply).toContain('responde «human»');
+    expect(mocked.prompts).toEqual([]);
+  });
+  it('reviews the Spanish billing question for ticket #5691 and corrects an English reply before delivery', async () => {
+    mocked.reviewText = '=== INTERNAL NOTE ===\nReviewed.\n=== CUSTOMER REPLY ===\nFor a possible duplicate charge, check your invoices in the billing portal.';
+    const spanishReply = 'Si ves dos cargos, revisa las facturas en el portal de facturación y dinos qué importes aparecen.';
+    mocked.fixText = `=== INTERNAL NOTE ===\nReviewed.\n=== CUSTOMER REPLY ===\n${spanishReply}`;
+    const result = await runPiSupportAgent({ ...options, ticketId: 5691, publicReplyAllowed: true, contextPrepared: true,
+      customerMessage: 'Hi there. How can I help you today?\nName: Test\nEmail: test@example.invalid\nHola, ¿por qué me cobraron dos veces por la suscripción?\nConnecting you with someone now.',
+    });
+    expect(mocked.prompts[0]).toContain('Reply language: Spanish');
+    expect(mocked.prompts.some(prompt => prompt.includes('The CUSTOMER REPLY must be written in Spanish.'))).toBe(true);
+    expect(mocked.prompts.at(-1)).toContain('not written in Spanish');
+    expect(result.customerReply).toBe(spanishReply);
+    expect(result.reply).toContain('Dify AI Agent envió esta respuesta');
+    expect(result.reply).not.toContain('This reply was sent');
+  });
+  it('blocks a reply that is still English after the Spanish correction turn', async () => {
+    const result = runPiSupportAgent({ ...options, publicReplyAllowed: true, customerMessage: '¿Dónde puedo descargar mi factura?' });
+    await expect(result).rejects.toThrow('customer reply must be written in Spanish');
+    expect(mocked.prompts.filter(prompt => prompt.startsWith('Output check before delivery'))).toHaveLength(1);
+  });
+  it('keeps an operator request in Spanish on the English-draft path', async () => {
+    const result = await runPiSupportAgent({ ...options, customerMessage: '¿Puedes revisar la factura?' });
+    expect(mocked.prompts[0]).toContain('English customer-sendable draft');
+    expect(result.customerReply).toBe('Hello, here is what we verified.');
+    expect(result.reply).toBe('');
+  });
   it('supplies earlier context and accepts the newly reviewed customer-language answer', async () => {
     mocked.reviewText = '=== INTERNAL NOTE ===\nNo account claim required.\n=== CUSTOMER REPLY ===\nエラーが発生する操作を教えてください。';
     const result = await runPiSupportAgent({ ...options, publicReplyAllowed: true, customerMessage: 'まだ動きません',

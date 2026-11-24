@@ -36,18 +36,20 @@ describe('acknowledgement text', () => {
     expect(handoffAcknowledgement('zh', true)).toBe('您好，已为您转接人工支持，工程师马上就来，请您稍等一会。');
     expect(handoffAcknowledgement('en', true)).toContain('will be with you shortly');
     expect(handoffAcknowledgement('ja', true)).toContain('少々お待ちください');
+    expect(handoffAcknowledgement('es', true)).toContain('Un especialista te atenderá en breve');
   });
 
   it('names the support hours outside them', () => {
-    for (const language of ['en', 'zh', 'ja'] as const) {
+    for (const language of ['en', 'es', 'zh', 'ja'] as const) {
       expect(handoffAcknowledgement(language, false)).toContain(SUPPORT_HOURS_TEXT[language]);
     }
     expect(handoffAcknowledgement('zh', false)).toContain('人工支持会在服务时间内第一时间查看您的问题');
     expect(handoffAcknowledgement('en', false)).toContain('first thing during support hours');
+    expect(handoffAcknowledgement('es', false)).toContain('fuera del horario de atención');
   });
 
   it('uses the same support hours as the reply footer', () => {
-    for (const language of ['en', 'zh', 'ja'] as const) {
+    for (const language of ['en', 'es', 'zh', 'ja'] as const) {
       expect(customerFooter(language)).toContain(SUPPORT_HOURS_TEXT[language]);
     }
   });
@@ -58,6 +60,8 @@ describe('handoffLanguage', () => {
     const context = 'Customer [t1]:\n我的应用无法发布\n\nSupport [t2]:\n请检查配置\n\nCustomer [t3]:\nhuman';
     expect(handoffLanguage('human', context)).toBe('zh');
     expect(handoffLanguage('Human!', 'Customer [t1]:\nアプリが公開できません\n\nCustomer [t2]:\nhuman')).toBe('ja');
+    expect(handoffLanguage('human', 'Customer [t1]:\nNecesito ayuda con mi factura.\n\nCustomer [t2]:\nhuman')).toBe('es');
+    expect(handoffLanguage('Quiero hablar con un agente humano')).toBe('es');
   });
 
   it('reads 人工 as Chinese and falls back to English', () => {
@@ -136,6 +140,17 @@ describe('processHandoff', () => {
     });
     expect(value.sendReply).toHaveBeenCalledWith(5459, '您好，已为您转接人工支持，工程师马上就来，请您稍等一会。');
     expect(statusOf(queries)).toEqual(['tagged_at', 'alerted_at', "ack_state = 'attempting'", "ack_state = 'sent'", "status = 'completed'"]);
+  });
+
+  it('sends a Spanish acknowledgement when the footer keyword follows a Spanish billing question', async () => {
+    const { value } = deps({
+      loadConversation: vi.fn(async () => ({
+        message: 'human',
+        conversationContext: 'Customer [t1]:\n¿Por qué me cobraron dos veces?\n\nCustomer [t2]:\nhuman',
+      })),
+    });
+    await processHandoff(row({ ticket_id: 5691 }), value);
+    expect(value.sendReply).toHaveBeenCalledExactlyOnceWith(5691, handoffAcknowledgement('es', true));
   });
 
   it('tells the customer about support hours outside them', async () => {
@@ -286,14 +301,14 @@ function fakeClientPool(lockedAt: Date | null, failOn?: RegExp) {
 }
 
 describe('recordWorkerHandoff', () => {
-  const options = { jobId: 'job-1', ticketId: 5500, customerMessage: ' I want to talk to a human ', acknowledge: true, reason: 'test' };
+  const options = { jobId: 'job-1', ticketId: 5500, generation: 1, leaseOwner: 'worker', attempt: 1, customerMessage: ' I want to talk to a human ', acknowledge: true, reason: 'test' };
 
   it('locks the ticket and records an acknowledged handoff', async () => {
     const { pool, client, sql, params } = fakeClientPool(null);
     await expect(recordWorkerHandoff(pool, options)).resolves.toBe('recorded');
     expect(sql[0]).toBe('BEGIN');
     expect(sql.at(-1)).toBe('COMMIT');
-    expect(sql.some(q => q.startsWith('UPDATE ticket_states SET human_cancelled_at = NOW()'))).toBe(true);
+    expect(sql.some(q => q.startsWith('UPDATE ticket_states SET human_cancelled_at = COALESCE('))).toBe(true);
     const eventIndex = sql.findIndex(q => q.startsWith('INSERT INTO events'));
     const handoffIndex = sql.findIndex(q => q.startsWith('INSERT INTO human_handoffs'));
     expect(eventIndex).toBeGreaterThan(0);
@@ -301,6 +316,22 @@ describe('recordWorkerHandoff', () => {
     expect(sql[eventIndex]).toContain("'internal'");
     expect(params[handoffIndex]).toEqual(['handoff:job-1', 5500, true, 'I want to talk to a human']);
     expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the full multiline request available for support', async () => {
+    const { pool, sql, params } = fakeClientPool(null);
+    const customerMessage = `human\n\n${'Details from the incident timeline. '.repeat(20)}End of timeline.`;
+    await recordWorkerHandoff(pool, { ...options, customerMessage });
+    const handoff = sql.findIndex(query => query.startsWith('INSERT INTO human_handoffs'));
+    expect(params[handoff]).toContain(customerMessage);
+  });
+
+  it('ignores a stale handoff when the resume cursor changes between the history read and ticket lock', async () => {
+    const { pool, client, sql } = fakeClientPool(null);
+    client.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ human_cancelled_at: null, resume_changed: true }] } as any);
+    expect(await recordWorkerHandoff(pool, options)).toBe('resume_changed');
+    expect(sql).not.toContain(expect.stringContaining('INSERT INTO human_handoffs'));
   });
 
   it('adds nothing when the ticket is already locked', async () => {
