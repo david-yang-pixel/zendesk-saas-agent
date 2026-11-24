@@ -44,6 +44,11 @@ const READ_TOOL_DIRECTORY_NAME = 'list_read_tools';
 const BLOCKED_SERVICES = new Set(['gmail']);
 const CUSTOM_MCP_TOOL_CACHE_TTL_MS = 60_000;
 const READ_TOOL_DIRECTORY_TTL_MS = 5 * 60_000;
+// Refresh before the TTL ends so no investigation waits on a cold directory.
+const READ_TOOL_DIRECTORY_REFRESH_MS = 4 * 60_000;
+const FULL_DIRECTORY_KEY = JSON.stringify([null, null]);
+// Per-connection budget in the prompt; list_read_tools pages the remainder.
+const READ_TOOL_DIRECTORY_LINE_LIMIT = 700;
 const READ_TOOL_PAGE_SIZE = 50;
 const DISCOVERY_DESCRIPTION_LIMIT = 220;
 // OpenConnector resolves live capabilities for every action in a search page;
@@ -487,100 +492,208 @@ export async function discoverOpenConnectorTools(config: McpServiceConfig): Prom
   return [...controls, createReadToolDirectoryTool(config)];
 }
 
+function directoryCache(config: McpServiceConfig) {
+  let cache = readToolDirectoryCache.get(config);
+  if (!cache) {
+    cache = new Map();
+    readToolDirectoryCache.set(config, cache);
+  }
+  return cache;
+}
+
 async function loadReadToolDirectory(
   config: McpServiceConfig,
   service?: string,
   connectionName?: string,
   signal?: AbortSignal,
 ): Promise<ReadToolEntry[]> {
-  let cache = readToolDirectoryCache.get(config);
-  if (!cache) {
-    cache = new Map();
-    readToolDirectoryCache.set(config, cache);
-  }
-  const cacheKey = JSON.stringify([service ?? null, connectionName ?? null]);
+  const cache = directoryCache(config);
   const now = Date.now();
+  // A fresh full directory answers every scoped query; the caller applies the scope.
+  const full = cache.get(FULL_DIRECTORY_KEY);
+  if (full && full.expiresAt > now) return full.entries;
+  const cacheKey = JSON.stringify([service ?? null, connectionName ?? null]);
   const cached = cache.get(cacheKey);
   if (cached && cached.expiresAt > now) return cached.entries;
 
-  const entries = (async () => {
-    const connectionResult = await callOpenConnectorTool(config, 'list_connections', service ? { service } : {}, signal);
-    const connections = parseOpenConnectorResult(connectionResult).data;
-    if (!Array.isArray(connections)) throw new Error('OpenConnector did not return a connection list');
-    const allowedConnections = connections.filter((connection: any) =>
-      typeof connection?.service === 'string' &&
-      typeof connection?.connectionName === 'string' &&
-      (!connectionName || connection.connectionName === connectionName) &&
-      !connection.connectionName.toLowerCase().includes('gmail') &&
-      !BLOCKED_SERVICES.has(connection.service.toLowerCase()),
-    );
-    const entries: ReadToolEntry[] = [];
-    const nativeServices = new Map<string, string[]>();
-    for (const connection of allowedConnections) {
-      if (connection.service === 'custom_mcp') {
-        const result = await callOpenConnectorTool(config, 'execute_action', {
-          actionId: 'custom_mcp.list_tools',
-          connectionName: connection.connectionName,
-          input: {},
-        }, signal);
-        const descriptors = payloadData(result).tools;
-        if (!Array.isArray(descriptors)) throw new Error(`OpenConnector custom MCP ${connection.connectionName} did not return a tool list`);
-        for (const descriptor of descriptors) {
-          if (descriptor?.operationType !== 'read' || descriptor.confirmationRequired === true || typeof descriptor.name !== 'string') continue;
-          entries.push({
-            service: 'custom_mcp',
-            connectionName: connection.connectionName,
-            actionId: 'custom_mcp.call_tool',
-            toolName: descriptor.name,
-            description: typeof descriptor.description === 'string' ? descriptor.description : '',
-            inputSummary: descriptor.inputSchema,
-          });
-        }
-      } else {
-        const names = nativeServices.get(connection.service) ?? [];
-        names.push(connection.connectionName);
-        nativeServices.set(connection.service, names);
-      }
-    }
-    for (const [service, connectionNames] of nativeServices) {
-      let cursor: string | undefined;
-      const seenCursors = new Set<string>();
-      do {
-        const result = await callOpenConnectorTool(config, 'search_actions', {
-          service,
-          limit: ACTION_SEARCH_PAGE_SIZE,
-          ...(cursor ? { cursor } : {}),
-        }, signal);
-        const payload = parseOpenConnectorResult(result);
-        if (!Array.isArray(payload.data)) throw new Error(`OpenConnector ${service} did not return an action list`);
-        for (const action of payload.data) {
-          if (action?.operationType !== 'read' || action?.allowed === false || typeof action.id !== 'string') continue;
-          for (const connectionName of connectionNames) {
-            entries.push({
-              service,
-              connectionName,
-              actionId: action.id,
-              description: shortDescription(action.description),
-            });
-          }
-        }
-        const nextCursor = payload.page?.nextCursor;
-        if (nextCursor != null && (typeof nextCursor !== 'string' || seenCursors.has(nextCursor))) {
-          throw new Error(`OpenConnector ${service} returned an invalid action cursor`);
-        }
-        if (nextCursor) seenCursors.add(nextCursor);
-        cursor = nextCursor || undefined;
-      } while (cursor);
-    }
-    return entries.sort((a, b) =>
-      `${a.service}/${a.connectionName}/${a.toolName || a.actionId}`.localeCompare(`${b.service}/${b.connectionName}/${b.toolName || b.actionId}`),
-    );
-  })();
+  const entries = fetchReadToolDirectory(config, service, connectionName, signal);
   cache.set(cacheKey, { expiresAt: now + READ_TOOL_DIRECTORY_TTL_MS, entries });
   entries.catch(() => {
-    if (cache?.get(cacheKey)?.entries === entries) cache.delete(cacheKey);
+    if (cache.get(cacheKey)?.entries === entries) cache.delete(cacheKey);
   });
   return entries;
+}
+
+/**
+ * Reload the full directory. Only a complete successful load replaces the
+ * cached copy, so a failed refresh keeps serving the last good directory.
+ */
+export async function refreshReadToolDirectory(config: McpServiceConfig, signal?: AbortSignal): Promise<ReadToolEntry[]> {
+  const entries = await fetchReadToolDirectory(config, undefined, undefined, signal);
+  directoryCache(config).set(FULL_DIRECTORY_KEY, {
+    expiresAt: Date.now() + READ_TOOL_DIRECTORY_TTL_MS, entries: Promise.resolve(entries),
+  });
+  return entries;
+}
+
+/** Prewarm the directory now and keep it fresh in the background. Returns a stop function. */
+export function startReadToolDirectoryRefresh(
+  config: McpServiceConfig,
+  intervalMs = READ_TOOL_DIRECTORY_REFRESH_MS,
+): () => void {
+  let inFlight: Promise<unknown> | undefined;
+  const refresh = () => {
+    if (inFlight) return;
+    inFlight = refreshReadToolDirectory(config)
+      .catch((error: any) => console.warn('[OpenConnector] Read-tool directory refresh failed; keeping the previous directory:', error?.message ?? error))
+      .finally(() => { inFlight = undefined; });
+  };
+  refresh();
+  const timer = setInterval(refresh, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+function directoryLine(prefix: string, names: readonly string[]): string {
+  let line = prefix;
+  let shown = 0;
+  for (const name of names) {
+    const next = `${shown ? ', ' : ''}${name}`;
+    if (line.length + next.length > READ_TOOL_DIRECTORY_LINE_LIMIT) break;
+    line += next;
+    shown++;
+  }
+  return shown < names.length ? `${line}${shown ? ', ' : ''}… +${names.length - shown} more (list_read_tools)` : line;
+}
+
+/**
+ * A compact view of the cached full directory for the model's prompt, so it
+ * can pick sources without discovery calls. Never contacts OpenConnector: a
+ * cold or failed directory yields nothing and the model discovers as before.
+ */
+export async function describeReadToolDirectory(config: McpServiceConfig): Promise<string | undefined> {
+  const full = readToolDirectoryCache.get(config)?.get(FULL_DIRECTORY_KEY);
+  if (!full || full.expiresAt <= Date.now()) return undefined;
+  let entries: ReadToolEntry[];
+  try {
+    entries = await full.entries;
+  } catch {
+    return undefined;
+  }
+  const customTools = new Map<string, string[]>();
+  const native = new Map<string, { connections: Set<string>; actions: Set<string> }>();
+  for (const entry of entries) {
+    if (entry.service === 'custom_mcp' && entry.toolName) {
+      customTools.set(entry.connectionName, [...customTools.get(entry.connectionName) ?? [], entry.toolName]);
+    } else if (entry.service !== 'custom_mcp') {
+      const provider = native.get(entry.service) ?? { connections: new Set(), actions: new Set() };
+      provider.connections.add(entry.connectionName);
+      provider.actions.add(entry.actionId);
+      native.set(entry.service, provider);
+    }
+  }
+  if (!customTools.size && !native.size) return undefined;
+  const lines = [
+    'Connected read-only OpenConnector sources (live discovery snapshot from the Worker). Choose sources from this list instead of calling list_connections or paging list_read_tools; each call is still checked against its live read classification and permissions when it executes.',
+  ];
+  if (customTools.size) {
+    lines.push('Custom MCP: execute_action with actionId "custom_mcp.call_tool", the connectionName below, and input {"toolName": "<tool>", "arguments": {...}}. Call custom_mcp.list_tools for a connection only when you need a tool\'s input schema.');
+    for (const [connectionName, tools] of customTools) lines.push(directoryLine(`- ${connectionName}: `, tools));
+  }
+  if (native.size) {
+    lines.push('Native providers: execute_action with the action ID and one of the connectionNames shown; call get_action_guide first when the input is unclear.');
+    for (const [service, provider] of native) {
+      lines.push(directoryLine(`- ${service} (${[...provider.connections].join(', ')}): `, [...provider.actions].sort()));
+    }
+  }
+  return lines.join('\n');
+}
+
+async function fetchReadToolDirectory(
+  config: McpServiceConfig,
+  service?: string,
+  connectionName?: string,
+  signal?: AbortSignal,
+): Promise<ReadToolEntry[]> {
+  const connectionResult = await callOpenConnectorTool(config, 'list_connections', service ? { service } : {}, signal);
+  const connections = parseOpenConnectorResult(connectionResult).data;
+  if (!Array.isArray(connections)) throw new Error('OpenConnector did not return a connection list');
+  const allowedConnections = connections.filter((connection: any) =>
+    typeof connection?.service === 'string' &&
+    typeof connection?.connectionName === 'string' &&
+    (!connectionName || connection.connectionName === connectionName) &&
+    !connection.connectionName.toLowerCase().includes('gmail') &&
+    !BLOCKED_SERVICES.has(connection.service.toLowerCase()),
+  );
+  const customConnections: string[] = [];
+  const nativeServices = new Map<string, string[]>();
+  for (const connection of allowedConnections) {
+    if (connection.service === 'custom_mcp') {
+      customConnections.push(connection.connectionName);
+    } else {
+      const names = nativeServices.get(connection.service) ?? [];
+      names.push(connection.connectionName);
+      nativeServices.set(connection.service, names);
+    }
+  }
+
+  // Connections are independent: catalog them concurrently. Pages of one
+  // native service stay sequential because each needs the previous cursor.
+  const customEntries = customConnections.map(async (customConnection): Promise<ReadToolEntry[]> => {
+    const result = await callOpenConnectorTool(config, 'execute_action', {
+      actionId: 'custom_mcp.list_tools',
+      connectionName: customConnection,
+      input: {},
+    }, signal);
+    const descriptors = payloadData(result).tools;
+    if (!Array.isArray(descriptors)) throw new Error(`OpenConnector custom MCP ${customConnection} did not return a tool list`);
+    return descriptors
+      .filter((descriptor: any) => descriptor?.operationType === 'read' && descriptor.confirmationRequired !== true && typeof descriptor.name === 'string')
+      .map((descriptor: any) => ({
+        service: 'custom_mcp',
+        connectionName: customConnection,
+        actionId: 'custom_mcp.call_tool',
+        toolName: descriptor.name,
+        description: typeof descriptor.description === 'string' ? descriptor.description : '',
+        inputSummary: descriptor.inputSchema,
+      }));
+  });
+  const nativeEntries = [...nativeServices].map(async ([nativeService, connectionNames]): Promise<ReadToolEntry[]> => {
+    const entries: ReadToolEntry[] = [];
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    do {
+      const result = await callOpenConnectorTool(config, 'search_actions', {
+        service: nativeService,
+        limit: ACTION_SEARCH_PAGE_SIZE,
+        ...(cursor ? { cursor } : {}),
+      }, signal);
+      const payload = parseOpenConnectorResult(result);
+      if (!Array.isArray(payload.data)) throw new Error(`OpenConnector ${nativeService} did not return an action list`);
+      for (const action of payload.data) {
+        if (action?.operationType !== 'read' || action?.allowed === false || typeof action.id !== 'string') continue;
+        for (const nativeConnection of connectionNames) {
+          entries.push({
+            service: nativeService,
+            connectionName: nativeConnection,
+            actionId: action.id,
+            description: shortDescription(action.description),
+          });
+        }
+      }
+      const nextCursor = payload.page?.nextCursor;
+      if (nextCursor != null && (typeof nextCursor !== 'string' || seenCursors.has(nextCursor))) {
+        throw new Error(`OpenConnector ${nativeService} returned an invalid action cursor`);
+      }
+      if (nextCursor) seenCursors.add(nextCursor);
+      cursor = nextCursor || undefined;
+    } while (cursor);
+    return entries;
+  });
+  const entries = (await Promise.all([...customEntries, ...nativeEntries])).flat();
+  return entries.sort((a, b) =>
+    `${a.service}/${a.connectionName}/${a.toolName || a.actionId}`.localeCompare(`${b.service}/${b.connectionName}/${b.toolName || b.actionId}`),
+  );
 }
 
 function createReadToolDirectoryTool(config: McpServiceConfig): CustomTool {

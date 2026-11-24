@@ -3,7 +3,9 @@
 import fs from 'node:fs';
 import dotenv from 'dotenv';
 import pg from 'pg';
-import { createOpenConnectorServiceConfig, discoverOpenConnectorTools } from '../dist/openconnector.js';
+import {
+  createOpenConnectorServiceConfig, describeReadToolDirectory, discoverOpenConnectorTools, refreshReadToolDirectory,
+} from '../dist/openconnector.js';
 import { runPiSupportAgent } from '../dist/agent.js';
 import { parseModelConfig } from '../dist/model-config.js';
 import { getTicketDetails } from '../dist/ticket-context.js';
@@ -40,13 +42,16 @@ let model;
 try { model = parseModelConfig((await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'")).rows[0]?.value); }
 finally { await pool.end(); }
 const tools = await discoverOpenConnectorTools(connector);
+// Mirror the Worker: supply the prewarmed directory; a failed load falls back to model discovery.
+await refreshReadToolDirectory(connector, signal).catch(error => report({ phase: 'directory_unavailable', error: error.message }));
+const toolDirectory = await describeReadToolDirectory(connector);
 let details;
 if (scenario === 'education') details = await getTicketDetails(ticketId, connector, signal);
 let lastRound = 0;
 let capturedTrace;
 try {
   const result = await runPiSupportAgent({
-    ticketId, tools, publicReplyAllowed: false, contextPrepared: Boolean(details),
+    ticketId, tools, toolDirectory, publicReplyAllowed: false, contextPrepared: Boolean(details),
     customerMessage: `${cases[scenario]}\nThis is an isolated read-only evaluation. Return an unsent draft; no external delivery is available.${details ? `\nLatest ticket context:\n${details.message}` : '\nThis product/engineering evaluation question is independent of the test ticket history.'}`,
     requesterEmail: details?.email, attachments: details?.attachments,
     apiKey: model.apiKey,

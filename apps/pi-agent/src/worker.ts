@@ -8,7 +8,9 @@ import dotenv from 'dotenv';
 import { CustomTool } from './mcp.js';
 import {
   createOpenConnectorServiceConfig,
+  describeReadToolDirectory,
   discoverOpenConnectorTools,
+  startReadToolDirectoryRefresh,
 } from './openconnector.js';
 import { runPiSupportAgent } from './agent.js';
 import { ModelConfig, parseModelConfig } from './model-config.js';
@@ -305,6 +307,8 @@ async function main() {
     throw new Error('OpenConnector exposed no permitted investigation tools');
   }
   console.log(`[Worker] Loaded ${allTools.length} read-only investigation controls from OpenConnector`);
+  // Keep the connected read-only directory warm so each run gets it in its prompt.
+  const stopDirectoryRefresh = startReadToolDirectoryRefresh(openConnectorService);
 
   const MAX_CONCURRENT_JOBS = parseInt(cleanEnv(process.env.CASEWORK_WORKER_CONCURRENCY) || '2', 10);
   console.log(`[Worker] Concurrency limit initialized to ${MAX_CONCURRENT_JOBS} parallel jobs`);
@@ -565,6 +569,7 @@ async function main() {
       const preparation = await prepareModelEndpoint(pool, endpointKey, lease);
       if (preparation.outcome !== 'ready') return;
       console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Model: ${modelConfig.model}${isMentionJob ? ', Trigger: operator mention' : ''})`);
+      const toolDirectory = await describeReadToolDirectory(openConnectorService);
 
       let agentResult: any;
       try {
@@ -579,6 +584,7 @@ async function main() {
             : 'en',
           requesterEmail: initialDetails.email,
           tools: allTools,
+          toolDirectory,
           apiKey: modelConfig.apiKey,
           modelBaseUrl: modelConfig.baseUrl,
           modelName: modelConfig.model,
@@ -877,6 +883,7 @@ async function main() {
     }
   }
 
+  stopDirectoryRefresh();
   await Promise.all([stopQueueAlerts(), handoffLoop, deliveryCheck, ...[...activeJobs.values()].map(ctx => ctx.completion)]);
   console.log('[Worker] Shutting down cleanly...');
   server.close();

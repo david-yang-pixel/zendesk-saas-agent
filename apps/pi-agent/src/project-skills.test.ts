@@ -7,8 +7,8 @@ import {
   DefaultResourceLoader,
   SessionManager,
 } from '@earendil-works/pi-coding-agent';
-import { DIFY_SUPPORT_SYSTEM_PROMPT } from './agent.js';
-import { createProjectSkillReadTool, getProjectSkills } from './project-skills.js';
+import { supportPromptResources } from './agent.js';
+import { createProjectSkillReadTool, getProjectSkills, inlineSkillBody } from './project-skills.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(() => {
@@ -18,17 +18,16 @@ afterEach(() => {
 });
 
 describe('Pi project Skill loading', () => {
-  it('advertises Skill metadata but loads its body only through read', async () => {
+  it('puts the support Skill body in the system prompt while other Skills and references stay on demand', async () => {
     const skills = getProjectSkills();
-    const supportSkill = skills.find(skill => skill.name === 'dify-saas-support');
-    expect(supportSkill).toBeDefined();
     const readTool = createProjectSkillReadTool(skills);
+    const { systemPrompt, advertisedSkills } = supportPromptResources(skills, 'DIRECTORY-SNAPSHOT');
     const loader = new DefaultResourceLoader({
       cwd: process.cwd(),
       agentDir: path.join(os.tmpdir(), 'pi-support-agent-test'),
       noContextFiles: true,
-      skillsOverride: current => ({ skills, diagnostics: current.diagnostics }),
-      systemPromptOverride: () => DIFY_SUPPORT_SYSTEM_PROMPT,
+      skillsOverride: current => ({ skills: advertisedSkills, diagnostics: current.diagnostics }),
+      systemPromptOverride: () => systemPrompt,
       appendSystemPromptOverride: () => [],
     });
     await loader.reload();
@@ -39,22 +38,41 @@ describe('Pi project Skill loading', () => {
       tools: ['read'],
     });
 
-    expect(session.systemPrompt).toContain('<name>dify-saas-support</name>');
-    expect(session.systemPrompt).toContain(supportSkill!.filePath);
-    expect(session.systemPrompt).not.toContain('# Dify SaaS Ticket Investigation and Reply');
+    expect(session.systemPrompt).toContain('# Dify SaaS Ticket Investigation and Reply');
+    expect(session.systemPrompt).not.toContain('name: dify-saas-support');
+    expect(session.systemPrompt).not.toContain('<name>dify-saas-support</name>');
+    expect(session.systemPrompt).toContain('<name>openconnector-routing</name>');
+    expect(session.systemPrompt).not.toContain('# OpenConnector Investigation Routing');
+    expect(session.systemPrompt).toContain('DIRECTORY-SNAPSHOT');
     const registeredRead = (session as any)._toolRegistry.get('read');
-    expect(registeredRead).toBeDefined();
-    const result = await registeredRead.execute('read-skill', { path: supportSkill!.filePath });
-    expect(result.content[0].text).toContain('# Dify SaaS Ticket Investigation and Reply');
-    const referencedPaths = [...result.content[0].text.matchAll(/\]\((references\/[^)]+\.md)\)/g)]
-      .map(match => path.resolve(supportSkill!.baseDir, match[1]));
+    const referencedPaths = [...session.systemPrompt.matchAll(/\]\(([^)]*references\/[^)]+\.md)\)/g)].map(match => match[1]);
     expect(referencedPaths.length).toBeGreaterThan(0);
     for (const referencePath of referencedPaths) {
+      expect(path.isAbsolute(referencePath)).toBe(true);
       const reference = await registeredRead.execute('read-reference', { path: referencePath });
       expect(reference.content[0].text).toMatch(/^# /);
     }
     await expect(registeredRead.execute('read-outside', { path: path.resolve(process.cwd(), 'package.json') }))
       .rejects.toThrow(/outside project Skill/);
+  });
+
+  it('inlines a Skill without its frontmatter and resolves only relative Markdown links', () => {
+    const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-skill-inline-'));
+    temporaryDirectories.push(temporaryDirectory);
+    const skillDirectory = path.join(temporaryDirectory, 'skills', 'inline-skill');
+    fs.mkdirSync(skillDirectory, { recursive: true });
+    fs.writeFileSync(path.join(skillDirectory, 'SKILL.md'), [
+      '---', 'name: inline-skill', 'description: Inline test.', '---', '',
+      '# Inline Skill', '',
+      'See [Billing](references/billing.md), [Guide](./guide.md#limits), [Docs](https://docs.example/a.md) and [Top](#scope).',
+    ].join('\n'));
+    const [skill] = getProjectSkills(temporaryDirectory);
+    const realDirectory = fs.realpathSync(skillDirectory);
+
+    expect(inlineSkillBody(skill)).toBe([
+      '# Inline Skill', '',
+      `See [Billing](${path.join(realDirectory, 'references/billing.md')}), [Guide](${path.join(realDirectory, 'guide.md')}#limits), [Docs](https://docs.example/a.md) and [Top](#scope).`,
+    ].join('\n'));
   });
 
   it('blocks reading non-Skill files and symlink escapes', async () => {

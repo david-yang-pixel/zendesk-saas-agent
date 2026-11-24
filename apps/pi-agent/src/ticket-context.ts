@@ -165,20 +165,23 @@ export async function getTicketDetails(
   options: TicketContextOptions = {},
 ): Promise<TicketDetails> {
   try {
-    let email = '';
-    let subject = '';
-    try {
-      const rawTicket = await callOpenConnectorCustomMcpTool(
-        openConnector, 'zendesk', 'get_ticket', { ticket_id: ticketId }, signal,
-      );
-      const parsed = parseOpenConnectorResult(rawTicket);
-      email = parsed?.data?.ticket?.requester?.email || parsed?.data?.ticket?.email || '';
-      subject = parsed?.data?.ticket?.subject || '';
-    } catch (error: any) {
+    // Metadata is optional and independent of the conversation, so both reads
+    // run together; a metadata failure never blocks the conversation.
+    const metadata = callOpenConnectorCustomMcpTool(
+      openConnector, 'zendesk', 'get_ticket', { ticket_id: ticketId }, signal,
+    ).then(rawTicket => {
+      const ticket = parseOpenConnectorResult(rawTicket)?.data?.ticket;
+      return { email: ticket?.requester?.email || ticket?.email || '', subject: ticket?.subject || '' };
+    }).catch((error: any) => {
       console.warn('[Worker] Could not fetch ticket metadata:', error.message);
-    }
-
-    const allEvents = await loadConversation(ticketId, openConnector, signal);
+      return { email: '', subject: '' };
+    });
+    const [allEvents, ticketMetadata] = await Promise.all([
+      loadConversation(ticketId, openConnector, signal),
+      metadata,
+    ]);
+    let email = ticketMetadata.email;
+    const subject = ticketMetadata.subject;
     if (allEvents.every(event => Number.isFinite(Date.parse(event?.created_at)))) {
       allEvents.sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
     }

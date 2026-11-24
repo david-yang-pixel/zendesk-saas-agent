@@ -46,6 +46,22 @@ export function getProjectSkills(cwd = process.cwd()): Skill[] {
   return projectSkills;
 }
 
+/**
+ * A Skill body for direct inclusion in the system prompt: frontmatter removed
+ * and relative Markdown links resolved against the Skill directory, so the
+ * read tool can open its references by absolute path.
+ */
+export function inlineSkillBody(skill: Skill): string {
+  const body = fs.readFileSync(skill.filePath, 'utf8').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, '').trim();
+  return body.replace(/\]\(([^)\s]+)\)/g, (link, target: string) => {
+    if (/^(?:[a-z][a-z0-9+.-]*:|#|\/)/i.test(target)) return link;
+    const anchorAt = target.indexOf('#');
+    const file = anchorAt === -1 ? target : target.slice(0, anchorAt);
+    const anchor = anchorAt === -1 ? '' : target.slice(anchorAt);
+    return `](${path.join(skill.baseDir, file)}${anchor})`;
+  });
+}
+
 /** Pi's native `read` tool, restricted to project Skill Markdown files. */
 export function createProjectSkillReadTool(skills: readonly Skill[]): CustomTool {
   const allowedDirectories = skills.map(skill => fs.realpathSync(skill.baseDir));

@@ -2,9 +2,9 @@
 
 Use `investigation_check` to keep important unanswered questions visible throughout the run. This is a local planning tool; it does not send anything or modify a ticket. The source map in the main Skill remains a navigation aid, not a demand to query every provider.
 
-## Plan before independent investigation
+## Plan with the first independent reads
 
-Usually identify 1–3 material questions. Plan only the checks that can change the answer. Example: for education credits, the policy is already known (see Billing and credits), so check which workspace is on the promotion and its refresh history. A product question answered by one official page needs one document check. A known-bug question instead needs matching engineering records and, when claiming recovery, deployed/customer-path evidence.
+Send the plan in the same turn as the first independent reads when the sources are already clear; it does not need a round of its own. Usually identify 1–3 material questions. Plan only the checks that can change the answer. Example: for education credits, the policy is already known (see Billing and credits), so check which workspace is on the promotion and its refresh history. A product question answered by one official page needs one document check. A known-bug question instead needs matching engineering records and, when claiming recovery, deployed/customer-path evidence.
 
 ```json
 {"checks":[
