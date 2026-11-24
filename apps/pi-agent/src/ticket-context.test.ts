@@ -209,3 +209,31 @@ it('preserves pending coverage when a legacy support reply has no stable author 
   expect(details.message).toBe('Why is my account charged?');
   expect(details.staffAnsweredCursors).toEqual([]);
 });
+
+it('starts reading the conversation while ticket metadata is still loading', async () => {
+  let releaseMetadata!: (value: unknown) => void;
+  vi.mocked(loadConversation).mockClear();
+  vi.mocked(callOpenConnectorCustomMcpTool).mockReturnValue(new Promise(resolve => { releaseMetadata = resolve; }));
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: '1', author: { type: 'end-user' }, content: { text: 'Why did my run fail?' } },
+  ]);
+
+  const pending = getTicketDetails(3726, config);
+  await new Promise(resolve => setImmediate(resolve));
+  expect(loadConversation).toHaveBeenCalledWith(3726, config, undefined);
+
+  releaseMetadata({ structuredContent: { data: { ticket: { subject: 'Run failure', requester: { email: 'customer@example.test' } } } } });
+  const result = await pending;
+  expect(result.email).toBe('customer@example.test');
+  expect(result.message).toBe('Why did my run fail?');
+});
+
+it('keeps the conversation when ticket metadata cannot be read', async () => {
+  vi.mocked(callOpenConnectorCustomMcpTool).mockRejectedValue(new Error('metadata unavailable'));
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: '1', author: { type: 'end-user' }, content: { text: 'Why did my run fail?' } },
+  ]);
+  const result = await getTicketDetails(3726, config);
+  expect(result.message).toBe('Why did my run fail?');
+  expect(result.email).toBe('');
+});
