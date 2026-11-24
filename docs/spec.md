@@ -99,10 +99,17 @@ Per job:
    unanswered ticket. A successful model request resets its window count.
 4. **Investigation**: the agent loop (`@earendil-works/pi-coding-agent`) uses
    only tools discovered live from OpenConnector whose operation type is
-   `read`. Gmail and every mutation are excluded. Skills are loaded on demand
-   through a read tool. `investigation_check` records the material questions,
-   sources and observation IDs, and the runtime allows at most two continuation
-   reviews before returning qualified partial findings.
+   `read`. Gmail and every mutation are excluded. The `dify-saas-support`
+   Skill, read on every run, is part of the system prompt; its references and
+   the other Skills are loaded on demand through a read tool. The worker keeps
+   the full read-only tool directory warm (loaded concurrently at startup,
+   refreshed every 4 minutes, last good copy kept on failure) and puts a
+   bounded summary of it in the system prompt, so the model can skip
+   connection and catalog discovery; a cold directory is simply omitted.
+   `investigation_check` records the material questions, sources and
+   observation IDs; the plan may share a turn with the first reads. The
+   runtime allows at most two continuation reviews before returning qualified
+   partial findings.
    Within one investigation, successful discovery calls with identical inputs
    reuse their results. Business reads and execution permission checks stay live.
 5. **Reply review gate**: the model must return `=== INTERNAL NOTE ===` and

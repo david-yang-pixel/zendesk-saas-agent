@@ -15,6 +15,7 @@ function workerJob(overrides: Record<string, unknown>) {
     prepareModelEndpoint: async () => ({ outcome: 'ready', observedWindowId: null }),
     deferUnconfirmedConversation: vi.fn(async () => false), WORKER_ID: 'worker-test',
     completePreviouslySentPublicJob: async () => false,
+    describeReadToolDirectory: async () => undefined,
     ...overrides,
   };
   const source = fs.readFileSync(new URL('./worker.ts', import.meta.url), 'utf8');

@@ -5,6 +5,7 @@ import { publicDeliveryIdsInBody } from './relay.js';
 
 const external = vi.hoisted(() => ({
   events: [] as Record<string, unknown>[],
+  directoryRefreshes: [] as unknown[],
   runAgent: vi.fn(async ({ customerMessage }: { customerMessage: string }) => ({
     reply: `Answer to ${customerMessage}`,
     trace: { toolCalls: [], finalReply: `Answer to ${customerMessage}` },
@@ -13,7 +14,9 @@ const external = vi.hoisted(() => ({
 
 vi.mock('./agent.js', () => ({ runPiSupportAgent: external.runAgent }));
 vi.mock('./openconnector.js', () => ({
-  createOpenConnectorServiceConfig: () => ({}),
+  createOpenConnectorServiceConfig: () => ({ name: 'openconnector-test' }),
+  startReadToolDirectoryRefresh: (config: unknown) => { external.directoryRefreshes.push(config); return () => {}; },
+  describeReadToolDirectory: async () => 'DIRECTORY-SNAPSHOT',
   discoverOpenConnectorTools: async () => [{ name: 'read' }],
   callOpenConnectorCustomMcpTool: async (_service: unknown, _connection: string, operation: string) => {
     if (operation === 'get_ticket') return { data: { ticket: { subject: 'Test ticket' } } };
@@ -155,6 +158,8 @@ it.skipIf(!testDatabase)('worker entry recovers a cold pending write and keeps #
     expect(outbound).toHaveLength(2);
     expect(outbound[1].body).toMatch(/^Answer to Still broken\./);
     expect(outbound[1].body).not.toContain('First question');
+    expect(external.directoryRefreshes).toEqual([{ name: 'openconnector-test' }, { name: 'openconnector-test' }]);
+    expect(external.runAgent).toHaveBeenCalledWith(expect.objectContaining({ toolDirectory: 'DIRECTORY-SNAPSHOT' }));
     expect(await row('run_records', first)).toMatchObject({ status: 'completed', outcome: { delivery: {
       status: 'sent', source: 'zendesk-conversation', message_id: 'verified-remote-message', delivery_id: firstPermit.delivery_id,
     } } });

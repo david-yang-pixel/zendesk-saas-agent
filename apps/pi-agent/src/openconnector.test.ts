@@ -3,8 +3,11 @@ import {
   assertDbGatewaySqlHasClosedStrings,
   callOpenConnectorTool,
   createOpenConnectorServiceConfig,
+  describeReadToolDirectory,
   discoverOpenConnectorTools,
   inferOpenConnectorService,
+  refreshReadToolDirectory,
+  startReadToolDirectoryRefresh,
   validateOpenConnectorControlCall,
 } from './openconnector.js';
 
@@ -448,5 +451,191 @@ describe('OpenConnector hard read-only boundary', () => {
       actionId: 'feishu.search_messages', connectionName: 'default',
     })).toBe('feishu');
     expect(inferOpenConnectorService('list_connections', { service: 'custom_mcp' })).toBe('custom_mcp');
+  });
+});
+
+type DirectoryFixture = {
+  connections: Array<{ service: string; connectionName: string }>;
+  customTools?: Record<string, string[]>;
+  nativeActions?: Record<string, string[]>;
+};
+
+/** A fake OpenConnector serving one directory snapshot; `hold` delays catalog responses. */
+function directoryFetch(fixture: () => DirectoryFixture, hold?: Promise<void>) {
+  return vi.fn(async (_url: string, init: RequestInit) => {
+    const request = JSON.parse(String(init.body));
+    if (request.method === 'tools/list') return sseMcpResponse({ tools: [
+      { name: 'list_connections' }, { name: 'search_actions' },
+      { name: 'get_action_guide' }, { name: 'execute_action' },
+    ] });
+    const { name, arguments: args } = request.params;
+    const current = fixture();
+    if (name === 'list_connections') return mcpResponse({ ok: true, data: current.connections });
+    if (hold) await hold;
+    if (name === 'search_actions') return mcpResponse({ ok: true,
+      data: (current.nativeActions?.[args.service] ?? []).map(id => ({ id, operationType: 'read' })),
+      page: { nextCursor: null } });
+    if (name === 'execute_action' && args.actionId === 'custom_mcp.list_tools') return mcpResponse({ ok: true, data: {
+      tools: (current.customTools?.[args.connectionName] ?? []).map(tool => ({ name: tool, operationType: 'read', confirmationRequired: false })),
+    } });
+    throw new Error(`Unexpected request: ${name}`);
+  });
+}
+
+function catalogRequests(fetchMock: ReturnType<typeof directoryFetch>): string[] {
+  return fetchMock.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).params)
+    .filter(params => params?.name === 'search_actions' || params?.arguments?.actionId === 'custom_mcp.list_tools')
+    .map(params => params.name === 'search_actions' ? params.arguments.service : params.arguments.connectionName);
+}
+
+describe('OpenConnector read-tool directory freshness', () => {
+  const fixture: DirectoryFixture = {
+    connections: [
+      { service: 'custom_mcp', connectionName: 'dify-docs' },
+      { service: 'custom_mcp', connectionName: 'github-mcp' },
+      { service: 'feishu', connectionName: 'default' },
+      { service: 'linear', connectionName: 'default' },
+    ],
+    customTools: { 'dify-docs': ['official_docs_search'], 'github-mcp': ['github_code_search'] },
+    nativeActions: { feishu: ['feishu.search_docs'], linear: ['linear.search_issues'] },
+  };
+
+  it('requests every connection catalog before any of them answers', async () => {
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const fetchMock = directoryFetch(() => fixture, hold);
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+
+    const refreshed = refreshReadToolDirectory(config);
+    await vi.waitFor(() => expect(catalogRequests(fetchMock).sort()).toEqual(['dify-docs', 'feishu', 'github-mcp', 'linear']));
+    release();
+    expect((await refreshed).map(entry => entry.toolName || entry.actionId)).toEqual([
+      'official_docs_search', 'github_code_search', 'feishu.search_docs', 'linear.search_issues',
+    ]);
+  });
+
+  it('answers a scoped directory query from a fresh full directory without contacting OpenConnector', async () => {
+    const fetchMock = directoryFetch(() => fixture);
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const directory = (await discoverOpenConnectorTools(config)).find(tool => tool.name === 'list_read_tools')!;
+    await refreshReadToolDirectory(config);
+    const callsAfterRefresh = fetchMock.mock.calls.length;
+
+    const scoped = await directory.execute('call-1', { service: 'custom_mcp', connectionName: 'github-mcp' });
+    expect(scoped.details.tools).toEqual([
+      { service: 'custom_mcp', connectionName: 'github-mcp', actionId: 'custom_mcp.call_tool', toolName: 'github_code_search', description: '' },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(callsAfterRefresh);
+  });
+
+  it('replaces the directory after a successful refresh and keeps the last good one after a failed refresh', async () => {
+    let current: DirectoryFixture = fixture;
+    const fetchMock = directoryFetch(() => current);
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    const directory = (await discoverOpenConnectorTools(config)).find(tool => tool.name === 'list_read_tools')!;
+    await refreshReadToolDirectory(config);
+
+    current = { ...fixture, customTools: { ...fixture.customTools, 'dify-docs': ['official_docs_read_page'] } };
+    await refreshReadToolDirectory(config);
+    const updated = await directory.execute('call-1', { connectionName: 'dify-docs' });
+    expect(updated.details.tools.map((tool: any) => tool.toolName)).toEqual(['official_docs_read_page']);
+
+    fetchMock.mockImplementation(async () => new Response('upstream unavailable', { status: 500 }));
+    await expect(refreshReadToolDirectory(config)).rejects.toThrow();
+    const kept = await directory.execute('call-2', { connectionName: 'dify-docs' });
+    expect(kept.isError).not.toBe(true);
+    expect(kept.details.tools.map((tool: any) => tool.toolName)).toEqual(['official_docs_read_page']);
+  });
+
+  it('prewarms immediately and refreshes on the interval until stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = directoryFetch(() => fixture);
+      vi.stubGlobal('fetch', fetchMock);
+      const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+      const listConnections = () => fetchMock.mock.calls
+        .filter(([, init]) => JSON.parse(String(init?.body)).params?.name === 'list_connections').length;
+
+      const stop = startReadToolDirectoryRefresh(config, 60_000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(listConnections()).toBe(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(listConnections()).toBe(2);
+      stop();
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(listConnections()).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('OpenConnector read-tool directory prompt', () => {
+  it('describes nothing until a full directory has been loaded, without contacting OpenConnector', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    expect(await describeReadToolDirectory(config)).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('lists each connection with its read tools so sources can be chosen without discovery calls', async () => {
+    const fetchMock = directoryFetch(() => ({
+      connections: [
+        { service: 'custom_mcp', connectionName: 'dify-docs' },
+        { service: 'custom_mcp', connectionName: 'zendesk' },
+        { service: 'feishu', connectionName: 'default' },
+        { service: 'feishu', connectionName: 'policy-space' },
+      ],
+      customTools: { 'dify-docs': ['official_docs_search', 'official_docs_read_page'], zendesk: ['get_ticket'] },
+      nativeActions: { feishu: ['feishu.search_docs', 'feishu.get_document_content'] },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    await refreshReadToolDirectory(config);
+    const callsAfterRefresh = fetchMock.mock.calls.length;
+
+    const text = await describeReadToolDirectory(config);
+    expect(text).toContain('- dify-docs: official_docs_read_page, official_docs_search');
+    expect(text).toContain('- zendesk: get_ticket');
+    expect(text).toContain('- feishu (default, policy-space): feishu.get_document_content, feishu.search_docs');
+    expect(text).toContain('custom_mcp.call_tool');
+    expect(fetchMock).toHaveBeenCalledTimes(callsAfterRefresh);
+  });
+
+  it('stops describing a directory that has expired without a successful refresh', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal('fetch', directoryFetch(() => ({
+        connections: [{ service: 'custom_mcp', connectionName: 'dify-docs' }],
+        customTools: { 'dify-docs': ['official_docs_search'] },
+      })));
+      const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+      await refreshReadToolDirectory(config);
+      expect(await describeReadToolDirectory(config)).toContain('official_docs_search');
+      vi.advanceTimersByTime(5 * 60_000 + 1);
+      expect(await describeReadToolDirectory(config)).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a large provider line and counts every action it leaves out', async () => {
+    const actions = Array.from({ length: 300 }, (_, index) => `feishu.read_action_${String(index).padStart(3, '0')}`);
+    vi.stubGlobal('fetch', directoryFetch(() => ({
+      connections: [{ service: 'feishu', connectionName: 'default' }],
+      nativeActions: { feishu: actions },
+    })));
+    const config = createOpenConnectorServiceConfig('https://connector.example/mcp', 'runtime-token');
+    await refreshReadToolDirectory(config);
+
+    const line = (await describeReadToolDirectory(config))!.split('\n').find(value => value.startsWith('- feishu'))!;
+    expect(line.length).toBeLessThan(1_000);
+    const shown = line.match(/feishu\.read_action_\d{3}/g)!.length;
+    expect(shown).toBeGreaterThan(0);
+    expect(line).toContain(`+${300 - shown} more`);
   });
 });
