@@ -293,13 +293,19 @@ async def test_database_failure_is_sanitized():
 
 
 @pytest.mark.asyncio
-async def test_form_only_does_not_advance_substantive_sequence_and_attachments_do(tmp_path):
+async def test_contact_form_queues_once_and_coalesces_with_questions_and_attachments(tmp_path):
     sessions = _SessionAdapter(tmp_path / "form.sqlite")
     async with sessions.transaction() as session:
         await ConfigRevisionRepository(session).bootstrap(revision="cfg-1", config=CONFIG, actor="test")
     admission = PostgresAdmission(transaction_scope=sessions.transaction)
     form = "Name: Test\nEmail: test@example.invalid\nPlan: Pro"
-    assert (await admission.admit(_event(event_id="form", message=form))).reason == "awaiting_customer_message"
+    submission = _event(event_id="form", message=form, snapshot_cursor="messaging:form-id")
+    assert (await admission.admit(submission)).action == "enqueue"
+    assert (await admission.admit(submission)).action == "duplicate"
+    async with sessions.transaction() as session:
+        job = (await session.execute(select(CaseJobRow))).scalar_one()
+        assert job.expected_event_id == "messaging:form-id"
+        assert job.available_at.replace(tzinfo=UTC) == NOW + timedelta(seconds=20)
     assert (await admission.admit(_event(event_id="full-text", message=f"{form}\nWhy was I charged?"))).action == "enqueue"
     attachment = _event(event_id="attachment", message="", snapshot_cursor="messaging:attachment-id")
     assert (await admission.admit(replace(attachment, raw_payload={
@@ -307,11 +313,11 @@ async def test_form_only_does_not_advance_substantive_sequence_and_attachments_d
     }))).action == "enqueue"
     async with sessions.transaction() as session:
         state = (await session.execute(select(TicketState))).scalar_one()
-        assert state.latest_customer_seq == 2
+        assert state.latest_customer_seq == 3
         assert state.answered_customer_seq == 0
         assert state.latest_customer_at is not None
         rows = (await session.execute(select(EventRecord))).scalars().all()
-        assert {row.event_id: row.customer_seq for row in rows} == {"form": None, "full-text": 1, "attachment": 2}
+        assert {row.event_id: row.customer_seq for row in rows} == {"form": 1, "full-text": 2, "attachment": 3}
         assert (await session.execute(select(CaseJobRow))).scalar_one().expected_event_id == "messaging:attachment-id"
 
 

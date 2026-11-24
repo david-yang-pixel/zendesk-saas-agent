@@ -100,14 +100,17 @@ it('recovers the exact pending follow-up before a stale AI reply while ignoring 
 });
 
 it.each([
-  { type: 'formResponse', text_fallback: 'Workspace: example', fields: [] },
+  { type: 'formResponse', text_fallback: 'Name: Alex\nWorkspace ID: example', fields: [] },
   { type: 'text', text: 'Name: Test\nEmail: test@example.invalid\nPlan: Pro' },
-])('keeps form-only context without making it actionable %s', async content => {
+  { type: 'formResponse', fields: [{ label: 'Name', text: 'Alex' }] },
+])('passes the submitted form as the customer message and tracks its cursor %s', async content => {
   vi.mocked(loadConversation).mockResolvedValue([{ id: 1, author: { type: 'end-user' }, content }]);
   const result = await getTicketDetails(5691, config);
-  expect(result.unrepliedCount).toBe(0);
-  expect(result.readCustomerMessages).toEqual([]);
-  expect(result.conversationContext).toMatch(/Workspace: example|test@example.invalid/);
+  expect(result.unrepliedCount).toBe(1);
+  expect(result.contactFormOnly).toBe(true);
+  expect(result.readCustomerMessages).toEqual([{ cursors: ['zendesk:1'] }]);
+  expect(result.message).toBe(content.text ?? content.text_fallback ?? JSON.stringify(content.fields));
+  expect(result.conversationContext).toContain(result.message);
 });
 
 it('handles a question after the contact fields and an attachment-only follow-up', async () => {
@@ -120,6 +123,7 @@ it('handles a question after the contact fields and an attachment-only follow-up
   expect(result.message).toContain('Why did you charge me twice?');
   expect(result.message).toContain('receipt.pdf');
   expect(result.unrepliedCount).toBe(2);
+  expect(result.contactFormOnly).toBe(false);
 });
 
 it('limits observed staff coverage to customers before the public staff reply', async () => {

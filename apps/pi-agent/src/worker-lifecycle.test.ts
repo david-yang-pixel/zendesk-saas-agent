@@ -369,7 +369,7 @@ it('hands a human request found by the worker to the handoff queue and cancels t
   expect(vi.getTimerCount()).toBe(0);
 });
 
-it('waits for a form-only ticket without running the model', async () => {
+it('waits when there is no identifiable unanswered customer input', async () => {
   const finishJob = vi.fn();
   const runPiSupportAgent = vi.fn();
   const recordJobOutcome = vi.fn();

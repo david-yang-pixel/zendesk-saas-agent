@@ -108,8 +108,8 @@ it.skipIf(!testDatabase)('worker entry recovers a cold pending write and keeps #
       }
       return Response.json({ ok: true, status: 'sent', ticket_id: ticketId });
     }));
-    external.events = [{ id: 'form', created_at: new Date(Date.now() - 10_000).toISOString(),
-      author: { type: 'end-user' }, content: { type: 'formResponse', fields: [], text_fallback: 'Workspace: example' } }];
+    external.events = [{ id: 'form-sent', created_at: new Date(Date.now() - 10_000).toISOString(),
+      author: { type: 'system' }, content: { type: 'form', fields: [] } }];
     const first = await enqueue('messaging:original', 1);
     await db.query(`CREATE FUNCTION fail_delivery_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
       IF OLD.status = 'pending' AND NEW.status IN ('sent', 'uncertain') THEN
@@ -126,13 +126,21 @@ it.skipIf(!testDatabase)('worker entry recovers a cold pending write and keeps #
     expect(external.runAgent).not.toHaveBeenCalled();
     expect(outbound).toHaveLength(0);
 
-    external.events.push(customer('original', 'First question', new Date(Date.now() - 5_000)));
+    const submittedForm = 'Name: Alex\nEmail: alex@example.test\nWorkspace ID: example';
+    const modelReply = 'Welcome, Alex! What would you like a hand with?';
+    external.runAgent.mockResolvedValueOnce({ reply: modelReply, trace: { toolCalls: [], finalReply: modelReply } });
+    external.events.push({ ...customer('original', '', new Date(Date.now() - 5_000)),
+      content: { type: 'formResponse', fields: [], text_fallback: submittedForm } });
     await db.query('UPDATE case_jobs SET available_at = NOW() WHERE job_id = $1', [first]);
     await waitFor(async () => {
       expect(outbound).toHaveLength(1);
       expect(await row('public_deliveries', first)).toMatchObject({ status: 'pending', started_at: expect.any(Date) });
     });
     const firstPermit = await row('public_deliveries', first);
+    expect(external.runAgent).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      customerMessage: submittedForm, conversationContext: expect.stringContaining(submittedForm),
+    }));
+    expect(outbound[0].body).toContain(modelReply);
     expect(publicDeliveryIdsInBody(outbound[0].body)).toEqual([firstPermit.delivery_id]);
     const followUp = await enqueue('messaging:follow-up', 2);
     await stopWorker();
@@ -148,7 +156,7 @@ it.skipIf(!testDatabase)('worker entry recovers a cold pending write and keeps #
     expect(await row('case_jobs', followUp)).toMatchObject({ status: 'queued' });
     expect(alerts).toHaveLength(1);
     expect(JSON.stringify(alerts)).toContain(firstPermit.delivery_id);
-    expect(JSON.stringify(alerts)).not.toContain('Answer to First question');
+    expect(JSON.stringify(alerts)).not.toContain('Welcome, Alex!');
     expect(outbound).toHaveLength(1);
 
     external.events.push({ id: 'verified-remote-message', created_at: postedAt!, public: true,
@@ -157,9 +165,11 @@ it.skipIf(!testDatabase)('worker entry recovers a cold pending write and keeps #
     await waitFor(async () => expect(await row('public_deliveries', followUp)).toMatchObject({ status: 'sent' }));
     expect(outbound).toHaveLength(2);
     expect(outbound[1].body).toMatch(/^Answer to Still broken\./);
-    expect(outbound[1].body).not.toContain('First question');
+    expect(outbound[1].body).not.toContain(submittedForm);
     expect(external.directoryRefreshes).toEqual([{ name: 'openconnector-test' }, { name: 'openconnector-test' }]);
     expect(external.runAgent).toHaveBeenCalledWith(expect.objectContaining({ toolDirectory: 'DIRECTORY-SNAPSHOT' }));
+    expect(external.runAgent).toHaveBeenCalledTimes(2);
+    expect(external.runAgent).toHaveBeenLastCalledWith(expect.objectContaining({ customerMessage: 'Still broken.' }));
     expect(await row('run_records', first)).toMatchObject({ status: 'completed', outcome: { delivery: {
       status: 'sent', source: 'zendesk-conversation', message_id: 'verified-remote-message', delivery_id: firstPermit.delivery_id,
     } } });
