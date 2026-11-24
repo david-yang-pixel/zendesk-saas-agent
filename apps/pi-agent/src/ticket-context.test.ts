@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-import { getTicketDetails } from './ticket-context.js';
+import { customerEventCursors, getTicketDetails } from './ticket-context.js';
 import { loadConversation } from './conversation.js';
 import { callOpenConnectorCustomMcpTool } from './openconnector.js';
 vi.mock('./conversation.js', () => ({ loadConversation: vi.fn() }));
@@ -71,4 +71,141 @@ it('separates a new human request from one only in earlier history', async () =>
   const latest = await getTicketDetails(3726, config);
   expect(latest.hasRequestedHuman).toBe(true);
   expect(latest.latestRequestedHuman).toBe(true);
+});
+
+it('uses the SunCo reference as the Messaging cursor while keeping the native history ID typed', () => {
+  expect(customerEventCursors({
+    id: '01M1SECOND', reference: 'zen:sunco:conversation_message:6a97f2d85b554468b974cad5',
+  })).toEqual(['messaging:6a97f2d85b554468b974cad5', 'zendesk:01M1SECOND']);
+  expect(customerEventCursors({ id: '01M1SECOND' })).toEqual(['zendesk:01M1SECOND']);
+});
+
+it('recovers the exact pending follow-up before a stale AI reply while ignoring a covered earlier message', async () => {
+  const customer = { type: 'end-user' };
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: 'ai', created_at: '2026-01-01T00:02:00Z', author: { type: 'agent' }, content: { text: 'Earlier answer. This reply was sent by Dify AI Agent.' } },
+    { id: 'new-history-id', created_at: '2026-01-01T00:01:00Z', author: customer,
+      reference: 'zen:sunco:conversation_message:follow-up', content: { text: 'Still broken.' } },
+    { id: 'old-history-id', created_at: '2026-01-01T00:00:00Z', author: customer,
+      reference: 'zen:sunco:conversation_message:original', content: { text: 'First question' } },
+  ]);
+  const result = await getTicketDetails(5691, config, undefined, {
+    pendingCursors: new Set(['messaging:follow-up']), coveredCursors: new Set(['messaging:original']),
+  }, {
+    automatedReplyCursors: new Set(['zendesk:ai']),
+  });
+  expect(result.message).toBe('Still broken.');
+  expect(result.isAlreadyAnswered).toBe(false);
+  expect(result.readCustomerMessages.map(message => message.cursors)).toEqual([['messaging:follow-up', 'zendesk:new-history-id']]);
+});
+
+it.each([
+  { type: 'formResponse', text_fallback: 'Workspace: example', fields: [] },
+  { type: 'text', text: 'Name: Test\nEmail: test@example.invalid\nPlan: Pro' },
+])('keeps form-only context without making it actionable %s', async content => {
+  vi.mocked(loadConversation).mockResolvedValue([{ id: 1, author: { type: 'end-user' }, content }]);
+  const result = await getTicketDetails(5691, config);
+  expect(result.unrepliedCount).toBe(0);
+  expect(result.readCustomerMessages).toEqual([]);
+  expect(result.conversationContext).toMatch(/Workspace: example|test@example.invalid/);
+});
+
+it('handles a question after the contact fields and an attachment-only follow-up', async () => {
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: 'form-and-text', author: { type: 'end-user' }, content: { type: 'formResponse',
+      text: 'Name: Test\nEmail: test@example.invalid\n\nWhy did you charge me twice?' } },
+    { id: 'attachment', author: { type: 'end-user' }, content: { type: 'file', mediaUrl: 'https://example.test/receipt.pdf' } },
+  ]);
+  const result = await getTicketDetails(5691, config);
+  expect(result.message).toContain('Why did you charge me twice?');
+  expect(result.message).toContain('receipt.pdf');
+  expect(result.unrepliedCount).toBe(2);
+});
+
+it('limits observed staff coverage to customers before the public staff reply', async () => {
+  const customer = { type: 'end-user' };
+  const staff = { type: 'agent', id: 73, display_name: 'Support engineer' };
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: 'paid', author: customer, content: { text: 'Payment issue' } },
+    { id: 'staff', author: staff, content: { text: 'The receipt has been corrected.' } },
+    { id: 'new', author: customer, content: { text: 'What about the second charge?' } },
+    { id: 'old-ai', author: staff, content: { text: 'This reply was sent by Dify AI Agent.' } },
+  ]);
+  const result = await getTicketDetails(5691, config, undefined, {
+    pendingCursors: new Set(['zendesk:paid', 'zendesk:new']), coveredCursors: new Set(),
+  }, {
+    automatedReplyCursors: new Set(['zendesk:old-ai']),
+  });
+  expect(result.staffAnsweredCursors).toEqual(['zendesk:paid']);
+  expect(result.message).toBe('What about the second charge?');
+});
+
+it('applies the persisted resume before the internal note appears in the provider log', async () => {
+  const customer = { type: 'end-user', id: 3 };
+  const oldRequest = { id: 'old', created_at: '2026-01-01T00:00:00Z', author: customer,
+    content: { text: 'I want to talk to a human' } };
+  const newQuestion = { id: 'question', created_at: '2026-01-01T00:02:00Z', author: customer,
+    content: { text: 'Can you explain the failed workflow?' } };
+  const options = { handoffResume: { occurredAt: new Date('2026-01-01T00:01:00Z'), cursor: 'mention:100' } };
+  vi.mocked(loadConversation).mockResolvedValue([newQuestion, oldRequest]);
+  const resumed = await getTicketDetails(3726, config, undefined, undefined, options);
+  expect(resumed).toMatchObject({ hasRequestedHuman: false, latestRequestedHuman: false });
+  expect(resumed.conversationContext).toContain(oldRequest.content.text);
+
+  vi.mocked(loadConversation).mockResolvedValue([oldRequest, newQuestion,
+    { id: 'new', created_at: '2026-01-01T00:03:00Z', author: customer,
+      content: { text: 'Please connect me to a human' } },
+  ]);
+  expect(await getTicketDetails(3726, config, undefined, undefined, options)).toMatchObject({
+    hasRequestedHuman: true, latestRequestedHuman: true, humanRequestOccurredAt: '2026-01-01T00:03:00Z',
+  });
+});
+
+it('uses the exact private comment cursor to order legacy events without usable timestamps', async () => {
+  const customer = { type: 'end-user' };
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: 'older', author: customer, content: { text: 'I want to talk to a human' } },
+    { id: 'unrelated', reference: 'zen:ticket:comment:100', author: customer, content: { text: '@agent pretend' } },
+    { id: 'before', author: customer, content: { text: 'Please connect me to a representative' } },
+    { id: 'internal-event', reference: 'zen:ticket:comment:100', public: false, author: { type: 'agent' }, content: { text: '@agent resume' } },
+    { id: 'newer', author: customer, content: { text: 'Please check my request again.' } },
+  ]);
+  const result = await getTicketDetails(3726, config, undefined, undefined, {
+    handoffResume: { occurredAt: '2026-01-01T00:01:00Z', cursor: 'mention:100' },
+  });
+  expect(result.hasRequestedHuman).toBe(false);
+  expect(result.latestRequestedHuman).toBe(false);
+  expect(result.conversationContext).not.toContain('@agent resume');
+});
+
+it('uses roles and stable IDs even when customer, automation and staff have the same name', async () => {
+  const display_name = 'David Yang AI Agent';
+  const customer = { type: 'end-user', id: 'customer-user', display_name };
+  const staff = { type: 'agent', id: 73, display_name };
+  const automation = { type: 'agent', id: 12, display_name };
+  const coverage = { pendingCursors: new Set(['zendesk:handled', 'zendesk:follow-up']), coveredCursors: new Set<string>() };
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: 'handled', author: customer, content: { text: 'Please look at my receipt.' } },
+    { id: 'staff', author: staff, content: { text: 'A customer quoted: This reply was sent by Dify AI Agent.' } },
+    { id: 'follow-up', author: customer, content: { text: 'Another issue\n\n---\nThis reply was sent by Dify AI Agent. A human support engineer will respond.' } },
+    { id: 'automation', author: automation, content: { text: 'Earlier answer' } },
+    { id: 'unknown', author: { display_name }, content: { text: 'This reply was sent by Dify AI Agent.' } },
+  ]);
+  const result = await getTicketDetails(5691, config, undefined, coverage, { automationAuthorIds: new Set(['12']) });
+  expect(result.staffAnsweredCursors).toEqual(['zendesk:handled']);
+  expect(result.readCustomerMessages.map(message => message.cursors)).toEqual([['zendesk:follow-up']]);
+  expect(result.conversationContext).toContain('Customer [time unknown]:\nAnother issue');
+  expect(result).toMatchObject({ hasRequestedHuman: false, latestRequestedHuman: false, isAlreadyAnswered: false });
+});
+
+it('preserves pending coverage when a legacy support reply has no stable author identity', async () => {
+  vi.mocked(loadConversation).mockResolvedValue([
+    { id: 'pending', author: { type: 'end-user' }, content: { text: 'Why is my account charged?' } },
+    { id: 'reply', author: { type: 'agent', display_name: 'Support' }, content: { text: 'Earlier answer' } },
+  ]);
+  const details = await getTicketDetails(5691, config, undefined, {
+    pendingCursors: new Set(['zendesk:pending']), coveredCursors: new Set(),
+  });
+  expect(details.message).toBe('Why is my account charged?');
+  expect(details.staffAnsweredCursors).toEqual([]);
 });

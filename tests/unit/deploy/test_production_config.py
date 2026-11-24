@@ -203,12 +203,12 @@ def test_openconnector_endpoint_rejects_credential_redirect(monkeypatch):
 def test_log_sync_is_opt_in_and_uses_private_credentials() -> None:
     root = Path(__file__).resolve().parents[3]
     compose = (root / "deploy/compose.release.yaml").read_text()
-    deploy = (root / "deploy/deploy-production.sh").read_text()
+    orchestration = (root / "deploy/production-quiesce.sh").read_text()
     workflow = (root / ".github/workflows/docker-image.yml").read_text()
     assert "profiles: [log-sync]" in compose
     assert "/run/log-sync/credentials.json" in compose
-    assert "CASEWORK_LOG_SYNC_ENABLED" in deploy
-    assert "services+=(log-sync)" in deploy
+    assert "CASEWORK_LOG_SYNC_ENABLED" in orchestration
+    assert "services+=(log-sync)" in orchestration
     assert "vars.CASEWORK_LOG_SYNC_ENABLED" in workflow
     assert "vars.HC_CLIENT_URL" in workflow
     assert "secrets.HC_CLIENT_API_KEY" in workflow

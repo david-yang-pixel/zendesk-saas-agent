@@ -11,6 +11,15 @@ if (!injectedApi) throw new Error('Admin API client is not provided')
 const api: AdminApiClient = injectedApi
 const { t, locale } = useI18n()
 
+interface TicketCoverage {
+  status: 'unknown' | 'pending' | 'answered'
+  latest_customer_seq: number | null
+  answered_customer_seq: number | null
+  answered_by_job_id: string | null
+  pending_age_seconds: number | null
+  human_takeover: boolean | null
+}
+
 interface TraceItem {
   ticket_id: number
   job_id: string
@@ -26,6 +35,7 @@ interface TraceItem {
   reply_preview: string
   delivery_status?: string
   has_trace: boolean
+  ticket_coverage?: TicketCoverage
 }
 
 interface TraceDetail {
@@ -56,10 +66,12 @@ interface TraceDetail {
   delivery?: {
     channel: string
     status: string
+    delivery_id?: string
     total_duration_ms?: number
     timings?: Record<string, number>
   }
   error?: string
+  ticket_coverage?: TicketCoverage
 }
 
 const query = ref('')
@@ -74,6 +86,16 @@ const errorMessage = ref('')
 const actionMessage = ref('')
 const thinkingExpanded = ref(true)
 const isProcessingLogExpanded = ref(false)
+const selectedCoverage = computed(() => selectedDetail.value?.ticket_coverage)
+let detailRequest = 0
+
+function formatPendingAge(seconds?: number | null): string {
+  if (seconds == null) return t('runs.coverage.unknown')
+  const units = [['day', 86400], ['hour', 3600], ['minute', 60]] as const
+  const [unit, divisor] = units.find(([, size]) => seconds >= size) ?? ['second', 1]
+  return new Intl.NumberFormat(locale.value, { style: 'unit', unit, unitDisplay: 'short' })
+    .format(Math.floor(seconds / divisor))
+}
 
 const activeTab = ref<'tickets' | 'console'>('tickets')
 const liveLogs = ref<string[]>([])
@@ -165,8 +187,18 @@ async function loadTraces() {
   }
 }
 
+async function refreshTraces() {
+  const ticketId = selectedTicketId.value
+  const jobId = selectedJobId.value
+  await loadTraces()
+  if (ticketId !== null && ticketId === selectedTicketId.value && jobId === selectedJobId.value) {
+    await selectTicket(ticketId, jobId ?? undefined)
+  }
+}
+
 // A ticket can have several runs; each list row opens its own run.
 async function selectTicket(ticketId: number, jobId?: string) {
+  const request = ++detailRequest
   selectedTicketId.value = ticketId
   selectedJobId.value = jobId ?? null
   loadingDetail.value = true
@@ -174,11 +206,24 @@ async function selectTicket(ticketId: number, jobId?: string) {
   isProcessingLogExpanded.value = false
   try {
     const detail = await api.getTrace(ticketId, jobId)
-    selectedDetail.value = detail
+    if (request === detailRequest) selectedDetail.value = detail
   } catch (err: any) {
     console.error('Failed to load trace detail:', err)
   } finally {
-    loadingDetail.value = false
+    if (request === detailRequest) loadingDetail.value = false
+  }
+}
+
+async function resolveDeliveryByStaff() {
+  const delivery = selectedDetail.value?.delivery
+  if (delivery?.status !== 'uncertain' || !delivery.delivery_id || !api.resolveDeliveryByStaff) return
+  const messageId = window.prompt(t('runs.delivery.staff_prompt'))?.trim()
+  if (!messageId) return
+  try {
+    await api.resolveDeliveryByStaff(delivery.delivery_id, messageId)
+    await refreshTraces()
+  } catch (error: any) {
+    actionMessage.value = error.message
   }
 }
 
@@ -330,7 +375,7 @@ onMounted(() => {
         <div class="trace-sidebar__header">
           <div class="header-title-row">
             <h3>{{ t('runs.sidebar.title') }}</h3>
-            <button class="btn-icon" :title="t('runs.console.refresh_btn')" @click="loadTraces" :disabled="loadingList">
+            <button class="btn-icon" :title="t('runs.console.refresh_btn')" @click="refreshTraces" :disabled="loadingList">
               <AppIcon name="refresh" :size="15" />
             </button>
           </div>
@@ -382,6 +427,19 @@ onMounted(() => {
               <span class="meta-tag" v-if="item.tool_calls_count > 0">🛠️ {{ item.tool_calls_count }} 工具</span>
               <span class="meta-tag" v-if="item.delivery_status">🚀 {{ item.delivery_status }}</span>
               <span class="meta-time">{{ item.created_at.slice(11, 19) }}</span>
+            </div>
+            <div class="ticket-coverage-summary">
+              <span>
+                {{ t('runs.coverage.list_latest') }}
+                <template v-if="item.ticket_coverage?.latest_customer_seq != null">#{{ item.ticket_coverage.latest_customer_seq }}</template>
+              </span>
+              <strong :class="{ 'coverage-pending': item.ticket_coverage?.status === 'pending' }">
+                {{ t('runs.coverage.' + (item.ticket_coverage?.status ?? 'unknown')) }}
+              </strong>
+              <span v-if="item.ticket_coverage?.status === 'pending' && item.ticket_coverage.pending_age_seconds != null">
+                {{ formatPendingAge(item.ticket_coverage.pending_age_seconds) }}
+              </span>
+              <span v-if="item.ticket_coverage?.human_takeover">{{ t('runs.coverage.takeover') }}</span>
             </div>
           </div>
         </div>
@@ -437,6 +495,37 @@ onMounted(() => {
               </a>
             </div>
           </header>
+
+          <section class="ticket-coverage" aria-labelledby="ticket-coverage-title">
+            <div class="ticket-coverage-heading">
+              <h3 id="ticket-coverage-title">{{ t('runs.coverage.title') }}</h3>
+              <strong :class="{ 'coverage-pending': selectedCoverage?.status === 'pending' }">
+                {{ t('runs.coverage.' + (selectedCoverage?.status ?? 'unknown')) }}
+              </strong>
+            </div>
+            <dl>
+              <div>
+                <dt>{{ t('runs.coverage.latest') }}</dt>
+                <dd>{{ selectedCoverage?.latest_customer_seq == null ? t('runs.coverage.unknown') : `#${selectedCoverage.latest_customer_seq}` }}</dd>
+              </div>
+              <div v-if="selectedCoverage?.status === 'pending'">
+                <dt>{{ t('runs.coverage.pending_age') }}</dt>
+                <dd>{{ formatPendingAge(selectedCoverage.pending_age_seconds) }}</dd>
+              </div>
+              <div v-if="selectedCoverage?.answered_customer_seq != null">
+                <dt>{{ t('runs.coverage.answered_message') }}</dt>
+                <dd>#{{ selectedCoverage.answered_customer_seq }}</dd>
+              </div>
+              <div>
+                <dt>{{ t('runs.coverage.answered_job') }}</dt>
+                <dd>{{ selectedCoverage?.answered_by_job_id ?? t('runs.coverage.unknown') }}</dd>
+              </div>
+              <div>
+                <dt>{{ t('runs.coverage.takeover') }}</dt>
+                <dd>{{ t(selectedCoverage?.human_takeover == null ? 'runs.coverage.unknown' : selectedCoverage.human_takeover ? 'runs.coverage.takeover_active' : 'runs.coverage.takeover_inactive') }}</dd>
+              </div>
+            </dl>
+          </section>
 
           <!-- Timeline Stream -->
           <div class="timeline-stream">
@@ -673,7 +762,7 @@ onMounted(() => {
               <div class="node-body card card-reply">
                 <div class="card-header">
                   <span class="step-title">{{ t(selectedDetail.reply_kind === 'internal_draft' ? 'runs.step.internal_draft' : 'runs.step.reply') }}</span>
-                  <span class="lang-tag">{{ selectedDetail.reply_kind === 'internal_draft' ? t('runs.step.internal_draft_tag') : 'English Only' }}</span>
+                  <span v-if="selectedDetail.reply_kind === 'internal_draft'" class="lang-tag">{{ t('runs.step.internal_draft_tag') }}</span>
                 </div>
                 <div class="reply-content">
                   <pre class="reply-pre">{{ selectedDetail.final_reply }}</pre>
@@ -687,8 +776,11 @@ onMounted(() => {
               <div class="node-body card card-delivery">
                 <div class="card-header">
                   <span class="step-title">{{ t('runs.step.delivery') }}</span>
-                  <span class="delivery-status sent">200 OK ({{ selectedDetail.delivery.status }})</span>
+                  <span class="delivery-status" :class="{ sent: selectedDetail.delivery.status === 'sent' }">{{ selectedDetail.delivery.status }}</span>
                 </div>
+                <p v-if="selectedDetail.delivery.delivery_id">{{ t('runs.delivery.id') }} <code>{{ selectedDetail.delivery.delivery_id }}</code></p>
+                <button v-if="selectedDetail.delivery.status === 'uncertain' && selectedDetail.delivery.delivery_id && api.resolveDeliveryByStaff"
+                  class="btn-action" @click="resolveDeliveryByStaff">{{ t('runs.delivery.staff_action') }}</button>
                 <div class="delivery-flow">
                   <div class="flow-step">
                     <small>通道</small>
@@ -967,6 +1059,19 @@ onMounted(() => {
   font-family: ui-monospace, monospace;
 }
 
+.ticket-coverage-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.coverage-pending {
+  color: var(--amber);
+}
+
 /* Player Column */
 .trace-player {
   flex: 1;
@@ -1074,6 +1179,44 @@ onMounted(() => {
 }
 .btn-escalate:hover {
   background: rgba(255, 59, 48, 0.2);
+}
+
+.ticket-coverage {
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.ticket-coverage-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.ticket-coverage h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.ticket-coverage dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  margin: 10px 0 0;
+  font-size: 12px;
+}
+
+.ticket-coverage dt {
+  color: var(--muted);
+}
+
+.ticket-coverage dd {
+  margin: 2px 0 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
 
 /* Timeline Stream */

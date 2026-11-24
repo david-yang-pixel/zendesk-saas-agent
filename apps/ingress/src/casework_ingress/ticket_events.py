@@ -17,6 +17,7 @@ class TicketCommentEvent:
     body: str = field(repr=False)
     is_public: bool
     is_staff: bool
+    created_at: str | None = None
 
     @property
     def eligible(self) -> bool:
@@ -27,7 +28,11 @@ class TicketCommentEvent:
         )
 
     def normalized(self) -> NormalizedZendeskEvent:
-        return NormalizedZendeskEvent(ticket_id=self.ticket_id, message_text=self.body)
+        return NormalizedZendeskEvent(
+            ticket_id=self.ticket_id,
+            is_staff_note=self.is_staff and not self.is_public,
+            message_text=self.body,
+        )
 
     def payload(self) -> dict[str, object]:
         # Retain only the instruction needed by the worker, never the raw
@@ -39,6 +44,7 @@ class TicketCommentEvent:
             "author_id": self.author_id,
             "trigger": "operator_mention",
             "snapshot_cursor": f"mention:{self.comment_id}",
+            "message_created_at": self.created_at,
             "body": self.body,
         }
 
@@ -61,6 +67,7 @@ def parse_ticket_event(value: object) -> TicketCommentEvent | None:
     public, staff = comment.get("is_public"), author.get("is_staff")
     if not isinstance(body, str) or type(public) is not bool or type(staff) is not bool:
         raise MessagingPayloadError("invalid comment fields")
+    created_at = comment.get("created_at") or payload.get("time")
     return TicketCommentEvent(
         event_id=event_id.strip(),
         ticket_id=_positive_ticket_id(detail.get("id")),
@@ -69,4 +76,5 @@ def parse_ticket_event(value: object) -> TicketCommentEvent | None:
         body=body,
         is_public=public,
         is_staff=staff,
+        created_at=created_at if isinstance(created_at, str) else None,
     )

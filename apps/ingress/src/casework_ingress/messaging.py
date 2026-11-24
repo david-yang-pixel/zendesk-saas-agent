@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from .intake_form import is_contact_form_only
 from .processing_rules import NormalizedZendeskEvent
 from .zendesk import ZendeskTicket
 
@@ -32,6 +33,9 @@ class MessagingEvent:
     message_text: str
     public: bool
     message_present: bool = True
+    form_only: bool = False
+    has_attachments: bool = False
+    message_created_at: str | None = None
 
     @property
     def is_customer_message(self) -> bool:
@@ -68,6 +72,12 @@ class MessagingEvent:
         }
         if self.message_id is not None:
             payload["snapshot_cursor"] = f"messaging:{self.message_id}"
+        if self.form_only:
+            payload["form_only"] = True
+        if self.has_attachments:
+            payload["has_attachments"] = True
+        if self.message_created_at:
+            payload["message_created_at"] = self.message_created_at
         return payload
 
 
@@ -157,15 +167,21 @@ def parse_messaging_payload(value: object) -> MessagingEvent:
         )
     message = _object(message_value, "event.message")
     message_id = _optional_identifier(message.get("id"))
+    content_value = message.get("content")
+    content = cast(dict[str, object], content_value) if isinstance(content_value, dict) else {}
+    content_type = content.get("type", message.get("type"))
+    form = isinstance(content_type, str) and content_type.strip().casefold() in {
+        "form", "formresponse", "form_response", "form-response",
+    }
+    if not form and isinstance(content.get("fields"), list):
+        form = not any(isinstance(content.get(key), str) and content[key] for key in ("text", "body"))
+    has_attachments = _has_attachments(message) or _has_attachments(content)
     body_value = message.get("body", message.get("text"))
-    if not isinstance(body_value, str):
-        content = message.get("content")
-        if isinstance(content, dict):
-            content_object = cast(dict[str, object], content)
-            body_value = content_object.get(
-                "text", content_object.get("body")
-            )
+    if not isinstance(body_value, str) or not body_value.strip():
+        body_value = content.get("text", content.get("body"))
     message_text = body_value if isinstance(body_value, str) else ""
+    form = (form and not message_text.strip()) or is_contact_form_only(message_text)
+    created_at = message.get("created_at", message.get("createdAt", payload.get("time")))
     public = _public_message(message, event_body)
     return MessagingEvent(
         event_id=event_id,
@@ -174,7 +190,27 @@ def parse_messaging_payload(value: object) -> MessagingEvent:
         message_id=message_id,
         message_text=message_text,
         public=public,
-        message_present=isinstance(body_value, str) and bool(body_value.strip()),
+        message_present=bool(message_text.strip()) or has_attachments or form,
+        form_only=form and not has_attachments,
+        has_attachments=has_attachments,
+        message_created_at=created_at if isinstance(created_at, str) else None,
+    )
+
+
+def _has_attachments(value: dict[str, object]) -> bool:
+    def has_url(attachment: dict[str, object], fields: tuple[str, ...]) -> bool:
+        return any(isinstance(url := attachment.get(field), str) and bool(url.strip()) for field in fields)
+
+    if has_url(value, ("media_url", "mediaUrl")):
+        return True
+    media_type = value.get("type")
+    if isinstance(media_type, str) and media_type.casefold() in {"file", "image", "audio", "video"}:
+        if has_url(value, ("url", "content_url", "contentUrl")):
+            return True
+    attachments = value.get("attachments")
+    return isinstance(attachments, list) and any(
+        isinstance(item, dict) and has_url(item, ("content_url", "contentUrl", "url", "media_url", "mediaUrl"))
+        for item in attachments
     )
 
 

@@ -82,6 +82,13 @@ export function detectHumanHandoffIntent(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
 
+  const firstLine = trimmed.split(/[\r\n\u2028\u2029]/u, 1)[0];
+  // A standalone lead can request a human even when the details use technical terms.
+  if (firstLine.length < trimmed.length
+    && /^(?:human|人工|真人)\s*[.!?,:~。]*$/iu.test(firstLine.normalize('NFKC').trim())) {
+    return true;
+  }
+
   // 1. Check positive patterns
   const matchesPositive = POSITIVE_INTENT_PATTERNS.some(regex => regex.test(trimmed));
   if (!matchesPositive) {

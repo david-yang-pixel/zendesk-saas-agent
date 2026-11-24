@@ -34,7 +34,6 @@ from .processing_rules import (
     ProcessingDecision,
     ProcessingRuleConfig,
     evaluate_processing_rules,
-    has_operator_mention,
 )
 from .zendesk import ZendeskTicket, ZendeskTicketError, ZendeskTicketReader
 from .ticket_events import parse_ticket_event
@@ -88,6 +87,7 @@ class ZendeskWebhookPayload(BaseModel):
     message_visibility: object | None = None
     is_public: object | None = None
     snapshot_cursor: str | None = Field(default=None, min_length=1)
+    message_created_at: str | None = None
 
     @staticmethod
     def _normalise_origin_value(value: object | None) -> str | None:
@@ -344,8 +344,7 @@ def create_app(
         except MessagingPayloadError as error:
             raise HTTPException(status_code=400, detail="bad_payload") from error
 
-        is_operator_mention = has_operator_mention(event.message_text or "")
-        if not event.is_customer_message and not is_operator_mention:
+        if not event.is_customer_message:
             return respond(
                 action="ignore",
                 reason="not_customer_message",

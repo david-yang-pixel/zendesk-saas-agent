@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 from casework_ingress.processing_rules import (
     NormalizedZendeskEvent,
     ProcessingRuleConfig,
     evaluate_processing_rules,
+)
+
+
+_HANDOFF_LEAD_CASES = json.loads(
+    (Path(__file__).resolve().parents[2] / "fixtures" / "human_handoff_lead.json")
+    .read_text(encoding="utf-8")
 )
 
 
@@ -86,7 +96,7 @@ def test_human_aliases_match_case_insensitively_but_only_as_exact_text() -> None
     config = ProcessingRuleConfig(
         saas_tag="saas",
         saas_assignee="saas-support",
-        human_aliases=("human agent", "真人"),
+        human_aliases=("human agent", "真人", "escalate\nto billing"),
     )
 
     assert evaluate_processing_rules(
@@ -102,6 +112,12 @@ def test_human_aliases_match_case_insensitively_but_only_as_exact_text() -> None
     assert evaluate_processing_rules(
         _event(message_text="human agent, please"), config=config
     ).action == "enqueue"
+    assert evaluate_processing_rules(
+        _event(message_text="human agent\nI cannot access my workspace"), config=config
+    ).action == "enqueue"
+    assert evaluate_processing_rules(
+        _event(message_text="escalate\nto billing"), config=config
+    ).action == "cancel"
 
 
 def test_human_normalization_accepts_width_and_surrounding_punctuation() -> None:
@@ -123,9 +139,28 @@ def test_human_normalization_accepts_width_and_surrounding_punctuation() -> None
     ).action == "enqueue"
 
 
-def test_human_text_in_non_customer_message_does_not_cancel() -> None:
+@pytest.mark.parametrize(
+    ("message_text", "handoff"),
+    [
+        pytest.param(case["text"], case["handoff"], id=case["name"])
+        for case in _HANDOFF_LEAD_CASES
+    ],
+)
+def test_multiline_handoff_lead(message_text: str, handoff: bool) -> None:
+    event = _event(message_text=message_text)
     decision = evaluate_processing_rules(
-        _event(is_customer_message=False, message_text="human"),
+        event,
+        config=ProcessingRuleConfig(saas_tag="saas", saas_assignee="saas-support"),
+    )
+
+    assert decision.action == ("cancel" if handoff else "enqueue")
+    assert decision.reason == ("human" if handoff else "eligible")
+
+
+@pytest.mark.parametrize("message_text", ["human", "human\nDetails from an agent."])
+def test_human_text_in_non_customer_message_does_not_cancel(message_text: str) -> None:
+    decision = evaluate_processing_rules(
+        _event(is_customer_message=False, message_text=message_text),
         config=ProcessingRuleConfig(
             saas_tag="saas", saas_assignee="saas-support"
         ),

@@ -7,6 +7,7 @@ the same API straightforward to exercise with an in-memory adapter.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -123,6 +124,19 @@ class RunSandboxLifecycle(_ReadModel):
     events: tuple[RunSandboxLifecycleEvent, ...] = ()
 
 
+class TicketCoverage(_ReadModel):
+    """Current ticket-level coverage, independent of any selected run."""
+
+    status: Literal["unknown", "pending", "answered"] = "unknown"
+    latest_customer_seq: int | None = None
+    latest_customer_at: datetime | None = None
+    answered_customer_seq: int | None = None
+    answered_by_job_id: str | None = None
+    pending_age_seconds: int | None = Field(default=None, ge=0)
+    human_takeover: bool | None = None
+    human_cancelled_at: datetime | None = None
+
+
 class RunRecord(RecentRun):
     session_id: str
     event_id: str | None = None
@@ -150,6 +164,7 @@ class RunRecord(RecentRun):
     evidence_ids: tuple[str, ...] = ()
     context_checkpoint: RunContextCheckpoint | None = None
     sandbox_lifecycle: RunSandboxLifecycle | None = None
+    ticket_coverage: TicketCoverage = Field(default_factory=TicketCoverage)
 
 
 class OverviewResponse(_ReadModel):

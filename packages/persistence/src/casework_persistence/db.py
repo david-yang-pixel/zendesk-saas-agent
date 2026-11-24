@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-SCHEMA_HEAD = "0011_human_handoffs"
+SCHEMA_HEAD = "0015_handoff_resume"
 
 
 def create_engine(database_url: str, *, echo: bool = False) -> AsyncEngine:

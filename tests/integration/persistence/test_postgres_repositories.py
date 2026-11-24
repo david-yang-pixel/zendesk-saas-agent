@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from casework_ingress.postgres_admission import PostgresAdmission, postgres_transaction_scope
 from casework_persistence.models import (
     CaseJobRow,
     EventRecord,
@@ -26,6 +27,8 @@ from casework_persistence.repositories import (
     OutboxRepository,
     OutboxStatus,
 )
+from tests.unit.ingress.test_postgres_admission import CONFIG as ADMISSION_CONFIG
+from tests.unit.ingress.test_postgres_admission import _event, _operator_mention
 
 NOW = datetime(2026, 9, 1, tzinfo=UTC)
 CONFIG = ConfigSnapshot(
@@ -450,3 +453,33 @@ async def test_postgres_outbox_claim_idempotency_and_transaction_rollback(
             ),
         )
     assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_resume_and_newer_takeover_are_ordered_by_provider_time(postgres_sessions):
+    async with postgres_sessions() as session, session.begin():
+        await ConfigRevisionRepository(session).bootstrap(revision="cfg-1", config=ADMISSION_CONFIG, actor="test")
+    admission = PostgresAdmission(transaction_scope=postgres_transaction_scope(postgres_sessions))
+    oldest = NOW + timedelta(seconds=1)
+    resumed = NOW + timedelta(seconds=2)
+    later_resume = NOW + timedelta(seconds=3)
+    newest = NOW + timedelta(seconds=4)
+    receipt = NOW + timedelta(seconds=5)
+
+    assert (await admission.admit(_event(event_id="old-request", message="human", occurred_at=oldest))).action == "cancel"
+    resume = _operator_mention("resume", occurred_at=resumed, received_at=receipt, comment_id="1234")
+    equivalent = _operator_mention("resume-redelivered", occurred_at=resumed, received_at=receipt, comment_id="1234")
+    responses = await asyncio.gather(admission.admit(resume), admission.admit(equivalent))
+    assert sorted(response.action for response in responses) == ["duplicate", "enqueue"]
+
+    older_note = _operator_mention("older-note", occurred_at=later_resume, received_at=receipt, comment_id="1235")
+    new_request = _event(event_id="new-request", message="human", occurred_at=newest, received_at=receipt)
+    note, request = await asyncio.gather(admission.admit(older_note), admission.admit(new_request))
+    assert note.action in {"enqueue", "ignore"}
+    assert request.action == "cancel"
+    async with postgres_sessions() as session:
+        state = (await session.execute(select(TicketState))).scalar_one()
+        assert state.human_cancelled_at == newest
+        assert (state.human_resumed_at, state.human_resume_cursor) == (
+            (later_resume, "mention:1235") if note.action == "enqueue" else (resumed, "mention:1234")
+        )

@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import { activeModelClaimDelay, isModelQuotaError, modelEndpointKey, postponeJobForModelQuota, prepareModelEndpoint, recordModelRecovery } from './endpoint-cooldown.js';
+import { oldestWaitingTicket, startQueueAlerts } from './queue-alerts.js';
 import http from 'node:http';
 import fs from 'node:fs';
 import pg from 'pg';
@@ -10,12 +13,18 @@ import {
 import { runPiSupportAgent } from './agent.js';
 import { ModelConfig, parseModelConfig } from './model-config.js';
 import { sumRoundTokens } from './round-telemetry.js';
-import { sendBrowserRelay } from './relay.js';
+import { findPublicDeliveryEvidence, sendBrowserRelay } from './relay.js';
+import { loadConversation } from './conversation.js';
 import { deliverInternalDraft, formatInternalDraft } from './internal-draft-delivery.js';
 import { detectCustomerLanguage } from './reply-policy.js';
 import { sendFeishuAlert, HumanAlertTracker } from './alerts.js';
-import { getTicketDetails } from './ticket-context.js';
-import { claimNextJob, requeueLatestConversation } from './job-queue.js';
+import { getTicketDetails as readTicketDetails } from './ticket-context.js';
+import { ticketContextSettings } from './ticket-context-settings.js';
+import {
+  claimNextJob, claimPublicDeliveryCheck, completePreviouslySentPublicJob, confirmPublicDelivery,
+  deferUnconfirmedConversation, deliverWithCustomerCoverage, finishPublicDeliveryCheck, loadCustomerCoverage,
+  markPublicDeliveryUncertain, recordStaffCoverage, requeueLatestConversation,
+} from './job-queue.js';
 import {
   addZendeskTicketTags, DEFAULT_HANDOFF_TAG, HANDOFF_ALERT_TIMEOUT_MS, HANDOFF_CONVERSATION_TIMEOUT_MS,
   HANDOFF_REPLY_TIMEOUT_MS, processHandoff, recordWorkerHandoff, runHandoffLoop,
@@ -107,6 +116,13 @@ if (!DATABASE_URL) {
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
 
 
+async function getTicketDetails(ticketId: number, service: Parameters<typeof readTicketDetails>[1],
+  signal?: AbortSignal, coverage?: Parameters<typeof readTicketDetails>[3]) {
+  const settings = await ticketContextSettings(pool, ticketId);
+  const details = await readTicketDetails(ticketId, service, signal, coverage, settings);
+  return { ...details, observedResume: settings.handoffResume ?? null };
+}
+
 async function getActiveModelConfig(): Promise<ModelConfig> {
   const res = await pool.query("SELECT value FROM system_settings WHERE key = 'model_config'");
   return parseModelConfig(res.rows[0]?.value);
@@ -162,6 +178,8 @@ async function recordJobOutcome(opts: {
         outcome = EXCLUDED.outcome,
         finished_at = EXCLUDED.finished_at,
         updated_at = NOW()
+      WHERE run_records.outcome->'delivery'->>'status' IS DISTINCT FROM 'sent'
+        OR EXCLUDED.outcome->'delivery'->>'status' = 'sent'
     `,
       [
         sessionId,
@@ -184,42 +202,27 @@ async function recordJobOutcome(opts: {
   }
 }
 
-async function markJobSucceeded(jobId: string) {
-  await pool.query(`
-    UPDATE case_jobs
-    SET status = 'completed',
-        finished_at = NOW(),
-        updated_at = NOW(),
-        lease_owner = NULL,
-        lease_expires_at = NULL
-    WHERE job_id = $1
-  `, [jobId]);
+type ClaimedJob = { job_id: string; lease_owner: string; attempts: number };
+
+async function markJobSucceeded(job: ClaimedJob) {
+  await finishJob(job, 'completed');
 }
 
-async function markJobFailed(jobId: string, reason: string) {
-  await pool.query(`
-    UPDATE case_jobs
-    SET status = 'failed',
-        dead_letter_reason = $2,
-        finished_at = NOW(),
-        updated_at = NOW(),
-        lease_owner = NULL,
-        lease_expires_at = NULL
-    WHERE job_id = $1
-  `, [jobId, reason.slice(0, 1024)]);
+async function markJobFailed(job: ClaimedJob, reason: string) {
+  await finishJob(job, 'failed', reason);
 }
 
-async function markJobCancelled(jobId: string, reason: string) {
+async function markJobCancelled(job: ClaimedJob, reason: string) {
+  await finishJob(job, 'cancelled', reason);
+}
+
+async function finishJob(job: ClaimedJob, status: string, reason?: string) {
   await pool.query(`
     UPDATE case_jobs
-    SET status = 'cancelled',
-        dead_letter_reason = $2,
-        finished_at = NOW(),
-        updated_at = NOW(),
-        lease_owner = NULL,
-        lease_expires_at = NULL
-    WHERE job_id = $1
-  `, [jobId, reason.slice(0, 1024)]);
+    SET status = $4, dead_letter_reason = $5, finished_at = NOW(), updated_at = NOW(),
+        lease_owner = NULL, lease_expires_at = NULL
+    WHERE job_id = $1 AND lease_owner = $2 AND attempts = $3 AND status = 'running'
+  `, [job.job_id, job.lease_owner, job.attempts, status, reason?.slice(0, 1024) ?? null]);
 }
 
 async function isTicketHumanCancelled(ticketId: number): Promise<boolean> {
@@ -241,18 +244,28 @@ async function isTicketHumanCancelled(ticketId: number): Promise<boolean> {
  * customer. Falls back to a plain Feishu alert if the handoff cannot be recorded.
  */
 async function handOffToHuman(
-  job: { job_id: string; ticket_id: number },
-  details: { message: string; latestRequestedHuman?: boolean },
+  job: ClaimedJob & { ticket_id: number; generation: number },
+  details: Awaited<ReturnType<typeof getTicketDetails>>,
   reason: string,
-): Promise<void> {
+): Promise<'superseded' | void> {
   try {
     const outcome = await recordWorkerHandoff(pool, {
       jobId: job.job_id,
       ticketId: job.ticket_id,
-      customerMessage: details.message,
+      customerMessage: details.humanRequestMessage ?? details.message,
+      leaseOwner: job.lease_owner, attempt: job.attempts, generation: job.generation,
       acknowledge: Boolean(details.latestRequestedHuman),
+      observedResume: details.observedResume, requestOccurredAt: details.humanRequestOccurredAt,
       reason,
     });
+    if (outcome === 'lease_lost') return 'superseded';
+    if (outcome === 'resume_changed') {
+      // A staff resume won after the history read. A fresh claim re-evaluates the current messages.
+      if (!await deferUnconfirmedConversation(pool, job, job.lease_owner, job.attempts, 'handoff_resume_changed')) {
+        await markJobCancelled(job, 'handoff_resume_changed');
+      }
+      return 'superseded';
+    }
     console.warn(`[Worker] 🛡️ HUMAN TAKEOVER for ticket #${job.ticket_id} (${outcome}): ${reason}`);
   } catch (error: any) {
     console.warn(`[Worker] Failed to record human handoff for ticket #${job.ticket_id}:`, error.message);
@@ -301,6 +314,7 @@ async function main() {
     ticketId: number;
     abortController: AbortController;
     startedAt: number;
+    completion?: Promise<void>;
   }
   const activeJobs = new Map<string, ActiveJobContext>();
 
@@ -309,8 +323,8 @@ async function main() {
   const shutdown = () => {
     console.log('[Worker] Graceful shutdown initiated. Aborting active jobs...');
     running = false;
-    for (const [jobId, ctx] of activeJobs.entries()) {
-      console.log(`[Worker] Aborting active job ${jobId} for ticket #${ctx.ticketId}...`);
+    for (const ctx of activeJobs.values()) {
+      console.log(`[Worker] Aborting active job ${ctx.jobId} for ticket #${ctx.ticketId}...`);
       ctx.abortController.abort();
     }
   };
@@ -318,6 +332,7 @@ async function main() {
   process.on('SIGTERM', shutdown);
 
   // Customer "human" commands recorded by ingress: tag, alert, acknowledge.
+  const stopQueueAlerts = startQueueAlerts(pool, FEISHU_WEBHOOK_URL);
   const handoffLoop = runHandoffLoop({
     pool,
     isRunning: () => running,
@@ -345,6 +360,38 @@ async function main() {
     }),
   });
 
+  async function reconcilePublicDelivery() {
+    const delivery = await claimPublicDeliveryCheck(pool);
+    if (!delivery) return;
+    let evidence;
+    let reason = delivery.last_error ?? 'public_delivery_confirmation_missing_after_dispatch';
+    try {
+      const conversation = await loadConversation(delivery.ticket_id, openConnectorService, AbortSignal.timeout(20_000));
+      evidence = findPublicDeliveryEvidence(conversation, delivery.delivery_id, delivery.started_at);
+    } catch (error) {
+      if (!delivery.last_error) reason = 'public_delivery_history_unavailable';
+      console.warn(`[Worker] Public delivery history check failed for ${delivery.delivery_id}`,
+        error instanceof Error ? error.name : 'unknown error');
+    }
+    if (evidence) {
+      await confirmPublicDelivery(pool, delivery, evidence);
+      console.log(`[Worker] Reconciled public delivery ${delivery.delivery_id} for ticket #${delivery.ticket_id}`);
+      return;
+    }
+
+    const unresolved = await markPublicDeliveryUncertain(pool, delivery, reason);
+    if (unresolved?.status !== 'uncertain') return;
+    let alerted = false;
+    if (!delivery.alert_sent_at && FEISHU_WEBHOOK_URL) {
+      alerted = await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
+        title: '🚨 Zendesk 公开回复投递待核实', color: 'orange',
+        ticketId: delivery.ticket_id, status: '可能已发送，自动公开回复已暂停',
+        note: `投递编号 ${delivery.delivery_id}。请先在 Zendesk 核实对话和发送记录，再决定是否回复。`,
+      }, (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(HANDOFF_ALERT_TIMEOUT_MS) }));
+    }
+    await finishPublicDeliveryCheck(pool, delivery.delivery_id, alerted);
+  }
+
   async function processJob(
     job: any,
     abortController: AbortController,
@@ -353,6 +400,7 @@ async function main() {
     console.log(`[Worker] 🚀 Processing job ${job.job_id} for ticket #${job.ticket_id} (active concurrency: ${activeJobs.size}/${MAX_CONCURRENT_JOBS})`);
 
     const isMentionJob = Boolean(
+      job.is_operator_mention ||
       job.event_id?.startsWith('mention:') ||
       job.expected_event_id?.startsWith('mention:')
     );
@@ -366,13 +414,15 @@ async function main() {
     // alert (not the failure alert) is sent; ingress still queues a job when it
     // records that customer message.
     async function requeueAfterInterception(
-      latest: { lastEventId?: string; message?: string },
+      latest: { lastEventId?: string; message?: string; readCustomerMessages?: Awaited<ReturnType<typeof getTicketDetails>>['readCustomerMessages'] },
       interceptReason: string,
     ): Promise<string> {
       try {
         const requeued = await requeueLatestConversation(pool, {
           job,
           latestZendeskEventId: latest.lastEventId,
+          observedCustomers: latest.readCustomerMessages,
+          lease: { workerId: job.lease_owner, attempt: job.attempts },
           reason: interceptReason,
         });
         console.log(`[Worker] Requeued ticket #${job.ticket_id} as job ${requeued.jobId} (${requeued.outcome}) after intercepting job ${job.job_id}.`);
@@ -398,10 +448,12 @@ async function main() {
     // terminal-state handler as model and delivery failures.
     const leaseTimer = setInterval(() => {
       pool.query(`UPDATE case_jobs SET lease_expires_at = NOW() + interval '180 seconds',
-        heartbeat_at = NOW(), updated_at = NOW() WHERE job_id = $1 AND status = 'running'`, [job.job_id])
+        heartbeat_at = NOW(), updated_at = NOW() WHERE job_id = $1 AND status = 'running'
+        AND lease_owner = $2 AND attempts = $3`, [job.job_id, job.lease_owner, job.attempts])
         .catch((error: Error) => console.warn('[Worker] Lease heartbeat failed:', error.message));
     }, 60_000);
     try {
+      if (!isMentionJob && await completePreviouslySentPublicJob(pool, job, job.lease_owner, job.attempts)) return;
 
       // Guard 1: Has this ticket already been transferred to human in database?
       // NOTE: Mention jobs BYPASS this guard because an operator explicitly tagged @David Yang!
@@ -413,27 +465,53 @@ async function main() {
           const details = await getTicketDetails(job.ticket_id, openConnectorService);
           await notifyHumanTakeover(job.ticket_id, details.message, humanReason);
         }
-        await markJobCancelled(job.job_id, humanReason);
+        await markJobCancelled(job, humanReason);
         return;
       }
 
-      const initialDetails = await getTicketDetails(job.ticket_id, openConnectorService, abortController.signal);
-
-      // Guard 0: Has this ticket already been answered by an agent reply?
-      // (Prevent duplicate reply when customer sends consecutive messages and agent already replied!)
-      if (initialDetails.isAlreadyAnswered && !isMentionJob) {
-        const skipReason = `防重复回复保护：该工单最新消息已由座席/AI完成回复（无待回复客户新消息），自动跳过防止二次抢答。`;
-        console.log(`[Worker] ⏭️ SKIP: ${skipReason}`);
-        await markJobCancelled(job.job_id, skipReason);
-        return;
+      const coverage = isMentionJob ? null : await loadCustomerCoverage(pool, job.ticket_id);
+      // An opaque delivery ID is distinct from a typed Zendesk message cursor.
+      const expected = job.expected_event_id;
+      if (coverage && /^(?:messaging|zendesk):[^:]+$/.test(expected ?? '') && !coverage.coveredCursors.has(expected)) {
+        coverage.pendingCursors.add(expected);
+      }
+      const initialDetails = await getTicketDetails(job.ticket_id, openConnectorService, abortController.signal, coverage ?? undefined);
+      if (initialDetails.staffAnsweredCursors?.length) await recordStaffCoverage(pool, job.ticket_id, initialDetails.staffAnsweredCursors);
+      const readCursors = new Set(initialDetails.readCustomerMessages?.flatMap(message => message.cursors));
+      if (coverage) {
+        const afterRead = await loadCustomerCoverage(pool, job.ticket_id);
+        const missingExpected = initialDetails.visibleCustomerCursors && [...coverage.pendingCursors].some(cursor =>
+          !initialDetails.visibleCustomerCursors.has(cursor) && (cursor === expected || readCursors.size === 0));
+        const admissionAfterRead = afterRead.pending.some(({ seq, cursor }) =>
+          seq > coverage.latestSeq && (!cursor || !readCursors.has(cursor)));
+        const unknownPending = initialDetails.isAlreadyAnswered && !coverage.coveredCursors.has(expected) &&
+          coverage.pending.some(({ cursor }) => !cursor);
+        if (missingExpected || admissionAfterRead || unknownPending) {
+          if (!await deferUnconfirmedConversation(pool, job, job.lease_owner, job.attempts)) {
+            await markJobCancelled(job, 'customer_conversation_snapshot_unconfirmed');
+          }
+          return;
+        }
       }
 
-      // Guard 2: Did the customer EVER ask for human in this conversation thread?
-      // NOTE: Mention jobs BYPASS this guard as well!
       if (initialDetails.hasRequestedHuman && !isMentionJob) {
-        const humanReason = `模式 B 人工优先保护：对话历史中检测到客户曾请求人工客服，AI 保持静默。`;
-        await handOffToHuman(job, initialDetails, humanReason);
-        await markJobCancelled(job.job_id, humanReason);
+        const humanReason = '客户请求人工支持，已停止自动回复。';
+        if (await handOffToHuman(job, initialDetails, humanReason) === 'superseded') return;
+        await markJobCancelled(job, humanReason);
+        return;
+      }
+      if (initialDetails.isAlreadyAnswered && !isMentionJob) {
+        await markJobCancelled(job, 'customer_message_already_answered');
+        return;
+      }
+
+      if (!isMentionJob && initialDetails.unrepliedCount === 0) {
+        await recordJobOutcome({
+          jobId: job.job_id, ticketId: job.ticket_id, generation: job.generation,
+          status: 'awaiting_customer', startedAt: new Date(startTime), finishedAt: new Date(),
+          trace: null, delivery: null,
+        });
+        await finishJob(job, 'awaiting_customer');
         return;
       }
 
@@ -463,19 +541,16 @@ async function main() {
       // Active in-flight monitor & heartbeat
       monitorTimer = setInterval(async () => {
         try {
-          // 2. Real-time in-flight cancel check: detect human takeover or new incoming customer message
           if (!isMentionJob && !abortController.signal.aborted) {
-            const checkRes = await pool.query(`
-              SELECT
-                (SELECT human_cancelled_at FROM ticket_states WHERE ticket_id = $1 LIMIT 1) as human_cancelled_at,
-                (SELECT count(*) FROM events WHERE ticket_id = $1 AND customer_origin = 'customer' AND received_at > $2) as new_events_count
-            `, [job.ticket_id, new Date(startTime)]);
-
-            if (checkRes.rows[0]?.human_cancelled_at) {
-              console.warn(`[Worker] 🛑 In-flight abort: Human takeover detected in DB for ticket #${job.ticket_id}`);
+            if (await isTicketHumanCancelled(job.ticket_id)) {
+              console.warn(`[Worker] In-flight abort: human takeover for ticket #${job.ticket_id}`);
               abortController.abort();
-            } else if (parseInt(checkRes.rows[0]?.new_events_count || '0', 10) > 0) {
-              console.warn(`[Worker] 🛑 In-flight abort: New customer message detected in DB for ticket #${job.ticket_id}`);
+              return;
+            }
+            const latestCoverage = await loadCustomerCoverage(pool, job.ticket_id);
+            if (latestCoverage.pending.some(({ seq, cursor }) =>
+              seq > coverage!.latestSeq && (!cursor || !readCursors.has(cursor)))) {
+              console.warn(`[Worker] In-flight abort: new customer message for ticket #${job.ticket_id}`);
               abortController.abort();
             }
           }
@@ -485,6 +560,10 @@ async function main() {
       }, 5000);
 
       const modelConfig = await getActiveModelConfig();
+      const endpointKey = modelEndpointKey(modelConfig.baseUrl);
+      const lease = { jobId: job.job_id, ticketId: job.ticket_id, leaseOwner: job.lease_owner };
+      const preparation = await prepareModelEndpoint(pool, endpointKey, lease);
+      if (preparation.outcome !== 'ready') return;
       console.log(`[Worker] Running Pi Agent for ticket #${job.ticket_id} (Model: ${modelConfig.model}${isMentionJob ? ', Trigger: operator mention' : ''})`);
 
       let agentResult: any;
@@ -519,14 +598,20 @@ async function main() {
           },
         });
         activeTrace = agentResult.trace;
+        if (preparation.observedWindowId && agentResult.trace?.rounds?.length) {
+          await recordModelRecovery(pool, endpointKey, preparation.observedWindowId)
+            .catch(error => console.warn('[Worker] Could not reset model cooldown count:', error.message));
+        }
         console.log(`[Worker] Pi Agent completed reasoning for ticket #${job.ticket_id} in ${Date.now() - startTime}ms (${agentResult.trace.toolCalls.length} tool calls).`);
       } catch (agentErr: any) {
         if (abortController.signal.aborted || agentErr.name === 'AbortError') {
           console.warn(`[Worker] 🚨 Job ${job.job_id} for ticket #${job.ticket_id} was aborted in-flight.`);
-          const freshDetails = await getTicketDetails(job.ticket_id, openConnectorService);
+          const freshCoverage = isMentionJob ? null : await loadCustomerCoverage(pool, job.ticket_id);
+          const freshDetails = await getTicketDetails(job.ticket_id, openConnectorService, undefined, freshCoverage ?? undefined);
+          if (freshDetails.staffAnsweredCursors?.length) await recordStaffCoverage(pool, job.ticket_id, freshDetails.staffAnsweredCursors);
           if (freshDetails.hasRequestedHuman && !isMentionJob) {
             const humanReason = `模式 B 人工优先保护：推理中途检测到客户转人工诉求，旧答复已即时打断并移交人工。`;
-            await handOffToHuman(job, freshDetails, humanReason);
+            if (await handOffToHuman(job, freshDetails, humanReason) === 'superseded') return;
             await recordJobOutcome({
               jobId: job.job_id,
               ticketId: job.ticket_id,
@@ -538,13 +623,15 @@ async function main() {
               delivery: null,
               errorReason: humanReason,
             });
-            await markJobCancelled(job.job_id, humanReason);
+            await markJobCancelled(job, humanReason);
             return;
           } else {
-            const interceptReason = await requeueAfterInterception(
-              freshDetails,
-              `推理中途收到客户新消息（“${freshDetails.message.slice(0, 60)}...”），已即时打断并触发 10 秒防抖重排。`,
-            );
+            const changed = freshDetails.lastEventId !== initialDetails.lastEventId ||
+              freshDetails.message !== initialDetails.message || freshCoverage?.pending.some(({ seq, cursor }) =>
+                seq > coverage!.latestSeq && (!cursor || !readCursors.has(cursor)));
+            const reason = changed && !isMentionJob
+              ? await requeueAfterInterception(freshDetails, 'customer_conversation_changed_during_processing')
+              : 'processing_interrupted';
             await recordJobOutcome({
               jobId: job.job_id,
               ticketId: job.ticket_id,
@@ -554,11 +641,27 @@ async function main() {
               finishedAt: new Date(),
               trace: activeTrace,
               delivery: null,
-              errorReason: interceptReason,
+              errorReason: reason,
             });
-            await markJobCancelled(job.job_id, interceptReason);
+            await markJobCancelled(job, reason);
             return;
           }
+        }
+        if (isModelQuotaError(agentErr)) {
+          try {
+            const pause = await postponeJobForModelQuota(pool, endpointKey, lease, preparation.observedWindowId);
+            if (pause.shouldAlert) {
+              const oldest = await oldestWaitingTicket(pool).catch(() => undefined);
+              await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
+                ticketId: job.ticket_id, title: '模型端点额度不足', status: '端点暂缓处理',
+                note: [`HTTP 402，连续暂停 ${pause.consecutiveWindows ?? 1} 次。下次尝试时间 ${pause.retryAt?.toISOString()}。`,
+                  oldest ? `最久待答工单 #${oldest.ticket_id} 已等待 ${oldest.minutes} 分钟。` : ''].filter(Boolean).join('\n'),
+              });
+            }
+          } catch (error) {
+            console.error('[Worker] Could not persist model cooldown or send alert:', error);
+          }
+          return;
         }
         throw agentErr;
       }
@@ -586,24 +689,21 @@ async function main() {
           delivery,
           internalDraft: formatInternalDraft(agentResult.customerReply, agentResult.operatorAnswer),
         });
-        await markJobSucceeded(job.job_id);
+        await markJobSucceeded(job);
         return;
       }
 
-      // Only customer-origin jobs use the freshness/human guards below.
-      // Mention jobs intentionally bypass both guards, so rereading the same
-      // conversation here adds latency without changing the delivery decision.
-      if (!isMentionJob) {
-        console.log(`[Worker] Pre-delivery check: Fetching latest conversation for ticket #${job.ticket_id} to verify no new customer messages...`);
-      }
-      const freshDetails = isMentionJob
-        ? initialDetails
-        : await getTicketDetails(job.ticket_id, openConnectorService);
+      const freshCoverage = await loadCustomerCoverage(pool, job.ticket_id);
+      coverage?.pendingCursors.forEach(cursor => {
+        if (!freshCoverage.coveredCursors.has(cursor)) freshCoverage.pendingCursors.add(cursor);
+      });
+      const freshDetails = await getTicketDetails(job.ticket_id, openConnectorService, abortController.signal, freshCoverage);
+      if (freshDetails.staffAnsweredCursors?.length) await recordStaffCoverage(pool, job.ticket_id, freshDetails.staffAnsweredCursors);
 
       // Guard 3: Did customer request human during reasoning?
       if (freshDetails.hasRequestedHuman && !isMentionJob) {
         const humanReason = `模式 B 人工优先保护：最新会话中检测到转人工诉求，旧答复已拦截并移交人工。`;
-        await handOffToHuman(job, freshDetails, humanReason);
+        if (await handOffToHuman(job, freshDetails, humanReason) === 'superseded') return;
         await recordJobOutcome({
           jobId: job.job_id,
           ticketId: job.ticket_id,
@@ -615,23 +715,25 @@ async function main() {
           delivery: null,
           errorReason: humanReason,
         });
-        await markJobCancelled(job.job_id, humanReason);
+        await markJobCancelled(job, humanReason);
         return;
       }
 
-      // Guard 4: Did customer send a new message during reasoning? (Skip if isMentionJob)
+      const freshCursors = new Set(freshDetails.readCustomerMessages?.flatMap(message => message.cursors));
       const hasNewMessage =
-        !isMentionJob && (
-          (freshDetails.lastEventId && initialDetails.lastEventId && freshDetails.lastEventId !== initialDetails.lastEventId) ||
-          (freshDetails.customerEventsCount > initialDetails.customerEventsCount) ||
-          (freshDetails.message.trim() !== initialDetails.message.trim())
-        );
+        freshCoverage.pending.some(({ seq, cursor }) =>
+          seq > coverage!.latestSeq && (!cursor || !readCursors.has(cursor))) ||
+        [...freshCursors].some(cursor => !readCursors.has(cursor)) ||
+        (!freshDetails.isAlreadyAnswered && (
+          freshDetails.lastEventId !== initialDetails.lastEventId ||
+          freshDetails.customerEventsCount !== initialDetails.customerEventsCount ||
+          freshDetails.message.trim() !== initialDetails.message.trim()
+        ));
 
-      if (hasNewMessage) {
-        const interceptNotice = `检测到客户在推理期间发送了新消息（“${freshDetails.message.slice(0, 60)}...”）。旧答复已自动拦截作废，触发 10 秒防抖并重新排队最新会话。`;
-        console.warn(`[Worker] 🚨 INTERCEPTED: ${interceptNotice}`);
-        const interceptReason = await requeueAfterInterception(freshDetails, interceptNotice);
-
+      if (hasNewMessage || freshDetails.isAlreadyAnswered || abortController.signal.aborted) {
+        const interceptReason = hasNewMessage
+          ? await requeueAfterInterception(freshDetails, 'customer_conversation_changed_during_processing')
+          : freshDetails.isAlreadyAnswered ? 'customer_message_already_answered' : 'processing_interrupted';
         await recordJobOutcome({
           jobId: job.job_id,
           ticketId: job.ticket_id,
@@ -644,7 +746,7 @@ async function main() {
           errorReason: interceptReason,
         });
 
-        await markJobCancelled(job.job_id, interceptReason);
+        await markJobCancelled(job, interceptReason);
         return;
       }
 
@@ -653,65 +755,52 @@ async function main() {
         console.log(`[Worker] Retained internal investigation analysis in telemetry for ticket #${job.ticket_id}; no Zendesk note was written.`);
       }
 
-      // Deliver the public customer reply through the only authorized write path.
-      console.log(`[Worker] Delivery guards passed. Delivering via Browser Relay...`);
-      const relayResult = await sendBrowserRelay(
-        BROWSER_RELAY_URL,
-        BROWSER_RELAY_KEY,
-        job.ticket_id,
-        agentResult.reply
-      );
-
-      if (relayResult.status !== 'sent') {
-        const relayErrMsg = relayResult.error || `Browser relay returned unexpected status: ${relayResult.status}`;
-        await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
-          title: '🚨 Dify 工单投递失败警告',
-          ticketId: job.ticket_id,
-          status: `投递异常 (${relayResult.status})`,
-          reason: relayErrMsg,
-          draftReply: agentResult.reply,
+      const delivered = await deliverWithCustomerCoverage(pool, {
+        job, workerId: job.lease_owner, attempt: job.attempts, startingSeq: coverage!.latestSeq,
+        messages: initialDetails.readCustomerMessages ?? [], reply: agentResult.reply, signal: abortController.signal,
+      }, (deliveryId, reply) => sendBrowserRelay(BROWSER_RELAY_URL, BROWSER_RELAY_KEY, job.ticket_id, reply, {
+        deliveryId, signal: AbortSignal.timeout(90_000),
+      }));
+      if (delivered.outcome === 'uncertain') {
+        if (delivered.jobStatus) await recordJobOutcome({
+          jobId: job.job_id, ticketId: job.ticket_id, generation: job.generation,
+          status: delivered.jobStatus, startedAt: new Date(startTime), finishedAt: new Date(),
+          trace: agentResult.trace, errorReason: delivered.reason,
+          delivery: { channel: 'browser-relay', status: 'uncertain', delivery_id: delivered.deliveryId },
         });
-        throw new Error(relayErrMsg);
+        return;
+      }
+      if (delivered.outcome === 'already_sent') {
+        await completePreviouslySentPublicJob(pool, job, job.lease_owner, job.attempts);
+        return;
+      }
+      if (delivered.outcome === 'blocked' && await deferUnconfirmedConversation(
+        pool, job, job.lease_owner, job.attempts, 'waiting_for_public_delivery_confirmation',
+      )) return;
+      if (delivered.outcome !== 'delivered') {
+        let reason = 'customer_delivery_superseded';
+        if (delivered.outcome === 'new_customer_message' || delivered.outcome === 'already_covered') {
+          reason = await requeueAfterInterception(freshDetails, delivered.outcome === 'new_customer_message'
+            ? 'customer_conversation_changed_before_delivery' : 'customer_coverage_changed_before_delivery');
+        }
+        if (delivered.outcome === 'unidentified_messages') reason = 'customer_message_identity_unconfirmed';
+        await recordJobOutcome({
+          jobId: job.job_id, ticketId: job.ticket_id, generation: job.generation,
+          status: 'cancelled', startedAt: new Date(startTime), finishedAt: new Date(),
+          trace: agentResult.trace, delivery: null, errorReason: reason,
+        });
+        await markJobCancelled(job, reason);
+        return;
       }
 
-      console.log(`[Worker] Browser Relay delivered successfully for ticket #${job.ticket_id}: status=${relayResult.status} (relayMs=${relayResult.total_duration_ms ?? 0})`);
-
+      console.log(`[Worker] Confirmed public delivery ${delivered.deliveryId} for ticket #${job.ticket_id}`);
       await recordJobOutcome({
-        jobId: job.job_id,
-        ticketId: job.ticket_id,
-        generation: job.generation,
-        status: 'completed',
-        startedAt: new Date(startTime),
-        finishedAt: new Date(),
+        jobId: job.job_id, ticketId: job.ticket_id, generation: job.generation,
+        status: delivered.jobStatus, startedAt: new Date(startTime), finishedAt: new Date(),
         trace: agentResult.trace,
-        delivery: {
-          channel: 'browser-relay',
-          status: relayResult.status,
-          total_duration_ms: relayResult.total_duration_ms,
-          timings: relayResult.timings || { total_ms: relayResult.total_duration_ms },
-        },
+        delivery: { channel: 'browser-relay', status: 'sent', delivery_id: delivered.deliveryId, ...delivered.delivery },
       });
 
-      await markJobSucceeded(job.job_id);
-
-      // Automatically drain/cancel any redundant queued jobs for this ticket to prevent duplicate replies!
-      try {
-        const drainRes = await pool.query(`
-          UPDATE case_jobs
-          SET status = 'cancelled',
-              dead_letter_reason = 'coalesced_into_previous_delivery',
-              finished_at = NOW(),
-              updated_at = NOW()
-          WHERE ticket_id = $1
-            AND status = 'queued'
-            AND job_id != $2
-        `, [job.ticket_id, job.job_id]);
-        if ((drainRes.rowCount ?? 0) > 0) {
-          console.log(`[Worker] 🧹 Cancelled ${drainRes.rowCount} redundant queued jobs for ticket #${job.ticket_id} to prevent duplicate reply.`);
-        }
-      } catch (e: any) {
-        console.warn(`[Worker] Failed to drain redundant queued jobs:`, e.message);
-      }
     } catch (runErr: any) {
       console.error(`[Worker] Job ${job.job_id} failed:`, runErr.message);
       await recordJobOutcome({
@@ -725,7 +814,7 @@ async function main() {
         delivery: null,
         errorReason: runErr.message,
       });
-      await markJobFailed(job.job_id, runErr.message);
+      await markJobFailed(job, runErr.message);
 
       // 🚨 Dispatch Feishu failure alert with draft reply (if generated)
       await sendFeishuAlert(FEISHU_WEBHOOK_URL, {
@@ -741,14 +830,23 @@ async function main() {
     }
   }
 
+  let deliveryCheck: Promise<void> | undefined;
+  let nextDeliveryCheckAt = 0;
   while (running) {
     try {
+      if (!deliveryCheck && Date.now() >= nextDeliveryCheckAt) {
+        nextDeliveryCheckAt = Date.now() + 1_500;
+        deliveryCheck = reconcilePublicDelivery()
+          .catch(error => console.error('[Worker] Public delivery recovery failed:', error))
+          .finally(() => { deliveryCheck = undefined; });
+      }
       if (activeJobs.size >= MAX_CONCURRENT_JOBS) {
         await new Promise(r => setTimeout(r, 500));
         continue;
       }
 
-      const job = await claimNextJob(pool, WORKER_ID);
+      const job = await claimNextJob(pool, `${WORKER_ID}:${randomUUID()}`, activeModelClaimDelay);
+      if (!running) break;
       if (!job) {
         await new Promise(r => setTimeout(r, 1500));
         continue;
@@ -762,15 +860,15 @@ async function main() {
         abortController,
         startedAt: Date.now(),
       };
-      activeJobs.set(job.job_id, jobContext);
+      activeJobs.set(job.lease_owner, jobContext);
 
       // Launch job asynchronously in concurrency pool
-      processJob(job, abortController)
+      jobContext.completion = processJob(job, abortController)
         .catch(err => {
           console.error(`[Worker] Unhandled error processing job ${job.job_id}:`, err);
         })
         .finally(() => {
-          activeJobs.delete(job.job_id);
+          activeJobs.delete(job.lease_owner);
         });
 
     } catch (loopErr: any) {
@@ -779,13 +877,13 @@ async function main() {
     }
   }
 
-  await handoffLoop;
+  await Promise.all([stopQueueAlerts(), handoffLoop, deliveryCheck, ...[...activeJobs.values()].map(ctx => ctx.completion)]);
   console.log('[Worker] Shutting down cleanly...');
   server.close();
   await pool.end();
 }
 
-main().catch(err => {
+export const workerCompletion = main().catch(err => {
   console.error('[Worker] Fatal error:', err);
   process.exit(1);
 });

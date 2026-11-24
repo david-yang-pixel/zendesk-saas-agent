@@ -308,6 +308,7 @@ def prepare(
     *,
     state_dir: Path,
     revision: str,
+    images_only: bool = False,
     legacy_auth_path: Path = Path("/opt/zd-agent/resources/.state/admin_auth.json"),
 ) -> None:
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -317,6 +318,19 @@ def prepare(
     existing = (
         _parse_dotenv(existing_runtime_path) if existing_runtime_path.exists() else {}
     )
+    images = {
+        name: _required(os.environ, name)
+        for name in (
+            "CASEWORK_INGRESS_IMAGE",
+            "CASEWORK_PI_AGENT_IMAGE",
+            "CASEWORK_ADMIN_IMAGE",
+        )
+    }
+    if images_only:
+        if not existing:
+            raise RuntimeError("Rollback requires an existing runtime.env")
+        _write_dotenv(existing_runtime_path, {**existing, **images, "CASEWORK_CONFIG_REVISION": revision})
+        return
     services = _configured_services(existing)
     postgres_password = existing.get("POSTGRES_PASSWORD") or secrets.token_hex(24)
     # Optional during staged rollout. Never reuse the Messaging signing key.
@@ -399,14 +413,6 @@ def prepare(
         state_dir=state_dir, legacy_auth_path=legacy_auth_path
     )
 
-    images = {
-        name: _required(os.environ, name)
-        for name in (
-            "CASEWORK_INGRESS_IMAGE",
-            "CASEWORK_PI_AGENT_IMAGE",
-            "CASEWORK_ADMIN_IMAGE",
-        )
-    }
     subdomain = os.environ.get("ZENDESK_SUBDOMAIN", "").strip()
     zendesk_base_url = (
         f"https://{subdomain}.zendesk.com"
@@ -433,6 +439,7 @@ def prepare(
         },
         "ZENDESK_TICKET_EVENTS_WEBHOOK_SECRET": ticket_events_secret,
         "CASEWORK_OPENCONNECTOR_MCP_URL": services[0].endpoint,
+        "CASEWORK_AUTOMATION_AUTHOR_IDS": os.environ.get("CASEWORK_AUTOMATION_AUTHOR_IDS", existing.get("CASEWORK_AUTOMATION_AUTHOR_IDS", "")),
         "CASEWORK_TOOL_CONFIG": json.dumps(
             all_tools, ensure_ascii=False, separators=(",", ":")
         ),
@@ -471,6 +478,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--state-dir", type=Path, required=True)
     parser.add_argument("--revision", required=True)
+    parser.add_argument("--images-only", action="store_true")
     parser.add_argument(
         "--legacy-auth-path",
         type=Path,
@@ -480,6 +488,7 @@ def main() -> None:
     prepare(
         state_dir=args.state_dir,
         revision=args.revision,
+        images_only=args.images_only,
         legacy_auth_path=args.legacy_auth_path,
     )
 

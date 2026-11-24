@@ -2,7 +2,7 @@ import type pg from 'pg';
 import type { FeishuAlertParams, HumanAlertTracker } from './alerts.js';
 import { zendeskTicketUrl } from './internal-draft-delivery.js';
 import { ticketIdFromDatabase } from './job-queue.js';
-import { detectCustomerLanguage, type ReplyLanguage } from './reply-policy.js';
+import { detectCustomerLanguage, SPANISH_SUPPORT_HOURS, type ReplyLanguage } from './reply-policy.js';
 
 /**
  * Follow-up work for a customer's request for a human.
@@ -48,6 +48,7 @@ export function isWithinSupportHours(now: Date): boolean {
 // Keep in sync with customerFooter() in reply-policy.ts (a test checks this).
 export const SUPPORT_HOURS_TEXT: Record<ReplyLanguage, string> = {
   en: 'Sunday–Thursday nights, 9:00 PM–6:00 AM EDT (daylight saving time) or 8:00 PM–5:00 AM EST (standard time)',
+  es: SPANISH_SUPPORT_HOURS,
   zh: '纽约时间：周日至周四晚间，夏令时 21:00 至次日 6:00，标准时间 20:00 至次日 5:00',
   ja: 'ニューヨーク時間：日曜～木曜、夏時間 21:00～翌6:00、標準時間 20:00～翌5:00',
 };
@@ -55,6 +56,8 @@ export const SUPPORT_HOURS_TEXT: Record<ReplyLanguage, string> = {
 export function handoffAcknowledgement(language: ReplyLanguage, inSupportHours: boolean): string {
   if (inSupportHours) {
     switch (language) {
+      case 'es':
+        return 'Gracias por escribirnos. Hemos derivado tu solicitud al equipo de soporte humano. Un especialista te atenderá en breve.';
       case 'zh':
         return '您好，已为您转接人工支持，工程师马上就来，请您稍等一会。';
       case 'ja':
@@ -64,6 +67,8 @@ export function handoffAcknowledgement(language: ReplyLanguage, inSupportHours: 
     }
   }
   switch (language) {
+    case 'es':
+      return `Gracias por escribirnos. Hemos derivado tu solicitud al equipo de soporte humano. En este momento estamos fuera del horario de atención. Un especialista revisará tu caso en cuanto se reanude la atención, ${SUPPORT_HOURS_TEXT.es} (hora de Nueva York).`;
     case 'zh':
       return `您好，已为您转接人工支持。当前不在人工服务时间内，人工支持会在服务时间内第一时间查看您的问题（${SUPPORT_HOURS_TEXT.zh}）。`;
     case 'ja':
@@ -127,7 +132,7 @@ export interface HandoffRow {
 
 type Queryable = Pick<pg.Pool, 'query'>;
 
-export type WorkerHandoffOutcome = 'recorded' | 'already_locked';
+export type WorkerHandoffOutcome = 'recorded' | 'already_locked' | 'resume_changed' | 'lease_lost';
 
 /**
  * Lock the ticket for humans and record a handoff for a request the worker
@@ -138,7 +143,9 @@ export type WorkerHandoffOutcome = 'recorded' | 'already_locked';
  */
 export async function recordWorkerHandoff(
   pool: Pick<pg.Pool, 'connect'>,
-  options: { jobId: string; ticketId: number; customerMessage: string; acknowledge: boolean; reason: string },
+  options: { jobId: string; ticketId: number; customerMessage: string; acknowledge: boolean; reason: string;
+    leaseOwner: string; attempt: number; generation: number;
+    observedResume?: { occurredAt: Date | string; cursor: string | null } | null; requestOccurredAt?: string },
 ): Promise<WorkerHandoffOutcome> {
   const handoffId = `handoff:${options.jobId}`;
   const client = await pool.connect();
@@ -148,30 +155,44 @@ export async function recordWorkerHandoff(
       `INSERT INTO ticket_states (ticket_id, updated_at) VALUES ($1, NOW()) ON CONFLICT (ticket_id) DO NOTHING`,
       [options.ticketId],
     );
-    const state = await client.query(
-      'SELECT human_cancelled_at FROM ticket_states WHERE ticket_id = $1 FOR UPDATE',
-      [options.ticketId],
-    );
+    const state = await client.query(`
+      SELECT human_cancelled_at,
+        (human_resumed_at IS DISTINCT FROM $2::timestamptz OR human_resume_cursor IS DISTINCT FROM $3::text) AS resume_changed
+      FROM ticket_states WHERE ticket_id = $1 FOR UPDATE
+    `, [options.ticketId, options.observedResume?.occurredAt ?? null, options.observedResume?.cursor ?? null]);
+    if (state.rows[0]?.resume_changed) {
+      await client.query('COMMIT');
+      return 'resume_changed';
+    }
     if (state.rows[0]?.human_cancelled_at) {
       await client.query('COMMIT');
       return 'already_locked';
     }
+    const owned = await client.query(`
+      SELECT 1 FROM case_jobs j JOIN ticket_states s ON s.ticket_id = j.ticket_id AND s.generation = j.generation
+      WHERE j.job_id = $1 AND j.ticket_id = $2 AND j.status = 'running' AND j.lease_owner = $3
+        AND j.attempts = $4 AND j.generation = $5 AND j.lease_expires_at > clock_timestamp() FOR UPDATE OF j
+    `, [options.jobId, options.ticketId, options.leaseOwner, options.attempt, options.generation]);
+    if (!owned.rowCount) {
+      await client.query('COMMIT');
+      return 'lease_lost';
+    }
     await client.query(
-      'UPDATE ticket_states SET human_cancelled_at = NOW(), updated_at = NOW() WHERE ticket_id = $1',
-      [options.ticketId],
+      'UPDATE ticket_states SET human_cancelled_at = COALESCE($2::timestamptz, NOW()), updated_at = NOW() WHERE ticket_id = $1',
+      [options.ticketId, options.requestOccurredAt ?? null],
     );
     // An internal event, so the in-flight monitor does not read it as a new
     // customer message; human_handoffs.handoff_id references it.
     await client.query(`
       INSERT INTO events (event_id, ticket_id, occurred_at, source, customer_origin, event_type, payload, received_at)
-      VALUES ($1, $2, NOW(), 'pi-agent', 'internal', 'human.handoff_detected', $3::json, NOW())
+      VALUES ($1, $2, COALESCE($4::timestamptz, NOW()), 'pi-agent', 'internal', 'human.handoff_detected', $3::json, NOW())
       ON CONFLICT (event_id) DO NOTHING
-    `, [handoffId, options.ticketId, JSON.stringify({ job_id: options.jobId, reason: options.reason })]);
+    `, [handoffId, options.ticketId, JSON.stringify({ job_id: options.jobId, reason: options.reason }), options.requestOccurredAt ?? null]);
     await client.query(`
       INSERT INTO human_handoffs (handoff_id, ticket_id, acknowledge, customer_message, status, attempts, available_at, created_at, updated_at)
       VALUES ($1, $2, $3, $4, 'pending', 0, NOW(), NOW(), NOW())
       ON CONFLICT (handoff_id) DO NOTHING
-    `, [handoffId, options.ticketId, options.acknowledge, options.customerMessage.trim().slice(0, 500) || null]);
+    `, [handoffId, options.ticketId, options.acknowledge, options.customerMessage.trim() || null]);
     await client.query('COMMIT');
     return 'recorded';
   } catch (error) {

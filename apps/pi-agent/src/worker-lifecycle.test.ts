@@ -3,12 +3,20 @@ import ts from 'typescript';
 import { afterEach, expect, it, vi } from 'vitest';
 import { formatInternalDraft } from './internal-draft-delivery.js';
 import { detectCustomerLanguage } from './reply-policy.js';
-import { requeueLatestConversation } from './job-queue.js';
+import { isModelQuotaError } from './endpoint-cooldown.js';
+import { loadCustomerCoverage, requeueLatestConversation } from './job-queue.js';
 
 // Exercise the actual worker closure without importing its process startup,
 // production DB connection, mention polling, or delivery services.
 function workerJob(overrides: Record<string, unknown>) {
-  const dependencies = { formatInternalDraft, detectCustomerLanguage, requeueLatestConversation, ...overrides };
+  const dependencies = {
+    formatInternalDraft, detectCustomerLanguage, requeueLatestConversation, loadCustomerCoverage,
+    modelEndpointKey: () => 'test-endpoint', isModelQuotaError, oldestWaitingTicket: async () => undefined,
+    prepareModelEndpoint: async () => ({ outcome: 'ready', observedWindowId: null }),
+    deferUnconfirmedConversation: vi.fn(async () => false), WORKER_ID: 'worker-test',
+    completePreviouslySentPublicJob: async () => false,
+    ...overrides,
+  };
   const source = fs.readFileSync(new URL('./worker.ts', import.meta.url), 'utf8');
   const start = source.indexOf('  async function processJob(');
   const end = source.indexOf('\n  while (running)', start);
@@ -54,7 +62,7 @@ it('records a context-read failure, marks the job failed, and clears its lease h
   });
   await job({ job_id: 'test-job', ticket_id: 3726, event_id: 'mention:test' }, new AbortController());
   expect(recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorReason: 'context unavailable' }));
-  expect(markJobFailed).toHaveBeenCalledWith('test-job', 'context unavailable');
+  expect(markJobFailed).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'test-job' }), 'context unavailable');
   expect(sendFeishuAlert).toHaveBeenCalledOnce();
   expect(vi.getTimerCount()).toBe(0);
 });
@@ -63,7 +71,7 @@ it('clears the heartbeat when a duplicate-reply guard cancels before analysis', 
   const markJobCancelled = vi.fn();
   const markJobFailed = vi.fn();
   const job = workerJob({
-    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query: vi.fn() },
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query: vi.fn(async () => ({ rows: [] })) },
     isTicketHumanCancelled: vi.fn(async () => false),
     getTicketDetails: vi.fn(async () => ({ isAlreadyAnswered: true })),
     openConnectorService: {}, markJobCancelled, markJobFailed,
@@ -84,8 +92,10 @@ it('uses two context reads before delivering a customer-origin public reply', as
   const query = vi.fn(async (sql: string) => sql.startsWith('SELECT payload')
     ? { rows: [{ payload: { body: '@agent reply to the customer' } }] }
     : { rows: [], rowCount: 0 });
-  const sendBrowserRelay = vi.fn(async () => ({ status: 'sent', total_duration_ms: 5 }));
-  const markJobSucceeded = vi.fn();
+  const sendBrowserRelay = vi.fn(async () => ({ ok: true, status: 'sent', ticket_id: 3726, total_duration_ms: 5 }));
+  const deliverWithCustomerCoverage = vi.fn(async (_pool, _opts, deliver) => ({
+    outcome: 'delivered', deliveryId: 'id', delivery: await deliver('id', _opts.reply), jobStatus: 'completed',
+  }));
   const markJobFailed = vi.fn();
   const process = workerJob({
     activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query },
@@ -96,7 +106,7 @@ it('uses two context reads before delivering a customer-origin public reply', as
       reply: 'safe reply', trace: { toolCalls: [], rounds: [], totalDurationMs: 1 },
     }),
     sendBrowserRelay, BROWSER_RELAY_URL: 'test', BROWSER_RELAY_KEY: 'test',
-    recordJobOutcome: vi.fn(), markJobSucceeded, markJobFailed,
+    recordJobOutcome: vi.fn(), deliverWithCustomerCoverage, markJobFailed,
     sendFeishuAlert: vi.fn(), FEISHU_WEBHOOK_URL: 'test',
   });
   try {
@@ -105,8 +115,8 @@ it('uses two context reads before delivering a customer-origin public reply', as
       event_id: 'webhook-uuid', expected_event_id: 'customer:1234',
     }, new AbortController());
     expect(getTicketDetails).toHaveBeenCalledTimes(2);
-    expect(sendBrowserRelay).toHaveBeenCalledOnce();
-    expect(markJobSucceeded).toHaveBeenCalledOnce();
+    expect(sendBrowserRelay).toHaveBeenCalledExactlyOnceWith('test', 'test', 3726, 'safe reply', expect.objectContaining({ deliveryId: 'id' }));
+    expect(deliverWithCustomerCoverage).toHaveBeenCalledOnce();
     expect(markJobFailed).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   } finally {
@@ -188,6 +198,12 @@ function fkEnforcingPool(knownEvents: string[], runningJob: Record<string, unkno
   const jobs: Record<string, any>[] = [{ ...runningJob, status: 'running' }];
   const query = vi.fn(async (sql: string, params: any[] = []) => {
     if (/^(BEGIN|COMMIT|ROLLBACK)$/.test(sql.trim())) return { rows: [], rowCount: 0 };
+    if (sql.includes('SELECT generation, human_cancelled_at')) {
+      return { rows: [{ generation: runningJob.generation, human_cancelled_at: null }] };
+    }
+    if (sql.includes('SELECT generation, is_operator_mention')) {
+      return { rows: [{ ...runningJob, status: 'running', lease_owner: 'worker-test' }] };
+    }
     if (sql.includes('INSERT INTO events')) {
       events.add(params[0]);
       return { rows: [], rowCount: 1 };
@@ -209,7 +225,7 @@ function fkEnforcingPool(knownEvents: string[], runningJob: Record<string, unkno
   return { events, jobs, pool: { query, connect: async () => ({ query, release: () => {} }) } };
 }
 
-const ticket5352Job = { job_id: '880b1790-test', ticket_id: 5352, generation: 1, event_id: 'webhook-uuid-1', expected_event_id: 'webhook-uuid-1' };
+const ticket5352Job = { job_id: '880b1790-test', ticket_id: 5352, generation: 1, attempts: 1, lease_owner: 'worker-test', event_id: 'webhook-uuid-1', expected_event_id: 'webhook-uuid-1' };
 const beforeReasoning = { isAlreadyAnswered: false, hasRequestedHuman: false, message: 'first question', lastEventId: '41230000001', customerEventsCount: 1 };
 // The new comment is visible in Zendesk before ingress has recorded its webhook.
 const afterReasoning = { isAlreadyAnswered: false, hasRequestedHuman: false, message: 'Conversation with n77 follow-up', lastEventId: '41230000002', customerEventsCount: 2 };
@@ -339,7 +355,7 @@ it('hands a human request found by the worker to the handoff queue and cancels t
   const markJobCancelled = vi.fn();
   const details = { isAlreadyAnswered: false, hasRequestedHuman: true, latestRequestedHuman: true, message: 'I want to talk to a human' };
   const job = workerJob({
-    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query: vi.fn() },
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query: vi.fn(async () => ({ rows: [] })) },
     isTicketHumanCancelled: vi.fn(async () => false),
     getTicketDetails: vi.fn(async () => details),
     openConnectorService: {}, handOffToHuman, markJobCancelled,
@@ -348,6 +364,70 @@ it('hands a human request found by the worker to the handoff queue and cancels t
   });
   await job({ job_id: 'job-h', ticket_id: 5500, event_id: 'evt-1', expected_event_id: 'evt-1' }, new AbortController());
   expect(handOffToHuman).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'job-h' }), details, expect.stringContaining('人工'));
-  expect(markJobCancelled).toHaveBeenCalledWith('job-h', expect.stringContaining('人工'));
+  expect(markJobCancelled).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'job-h' }), expect.stringContaining('人工'));
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it('waits for a form-only ticket without running the model', async () => {
+  const finishJob = vi.fn();
+  const runPiSupportAgent = vi.fn();
+  const recordJobOutcome = vi.fn();
+  const job = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query: vi.fn(async () => ({ rows: [] })) },
+    isTicketHumanCancelled: async () => false, getTicketDetails: async () => ({
+      message: 'Ticket title', isAlreadyAnswered: false, unrepliedCount: 0,
+      readCustomerMessages: [], visibleCustomerCursors: new Set(),
+    }),
+    openConnectorService: {}, finishJob, runPiSupportAgent, recordJobOutcome,
+  });
+  await job({ job_id: 'form-job', ticket_id: 5691, attempts: 1 }, new AbortController());
+  expect(finishJob).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'form-job' }), 'awaiting_customer');
+  expect(recordJobOutcome).toHaveBeenCalledWith(expect.objectContaining({ status: 'awaiting_customer', delivery: null }));
+  expect(runPiSupportAgent).not.toHaveBeenCalled();
+});
+
+it('defers an unseen typed webhook even when stale history shows a previous answer', async () => {
+  const deferUnconfirmedConversation = vi.fn(async () => true);
+  const runPiSupportAgent = vi.fn();
+  const markJobCancelled = vi.fn();
+  const job = workerJob({
+    activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, pool: { query: vi.fn(async () => ({ rows: [] })) },
+    isTicketHumanCancelled: async () => false, getTicketDetails: async () => ({
+      isAlreadyAnswered: true, visibleCustomerCursors: new Set(['messaging:previous-message']),
+    }),
+    openConnectorService: {}, deferUnconfirmedConversation, runPiSupportAgent, markJobCancelled,
+  });
+  const claimed = { job_id: 'stale-job', ticket_id: 5691, attempts: 1, lease_owner: 'worker-test', expected_event_id: 'messaging:new-message' };
+  await job(claimed, new AbortController());
+  expect(deferUnconfirmedConversation).toHaveBeenCalledWith(expect.anything(), claimed, 'worker-test', 1);
+  expect(markJobCancelled).not.toHaveBeenCalled();
+  expect(runPiSupportAgent).not.toHaveBeenCalled();
+});
+
+it('postpones a model 402 once and checks staff coverage before retrying the same ticket', async () => {
+  const job = { job_id: 'quota-job', ticket_id: 5608, attempts: 1, lease_owner: 'lease-a', expected_event_id: 'messaging:m1' };
+  const pool = { query: vi.fn(async () => ({ rows: [] })) };
+  const postpone = vi.fn(async () => ({ outcome: 'requeued', shouldAlert: true, retryAt: new Date() }));
+  const sendFeishuAlert = vi.fn();
+  const runPiSupportAgent = vi.fn(async () => { throw new Error('OpenAI API error (402): credits'); });
+  const markJobFailed = vi.fn();
+  const markJobCancelled = vi.fn();
+  const recordStaffCoverage = vi.fn();
+  const context = { message: 'Billing issue', readCustomerMessages: [{ cursors: ['messaging:m1'] }], visibleCustomerCursors: new Set(['messaging:m1']) };
+  const getTicketDetails = vi.fn().mockResolvedValueOnce(context).mockResolvedValueOnce({
+    ...context, readCustomerMessages: [], isAlreadyAnswered: true, staffAnsweredCursors: ['messaging:m1'],
+  });
+  const run = workerJob({ pool, activeJobs: new Map(), MAX_CONCURRENT_JOBS: 2, isTicketHumanCancelled: async () => false,
+    getTicketDetails, openConnectorService: {}, allTools: [], getActiveModelConfig: async () => ({ model: 'test' }),
+    runPiSupportAgent, postponeJobForModelQuota: postpone, markJobFailed, markJobCancelled, recordStaffCoverage,
+    sendFeishuAlert, FEISHU_WEBHOOK_URL: 'test', recordJobOutcome: vi.fn(),
+  });
+  await run(job, new AbortController());
+  expect(postpone).toHaveBeenCalledWith(pool, 'test-endpoint', { jobId: 'quota-job', ticketId: 5608, leaseOwner: 'lease-a' }, null);
+  await run({ ...job, lease_owner: 'lease-b' }, new AbortController());
+  expect(runPiSupportAgent).toHaveBeenCalledOnce();
+  expect(sendFeishuAlert).toHaveBeenCalledOnce();
+  expect(recordStaffCoverage).toHaveBeenCalledWith(pool, 5608, ['messaging:m1']);
+  expect(markJobCancelled).toHaveBeenCalledOnce();
+  expect(markJobFailed).not.toHaveBeenCalled();
 });

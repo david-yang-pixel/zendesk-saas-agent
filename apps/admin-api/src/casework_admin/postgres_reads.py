@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Literal, cast
 
 from pydantic import BaseModel
-from sqlalchemy import desc, select
+from sqlalchemy import Select, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from casework_admin.read_models import (
@@ -31,10 +31,11 @@ from casework_admin.read_models import (
     RunTodo,
     RunToolCall,
     SkillRecord,
+    TicketCoverage,
     ToolProbe,
     ToolRecord,
 )
-from casework_persistence.models import CaseJobRow, RunRecordRow
+from casework_persistence.models import CaseJobRow, RunRecordRow, TicketState
 from casework_persistence.repositories import (
     ConfigRevisionRepository,
     SessionPort,
@@ -57,6 +58,39 @@ def postgres_read_transaction_scope(
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def select_runs_with_ticket_state() -> Select[tuple[CaseJobRow, RunRecordRow, TicketState]]:
+    return (
+        select(CaseJobRow, RunRecordRow, TicketState)
+        .outerjoin(RunRecordRow, RunRecordRow.job_id == CaseJobRow.job_id)
+        .outerjoin(TicketState, TicketState.ticket_id == CaseJobRow.ticket_id)
+    )
+
+
+def ticket_coverage(state: TicketState | None, *, now: datetime) -> TicketCoverage:
+    if state is None:
+        return TicketCoverage()
+
+    latest_seq = state.latest_customer_seq or None
+    answered_seq = state.answered_customer_seq or None
+    latest_at = _utc(state.latest_customer_at) if state.latest_customer_at is not None else None
+    pending = state.latest_customer_seq > state.answered_customer_seq
+    cancelled_at = state.human_cancelled_at
+    return TicketCoverage(
+        status="unknown" if latest_seq is None else "pending" if pending else "answered",
+        latest_customer_seq=latest_seq,
+        latest_customer_at=latest_at,
+        answered_customer_seq=answered_seq,
+        answered_by_job_id=state.answered_by_job_id,
+        pending_age_seconds=(
+            max(0, int((now - latest_at).total_seconds()))
+            if pending and latest_at is not None
+            else None
+        ),
+        human_takeover=cancelled_at is not None,
+        human_cancelled_at=_utc(cancelled_at) if cancelled_at is not None else None,
+    )
 
 
 def _timestamp(value: datetime | None) -> str:
@@ -111,7 +145,9 @@ def _read_models[M: BaseModel](model_type: type[M], value: object) -> tuple[M, .
     return parsed
 
 
-def _record(row: CaseJobRow, run: RunRecordRow | None = None) -> RunRecord:
+def _record(
+    row: CaseJobRow, run: RunRecordRow | None, coverage: TicketCoverage | None = None
+) -> RunRecord:
     status = _run_status(row.status)
     has_telemetry = run is not None and run.telemetry_version is not None
     active_question = (
@@ -208,6 +244,7 @@ def _record(row: CaseJobRow, run: RunRecordRow | None = None) -> RunRecord:
         ),
         context_checkpoint=context_checkpoint,
         sandbox_lifecycle=sandbox_lifecycle,
+        ticket_coverage=coverage if coverage is not None else TicketCoverage(),
     )
 
 
@@ -239,16 +276,16 @@ class PostgresAdminReadRepository:
 
     async def _jobs_with_runs(
         self,
-    ) -> tuple[tuple[CaseJobRow, RunRecordRow | None], ...]:
+    ) -> tuple[tuple[CaseJobRow, RunRecordRow | None, TicketState | None], ...]:
         async with self._transaction_scope() as session:
             result = await session.execute(
-                select(CaseJobRow, RunRecordRow)
-                .outerjoin(RunRecordRow, RunRecordRow.job_id == CaseJobRow.job_id)
+                select_runs_with_ticket_state()
                 .order_by(desc(CaseJobRow.created_at))
                 .limit(500)
             )
             return cast(
-                tuple[tuple[CaseJobRow, RunRecordRow | None], ...], result.all()
+                tuple[tuple[CaseJobRow, RunRecordRow | None, TicketState | None], ...],
+                result.all(),
             )
 
     async def overview(
@@ -258,7 +295,7 @@ class PostgresAdminReadRepository:
         config_revision: str,
     ) -> OverviewResponse:
         pairs = await self._jobs_with_runs()
-        jobs = tuple(row for row, _run in pairs)
+        jobs = tuple(row for row, _run, _state in pairs)
         statuses = Counter(row.status for row in jobs)
         active = sum(statuses[status] for status in _ACTIVE)
         waiting = statuses["awaiting_customer"]
@@ -290,8 +327,8 @@ class PostgresAdminReadRepository:
                 tone="danger" if statuses["failed"] else "neutral",
             ),
         )
-        records = tuple(_record(row, run) for row, run in pairs)
-        run_by_job = {run.job_id: run for _row, run in pairs if run is not None}
+        records = tuple(_record(row, run) for row, run, _state in pairs)
+        run_by_job = {run.job_id: run for _row, run, _state in pairs if run is not None}
         failures = tuple(
             FailureItem(
                 id=row.job_id,
@@ -377,6 +414,7 @@ class PostgresAdminReadRepository:
                     "evidence_ids",
                     "context_checkpoint",
                     "sandbox_lifecycle",
+                    "ticket_coverage",
                 }))
                 for record in records[:10]
             ),
@@ -389,10 +427,12 @@ class PostgresAdminReadRepository:
         status: RunStatus | None = None,
     ) -> RunListResponse:
         normalized = query.strip().casefold() if query else ""
+        now = datetime.now(UTC)
         records = tuple(
             record
             for record in (
-                _record(row, run) for row, run in await self._jobs_with_runs()
+                _record(row, run, ticket_coverage(state, now=now))
+                for row, run, state in await self._jobs_with_runs()
             )
             if (status is None or record.status == status)
             and (
@@ -407,12 +447,14 @@ class PostgresAdminReadRepository:
     async def run(self, *, session_id: str) -> RunRecord | None:
         async with self._transaction_scope() as session:
             result = await session.execute(
-                select(CaseJobRow, RunRecordRow)
-                .outerjoin(RunRecordRow, RunRecordRow.job_id == CaseJobRow.job_id)
+                select_runs_with_ticket_state()
                 .where(CaseJobRow.session_id == session_id)
             )
-            pair = result.one_or_none()
-        return None if pair is None else _record(pair[0], pair[1])
+            row = result.one_or_none()
+        if row is None:
+            return None
+        job, run, state = row
+        return _record(job, run, ticket_coverage(state, now=datetime.now(UTC)))
 
     async def registry(self) -> RegistryResponse:
         async with self._transaction_scope() as session:

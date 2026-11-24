@@ -14,6 +14,7 @@ from typing import Literal
 
 _ACTIVE_STATUSES = frozenset({"new", "open"})
 _HUMAN_KEYWORD = "human"
+_HUMAN_LEAD_KEYWORDS = frozenset({_HUMAN_KEYWORD, "人工", "真人"})
 _ProcessingAction = Literal["enqueue", "ignore", "cancel"]
 
 MENTION_TRIGGERS = (
@@ -75,6 +76,7 @@ class NormalizedZendeskEvent:
     status: str = ""
     is_customer_message: bool = False
     message_text: str = ""
+    is_staff_note: bool = False
 
     def __post_init__(self) -> None:
         if type(self.ticket_id) is not int or self.ticket_id <= 0:
@@ -165,11 +167,21 @@ def _decision(
 def _has_human_request(
     event: NormalizedZendeskEvent, config: ProcessingRuleConfig
 ) -> bool:
-    text = _normalise_human_text(event.message_text)
+    text = event.message_text.strip()
     if not text:
         return False
+
+    first_line, *detail = text.splitlines()
+    if detail:
+        lead = unicodedata.normalize("NFKC", first_line).strip().casefold()
+        # Keep quote markers and identifier punctuation significant on a lead line.
+        if lead.rstrip(".!?,:~。").rstrip() in _HUMAN_LEAD_KEYWORDS:
+            return True
+
+    normalized = _normalise_human_text(text)
     triggers = (*config.human_keywords, *config.human_aliases)
-    return text in triggers
+    # Whole-message punctuation stripping can expose a keyword inside a quote.
+    return normalized in triggers and (not detail or len(normalized.splitlines()) > 1)
 
 
 def _has_individual_assignee(assignee_id: str | int | None) -> bool:
@@ -197,7 +209,7 @@ def evaluate_processing_rules(
     """
 
     if not event.is_customer_message:
-        if has_operator_mention(event.message_text):
+        if event.is_staff_note and has_operator_mention(event.message_text):
             return _decision("enqueue", event, "operator_mention")
         return _decision("ignore", event, "not_customer_message")
 
